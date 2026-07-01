@@ -26,6 +26,17 @@ critic could be Claude, orchestrator could be codex. Concretely, as the operator
 - The operator can also open a window onto an already-running worker/critic/planner and talk
   to it directly, and can spawn a worker directly via "New task" (the AO pattern).
 
+**Framing the operator gave (the intent behind this):** globally, the orchestrator role and
+the autodev discipline do not change from autodev-loop — only the packaging does. Before, the
+operator launched a Claude Code session in the project terminal and said "use autodev-loop to
+implement task X"; now the operator just opens the harness and says "implement task X", and the
+orchestrator already knows it is inside autodev. The wiring becomes implicit instead of a manual
+instruction. Crucially, the discipline the orchestrator "obeys" is two things: (1) a soft
+*protocol* layer it follows as an agent, and (2) a hard, un-bypassable *deterministic gate* —
+in autodev-loop the gate ran in PowerShell, not in the operator's Claude session, so the agent
+physically could not talk past it. That mechanical guarantee (not the agent's good behavior) is
+what makes "never merge bullshit" hold — and it maps directly onto the two-layer split below.
+
 ## Decision
 
 **Roles are a first-class, open set (`orchestrator`, `worker`, `critic`, `planner`, …), each
