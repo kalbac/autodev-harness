@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s08 — thin api + parity harness + cross-platform CI Tasks 27–29 + EPIPE fix; **P1 DoD fixture-side reached, PR #13 merged to `main`, all 4 CI cells green**; 265 tests green).
+> Last updated: 2026-07-02 (s09 — **P1 real-world DoD REACHED**: live build-step-9 on real repo `aurora` → green COMMIT with live claude+codex, oracle-equivalent. 2 harness fixes found+fixed live (worker-report harvest, Windows .cmd spawn), PR #16 merged to `main` (`d137f2b`), all 4 CI cells green; 272 tests).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 🔨 **build steps 1–9 done (Tasks 1–29): loop runs end-to-end + thin api + parity harness + cross-platform CI; 264 tests green, typecheck (src+test) clean. Fixture-side DoD reached. Remaining: build step 9 live woodev workload (operator-picked) = real-world DoD** |
+| **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,32 +29,25 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s08, 2026-07-01)
+## Last session (s09, 2026-07-02)
 
-- **Tasks 27–29 done → P1 fixture-side DoD.** Task 27 `src/api/server.ts` (thin http+ws over the repo:
-  `/state`, WS change-stream, structured A/B `/escalations/:id/reply`). Task 28 `test/parity/parity.test.ts`
-  (18-scenario parity harness: real conductor+repo+scheduler+escalate, fake worker/critic/worktree/git, same
-  decisions + queue/escalation end-state as the PS oracle). Task 29 GH Actions matrix (win+linux × node 20/22)
-  + `postbuild` schema copy + `tsconfig.typecheck.json`. **264 tests green, typecheck (src+test) clean.** PR
-  `feat/p1-dod-api-parity-ci` (3 commits) **awaiting operator merge**.
-- **Three codex gates + two re-critics.** api: 3 accepted (body cap+413, id allowlist, bounded digest tail);
-  re-critic caught an over-broad partial-line drop. parity: 8 accepted incl. one "passes for the wrong reason";
-  re-critic caught 2 vacuous label assertions. New gotchas `[ts/typecheck-scope]`, `[api/413-teardown]`,
-  `[test/vacuous-assert]`.
-- **CI flake found+fixed:** first cross-platform run went red on ubuntu/node20 — real EPIPE race in
-  `src/util/native.ts` (`child.stdin` write with no `'error'` listener). Fixed at root + regression test
-  (`790ffc9`); re-run → **all 4 cells green**. PR **#13 merged to `main`** (`cde17a2`).
+- **P1 real-world DoD reached.** Live build-step-9 on `aurora` (disposable Laravel sandbox in `d:/projects/`):
+  CLAIM→worktree→live claude(sonnet)→harvest→fence→live codex(`clean`)→gate `php -l`→**COMMIT `3ffe028`**→done —
+  oracle-equivalent. 2 harness bugs found live, both codex-gated + re-critic, merged (**PR #16 `d137f2b`**, 4 CI green).
+- **Fix #4 `ded192e`** — `harvestWorkerReport` (`src/worker/report.ts`): worker writes `worker-report.md` into
+  the worktree → dirty-file fence flagged it stray → relocate to runtimeDir before status-read+fence.
+- **Fix #5 `76e0ab3`** — `runNative` via `cross-spawn`: node can't spawn the Windows `codex.cmd` shim (ENOENT).
+- Step-0 tails done (PR #15): `[node/stdin-epipe]` gotcha + Supermemory. Gotchas 12→15 (worker-report, win-cmd-spawn, real-repo-run).
 
-## NEXT ACTIONS (s09)
+## NEXT ACTIONS (s10)
 
-0. **Deferred tails from s08 (quick):** write the `[node/stdin-epipe]` gotcha file (+ index in GOTCHAS.md,
-   bump count 11→12); save 1–2 cross-project TS/Node learnings (`[ts/typecheck-scope]`, EPIPE) to Supermemory.
-1. **Build step 9 — live woodev workload (real-world P1 DoD):** operator picks ONE live woodev-class task; run
-   it through the harness end-to-end (real claude worker + codex critic) and confirm parity with how the PS
-   loop would handle it. This is the last P1 gate. NOTE first-live-run risks: `[conductor/wiring]` deferred
-   limits (whitespace-split gate commands, main-root invariants) may bite real recipes.
-2. **🟡 Before the orchestrator layer:** resolve `adr/003` open questions with the operator (deterministic
-   conductor already landed). Then P2 (web UI over the `api` seam) / P3.
+1. **🟡 Resolve `adr/003` open questions with the operator BEFORE building the orchestrator layer:**
+   orchestrator↔conductor boundary, planner scope, config schema (role registry + per-adapter config).
+   The deterministic conductor is done; the LLM-orchestrator is the next architectural piece and needs sign-off.
+2. **Optional P1 hardening — Finding #1 (deps-provisioning):** a harness feature to symlink/junction configured
+   dirs (`vendor/`, `node_modules/`, `.env`, sqlite) into each worktree before the gate, so gates can graduate
+   from `php -l` to real test suites (`php artisan test`). Not a P1 blocker. codex-gated.
+3. **Then P2** (localhost dashboard over the read-only `api` seam) / P3.
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
 escalate,anti-drift,gate,conductor,api}/` + `src/index.ts` (composition root). Parity harness under
@@ -91,7 +84,8 @@ keeps running our real tasks until P1 reaches parity. It is the **parity oracle*
   `GuardRecipePair[]`; `gate.ts` owns recipe loading (mirrors PS `Get-AutodevGuards` + `Get-AutodevGuardRecipePairs`
   + pure `Select-*`). Matching the raw `contract_value` cell would have falsely covered a sibling value —
   (b) is required for divergence-#2 correctness, not just cleaner.
-- Which live woodev-class workload to use as the P1 parity target (operator; needed at DoD step 9).
+- ✅ **RESOLVED (s09).** Live P1 parity target = `aurora` (disposable Laravel sandbox in `d:/projects/`,
+  operator-designated as abandoned/deletion-candidate → free to use). Green COMMIT proven end-to-end.
 - Repo hosting/licensing details for `kalbac/autodev-harness`.
 - Exact per-project config file format (`.autodev/config.yaml` vs `harness.config.*`).
 

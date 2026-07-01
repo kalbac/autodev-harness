@@ -4,6 +4,32 @@
 
 ---
 
+## s09 — 2026-07-02 — live build-step-9 on a real repo → **P1 real-world DoD reached** (green COMMIT)
+
+**Context:** Continued from s08 (265 tests, PR #13 merged). Step 0 tails: wrote the `[node/stdin-epipe]`
+gotcha (count 11→12), saved 2 cross-project TS/Node learnings to Supermemory — docs branch → **PR #15 merged**.
+
+**Build-step-9 — the last P1 gate — done.** Ran the harness end-to-end on a REAL woodev-class repo with a
+live `claude` worker + live `codex` critic and reached a **green COMMIT** matching the PS oracle.
+- **Target:** operator dropped `open-warehouse` (dirty tree) → picked `aurora` (disposable Laravel sandbox
+  in `d:/projects/`). Dependency-free gate `php -l server/app/Services/Llm/LlmServiceFactory.php`; task `live01`
+  (name supported providers in the unsupported-provider error). Runs on `autodev/live-proof`, `.autodev/` git-excluded.
+- **First run → ESCALATE (dirty-file):** the worker wrote `worker-report.md` into the worktree root → fence
+  flagged it stray → no task can COMMIT. **Finding #4 (blocking).**
+- **Fix #4 (`ded192e`)** — `src/worker/report.ts` `harvestWorkerReport` relocates the report worktree→runtimeDir
+  before status-read+fence (parity §6). codex gate returned **broken** (stale carry-over on retry/re-claim;
+  non-atomic EXDEV; test covered only the status-read half) → fixed → **re-critic clean**.
+- **Second run → `spawn codex ENOENT`:** fence PASSED (fix #4 proven live), reached the critic; node can't
+  spawn the Windows `codex.cmd` shim. **Finding #5.** **Fix #5 (`76e0ab3`)** — `runNative` via `cross-spawn`;
+  win32-gated regression test; codex-gated (only flagged risk = the added dep, satisfied).
+- **Third run → GREEN COMMIT:** CLAIM → worktree → claude(sonnet) → harvest → fence(pass) → **codex `clean`
+  (conf 0.76)** → gate `php -l` green → **COMMIT `3ffe028`** → task `done` + digest line. Oracle-equivalent.
+
+**Merged:** both fixes → **PR #16 merged to `main` (`d137f2b`)**, all 4 CI cells green. 272 tests + 2 skipped.
+**Findings captured:** #4/#5 (fixed) + 3 operational (worktree lacks deps; dirty tree breaks merge; `.autodev/`
+must be git-excluded) → gotchas (count 12→15). **Discipline:** 3 codex gates + 2 re-critics (both caught
+incomplete fixes) — never self-certified.
+
 ## s08 — 2026-07-01 — thin api + parity harness + cross-platform CI (P1 DoD, fixture side; steps 8–9 done)
 
 **Context:** Continued from s07 (233 tests). s07 PR `feat/conductor-p1` already merged to `main` (#12) —
