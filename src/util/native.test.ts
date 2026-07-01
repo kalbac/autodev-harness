@@ -1,0 +1,20 @@
+import { describe, it, expect } from "vitest";
+import { runNative } from "./native.js";
+
+describe("runNative", () => {
+  it("captures stdout and a zero exit code", async () => {
+    const r = await runNative(process.execPath, ["-e", "process.stdout.write('hi')"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("hi");
+  });
+
+  it("captures a non-zero exit code without throwing", async () => {
+    const r = await runNative(process.execPath, ["-e", "process.exit(3)"]);
+    expect(r.exitCode).toBe(3);
+  });
+
+  it("captures stderr", async () => {
+    const r = await runNative(process.execPath, ["-e", "process.stderr.write('boom')"]);
+    expect(r.stderr).toContain("boom");
+  });
+});
