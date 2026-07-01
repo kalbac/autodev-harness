@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s06 — watchdog/escalate/anti-drift/fingerprint Tasks 20–23; 193 tests green, merged to main).
+> Last updated: 2026-07-01 (s07 — scheduler + conductor + composition root Tasks 23.5/24–26; step 7 done; 233 tests green; PR feat/conductor-p1 awaiting operator merge).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–6 done (gate group + watchdog/escalate/anti-drift/fingerprint Tasks 20–23); 193 tests green. Next: step 7 conductor wiring (Tasks 24–26)** |
+| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–7 done (conductor loop + scheduler + composition root Tasks 23.5/24–26 wired; loop runs end-to-end); 233 tests green. Next: thin `api` (Task 27) → parity harness + CI (28–29) = P1 DoD** |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,35 +29,34 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s06, 2026-07-01)
+## Last session (s07, 2026-07-01)
 
-- **Step 6 Tasks 20–23** — `watchdog/watchdog.ts` (real `runWatched`, cross-platform tree-kill, makes the
-  `runner.ts` seam real + optional `pollMs`), `escalate/escalate.ts` (artifact + Telegram/outbox, never-throws),
-  `anti-drift/anti-drift.ts` (configurable intent + injected model → one digest line), `util/fingerprint.ts`
-  (content-keyed SHA256 fence, divergence #3). 4 modules dispatched in parallel (sonnet-5, TDD). **193 tests green.**
-- **Codex gate:** 4 findings → 3 accepted (anti-drift model-throw fail-hard; `forbiddenTouches` raw-path fail-open;
-  `escalate` env/log unguarded vs never-throws), 1 rejected as anti-parity (multiline `/im` verdict = verbatim
-  `anti-drift.ps1:91`). **Re-critic** refuted the F1 fix as incomplete → `safeLog` everywhere in `runAntiDrift`.
-  New gotcha `[ts/fail-closed]`: guard catch-block logging in never-throws modules.
+- **Step 7 done** — Task 23.5 `scheduler/scheduler.ts` (plan gap; `scheduler.ps1` parity), Tasks 24–26
+  `conductor/conductor.ts` (full parity §2 spine + outer loop, DI, 8 self-tests on fakes), and the step-7
+  close-out: `src/index.ts` production composition root + `src/util/log.ts`, plus worktree `create()`
+  re-queue safety. **233 tests green, typecheck clean.** PR `feat/conductor-p1` **awaiting operator merge**.
+- **Two codex gates + two re-critics.** Conductor/scheduler: 2 rejected as faithful-to-oracle, 3 accepted;
+  re-critic caught an incomplete teardown fix (`safeLog`). Integration: 2 deferred w/ docs, 4 fixed; re-critic
+  caught `--max-iterations` missing-value. New gotchas `[ts/test-hang]`, `[conductor/wiring]`.
 
-## NEXT ACTIONS (s07)
+## NEXT ACTIONS (s08)
 
-1. **Build step 7 — `conductor` wiring (Tasks 24–26)**, same discipline. This is pure wiring + judgment routing,
-   zero LLM calls; composes every seam built so far. Parity: `conductor.ps1` §2 exact step sequence.
-   - Task 24: branch preflight + `Invoke-ConductorIteration` spine (CLAIM → circuit-breaker → worker → report
-     routing → dirty-file fence → diff+critic bounded retry → gate → decision, with divergences #4/#8/#10).
-   - Task 25: outer loop (`MaxSessionHours` graceful exit #9; anti-drift every N commits via explicit
-     `iterationCommitted` flag; rate-limit backoff via `iterationRateLimited` flag; `--once`/`--maxIterations`).
-   - Task 26: port the 8 conductor `-SelfTest` cases (all pure, fakes for worker/critic/gate).
-2. Then thin `api` (27) → parity harness + CI (28–29). Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
-3. **🟡 Before building the orchestrator layer:** resolve `adr/003` open questions (orchestrator↔conductor
-   boundary, role registry) with the operator — but the deterministic conductor (Tasks 24–26) can land first.
-4. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
+1. **Merge `feat/conductor-p1`** first (operator-approved `gh pr merge` — classifier blocks self-authored).
+2. **Task 27 — thin `api/server.ts`:** `http` + `ws` over `BlackboardRepository` — `GET /state` (queues +
+   digest tail), WS change-stream via `chokidar` on `.autodev/`, `POST /escalations/:id/reply` (A/B structured;
+   free text recorded, NEVER fed to a worker — injection surface). Plan §Task 27.
+3. **Tasks 28–29 — parity harness + cross-platform CI** = P1 DoD (fixture side). Task 28: seeded fixture repo
+   (normal / contract-zone / TOO_BIG / poison / 429) run through the loop with fake adapters, assert same
+   COMMIT/ESCALATE/RETRY + done/escalations end-state as the PS loop. Task 29: GH Actions matrix (win+linux,
+   node 20/22): `npm ci` → `typecheck` → `test`. NOTE also copy `critic-verdict.schema.json` into `dist/`
+   (deferred `[critic/codex]` gotcha).
+4. **🟡 Before the orchestrator layer:** resolve `adr/003` open questions with the operator (deterministic
+   conductor already landed). **Pick the live woodev-class parity target** (operator; needed at build step 9).
 
-**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog,escalate,anti-drift,gate}/`.
-Decision + support layers all live: `gate/*` (all I/O via `GateDeps`), `watchdog/watchdog` (real, seam wired),
-`escalate/escalate`, `anti-drift/anti-drift`, `util/fingerprint`. **Still missing: `conductor` (Task 24) — the loop
-that wires them end-to-end — and thin `api` (27).** `src/index.ts` is still a stub awaiting `conductor`.
+**Assets:** all P1 core modules live under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,
+watchdog,escalate,anti-drift,gate,conductor}/` + `src/index.ts` (composition root) + `src/util/log.ts`. **The
+loop runs end-to-end** (index.ts wires every real dep → `createConductor().run()`). Still missing: thin `api`
+(27) + parity harness/CI (28–29). Known deferred limits: see gotcha `[conductor/wiring]`.
 
 ## Continuity (do not break)
 
