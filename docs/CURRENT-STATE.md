@@ -38,16 +38,16 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 
 ## NEXT ACTIONS (s04)
 
-1. **Merge PR #1** (operator) — brings in the foundation + repo-hygiene cleanup. Until merged, the
-   flagged files remain on `main`.
-2. **Finish step 3 → continue steps 4–9**, same discipline (sonnet-5 implementer → codex GPT-5.5 gate):
+0. ✅ **PR #1 merged** to `main` (merge-commit `3c4a7ad`, s03) — foundation + repo-hygiene are live on `main`.
+   Start s04 from a fresh feature branch off `main`.
+1. **Finish step 3 → continue steps 4–9**, same discipline (sonnet-5 implementer → codex GPT-5.5 gate):
    next concrete = **Task 11 `worker/claude-adapter`** — build it against an **injected `ProcessRunner`/watchdog
    seam** (define the interface now; the real `watchdog` is Task 20) so it unit-tests with a fake runner; the live
    `claude -p` path stays behind an `ADH_LIVE=1` flag. Then `critic`(codex adapter)+fencing → `gate`+`guards`+
    `mutation-check` → `watchdog`+`escalate`+`anti-drift` → `conductor` → thin `api` → parity harness + CI.
    Plan tasks 11–29 in `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md` (interfaces pinned; expand to full TDD when reached).
-3. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
-4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
+2. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
+3. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
 
 **Assets:** modules under `src/{util,config,blackboard,worktree,router,worker}/` (worker = prompt + adapter
 interface + fake; NO live claude spawn yet). `src/index.ts` is a stub awaiting `conductor` wiring (plan Task 24).
