@@ -71,7 +71,12 @@ describe("ClaudeWorkerAdapter", () => {
   });
 
   it("constructs the command exactly as the parity spec pins", async () => {
-    const cfg = HarnessConfigSchema.parse({});
+    // Non-default worker config so this proves the adapter FORWARDS config
+    // values rather than coincidentally matching the schema defaults.
+    const cfg = HarnessConfigSchema.parse({
+      worker: { exe: "claude-cli", maxTurns: 42, staleMinutes: 7, timeoutMinutes: 11 },
+    });
+    expect(cfg.worker.exe).not.toBe(HarnessConfigSchema.parse({}).worker.exe);
     const runner = new FakeRunner([okResult()]);
     const adapter = new ClaudeWorkerAdapter({ runner, cfg });
     const task = makeTask();
@@ -165,6 +170,52 @@ describe("ClaudeWorkerAdapter", () => {
 
     expect(result).toEqual({ status: "TIMED_OUT", model: "opus", exitCode: 1, rateLimited: false, timedOut: true });
     expect(runner.calls).toHaveLength(1);
+  });
+
+  // §6 pins the priority order EXACTLY: rate-limit is evaluated before
+  // timeout. These two cases set BOTH flags on the same step so a wrong impl
+  // that checked `timedOut` first would fail (single-flag tests could not
+  // catch that reordering).
+  it("prioritizes rate-limit over timeout on a contract-zone step (PAUSE, no step-down)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ rateLimited: true, timedOut: true, exitCode: 1 }),
+      okResult({ exitCode: 0 }), // must never be consumed
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask({ touches_contract_zone: true });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus", "sonnet"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result.status).toBe("RATE_LIMITED");
+    expect(result.model).toBe("opus");
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("prioritizes rate-limit over timeout on a non-contract step (steps down, not TIMED_OUT)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ rateLimited: true, timedOut: true, exitCode: 1 }),
+      okResult({ exitCode: 0 }),
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask({ touches_contract_zone: false });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["sonnet", "haiku"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result.status).toBe("DONE");
+    expect(result.model).toBe("haiku");
+    expect(runner.calls).toHaveLength(2);
   });
 
   it("returns RATE_LIMITED with the last model when every ladder step (non-contract) is rate-limited", async () => {
