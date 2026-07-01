@@ -4,6 +4,42 @@
 
 ---
 
+## s06 — 2026-07-01 — Watchdog + escalate + anti-drift + fingerprint (Tasks 20–23, step 6 done)
+
+**Context:** Continued from s05 (155 tests). Same discipline: sonnet-5 implementers (TDD, no commit) →
+controller spec-check vs the PS oracle → whole-module codex GPT-5.5 gate over the combined diff →
+adjudicate → fix + regression test → **re-critic the fixes**.
+
+**Built (4 disjoint modules, dispatched in PARALLEL):** Task 20 `watchdog/watchdog.ts` — makes the
+`runner.ts` seam real: `runWatched` liveness = newest of (stdout/stderr stream activity, heartbeat mtime,
+newest mtime under `activityPaths`), kill whole process tree on stale/hard-timeout; cross-platform tree-kill
+(Win `taskkill /T /F`; POSIX detached process-group SIGKILL) + `isRateLimited` (Test-RateLimited parity);
+added optional `pollMs` to the seam (backward-compatible). Task 21 `escalate/escalate.ts` — artifact
+(verbatim template) + best-effort Telegram/outbox delivery, injected fs/http/env, never-throws, no task-move.
+Task 22 `anti-drift/anti-drift.ts` — configurable intent source (whole-file or header-extracted, coupling #4)
++ injected model runner → one digest line; unparseable/failed → UNCERTAIN. Task 23 `util/fingerprint.ts` —
+content-keyed SHA256 fence (divergence #3): `snapshot`/`workerTouched`/`strayChanged`/`forbiddenTouches`.
+**193 tests / 2 skipped, typecheck clean** (was 155).
+
+**Codex gate (4 findings): 3 accepted, 1 rejected as anti-parity.** ACCEPTED — (F1) anti-drift didn't wrap
+the model call → a thrown `runModel` was fail-hard; PS `anti-drift.ps1:82-88` catches → wrapped to UNCERTAIN
++ still writes digest. (F3) `forbiddenTouches` matched the raw path; PS `Test-GlobMatch` normalizes BOTH
+sides → a `./`-prefixed forbidden touch was fail-open → normalize before match. (F4) `escalate` env/log reads
+were unguarded vs the documented never-throws → `safeLog` + guarded env. REJECTED — (F2) "multiline `/im`
+verdict match accepts a later line" is **verbatim `anti-drift.ps1:91` `(?im)^\s*(...)`** — matching the
+oracle IS the contract; UNCERTAIN fallback is only for NO-prefix output.
+
+**Re-critic** refuted the F1 fix as incomplete (catch-block logs still unguarded → a throwing logger re-throws
+the fail-closed path) → routed all `runAntiDrift` logs through `safeLog` too; confirmed F3/F4 and the F2
+rejection. Each fix gated by a regression test.
+
+**Merged:** PR (step 6 batch) → `main`. Codex Windows-sandbox couldn't spawn pwsh/serena
+(`CreateProcessAsUserW failed: 5`) but reviewed fine from the inline diff (known gotcha).
+
+**Next:** step 7 — `conductor` wiring (Tasks 24–26), then thin `api` (27), parity harness + CI (28–29).
+
+---
+
 ## s05 — 2026-07-01 — Gate group (Tasks 15–19): the correctness core (step 5 done)
 
 **Context:** Continued from s04 (101 tests). Same discipline: sonnet-5 implementers (TDD) →

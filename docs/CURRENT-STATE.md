@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s05 — gate group Tasks 15–19; 155 tests green, merged to main).
+> Last updated: 2026-07-01 (s06 — watchdog/escalate/anti-drift/fingerprint Tasks 20–23; 193 tests green, merged to main).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–5 done (gate group Tasks 15–19 = correctness core); 155 tests green; PRs #1/#3/#5/#9/#10 merged. Next: step 6 watchdog/escalate/anti-drift** |
+| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–6 done (gate group + watchdog/escalate/anti-drift/fingerprint Tasks 20–23); 193 tests green. Next: step 7 conductor wiring (Tasks 24–26)** |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,34 +29,35 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s05, 2026-07-01)
+## Last session (s06, 2026-07-01)
 
-- **Gate group Tasks 15–19** (PR #10) — the correctness core. `src/gate/{invariants,guards,mutation-check,gate}.ts`
-  + `self-test.test.ts` (5 `gate.ps1 -SelfTest` cases). Per-VALUE coverage (divergence #2) verified. Three leaf
-  modules dispatched in parallel (sonnet-5, TDD); gate.ts = exact port of `Invoke-AutodevGate`. **155 tests green.**
-- **🔴 guards/recipe question RESOLVED → (b)** from real `.autodev/` data (see Open questions, now closed).
-- **Whole-module codex gate:** correctness core confirmed clean; 3 dependency-resilience findings all rejected
-  as anti-parity (PS loads guards before check; `!range` guard is verbatim `gate.ps1:149`; broken constitution
-  → conductor fail-closes, not RETRY). Throw/fail-closed contract documented in `runGate`.
-- **Merged (self-merge, operator-confirmed):** PR #10 + PR #9 (batch-rule) → `main`.
+- **Step 6 Tasks 20–23** — `watchdog/watchdog.ts` (real `runWatched`, cross-platform tree-kill, makes the
+  `runner.ts` seam real + optional `pollMs`), `escalate/escalate.ts` (artifact + Telegram/outbox, never-throws),
+  `anti-drift/anti-drift.ts` (configurable intent + injected model → one digest line), `util/fingerprint.ts`
+  (content-keyed SHA256 fence, divergence #3). 4 modules dispatched in parallel (sonnet-5, TDD). **193 tests green.**
+- **Codex gate:** 4 findings → 3 accepted (anti-drift model-throw fail-hard; `forbiddenTouches` raw-path fail-open;
+  `escalate` env/log unguarded vs never-throws), 1 rejected as anti-parity (multiline `/im` verdict = verbatim
+  `anti-drift.ps1:91`). **Re-critic** refuted the F1 fix as incomplete → `safeLog` everywhere in `runAntiDrift`.
+  New gotcha `[ts/fail-closed]`: guard catch-block logging in never-throws modules.
 
-## NEXT ACTIONS (s06)
+## NEXT ACTIONS (s07)
 
-1. **Build step 6 — `watchdog` + `escalate` + `anti-drift` + fingerprint fence (Tasks 20–23)**, same discipline.
-   - Task 20 `watchdog/watchdog.ts`: `runWatched` liveness (stream + heartbeat + activityPaths mtime), cross-platform
-     tree-kill (Win `taskkill /T`; POSIX pgroup) — the injected `runner` seam becomes real. Parity `watchdog.ps1`.
-   - Task 21 `escalate/escalate.ts`: write `escalations/<id>.md` + type enum + Telegram-or-outbox delivery.
-   - Task 22 `anti-drift/anti-drift.ts`: intent-vs-diff sonnet check → one digest line; unparseable→UNCERTAIN.
-   - Task 23 `util/fingerprint.ts`: SHA256 content fingerprints (divergence #3, content-keyed not path-set).
-2. Then step 7 `conductor` (24–26) → thin `api` (27) → parity harness + CI (28–29).
-   Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
-3. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
-4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
+1. **Build step 7 — `conductor` wiring (Tasks 24–26)**, same discipline. This is pure wiring + judgment routing,
+   zero LLM calls; composes every seam built so far. Parity: `conductor.ps1` §2 exact step sequence.
+   - Task 24: branch preflight + `Invoke-ConductorIteration` spine (CLAIM → circuit-breaker → worker → report
+     routing → dirty-file fence → diff+critic bounded retry → gate → decision, with divergences #4/#8/#10).
+   - Task 25: outer loop (`MaxSessionHours` graceful exit #9; anti-drift every N commits via explicit
+     `iterationCommitted` flag; rate-limit backoff via `iterationRateLimited` flag; `--once`/`--maxIterations`).
+   - Task 26: port the 8 conductor `-SelfTest` cases (all pure, fakes for worker/critic/gate).
+2. Then thin `api` (27) → parity harness + CI (28–29). Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
+3. **🟡 Before building the orchestrator layer:** resolve `adr/003` open questions (orchestrator↔conductor
+   boundary, role registry) with the operator — but the deterministic conductor (Tasks 24–26) can land first.
+4. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
 
-**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog,gate}/`.
-`gate/{invariants,guards,mutation-check,gate}` live (decision core, all I/O via injected `GateDeps`).
-`watchdog/runner` is still just the seam — real `watchdog` impl is Task 20. `src/index.ts` still a stub
-awaiting `conductor` wiring (Task 24). NO watchdog impl, NO conductor/escalate/anti-drift/api yet.
+**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog,escalate,anti-drift,gate}/`.
+Decision + support layers all live: `gate/*` (all I/O via `GateDeps`), `watchdog/watchdog` (real, seam wired),
+`escalate/escalate`, `anti-drift/anti-drift`, `util/fingerprint`. **Still missing: `conductor` (Task 24) — the loop
+that wires them end-to-end — and thin `api` (27).** `src/index.ts` is still a stub awaiting `conductor`.
 
 ## Continuity (do not break)
 
