@@ -1,0 +1,462 @@
+/**
+ * The conductor loop — parity port of `conductor.ps1` (parity spec §2). Pure
+ * wiring + deterministic routing: zero LLM calls, zero judgment of its own.
+ * Every side effect (git, fs, subprocess, LLM adapters) is injected via
+ * `ConductorDeps` so the whole spine can be exercised with fakes and no
+ * subprocesses.
+ */
+import type { Task } from "../blackboard/types.js";
+import type { BlackboardRepository } from "../blackboard/repository.js";
+import type { Scheduler } from "../scheduler/scheduler.js";
+import type { Worktree, WorktreeManager } from "../worktree/worktree.js";
+import type { WorkerAdapter } from "../worker/adapter.js";
+import type { CriticAdapter } from "../critic/adapter.js";
+import type { Router } from "../router/router.js";
+import type { Git } from "../util/git.js";
+import type { GateInput, GateVerdict } from "../gate/gate.js";
+import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
+import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
+import type { HarnessConfig } from "../config/schema.js";
+import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
+
+export interface ConductorDeps {
+  cfg: HarnessConfig;
+  repo: BlackboardRepository;
+  scheduler: Scheduler;
+  worktree: WorktreeManager;
+  worker: WorkerAdapter;
+  critic: CriticAdapter;
+  router: Router;
+  /** Git bound to the MAIN repo (preflight + commit-time branch re-check). */
+  git: Git;
+  /** Git bound to a worktree (used to `add` file_set + `commit` there). */
+  worktreeGit: (wt: Worktree) => Git;
+  /** May THROW on a broken operator config; the conductor treats a throw as fail-closed ESCALATE. */
+  runGate: (input: GateInput, wt: Worktree) => Promise<GateVerdict>;
+  /** Never-throws contract; still called defensively. */
+  escalate: (input: EscalationInput) => Promise<unknown>;
+  runAntiDrift: (input: AntiDriftInput) => Promise<string>;
+  gitChangedPaths: (cwd: string) => Promise<string[]>;
+  snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
+  zonesTouchedInDiff: (diff: string) => Promise<string[]>;
+  clock: { now: () => number };
+  sleep: (seconds: number) => Promise<void>;
+  log: (level: string, message: string) => void;
+}
+
+export interface ConductorRunOptions {
+  once?: boolean;
+  maxIterations?: number;
+}
+
+export interface IterationResult {
+  claimedTaskId: string | null;
+  committed: boolean;
+  rateLimited: boolean;
+}
+
+export interface Conductor {
+  runIteration(): Promise<IterationResult>;
+  run(opts?: ConductorRunOptions): Promise<void>;
+}
+
+/** Fields needed to build an `EscalationInput` beyond the fixed `id`/`taskId`/`title`. */
+interface EscalationFields {
+  reason: string;
+  type: EscalationType;
+  what: string;
+  decision: string;
+  optionA: string;
+  optionB: string;
+  costOfWrong: string;
+  evidence: string;
+}
+
+function buildEscalation(task: Task, fields: EscalationFields): EscalationInput {
+  return {
+    id: task.id,
+    taskId: task.id,
+    title: task.title,
+    reason: fields.reason,
+    type: fields.type,
+    what: fields.what,
+    decision: fields.decision,
+    optionA: fields.optionA,
+    optionB: fields.optionB,
+    costOfWrong: fields.costOfWrong,
+    evidence: fields.evidence,
+  };
+}
+
+function buildDriftEscalation(line: string): EscalationInput {
+  return {
+    id: `drift-${Date.now()}`,
+    taskId: "(anti-drift)",
+    title: "Anti-drift check reported drift",
+    reason: "anti-drift verdict: DRIFT",
+    type: "drift",
+    what: line,
+    decision: "Review recent commits for scope drift vs the phase intent.",
+    optionA: "Acknowledge and continue -- drift is acceptable / expected.",
+    optionB: "Halt the loop and course-correct before more tasks land.",
+    costOfWrong: "Undetected drift compounds silently across many small commits.",
+    evidence: line,
+  };
+}
+
+export function createConductor(deps: ConductorDeps): Conductor {
+  const {
+    cfg,
+    repo,
+    scheduler,
+    worktree,
+    worker,
+    critic,
+    router,
+    git,
+    worktreeGit,
+    runGate,
+    escalate,
+    runAntiDrift,
+    gitChangedPaths,
+    snapshotFingerprints,
+    zonesTouchedInDiff,
+    clock,
+    sleep,
+    log,
+  } = deps;
+
+  async function runIteration(): Promise<IterationResult> {
+    // 1. CLAIM
+    const task = await scheduler.claimNextTask();
+    if (task === null) {
+      return { claimedTaskId: null, committed: false, rateLimited: false };
+    }
+
+    // 2. CIRCUIT BREAKER
+    const attempts = (await repo.getAttempts(task.id)) + 1;
+    await repo.setAttempts(task.id, attempts);
+    if (attempts > cfg.loop.maxAttempts) {
+      await repo.moveTask(task.id, "active", "quarantine");
+      await escalate(
+        buildEscalation(task, {
+          reason: "circuit breaker tripped -- too many attempts",
+          type: "poison",
+          what: `Task ${task.id} exceeded max attempts (${attempts} > ${cfg.loop.maxAttempts}).`,
+          decision: "Quarantine and investigate why this task cannot converge.",
+          optionA: "Fix the task definition (file_set / acceptance / scope) and re-queue.",
+          optionB: "Abandon the task.",
+          costOfWrong: "A poisoned task can burn unbounded attempts if left in the pending pool.",
+          evidence: `attempts=${attempts} maxAttempts=${cfg.loop.maxAttempts}`,
+        }),
+      );
+      return { claimedTaskId: task.id, committed: false, rateLimited: false };
+    }
+
+    // 3. WORKTREE + WORKER + FENCE + CRITIC
+    const loopBranch = await git.currentBranch();
+    const { ladder, warnings } = router.resolveLadder(task);
+    warnings.forEach((w) => log("WARN", w));
+    const maxRounds = task.max_rounds ?? cfg.critic.retryMax;
+    const runtimeDir = repo.runtimeDir(task.id);
+    const workerReportPath = `${runtimeDir}/worker-report.md`;
+
+    const wt = await worktree.create(task.id, loopBranch);
+    try {
+      let round = 0;
+      while (true) {
+        // Pre-worker fingerprint baseline.
+        const basePaths = await gitChangedPaths(wt.path);
+        const baseline = snapshotFingerprints(wt.path, basePaths);
+
+        // WORKER
+        const criticFeedback =
+          round > 0 ? (await repo.readRuntimeFile(task.id, "critic-feedback.md")) ?? undefined : undefined;
+        const wr = await worker.run({
+          task,
+          worktreePath: wt.path,
+          ladder,
+          runtimeDir,
+          ...(criticFeedback !== undefined ? { criticFeedback } : {}),
+        });
+
+        if (wr.rateLimited) {
+          await repo.setAttempts(task.id, attempts - 1);
+          await repo.moveTask(task.id, "active", "pending");
+          return { claimedTaskId: task.id, committed: false, rateLimited: true };
+        }
+        if (wr.timedOut) {
+          await repo.moveTask(task.id, "active", "pending");
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        // WORKER-REPORT routing
+        const report = (await repo.readRuntimeFile(task.id, "worker-report.md")) ?? "";
+        const m = /^\s*status\s*[:=]\s*([A-Z_]+)/im.exec(report);
+        const status = m ? m[1] : "";
+
+        if (status === "TOO_BIG") {
+          await repo.moveTask(task.id, "active", "quarantine");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worker reported task too big",
+              type: "blocked",
+              what: `Task ${task.id} worker report status TOO_BIG.`,
+              decision: "Split the task into smaller pieces and re-queue.",
+              optionA: "Split the task.",
+              optionB: "Abandon the task.",
+              costOfWrong: "An oversized task will keep failing and burning attempts.",
+              evidence: report,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+        if (status === "NEEDS_GUARD") {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worker reported it needs a guard",
+              type: "needs-guard",
+              what: `Task ${task.id} worker report status NEEDS_GUARD.`,
+              decision: "Author/bless a mutation-verified guard for the touched contract zone.",
+              optionA: "Add the guard and re-queue.",
+              optionB: "Reject the change.",
+              costOfWrong: "An unguarded contract-zone change cannot be safely auto-committed.",
+              evidence: report,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+        if (status === "BLOCKED") {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worker reported it is blocked",
+              type: "blocked",
+              what: `Task ${task.id} worker report status BLOCKED.`,
+              decision: "Unblock the task (missing dependency / access / decision).",
+              optionA: "Unblock and re-queue.",
+              optionB: "Abandon the task.",
+              costOfWrong: "A blocked task cannot make progress and will keep failing.",
+              evidence: report,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+        // (DONE / anything else falls through to the fence.)
+
+        // DIRTY-FILE FENCE
+        const nowPaths = await gitChangedPaths(wt.path);
+        const now = snapshotFingerprints(wt.path, nowPaths);
+        const touched = workerTouched(baseline, now);
+        const stray = strayChanged(touched, task.file_set, cfg.dirtyFenceIgnore);
+        const forbidden = forbiddenTouches(touched, task.forbidden_paths);
+        if (stray.length > 0 || forbidden.length > 0) {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worker touched files outside its declared scope",
+              type: "dirty-file",
+              what: `Task ${task.id} touched files outside file_set and/or forbidden_paths.`,
+              decision: "Review the stray/forbidden touches before allowing this task to land.",
+              optionA: "Approve the extra scope and re-queue with an updated file_set.",
+              optionB: "Reject the change.",
+              costOfWrong: "An unreviewed out-of-scope write can silently corrupt other tasks' territory.",
+              evidence: `stray: ${stray.join(", ")}\nforbidden: ${forbidden.join(", ")}`,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        // DIFF + CRITIC
+        const diff = await worktree.diff(wt, task.file_set);
+        await repo.writeRuntimeFile(task.id, "diff.patch", diff);
+        const cr = await critic.run({ diff, runtimeDir, workerReportPath });
+
+        if (cr.verdict === null && cr.rateLimited) {
+          await repo.setAttempts(task.id, attempts - 1);
+          await repo.moveTask(task.id, "active", "pending");
+          return { claimedTaskId: task.id, committed: false, rateLimited: true };
+        }
+
+        if (cr.verdict?.verdict === "clean") {
+          break;
+        }
+
+        // Not clean (broken / uncertain / unparseable-null).
+        const actualZones = await zonesTouchedInDiff(diff);
+        const contractRisk =
+          task.touches_contract_zone ||
+          actualZones.length > 0 ||
+          (cr.verdict?.broken_contracts.length ?? 0) > 0;
+
+        if (contractRisk || round >= maxRounds) {
+          const escType: EscalationType = cr.verdict?.verdict === "broken" ? "disagreement" : "uncertain";
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "critic did not return a clean verdict",
+              type: escType,
+              what: `Task ${task.id} critic verdict: ${cr.verdict?.verdict ?? "(unparseable)"}.`,
+              decision: "Review the critic notes and diff, decide whether to accept or reject.",
+              optionA: "Accept the change despite the critic's concerns.",
+              optionB: "Reject and require rework.",
+              costOfWrong: "Committing a broken/uncertain contract-zone change can silently break behavior.",
+              evidence: cr.verdict?.notes ?? "critic returned no parseable verdict",
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        await repo.writeRuntimeFile(
+          task.id,
+          "critic-feedback.md",
+          cr.verdict?.notes ?? "critic returned no parseable verdict; make the smallest, clearest change and retry.",
+        );
+        round++;
+      }
+
+      // 4. GATE
+      let gv: GateVerdict;
+      try {
+        gv = await runGate({ taskId: task.id, fileSet: task.file_set, successCommands: task.success_commands }, wt);
+      } catch {
+        await repo.moveTask(task.id, "active", "escalated");
+        const escType: EscalationType = task.contract_zones_touched.length > 0 ? "constitution" : "needs-guard";
+        await escalate(
+          buildEscalation(task, {
+            reason: "gate threw -- broken operator config",
+            type: escType,
+            what: `Task ${task.id} gate invocation threw.`,
+            decision: "Fix the broken gate config (INVARIANTS.md / GUARDS.md / check command) before retrying.",
+            optionA: "Fix the config and re-queue.",
+            optionB: "Abandon the task.",
+            costOfWrong: "A broken gate config cannot safely judge ANY task, not just this one.",
+            evidence: `taskId=${task.id}`,
+          }),
+        );
+        return { claimedTaskId: task.id, committed: false, rateLimited: false };
+      }
+
+      // 5. DECISION
+      if (gv.decision === "RETRY") {
+        await repo.moveTask(task.id, "active", "pending");
+        return { claimedTaskId: task.id, committed: false, rateLimited: false };
+      }
+
+      if (gv.decision === "COMMIT") {
+        const cur = await git.currentBranch();
+        if (cur === "main" || !new RegExp(cfg.allowedBranchPattern).test(cur)) {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "branch moved off allowed pattern before commit",
+              type: "blocked",
+              what: `Task ${task.id} gate said COMMIT but the current branch '${cur}' is no longer allowed.`,
+              decision: "Restore the loop branch and re-run, or abandon.",
+              optionA: "Restore the branch and re-queue.",
+              optionB: "Abandon the task.",
+              costOfWrong: "Committing on the wrong branch could land the change on main.",
+              evidence: `currentBranch=${cur} allowedPattern=${cfg.allowedBranchPattern}`,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        const kind = cfg.commit.typeMap[task.type] ?? cfg.commit.defaultKind;
+        const msg = `${kind}(autodev): ${task.title}`;
+        const wg = worktreeGit(wt);
+        await wg.add(task.file_set);
+        const hash = await wg.commit(msg);
+
+        const mr = await worktree.mergeAfterGate(wt, loopBranch);
+        if (!mr.ok) {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worktree merge conflict",
+              type: "blocked",
+              what: `Task ${task.id} merge back into '${loopBranch}' conflicted.`,
+              decision: "Resolve the conflict manually.",
+              optionA: "Resolve and re-queue.",
+              optionB: "Abandon the task.",
+              costOfWrong: "An unresolved conflict blocks all tasks touching these files.",
+              evidence: `branch=${wt.branch} into=${loopBranch}`,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        await repo.moveTask(task.id, "active", "done");
+        await repo.markDone(task.id, hash);
+        await repo.appendDigest(`[conductor] committed ${task.id} -> ${hash} (${msg})`);
+        return { claimedTaskId: task.id, committed: true, rateLimited: false };
+      }
+
+      // anything else (ESCALATE, or a malformed/empty decision) -- fail-closed.
+      await repo.moveTask(task.id, "active", "escalated");
+      const escType: EscalationType = gv.constitution_touched.length > 0 ? "constitution" : "needs-guard";
+      await escalate(
+        buildEscalation(task, {
+          reason: "gate did not COMMIT",
+          type: escType,
+          what: `Task ${task.id} gate decision: ${gv.decision}.`,
+          decision: "Review the gate reasons and decide how to proceed.",
+          optionA: "Approve manually.",
+          optionB: "Reject and require rework.",
+          costOfWrong: "Committing without gate approval can land an unguarded/uncovered contract change.",
+          evidence: gv.reasons.join("\n"),
+        }),
+      );
+      return { claimedTaskId: task.id, committed: false, rateLimited: false };
+    } finally {
+      await worktree.teardown(wt);
+    }
+  }
+
+  async function run(opts?: ConductorRunOptions): Promise<void> {
+    const branch = await git.currentBranch();
+    if (branch === "main" || !new RegExp(cfg.allowedBranchPattern).test(branch)) {
+      log("ERROR", `conductor: refusing to run on branch '${branch}' (must match ${cfg.allowedBranchPattern}, never main)`);
+      throw new Error(`conductor: refusing to run on branch '${branch}' (must match ${cfg.allowedBranchPattern}, never main)`);
+    }
+
+    const startMs = clock.now();
+    let iterations = 0;
+    let commitsSinceDrift = 0;
+
+    while (true) {
+      if (clock.now() - startMs >= cfg.loop.maxSessionHours * 3600 * 1000) {
+        log("INFO", "MaxSessionHours reached; stopping.");
+        break;
+      }
+
+      const res = await runIteration();
+
+      if (res.committed) {
+        commitsSinceDrift++;
+        if (commitsSinceDrift >= cfg.antiDrift.everyCommits) {
+          const window = commitsSinceDrift;
+          const line = await runAntiDrift({ sinceRef: `HEAD~${window}`, commitsSinceLast: window });
+          if (/^\s*DRIFT:/i.test(line)) {
+            await escalate(buildDriftEscalation(line));
+          }
+          commitsSinceDrift = 0;
+        }
+      }
+
+      iterations++;
+      if (opts?.once || (opts?.maxIterations !== undefined && iterations >= opts.maxIterations)) {
+        break;
+      }
+
+      if (res.rateLimited) {
+        await sleep(cfg.loop.rateLimitBackoffSeconds);
+      } else if (res.claimedTaskId === null) {
+        await sleep(cfg.loop.sleepSeconds);
+      }
+    }
+  }
+
+  return { runIteration, run };
+}
