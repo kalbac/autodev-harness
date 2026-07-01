@@ -4,6 +4,42 @@
 
 ---
 
+## s04 — 2026-07-01 — Worker claude-adapter + full critic module (step 3 done, step 4 done)
+
+**Context:** Continued from s03 (PR #1 merged). Same discipline: sonnet-5 implementer (TDD) →
+controller spec-check vs parity spec → **codex GPT-5.5 gate per module** → fix subagent + re-critic.
+Operator set two durable rules mid-session (→ `AGENTS.md`, memory): **Russian to the operator /
+English for all artifacts**, and **the agent always does merges/commits/PRs itself** (operator only
+approves a classifier-gated merge). Adopted **per-module PRs** for the rest of P1.
+
+**Built:**
+- **Task 11 `worker/claude-adapter`** (PR #3): first live `claude -p` adapter driving the model ladder
+  through an injected `WatchedProcessRunner` seam (`src/watchdog/runner.ts`; real watchdog = Task 20).
+  Parity §6 exact: contract-zone+429 PAUSE (no downgrade), non-contract+429 step-down, timeout→TIMED_OUT,
+  ladder-exhausted→RATE_LIMITED. Transport status only; live path behind `ADH_LIVE=1`.
+- **Tasks 12–14 `critic` module** (PR #5): `verdict.ts` (tolerant first-`{`-to-last-`}` parse, strict zod,
+  `attachDiffSha256`), `fencing.ts` (physically moves `worker-report.md` out for the codex call,
+  non-masking restore), `prompt.ts` (adversarial framing + 4-item checklist + inline diff), `codex-adapter.ts`
+  (empty-diff→synthetic clean no-spawn; one fenced `codex exec`; verdict resolution outfile→stdout→exit-code,
+  parsed-wins-over-429), `critic-verdict.schema.json`. Two implementer dispatches (12–13 pure, then 14).
+
+**Codex gate earned its keep again:** on the critic module the whole-module gate caught a **High** bug the
+subagent's own narrower codex pass missed — a **stale `-o` outfile** readable as this run's verdict across
+retry rounds (fixed: `rm` before spawn). Plus `z.number().int()` line parity, non-masking fence restore,
+schema-path export guard. All fixed in one pass → **re-critic on the fix diff came back clean**. Weak parts
+of findings rejected with reasoning (copy+unlink atomicity redesign; brittle restore-failure test).
+
+**Gotcha logged:** `critic-verdict.schema.json` is not copied to `dist/` by `tsc` — deferred to Task 29.
+
+**Merged (self-merge, operator-authorized):** PR #3, PR #4 (AGENTS.md), PR #5 → `main`. **101 tests passed /
+2 skipped, typecheck clean** on `main`.
+
+**Stopped at a clean module boundary (not out of context):** the **gate group (Tasks 15–19)** is the
+correctness core and Task 16 `guards` has a genuine design decision to settle first — see CURRENT-STATE
+"Open questions". Deliberately deferred to a fresh session rather than improvised.
+
+---
+
 ## s03 — 2026-07-01 — P1 foundation built (subagent-driven + codex gate)
 
 **Context:** Fresh session per the s02 handoff. Operator wired the remote
