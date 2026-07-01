@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s02 — pivot + donor extraction + P1 spec).
+> Last updated: 2026-07-01 (s03 — P1 foundation built: steps 1–2, 42 tests green).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 📝 **spec written; NEXT = plan + implement** |
+| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — plan written; build-order steps 1–2 done (config, blackboard, git, worktree); 42 tests green; PR #1** |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,24 +29,26 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s02, 2026-07-01)
+## Last session (s03, 2026-07-01)
 
-- Pivoted from "fork AO" to "build our own harness" (`adr/002`); AO → one of 4 donors.
-- Ran donor-extraction: 5 Sonnet-5 agents → briefs; synthesized `decision-matrix.md`;
-  **codex GPT-5.5 verified** the 🔴 claims (17/18 confirmed, 1 partial, none refuted).
-- Resolved 6 skeleton axes with operator; froze architecture; wrote the **P1 design spec**.
+- Wired `origin`; adopted **PR-flow** (push-to-`main` is classifier-gated) → **PR #1** on `feat/p1-core-loop`.
+- Wrote the P1 **implementation plan**; built **build-order steps 1–2** subagent-driven (sonnet-5) with
+  a **codex GPT-5.5 gate per module** — 42 tests green, typecheck clean, all codex findings fixed + regression-tested.
+- Repo hygiene (gitignore `references/`+`next-session-promt.md`); decided Apache-2.0 + `.autodev/config.yaml`.
 
-## NEXT ACTIONS (new session — context was full, deliberately deferred)
+## NEXT ACTIONS (s04)
 
-1. **Create the remote repo** `github.com/kalbac/autodev-harness` and wire `origin`
-   (does not exist yet). Decide licensing (donors are Apache-2.0/MIT).
-2. **Run `superpowers:writing-plans`** on
-   `docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md` → implementation plan.
-3. **Implement P1** per the spec's build order (§10): `config`+`blackboard` → `worktree`
-   → `worker-runner`(claude)+`router` → `critic-runner`(codex) → `gate`+`guards`+`mutation`
-   → `watchdog`+`escalate`+`anti-drift` → `conductor` → thin `api` → parity harness + CI.
-4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + a live
-   woodev-class workload.
+1. **Merge PR #1** (operator) — brings in the foundation + repo-hygiene cleanup. Until merged, the
+   flagged files remain on `main`.
+2. **Continue build order (§10) steps 3–9**, same discipline (sonnet-5 implementer → codex GPT-5.5 gate):
+   `router` → `worker`(claude adapter)+`prompt` → `critic`(codex adapter)+fencing → `gate`+`guards`+`mutation-check`
+   → `watchdog`+`escalate`+`anti-drift` → `conductor` → thin `api` → parity harness + cross-platform CI.
+   Plan tasks 8–29 in `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md` (interfaces pinned; expand each to full TDD when reached).
+3. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
+4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
+
+**Assets:** foundation modules under `src/{util,config,blackboard,worktree}/`; `src/index.ts` is a stub
+awaiting the `conductor` wiring (plan Task 24).
 
 ## Continuity (do not break)
 

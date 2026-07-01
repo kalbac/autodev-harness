@@ -4,6 +4,41 @@
 
 ---
 
+## s03 — 2026-07-01 — P1 foundation built (subagent-driven + codex gate)
+
+**Context:** Fresh session per the s02 handoff. Operator wired the remote
+(`github.com/kalbac/autodev-harness`) and set the coding workflow: **subagent-driven,
+worker = sonnet-5, mandatory codex GPT-5.5 critic per module**. Ran mostly autonomously
+(operator asleep).
+
+**Setup:**
+- Wired `origin`, pushed `main`. **Push to `main` is gated by the safety classifier** → adopted
+  PR-flow: all work on `feat/p1-core-loop`, growing **PR #1**. (Correct for our own discipline.)
+- Repo hygiene: gitignored `next-session-promt.md` + whole `references/`; untracked
+  `references/MANIFEST.md`, preserved its pinned-SHA recipe as tracked `donor-extraction/DONOR-SOURCES.md`.
+- Ran `writing-plans` → `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md` (TDD, grounded
+  in the parity spec, spec-coverage table).
+
+**Built (build-order steps 1–2; each = sonnet-5 implementer → I spec-check → codex GPT-5.5 gate → fix subagent):**
+- Task 0 scaffold (ESM/TS/vitest/zod/yaml), Tasks 1–2 `util/native`+`util/glob`, Task 3 `config`,
+  Tasks 4–5 `blackboard` (task parser + file repo = state seam), Tasks 6–7 `util/git`+`worktree`.
+- **42 tests green, typecheck clean** (independently re-verified in the main context, not just trusted).
+
+**Codex gate earned its keep — real defects caught pre-merge:** stdin-hang + multibyte-UTF-8
+corruption (native); non-object-YAML-root + keyless error (config); **exploitable path-traversal via
+task id** + frontmatter delimiter anchor + TOCTOU (blackboard); dirty-tree merge + string-based
+conflict false-positive + missing `--` arg terminators (git/worktree). Every finding → fix subagent
++ regression test.
+
+**Decisions (minor/reversible, per handoff rule):** license Apache-2.0; config file `.autodev/config.yaml`;
+branch renamed `master`→`main`; worktrees via AO pattern (deliberate divergence #1 from PS shared-tree).
+
+**Not done / next:** build-order steps 3–9 (`router`→`worker`→`critic`→`gate`→`watchdog/escalate/anti-drift`
+→`conductor`→`api`→parity harness+CI). Operator to: merge PR #1; pick the live woodev parity target.
+See `CURRENT-STATE.md` → NEXT ACTIONS. New gotcha: codex-exec Windows sandbox.
+
+---
+
 ## s02 — 2026-07-01 — Pivot, donor extraction, P1 spec
 
 **Context:** New session opened on the day-zero scaffold. Operator corrected direction
