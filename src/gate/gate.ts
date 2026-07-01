@@ -66,7 +66,21 @@ export interface GateDeps {
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
 }
 
-/** Parity: gate.ps1 Invoke-AutodevGate (parity spec §4). Checks in exact order -> COMMIT|RETRY|ESCALATE. */
+/**
+ * Parity: gate.ps1 Invoke-AutodevGate (parity spec §4). Checks in exact order
+ * -> COMMIT|RETRY|ESCALATE.
+ *
+ * Failure contract (parity with the PS gate): the invariants/guards loaders and
+ * `resolveScope` run BEFORE the check/zone logic, exactly as `gate.ps1` loads
+ * `Get-AutodevInvariants`/`Get-AutodevGuards` before `composer check`. If a
+ * loader, `guardStillRed`, or `writeVerdict` throws (e.g. a broken INVARIANTS.md
+ * / GUARDS.md — an operator-config error a worker cannot fix), runGate REJECTS
+ * rather than inventing a RETRY: a broken constitution file is not worker-fixable.
+ * The conductor is the fail-closed net — it treats a gate throw as ESCALATE
+ * (parity spec §2 step 7), and reads the durable gate-verdict.json only on
+ * success. The one thing guaranteed without any loader is the empty-file_set
+ * fast-path below.
+ */
 export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVerdict> {
   // Step 0 — empty file_set fast-path, BEFORE any loader (a broken INVARIANTS.md
   // must never stop this verdict from being written).
