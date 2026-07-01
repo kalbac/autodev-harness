@@ -53,6 +53,19 @@ Ranked by fit (UX-first — the operator's reason to like it):
 - **Comment-mode surgical edits** — targeted fix application when the critic sends
   findings back.
 
+## Candidate donors — not yet analyzed (proposed by the agent, 2026-07-01)
+
+Fills a gap the current four donors don't center on: **worker code-editing quality
+& token economy.**
+
+- 🥇 **Aider** (`Aider-AI/aider`, Apache-2.0) — repo-map via tree-sitter, edit formats
+  (diff/whole), per-change git commits, any-LLM. Best-in-class for precise, cheap
+  patching. **Strongest additional candidate — analyze next.**
+- **SWE-agent** — Agent-Computer Interface (ACI) design + strong eval lineage; overlaps
+  OpenHands' eval, so lower marginal value.
+- **Cline** — good approval UX (plan/act, checkpoints) but VS Code-bound; less fit for a
+  standalone harness.
+
 ## Tech debt / risks to watch
 
 - **Upstream merge debt** — the standing risk of any fork. Revisit branch model if

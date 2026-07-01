@@ -55,7 +55,8 @@
   plugins/MCP extensibility, pre-emit self-critique lint. Candidates in `FUTURE-BACKLOG.md`.
 - Next donor-eval steps: (a) verify AO `--harness` ⇄ **OpenHands ACP** worker path;
   (b) identify **AO's frontend framework** (decides how directly Open Design's UI
-  blueprint ports); (c) converge model-routing engine choice (BYOK-proxy vs LiteLLM).
+  blueprint ports); (c) converge model-routing engine choice (BYOK-proxy vs LiteLLM);
+  (d) **analyze Aider** (proposed 5th donor — worker edit quality/economy).
 
 ## Open questions
 
