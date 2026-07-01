@@ -9,9 +9,10 @@
 
 At the start of **every** session, read in this order:
 1. `docs/VISION.md` — mission, single-source-of-truth rule, tier plan (the anchor)
-2. `docs/CURRENT-STATE.md` — phase status, next concrete actions, open questions
-3. `docs/GOTCHAS.md` — scan the index to avoid repeated mistakes
-4. `docs/reference/` — the two crown docs we are porting (runbook + critic protocol)
+2. `AGENTS.md` — the agent contract for this repo (language, git-ownership, batch-merges, review discipline)
+3. `docs/CURRENT-STATE.md` — phase status, next concrete actions, open questions
+4. `docs/GOTCHAS.md` — scan the index to avoid repeated mistakes
+5. `docs/reference/` — the two crown docs we are porting (runbook + critic protocol)
 
 ## What this project is
 
