@@ -1,0 +1,15 @@
+{
+  // Typecheck config: extends the build config but WIDENS the program to include
+  // the cross-module `test/` tree (parity harness, future fixtures). The base
+  // `tsconfig.json` is emit-oriented (`rootDir: "src"`, `include: ["src/**/*.ts"]`),
+  // so `npm run typecheck` against it never looked at `test/**` -- making it
+  // vacuously green for anything under `test/`. This config fixes that: `noEmit`
+  // + `rootDir: "."` avoid the "file is not under rootDir" emit constraint.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["dist", "node_modules", "test/fixtures"]
+}

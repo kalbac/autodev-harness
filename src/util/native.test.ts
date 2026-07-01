@@ -26,6 +26,17 @@ describe("runNative", () => {
     expect(r.exitCode).toBe(0);
   });
 
+  it("resolves without throwing when the child exits before reading a large stdin (EPIPE race)", async () => {
+    // The child exits immediately without reading stdin; writing a payload larger
+    // than the OS pipe buffer to its now-closed read end raises EPIPE on our
+    // stdin write. runNative must swallow that (benign) error and still resolve
+    // from the child's exit -- this is the flaky-CI regression (linux/node20).
+    const r = await runNative(process.execPath, ["-e", "process.exit(0)"], {
+      stdin: "x".repeat(1_000_000),
+    });
+    expect(r.exitCode).toBe(0);
+  });
+
   it("round-trips a multibyte UTF-8 string through stdout without corruption", async () => {
     const payload = "€ ✓ ключ 中";
     const r = await runNative(process.execPath, [

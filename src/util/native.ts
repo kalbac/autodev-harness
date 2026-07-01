@@ -35,6 +35,13 @@ export function runNative(
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", reject); // spawn failure (ENOENT) is a real error
     child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
+    // Writing stdin races the child closing its read end: a child that never
+    // reads stdin and exits fast (e.g. many `git` subcommands) leaves the pipe's
+    // reader gone, so our `end()` write raises EPIPE. That is benign here -- the
+    // child's output/exit are captured via the handlers above -- but without an
+    // 'error' listener it surfaces as an UNHANDLED error event and crashes the
+    // run (observed as a flaky EPIPE on linux/node20 in CI). Swallow it.
+    child.stdin?.on("error", () => {});
     // Always close stdin so children that read until EOF (e.g. `cat`, or a
     // node script waiting on 'end') don't hang forever waiting for more input.
     child.stdin?.end(options.stdin ?? "");

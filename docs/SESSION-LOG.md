@@ -4,6 +4,53 @@
 
 ---
 
+## s08 — 2026-07-01 — thin api + parity harness + cross-platform CI (P1 DoD, fixture side; steps 8–9 done)
+
+**Context:** Continued from s07 (233 tests). s07 PR `feat/conductor-p1` already merged to `main` (#12) —
+step 0 was a no-op. Branched `feat/p1-dod-api-parity-ci` off `main`. Same discipline: sonnet-5 implementers
+(TDD, no commit) → controller spec-check vs the PS oracle/parity spec → whole-module codex GPT-5.5 gate →
+adjudicate → fix + regression test → **re-critic every fix**.
+
+**Built (sequential, one commit per task):**
+- **Task 27 `src/api/server.ts`** (`77c3b36`) — thin `http`+`ws` over `BlackboardRepository` (P2 seam,
+  read-only+reply-only). `GET /state` (5 queues + bounded digest tail), WS change-stream (injectable chokidar),
+  `POST /escalations/:id/reply` = STRUCTURED A/B only (`note` free text is context, never a worker instruction —
+  §8 injection surface). Frozen repo seam untouched; clean http+ws+watcher teardown. +13 tests.
+- **Task 28 `test/parity/parity.test.ts`** (`3b17512`) — the **P1 DoD parity harness**: drives the REAL
+  conductor + real FileBlackboardRepository + real scheduler + real escalate over a temp `.autodev` tree, fake
+  worker/critic/worktree/git + scripted gate, asserting the same COMMIT/ESCALATE/RETRY + queue/escalation
+  end-state as the PS oracle (§2). 18 scenarios: 5 core + divergences #1/#4/#8/#9/#10 + dirty-fence (stray +
+  forbidden, each arm isolated) + critic-retry + NEEDS_GUARD/BLOCKED + merge-conflict + run() backoff.
+- **Task 29 CI + schema fix** (`38adf44`) — GH Actions matrix win+linux × node 20/22 (`npm ci`→typecheck→test
+  →build→assert schema in dist). Fixed deferred `[critic/codex]`: `scripts/copy-assets.mjs` (`postbuild`,
+  cross-platform) copies `critic-verdict.schema.json` into `dist/critic/`. Also added `tsconfig.typecheck.json`
+  (the parity harness surfaced that `tsconfig.json`'s `include:["src/**"]` made `npm run typecheck` vacuously
+  green for `test/**`). **264 tests / 2 skipped, typecheck (src+test) clean.**
+
+**Codex gates (3 module passes + 2 re-critics):**
+- *api (Task 27):* 3 findings, all accepted (unbounded body → 1MB cap + 413 + socket teardown on finish; id
+  guard → positive allowlist `^[A-Za-z0-9_-]+$`; `/state` → bounded 64KB positioned digest tail). **Re-critic**
+  caught an incomplete digest-tail fix (over-broad partial-line drop on an exact-boundary window) → over-read
+  one byte + boundary regression test. My own first 413 fix was buggy (destroyed the socket before flushing →
+  client reset) — fixed to teardown on response `finish`.
+- *parity (Task 28):* 8 findings, all accepted — incl. one **"passes for the wrong reason"** (scenario 2 set
+  BOTH contractRisk OR-arms). Hardened: split 2a/2b, gate/sleep call recorders, dirty-fence coverage,
+  critic-retry, backoff, NEEDS_GUARD/BLOCKED, merge-conflict. **Re-critic** caught 2 vacuous assertions (the
+  dirty-fence `stray:`/`forbidden:` labels are ALWAYS emitted → asserting the label passes regardless of
+  content; forbidden test didn't isolate the forbidden arm) → assert actual paths + isolate the arm.
+
+**Gotchas found:** `[ts/typecheck-scope]` (emit-scoped `tsconfig` `include:["src/**"]` silently skips `test/**`
+in `tsc` → typecheck vacuously green there; separate `noEmit` typecheck config). `[api/413-teardown]`
+(destroying an HTTP socket on oversized body before flushing the response = client reset, not 413; teardown on
+response `finish`). `[test/vacuous-assert]` (parity-harness lesson: assert the value, not an always-present
+label; isolate one OR-arm per test).
+
+**Next:** P1 fixture-side DoD reached. Remaining P1 real-world DoD = build step 9's live woodev workload
+(operator picks target). PR `feat/p1-dod-api-parity-ci` (3 commits) → operator-approved merge (classifier
+blocks self-authored `gh pr merge`).
+
+---
+
 ## s07 — 2026-07-01 — Conductor loop + scheduler + composition root (step 7 done; loop runs end-to-end)
 
 **Context:** Continued from s06 (193 tests). Same discipline: sonnet-5 implementers (TDD, no commit) →
