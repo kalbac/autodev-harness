@@ -18,4 +18,6 @@
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [001](001-fork-ao-not-wait.md) | Fork AO instead of waiting for upstream | accepted |
+| [001](001-fork-ao-not-wait.md) | Fork AO instead of waiting for upstream | superseded by ADR-002 |
+| [002](002-build-own-harness-not-fork-ao.md) | Build our own harness; AO becomes one donor of several | accepted |
+| [003](003-roles-are-a-configurable-vendor-matrix.md) | Roles are a configurable model matrix; the orchestrator is an in-harness LLM | proposed |

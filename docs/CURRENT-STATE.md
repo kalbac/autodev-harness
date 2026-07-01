@@ -68,6 +68,13 @@ keeps running our real tasks until P1 reaches parity. It is the **parity oracle*
 
 ## Open questions
 
+- 🟡 **Role model = configurable matrix (see `adr/003`, proposed):** roles (orchestrator, worker,
+  critic, planner, …) map to models via global defaults + per-project overrides; no vendor bound to
+  a role; operator talks to an in-harness LLM **orchestrator** that drives the run while the
+  **gate/enforcement stays deterministic**. Current claude/codex adapters are valid MVP role-impls.
+  Generalization (role registry + per-adapter config + heterogeneity-as-policy) lands at the
+  config/conductor stage. `adr/003` open questions (orchestrator↔conductor boundary, planner scope,
+  config schema) to resolve with the operator before building the orchestrator layer.
 - 🔴 **Gate/recipe resolution (settle before Task 16 `guards.ts`):** parity §4 selects guards by
   `recipe.canonical_value` (per-value) and `recipe.zone_id` (zone-fallback), but the `GUARDS.md` 7-col
   table only carries `contract_id | contract_value | ...` — no `zone_id`, and the recipe fields live in a
