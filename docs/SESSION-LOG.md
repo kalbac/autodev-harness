@@ -4,6 +4,33 @@
 
 ---
 
+## s11 — 2026-07-02 — R3 role registry SHIPPED (PR #21) + orchestrator design started
+
+**Context:** First build session of the post-P1 architecture. Read all anchors (VISION, AGENTS, CURRENT-STATE,
+GOTCHAS, adr/003, parity-spec §2/§5/§6/§7). Operator flagged that AGENTS.md was missing from the session-start
+protocol → added it. Operator authorized **overnight autonomous mode** (subagent-driven + codex critic; merge
+after codex-gate + green CI, pre-authorized).
+
+**R3 — role registry + per-adapter config (adr/003 R3) — SHIPPED & MERGED (PR #21, `d07e72c`):**
+- Two skeleton-adjacent forks surfaced to operator before coding: (Q1) where vendor knobs live → **role-shaped
+  entries** (knobs inside each role, operator deferred to my judgment); (Q2) migration → **hard-cut to `roles:`**.
+- sonnet-5 implementer (TDD, no commit) → my spec-check vs parity §7 → **codex GPT-5.5 gate**. Flat `worker:`/
+  `critic:` → `roles: {orchestrator, worker, critic, planner}` + `policy.heterogeneity`. Worker keeps `ladder`
+  (parity §7 intact). New `src/config/roles.ts` (adapter family/exe resolution, `assertKnownAdapters` fail-loud,
+  heterogeneity policy). All 6 consumers migrated.
+- **codex findings:** (1 High) legacy flat configs silently stripped → fixed with root `.strict()` (fail loud) +
+  regression test; (2 Med) empty `ladder` passes schema then throws at runtime → fixed with `.min(1)` (NOT min(2):
+  single-element ladder is valid per §7); (3 Med) heterogeneity-warn unreachable → **declined** (assert-before-warn
+  is intentional; warning is forward-looking). **Re-critic clean.** typecheck clean, 287 tests, CI green 4/4.
+- aurora `.autodev/config.yaml` migrated to `roles:` (else `.strict()` would reject it).
+
+**R1/R2 orchestrator layer — design started (not yet coded):** ADR fixes the 4 capabilities but leaves genuine
+skeleton-shaping forks open (execution model: agentic tool-use vs staged pipeline; non-UI entry point;
+orchestrator-adapter shape; headless "report" pre-kanban). Plan subagent drafting the design + fork analysis;
+surfacing 🔴 to operator before writing code.
+
+---
+
 ## s10 — 2026-07-02 — `adr/003` design gate → **accepted** (role matrix + LLM orchestrator)
 
 **Context:** Continued from s09 (P1 DONE, 272 tests, all merged, no tail). s10 was a **design gate, not a
