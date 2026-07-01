@@ -17,4 +17,21 @@ describe("runNative", () => {
     const r = await runNative(process.execPath, ["-e", "process.stderr.write('boom')"]);
     expect(r.stderr).toContain("boom");
   });
+
+  it("resolves (does not hang) when the child reads stdin to EOF and no stdin option is given", async () => {
+    const r = await runNative(process.execPath, [
+      "-e",
+      "process.stdin.on('data',()=>{});process.stdin.on('end',()=>process.exit(0))",
+    ]);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it("round-trips a multibyte UTF-8 string through stdout without corruption", async () => {
+    const payload = "€ ✓ ключ 中";
+    const r = await runNative(process.execPath, [
+      "-e",
+      `process.stdout.write(${JSON.stringify(payload)})`,
+    ]);
+    expect(r.stdout).toBe(payload);
+  });
 });

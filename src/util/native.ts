@@ -29,13 +29,14 @@ export function runNative(
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
     child.on("error", reject); // spawn failure (ENOENT) is a real error
     child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
-    if (options.stdin !== undefined) {
-      child.stdin.write(options.stdin);
-      child.stdin.end();
-    }
+    // Always close stdin so children that read until EOF (e.g. `cat`, or a
+    // node script waiting on 'end') don't hang forever waiting for more input.
+    child.stdin?.end(options.stdin ?? "");
   });
 }
