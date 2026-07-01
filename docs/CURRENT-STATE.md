@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s03 — P1 foundation built: steps 1–2, 42 tests green).
+> Last updated: 2026-07-01 (s04 — worker claude-adapter + full critic module; 101 tests green).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–2 done + step 3 started (config, blackboard, git, worktree, router, worker prompt/adapter); 60 tests green; PR #1** |
+| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–3 done + step 4 done (worker claude-adapter + full critic module); 101 tests green; PRs #1/#3/#5 merged. Next: step 5 gate group** |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,28 +29,29 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s03, 2026-07-01)
+## Last session (s04, 2026-07-01)
 
-- Wired `origin`; adopted **PR-flow** (push-to-`main` is classifier-gated) → **PR #1** on `feat/p1-core-loop`.
-- Wrote the P1 **implementation plan**; built **build-order steps 1–2** subagent-driven (sonnet-5) with
-  a **codex GPT-5.5 gate per module** — 42 tests green, typecheck clean, all codex findings fixed + regression-tested.
-- Repo hygiene (gitignore `references/`+`next-session-promt.md`); decided Apache-2.0 + `.autodev/config.yaml`.
+- **Task 11 `worker/claude-adapter`** (PR #3) + **Tasks 12–14 full `critic` module** (PR #5) — same discipline
+  (sonnet-5 implementer → spec-check → codex GPT-5.5 gate → fix + re-critic). 101 tests green, typecheck clean.
+- Operator rules → `AGENTS.md` + memory: **Russian to operator / English artifacts**; **agent always does
+  merges/commits/PRs**; **per-module PRs** for the rest of P1. PR #4 landed AGENTS.md.
+- Whole-module critic gate caught a **High** stale-`-o`-outfile bug the subagent's own codex pass missed → fixed + re-critic clean.
 
-## NEXT ACTIONS (s04)
+## NEXT ACTIONS (s05)
 
-0. ✅ **PR #1 merged** to `main` (merge-commit `3c4a7ad`, s03) — foundation + repo-hygiene are live on `main`.
-   Start s04 from a fresh feature branch off `main`.
-1. **Finish step 3 → continue steps 4–9**, same discipline (sonnet-5 implementer → codex GPT-5.5 gate):
-   next concrete = **Task 11 `worker/claude-adapter`** — build it against an **injected `ProcessRunner`/watchdog
-   seam** (define the interface now; the real `watchdog` is Task 20) so it unit-tests with a fake runner; the live
-   `claude -p` path stays behind an `ADH_LIVE=1` flag. Then `critic`(codex adapter)+fencing → `gate`+`guards`+
-   `mutation-check` → `watchdog`+`escalate`+`anti-drift` → `conductor` → thin `api` → parity harness + CI.
-   Plan tasks 11–29 in `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md` (interfaces pinned; expand to full TDD when reached).
-2. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
-3. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
+1. **Build step 5 — `gate` group (Tasks 15–19)**, same discipline. This is the **correctness core**
+   (per-VALUE coverage, divergence #2). Order: `invariants.ts` (Task 15) → `guards.ts` (Task 16) →
+   `mutation-check.ts` (Task 17) → `gate.ts` decision core (Task 18) → port the 5 `gate.ps1 -SelfTest`
+   cases, esp. case 2 sibling-value-uncovered (Task 19). Parity oracle: spec **§4** + **§3** (INVARIANTS
+   block, GUARDS 7-col table). ⚠️ **Resolve the guards/recipe design question below BEFORE dispatching Task 16.**
+2. Then step 6 (`watchdog`+`escalate`+`anti-drift`, Tasks 20–23) → step 7 `conductor` (24–26) → thin `api`
+   (27) → parity harness + CI (28–29). Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
+3. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
+4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
 
-**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker}/` (worker = prompt + adapter
-interface + fake; NO live claude spawn yet). `src/index.ts` is a stub awaiting `conductor` wiring (plan Task 24).
+**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog}/`. `worker/claude-adapter`
++ `watchdog/runner` (seam) live; `critic/{verdict,fencing,prompt,codex-adapter}` + schema live. `src/index.ts`
+still a stub awaiting `conductor` wiring (plan Task 24). NO watchdog impl yet (Task 20), NO gate/conductor yet.
 
 ## Continuity (do not break)
 
@@ -67,8 +68,16 @@ keeps running our real tasks until P1 reaches parity. It is the **parity oracle*
 
 ## Open questions
 
+- 🔴 **Gate/recipe resolution (settle before Task 16 `guards.ts`):** parity §4 selects guards by
+  `recipe.canonical_value` (per-value) and `recipe.zone_id` (zone-fallback), but the `GUARDS.md` 7-col
+  table only carries `contract_id | contract_value | ...` — no `zone_id`, and the recipe fields live in a
+  separate `mutation-recipe.json` referenced by the table's `recipe` column. **Decide:** (a) `guards.ts`
+  loads each row's recipe file to expose `canonical_value`/`zone_id` (couples the parser to the fs), or
+  (b) treat the table's `contract_value` as the canonical value and have `gate.ts`/`mutation-check` own
+  recipe loading + `zone_id` resolution, passing enriched guards in. Leaning (b) for a pure table parser,
+  but confirm against real `GUARDS.md`/recipe examples in `D:/Projects/woodev_framework/.autodev/` first.
+- Which live woodev-class workload to use as the P1 parity target (operator; needed at DoD step 9).
 - Repo hosting/licensing details for `kalbac/autodev-harness`.
-- Which live woodev-class workload to use as the P1 parity target.
 - Exact per-project config file format (`.autodev/config.yaml` vs `harness.config.*`).
 
 ## Related
