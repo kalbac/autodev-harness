@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s04 — worker claude-adapter + full critic module; 101 tests green).
+> Last updated: 2026-07-01 (s05 — gate group Tasks 15–19; 155 tests green, merged to main).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -16,7 +16,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 |---|---|
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
-| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–3 done + step 4 done (worker claude-adapter + full critic module); 101 tests green; PRs #1/#3/#5 merged. Next: step 5 gate group** |
+| **P1 — Core loop (headless TS daemon)** | 🔨 **in progress — steps 1–5 done (gate group Tasks 15–19 = correctness core); 155 tests green; PRs #1/#3/#5/#9/#10 merged. Next: step 6 watchdog/escalate/anti-drift** |
 | P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
@@ -29,29 +29,34 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s04, 2026-07-01)
+## Last session (s05, 2026-07-01)
 
-- **Task 11 `worker/claude-adapter`** (PR #3) + **Tasks 12–14 full `critic` module** (PR #5) — same discipline
-  (sonnet-5 implementer → spec-check → codex GPT-5.5 gate → fix + re-critic). 101 tests green, typecheck clean.
-- Operator rules → `AGENTS.md` + memory: **Russian to operator / English artifacts**; **agent always does
-  merges/commits/PRs**; **per-module PRs** for the rest of P1. PR #4 landed AGENTS.md.
-- Whole-module critic gate caught a **High** stale-`-o`-outfile bug the subagent's own codex pass missed → fixed + re-critic clean.
+- **Gate group Tasks 15–19** (PR #10) — the correctness core. `src/gate/{invariants,guards,mutation-check,gate}.ts`
+  + `self-test.test.ts` (5 `gate.ps1 -SelfTest` cases). Per-VALUE coverage (divergence #2) verified. Three leaf
+  modules dispatched in parallel (sonnet-5, TDD); gate.ts = exact port of `Invoke-AutodevGate`. **155 tests green.**
+- **🔴 guards/recipe question RESOLVED → (b)** from real `.autodev/` data (see Open questions, now closed).
+- **Whole-module codex gate:** correctness core confirmed clean; 3 dependency-resilience findings all rejected
+  as anti-parity (PS loads guards before check; `!range` guard is verbatim `gate.ps1:149`; broken constitution
+  → conductor fail-closes, not RETRY). Throw/fail-closed contract documented in `runGate`.
+- **Merged (self-merge, operator-confirmed):** PR #10 + PR #9 (batch-rule) → `main`.
 
-## NEXT ACTIONS (s05)
+## NEXT ACTIONS (s06)
 
-1. **Build step 5 — `gate` group (Tasks 15–19)**, same discipline. This is the **correctness core**
-   (per-VALUE coverage, divergence #2). Order: `invariants.ts` (Task 15) → `guards.ts` (Task 16) →
-   `mutation-check.ts` (Task 17) → `gate.ts` decision core (Task 18) → port the 5 `gate.ps1 -SelfTest`
-   cases, esp. case 2 sibling-value-uncovered (Task 19). Parity oracle: spec **§4** + **§3** (INVARIANTS
-   block, GUARDS 7-col table). ⚠️ **Resolve the guards/recipe design question below BEFORE dispatching Task 16.**
-2. Then step 6 (`watchdog`+`escalate`+`anti-drift`, Tasks 20–23) → step 7 `conductor` (24–26) → thin `api`
-   (27) → parity harness + CI (28–29). Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
+1. **Build step 6 — `watchdog` + `escalate` + `anti-drift` + fingerprint fence (Tasks 20–23)**, same discipline.
+   - Task 20 `watchdog/watchdog.ts`: `runWatched` liveness (stream + heartbeat + activityPaths mtime), cross-platform
+     tree-kill (Win `taskkill /T`; POSIX pgroup) — the injected `runner` seam becomes real. Parity `watchdog.ps1`.
+   - Task 21 `escalate/escalate.ts`: write `escalations/<id>.md` + type enum + Telegram-or-outbox delivery.
+   - Task 22 `anti-drift/anti-drift.ts`: intent-vs-diff sonnet check → one digest line; unparseable→UNCERTAIN.
+   - Task 23 `util/fingerprint.ts`: SHA256 content fingerprints (divergence #3, content-keyed not path-set).
+2. Then step 7 `conductor` (24–26) → thin `api` (27) → parity harness + CI (28–29).
+   Plan: `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`.
 3. **Pick the live woodev-class parity target** (operator) — needed only at build step 9 (DoD).
 4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + that live workload.
 
-**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog}/`. `worker/claude-adapter`
-+ `watchdog/runner` (seam) live; `critic/{verdict,fencing,prompt,codex-adapter}` + schema live. `src/index.ts`
-still a stub awaiting `conductor` wiring (plan Task 24). NO watchdog impl yet (Task 20), NO gate/conductor yet.
+**Assets:** modules under `src/{util,config,blackboard,worktree,router,worker,critic,watchdog,gate}/`.
+`gate/{invariants,guards,mutation-check,gate}` live (decision core, all I/O via injected `GateDeps`).
+`watchdog/runner` is still just the seam — real `watchdog` impl is Task 20. `src/index.ts` still a stub
+awaiting `conductor` wiring (Task 24). NO watchdog impl, NO conductor/escalate/anti-drift/api yet.
 
 ## Continuity (do not break)
 
@@ -75,14 +80,13 @@ keeps running our real tasks until P1 reaches parity. It is the **parity oracle*
   Generalization (role registry + per-adapter config + heterogeneity-as-policy) lands at the
   config/conductor stage. `adr/003` open questions (orchestrator↔conductor boundary, planner scope,
   config schema) to resolve with the operator before building the orchestrator layer.
-- 🔴 **Gate/recipe resolution (settle before Task 16 `guards.ts`):** parity §4 selects guards by
-  `recipe.canonical_value` (per-value) and `recipe.zone_id` (zone-fallback), but the `GUARDS.md` 7-col
-  table only carries `contract_id | contract_value | ...` — no `zone_id`, and the recipe fields live in a
-  separate `mutation-recipe.json` referenced by the table's `recipe` column. **Decide:** (a) `guards.ts`
-  loads each row's recipe file to expose `canonical_value`/`zone_id` (couples the parser to the fs), or
-  (b) treat the table's `contract_value` as the canonical value and have `gate.ts`/`mutation-check` own
-  recipe loading + `zone_id` resolution, passing enriched guards in. Leaning (b) for a pure table parser,
-  but confirm against real `GUARDS.md`/recipe examples in `D:/Projects/woodev_framework/.autodev/` first.
+- ✅ **RESOLVED (s05) → (b).** Gate/recipe design: confirmed from real `.autodev/GUARDS.md` + recipe files
+  that the table's `contract_value` cell is human-facing (can list `+`-joined siblings; yandex row lists two
+  values but the recipe carries one `canonical_value`) while the machine per-value key is `recipe.canonical_value`,
+  and `zone_id` lives ONLY in the recipe. `guards.ts` = pure fs-free table parser + selectors over enriched
+  `GuardRecipePair[]`; `gate.ts` owns recipe loading (mirrors PS `Get-AutodevGuards` + `Get-AutodevGuardRecipePairs`
+  + pure `Select-*`). Matching the raw `contract_value` cell would have falsely covered a sibling value —
+  (b) is required for divergence-#2 correctness, not just cleaner.
 - Which live woodev-class workload to use as the P1 parity target (operator; needed at DoD step 9).
 - Repo hosting/licensing details for `kalbac/autodev-harness`.
 - Exact per-project config file format (`.autodev/config.yaml` vs `harness.config.*`).

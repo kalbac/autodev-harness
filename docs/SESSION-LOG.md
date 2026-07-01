@@ -4,6 +4,43 @@
 
 ---
 
+## s05 — 2026-07-01 — Gate group (Tasks 15–19): the correctness core (step 5 done)
+
+**Context:** Continued from s04 (101 tests). Same discipline: sonnet-5 implementers (TDD) →
+controller spec-check vs the PS oracle → **whole-module codex GPT-5.5 gate** → adjudicate findings.
+
+**🔴 Resolved before Task 16 (guards/recipe design):** read real `.autodev/GUARDS.md` + recipe files.
+Confirmed the table's `contract_value` cell is human-facing (can list `+`-joined siblings) while the
+machine per-value key is the recipe's `canonical_value`, and `zone_id` lives ONLY in the recipe. Chose
+**(b)**: `guards.ts` is a pure fs-free table parser + selectors over enriched `GuardRecipePair[]`; recipe
+loading (fs) is the gate's job. This mirrors the PS split (`Get-AutodevGuards` + `Get-AutodevGuardRecipePairs`
++ pure `Select-*`) exactly — decided from real data, no operator escalation needed (files confirmed the spec).
+
+**Built (all in `src/gate/`):** Task 15 `invariants.ts` (MACHINE-INVARIANTS zod parse, types derived from
+schema; `zoneTouched`/`zoneTouchedStrings`/`diffAddedRemovedLines`), Task 16 `guards.ts` (table parser +
+per-VALUE `selectGuardForValue` / zone-fallback `selectGuardForZone`), Task 17 `mutation-check.ts`
+(GREEN→RED→GREEN, `replaceAll`, byte-exact restore in `finally`, injected runner), Task 18 `gate.ts`
+(decision core, exact §4 order, all I/O via `GateDeps`), Task 19 `self-test.test.ts` (5 `gate.ps1 -SelfTest`
+cases). Three leaf modules dispatched in PARALLEL (disjoint files). **155 tests / 2 skipped, typecheck clean.**
+
+**Pinned subtle parity from the PS source:** case-sensitivity asymmetry (`zoneTouched` case-INsensitive via
+`-match`/`-like`; `zoneTouchedStrings` case-SENSITIVE via `.Contains`); `String.Replace`→`.replaceAll`
+(JS `.replace` = first-only, a real bug); empty-file_set fast-path (incl. `!range` guard) BEFORE loaders.
+
+**Codex gate:** correctness core (per-value-no-fallback, case-asymmetry, replaceAll/byte-restore, table
+indexing) **confirmed clean**. 3 findings on gate-dependency-failure resilience — **all rejected as
+anti-parity**: PS loads invariants/guards before the check too (`gate.ps1:168-170`<`:194`); the `!range`
+guard is verbatim `gate.ps1:149`; a broken constitution file isn't worker-fixable (→ conductor fail-closes
+to ESCALATE, §2 step 7, not RETRY). Documented the throw/fail-closed contract in `runGate`'s JSDoc.
+
+**Merged (self-merge, operator-confirmed):** PR #10 (gate group) + PR #9 (batch-rule) → `main`. 6 granular
+commits. Codex Windows-sandbox couldn't read skill files (`CreateProcessAsUserW failed: 5`) but reviewed
+fine from the inline diff (per the known gotcha).
+
+**Next:** step 6 — `watchdog` + `escalate` + `anti-drift` (Tasks 20–23).
+
+---
+
 ## s04 — 2026-07-01 — Worker claude-adapter + full critic module (step 3 done, step 4 done)
 
 **Context:** Continued from s03 (PR #1 merged). Same discipline: sonnet-5 implementer (TDD) →
