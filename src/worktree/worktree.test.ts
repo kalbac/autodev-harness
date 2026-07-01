@@ -120,6 +120,50 @@ describe("createWorktreeManager", () => {
     expect(existsSync(join(repoRoot, "merged.txt"))).toBe(false);
   });
 
+  it("create() is re-queue-safe: a re-claimed task id starts clean even without teardown", async () => {
+    const taskId = "task-requeue";
+
+    // First attempt: create, leave a committed file on the branch, then tear down
+    // (mirrors: task claimed, worker runs, then rate-limit/timeout/gate RETRY/
+    // escalate-then-operator-requeues sends it back to the queue).
+    const wt1 = await manager.create(taskId, "main");
+    writeFileSync(join(wt1.path, "stale-file.txt"), "stale from attempt 1\n");
+    const wt1Git = (await import("../util/git.js")).createGit(wt1.path);
+    await wt1Git.add(["stale-file.txt"]);
+    await wt1Git.commit("stale commit from discarded attempt");
+    await manager.teardown(wt1);
+
+    // Re-claim of the same task id after teardown: must succeed instead of
+    // failing on "branch already exists", and must start from a clean base —
+    // the prior attempt's commit must be gone (thrown away, not carried over).
+    const wt2 = await manager.create(taskId, "main");
+    expect(wt2.taskId).toBe(taskId);
+    expect(wt2.branch).toBe(`autodev/wt-${taskId}`);
+    expect(existsSync(wt2.path)).toBe(true);
+    expect(existsSync(join(wt2.path, "stale-file.txt"))).toBe(false);
+
+    // Re-claim AGAIN, this time WITHOUT tearing down wt2 first (the worktree
+    // dir and its registration are still live) — the second call must clean
+    // up the leftover worktree + branch itself and still succeed.
+    writeFileSync(join(wt2.path, "second-stale-file.txt"), "stale from attempt 2\n");
+    const wt3 = await manager.create(taskId, "main");
+    expect(wt3.taskId).toBe(taskId);
+    expect(wt3.branch).toBe(`autodev/wt-${taskId}`);
+    expect(existsSync(wt3.path)).toBe(true);
+    expect(existsSync(join(wt3.path, "second-stale-file.txt"))).toBe(false);
+  });
+
+  it("create() rejects an unsafe task id before performing any destructive cleanup", async () => {
+    // A traversal id must be refused: create() rm's + branch -D's the derived
+    // path, so `../x` would let that cleanup escape worktreesDir.
+    for (const bad of ["../evil", "a/b", "..", ".", "", "x\\y"]) {
+      await expect(manager.create(bad, "main")).rejects.toThrow(/unsafe task id/i);
+    }
+    // A normal id with dots/dashes is still accepted.
+    const ok = await manager.create("s7-t1.conductor", "main");
+    expect(ok.branch).toBe("autodev/wt-s7-t1.conductor");
+  });
+
   it("teardown removes the worktree dir but keeps the branch (non-destructive)", async () => {
     const wt = await manager.create("task5", "main");
     expect(existsSync(wt.path)).toBe(true);

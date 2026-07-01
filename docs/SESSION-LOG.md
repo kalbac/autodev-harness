@@ -4,6 +4,48 @@
 
 ---
 
+## s07 — 2026-07-01 — Conductor loop + scheduler + composition root (step 7 done; loop runs end-to-end)
+
+**Context:** Continued from s06 (193 tests). Same discipline: sonnet-5 implementers (TDD, no commit) →
+controller spec-check vs the PS oracle → whole-module codex GPT-5.5 gate → adjudicate → fix + regression
+test → **re-critic the fixes**. Branch `feat/conductor-p1`.
+
+**Built (SEQUENTIAL — the conductor is one tightly-coupled module):**
+- **Task 23.5 `scheduler/scheduler.ts`** (plan-gap; the numbered tasks skipped it) — port of `scheduler.ps1`:
+  deps-first then file_set disjointness vs active∪escalated locks, atomic claim with lost-race skip,
+  `listClaimable` report; pure over `BlackboardRepository` (fake-repo testable). 9→10 tests.
+- **Tasks 24–26 `conductor/conductor.ts`** — the whole parity §2 spine + outer loop, pure wiring/zero-LLM,
+  full DI so all 8 self-tests run on fakes with zero subprocesses. Honors divergences #1 (worktree
+  adaptation), #4 (RETRY→pending, not refunded), #8 (symmetric worker+critic 429 refund), #9
+  (MaxSessionHours at top), #10 (commit-time branch re-check). 26→28 tests.
+- **Step-7 close-out (parallel subagents):** `src/index.ts` production composition root (thin entry: flags →
+  construct every real dep → `conductor.run`) + `src/util/log.ts`; and worktree `create()` made
+  **re-queue-safe** (prune + remove --force + rm stale dir + branch -D before add) + taskId traversal guard.
+  **233 tests / 2 skipped, typecheck clean** (was 193).
+
+**Codex gates (two whole-module passes + two re-critics):**
+- *Conductor+scheduler diff:* 5 findings → **2 rejected as faithful to the PS oracle** (activeSets computed
+  once before the scan; `TrimStart('./')` is a char-set trim that strips `../` identically), **3 accepted**:
+  scheduler imposes its own id order (don't rely on repo ordering), commit-time re-check must also require
+  `cur === loopBranch`, teardown-in-finally must not reject a decided iteration. **Re-critic** refuted the
+  teardown fix as incomplete (catch-block `log()` had no never-throws contract) → `safeLog` + throwing-logger
+  test (the `[ts/fail-closed]` gotcha again).
+- *Integration diff:* 6 findings → **2 deferred with docs** (`zonesTouchedInDiff` main-root invariants;
+  `splitCommand` not quote-aware), **4 fixed**: guard-recipe matched by full row identity (per-value #2),
+  `--max-iterations` validated as a positive int, taskId path-traversal guard, orphaned-dir rm. **Re-critic**
+  caught the `--max-iterations` fix missing the no-value case → closed.
+
+**Gotchas found:** `[ts/test-hang]` (an unterminated `run()` loop with no-op async deps starves vitest's
+macrotask timer → uncatchable hang, process-killed at 5 min — two conductor *tests* were wrong, the code was
+right; also: a new foreground shell command kills the running background one — killed my own test runs +
+orphaned 186 node procs → OOM). `[conductor/wiring]` (the two deferred integration limitations + index.ts is
+untested glue by design).
+
+**Next:** thin `api` (Task 27) → parity harness + cross-platform CI (28–29) → P1 DoD. PR `feat/conductor-p1`
+awaiting operator-approved merge (Claude-Code classifier blocks self-authored `gh pr merge`).
+
+---
+
 ## s06 — 2026-07-01 — Watchdog + escalate + anti-drift + fingerprint (Tasks 20–23, step 6 done)
 
 **Context:** Continued from s05 (155 tests). Same discipline: sonnet-5 implementers (TDD, no commit) →
