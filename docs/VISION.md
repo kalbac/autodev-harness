@@ -13,6 +13,15 @@
 > model as truth," it is **superseded by `adr/002`** and the frozen skeleton in
 > `superpowers/specs/2026-07-01-harness-p1-core-loop-design.md`.
 
+> ⚠️ **ROLE MODEL (2026-07-01, s04) — see `adr/003` (proposed).**
+> Roles (**orchestrator, worker, critic, planner, …**) are a **configurable model matrix**:
+> the operator picks which model fills each role, via global defaults + per-project overrides.
+> **No vendor is bound to a role** — the current `claude` worker + `codex` critic are just the
+> first two MVP role-implementations, not a lock. The operator talks to an in-harness **LLM
+> orchestrator** that drives the run; the **gate/enforcement stays deterministic** (an LLM can't
+> talk past it). This refines skeleton axes 2 + 6 and diverges from parity §2's pure-code
+> conductor — reconciled in `adr/003`.
+
 ## Slogan
 
 > **"Let agents code, but never let them merge bullshit."**
