@@ -43,4 +43,10 @@ describe("parseTask", () => {
     expect(t.writes_guard).toBe(true);
     expect(t.needs_guard).toBe(false);
   });
+
+  it("does not treat a `---` that is not its own line as the closing delimiter", () => {
+    const t = parseTask("---\nid: x\n--- this is body\nmore", "p");
+    expect(t.id).toBe("");
+    expect(t.body).toContain("--- this is body");
+  });
 });

@@ -1,7 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import type { Task } from "./types.js";
 
-const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)([\s\S]*)$/;
 
 function toBool(v: unknown, fallback = false): boolean {
   if (typeof v === "boolean") return v;

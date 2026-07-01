@@ -51,4 +51,28 @@ describe("FileBlackboardRepository", () => {
     const txt = readFileSync(join(root, ".autodev", "digest.md"), "utf8");
     expect(txt).toContain("ON-TRACK: fine");
   });
+
+  it("rejects task ids that attempt path traversal", async () => {
+    // seed a file OUTSIDE the pending queue dir that a malicious id could reach
+    const outside = join(root, ".autodev", "victim.md");
+    mkdirSync(join(root, ".autodev"), { recursive: true });
+    writeFileSync(outside, "---\nid: victim\n---\nbody");
+    await expect(repo.moveTask("../../victim", "pending", "active")).rejects.toThrow(/unsafe task id/);
+    expect(existsSync(outside)).toBe(true); // never moved out from under us
+
+    // a normal id still works
+    seedPending("t1");
+    await repo.moveTask("t1", "pending", "active");
+    expect(existsSync(join(root, ".autodev", "queue", "active", "t1.md"))).toBe(true);
+  });
+
+  it("rejects runtime file names that attempt path traversal, round-trips flat names", async () => {
+    await expect(repo.writeRuntimeFile("t1", "../escape", "x")).rejects.toThrow();
+    await repo.writeRuntimeFile("t1", "worker-report.md", "hello");
+    expect(await repo.readRuntimeFile("t1", "worker-report.md")).toBe("hello");
+  });
+
+  it("listTasks returns [] when the queue dir was never created (no throw)", async () => {
+    expect(await repo.listTasks("done")).toEqual([]);
+  });
 });
