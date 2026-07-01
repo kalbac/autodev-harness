@@ -37,9 +37,12 @@ branch renamed `master`→`main`; worktrees via AO pattern (deliberate divergenc
 `WorkerAdapter` returns TRANSPORT status only (DONE/RATE_LIMITED/TIMED_OUT) — report statuses parsed by the
 conductor (parity §6), correcting the plan's mixed `WorkerStatus` sketch.
 
+**Merged:** operator authorized self-merge → **PR #1 merged to `main`** (merge-commit `3c4a7ad`, preserving the
+granular feat+codex-fix history as a dogfooding audit trail); branch deleted; 60 tests green on `main`.
+
 **Not done / next:** finish step 3 (`worker` Task 11 claude-adapter via injected watchdog runner) → steps 4–9
-(`critic`→`gate`→`watchdog/escalate/anti-drift`→`conductor`→`api`→parity harness+CI). Operator to: merge PR #1;
-pick the live woodev parity target. See `CURRENT-STATE.md` → NEXT ACTIONS. New gotcha: codex-exec Windows sandbox.
+(`critic`→`gate`→`watchdog/escalate/anti-drift`→`conductor`→`api`→parity harness+CI). Operator to pick the live
+woodev parity target. See `CURRENT-STATE.md` → NEXT ACTIONS. New gotcha: codex-exec Windows sandbox.
 
 ---
 
