@@ -1,4 +1,10 @@
-import { spawn } from "node:child_process";
+// cross-spawn, not node:child_process: on Windows, node's bare `spawn("codex", ...)`
+// fails ENOENT for a PATH command that resolves to a `.cmd`/`.bat` shim (e.g. the
+// npm-global `codex` critic), and node 22 refuses to spawn `.cmd` without a shell
+// (CVE-2024-27980). cross-spawn resolves the shim via PATH+PATHEXT and invokes it
+// through cmd.exe with correct argument quoting -- so the codex arg
+// `model_reasoning_effort="high"` survives intact. A no-op passthrough on POSIX.
+import spawn from "cross-spawn";
 
 export interface NativeResult {
   exitCode: number;
@@ -29,10 +35,13 @@ export function runNative(
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => (stderr += d));
+    // cross-spawn types stdout/stderr as nullable (they are null only for
+    // non-'pipe' stdio, which we never request), so guard defensively -- with
+    // default stdio these streams are always present at runtime.
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => (stdout += d));
+    child.stderr?.on("data", (d) => (stderr += d));
     child.on("error", reject); // spawn failure (ENOENT) is a real error
     child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
     // Writing stdin races the child closing its read end: a child that never

@@ -45,4 +45,17 @@ describe("runNative", () => {
     ]);
     expect(r.stdout).toBe(payload);
   });
+
+  // Windows-only regression: a PATH command that resolves to a `.cmd`/`.bat`
+  // shim (like the npm-global `codex` critic, or `npm` itself) must be spawnable
+  // by bare name. node's own `spawn` returns ENOENT here; cross-spawn resolves it
+  // via PATH+PATHEXT. On POSIX this is uninteresting, so it is skipped there.
+  it.runIf(process.platform === "win32")(
+    "spawns a Windows .cmd shim by bare name (cross-spawn resolution)",
+    async () => {
+      const r = await runNative("npm", ["--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    },
+  );
 });
