@@ -7,6 +7,7 @@ import { buildCriticPrompt } from "./prompt.js";
 import { attachDiffSha256, parseVerdict } from "./verdict.js";
 import { withWorkerReportFenced } from "./fencing.js";
 import type { HarnessConfig } from "../config/schema.js";
+import { resolveCriticExe } from "../config/roles.js";
 import { runNative } from "../util/native.js";
 import type { NativeOptions, NativeResult } from "../util/native.js";
 
@@ -31,7 +32,7 @@ export const DEFAULT_SCHEMA_PATH = fileURLToPath(new URL("./critic-verdict.schem
  * Tiering (§5): an empty diff is the `none` tier — pass-through `clean` at
  * confidence 0.5, WITHOUT spawning codex. Every non-empty diff is the
  * `expensive` tier — exactly one `codex exec` call (no internal retry; that
- * is a conductor-level concern via `cfg.critic.retryMax`).
+ * is a conductor-level concern via `cfg.roles.critic.retryMax`).
  *
  * Verdict resolution ordering (§5, load-bearing): the `-o` outfile is read
  * first; if that yields no parseable verdict, stdout+stderr is tried as a
@@ -74,13 +75,13 @@ export class CodexCriticAdapter implements CriticAdapter {
       await rm(outfile, { force: true });
 
       const result = await this.runner(
-        this.cfg.critic.exe,
+        resolveCriticExe(this.cfg),
         [
           "exec",
           "-m",
-          this.cfg.critic.model,
+          this.cfg.roles.critic.model,
           "-c",
-          `model_reasoning_effort="${this.cfg.critic.effort}"`,
+          `model_reasoning_effort="${this.cfg.roles.critic.effort}"`,
           "-c",
           `approval_policy="never"`,
           "-s",

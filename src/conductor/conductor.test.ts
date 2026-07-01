@@ -356,7 +356,7 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     worktree: partial.worktree ?? makeWorktree().worktree,
     worker: partial.worker ?? makeWorker([{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }], repo).worker,
     critic: partial.critic ?? makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]).critic,
-    router: partial.router ?? ({ resolveLadder: () => ({ ladder: cfg.worker.ladder, warnings: [] }) } as Router),
+    router: partial.router ?? ({ resolveLadder: () => ({ ladder: cfg.roles.worker.ladder, warnings: [] }) } as Router),
     git: partial.git ?? makeGit("autodev/loop-main").git,
     worktreeGit: partial.worktreeGit ?? makeWorktreeGitFactory().worktreeGit,
     runGate: partial.runGate ?? (async () => defaultGateVerdict()),

@@ -16,8 +16,11 @@ import { createRouter } from "./router/router.js";
 import { createGit } from "./util/git.js";
 import { runNative } from "./util/native.js";
 import { ClaudeWorkerAdapter } from "./worker/claude-adapter.js";
+import type { WorkerAdapter } from "./worker/adapter.js";
 import { RealWatchedProcessRunner } from "./watchdog/watchdog.js";
 import { CodexCriticAdapter } from "./critic/codex-adapter.js";
+import type { CriticAdapter } from "./critic/adapter.js";
+import { assertKnownAdapters, heterogeneityWarnings, resolveWorkerExe } from "./config/roles.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "./gate/gate.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "./gate/invariants.js";
 import {
@@ -102,8 +105,30 @@ async function main(): Promise<void> {
   const git = createGit(repoRoot);
   const worktreeGit = (wt: Worktree) => createGit(wt.path);
 
-  const worker = new ClaudeWorkerAdapter({ runner: new RealWatchedProcessRunner(), cfg });
-  const critic = new CodexCriticAdapter({ cfg, repoRoot });
+  // Order is intentional: the hard capability check (is this adapter even
+  // implemented?) runs BEFORE the soft heterogeneity policy warning. In the
+  // MVP the only same-family worker/critic combos require an unregistered
+  // adapter, so assertKnownAdapters surfaces the more actionable error first;
+  // heterogeneityWarnings is forward-looking — it starts firing once a second
+  // adapter of the same family (e.g. a Claude-based critic) is registered.
+  assertKnownAdapters(cfg); // fail loud on an unregistered worker/critic adapter
+  for (const w of heterogeneityWarnings(cfg)) log("WARN", w);
+  const worker = ((): WorkerAdapter => {
+    switch (cfg.roles.worker.adapter) {
+      case "claude":
+        return new ClaudeWorkerAdapter({ runner: new RealWatchedProcessRunner(), cfg });
+      default:
+        throw new Error(`unreachable: assertKnownAdapters should have caught '${cfg.roles.worker.adapter}'`);
+    }
+  })();
+  const critic = ((): CriticAdapter => {
+    switch (cfg.roles.critic.adapter) {
+      case "codex":
+        return new CodexCriticAdapter({ cfg, repoRoot });
+      default:
+        throw new Error(`unreachable: assertKnownAdapters should have caught '${cfg.roles.critic.adapter}'`);
+    }
+  })();
 
   // --- Contract-zone plumbing (INVARIANTS.md / GUARDS.md) ---------------
   /** Parse `<root>/<contract.invariantsFile>`; missing/empty file -> an empty (zero-zone) Invariants. */
@@ -234,7 +259,7 @@ async function main(): Promise<void> {
       gitDiff: async (sinceRef: string) =>
         (await runNative("git", ["diff", `${sinceRef}..HEAD`], { cwd: repoRoot })).stdout,
       runModel: async (model: string, prompt: string) => {
-        const r = await runNative(cfg.worker.exe, ["-p", "--model", model], { cwd: repoRoot, stdin: prompt });
+        const r = await runNative(resolveWorkerExe(cfg), ["-p", "--model", model], { cwd: repoRoot, stdin: prompt });
         return { exitCode: r.exitCode, output: r.stdout };
       },
       appendDigest: (line: string) => repo.appendDigest(line),
