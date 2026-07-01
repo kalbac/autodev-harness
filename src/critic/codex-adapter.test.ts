@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CodexCriticAdapter, DEFAULT_SCHEMA_PATH } from "./codex-adapter.js";
 import { buildCriticPrompt } from "./prompt.js";
 import { HarnessConfigSchema } from "../config/schema.js";
+import { resolveCriticExe } from "../config/roles.js";
 import type { NativeOptions, NativeResult } from "../util/native.js";
 
 const dirsToClean: string[] = [];
@@ -123,13 +124,13 @@ describe("CodexCriticAdapter", () => {
 
     expect(runner.calls).toHaveLength(1);
     const call = runner.calls[0]!;
-    expect(call.command).toBe(cfg.critic.exe);
+    expect(call.command).toBe(resolveCriticExe(cfg));
     expect(call.args).toEqual([
       "exec",
       "-m",
-      cfg.critic.model,
+      cfg.roles.critic.model,
       "-c",
-      `model_reasoning_effort="${cfg.critic.effort}"`,
+      `model_reasoning_effort="${cfg.roles.critic.effort}"`,
       "-c",
       `approval_policy="never"`,
       "-s",

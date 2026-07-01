@@ -174,7 +174,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const loopBranch = await git.currentBranch();
     const { ladder, warnings } = router.resolveLadder(task);
     warnings.forEach((w) => log("WARN", w));
-    const maxRounds = task.max_rounds ?? cfg.critic.retryMax;
+    const maxRounds = task.max_rounds ?? cfg.roles.critic.retryMax;
     const runtimeDir = repo.runtimeDir(task.id);
     const workerReportPath = `${runtimeDir}/worker-report.md`;
 

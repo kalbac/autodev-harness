@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ClaudeWorkerAdapter } from "./claude-adapter.js";
 import { buildWorkerPrompt } from "./prompt.js";
 import { HarnessConfigSchema } from "../config/schema.js";
+import { resolveWorkerExe } from "../config/roles.js";
 import type { Task } from "../blackboard/types.js";
 import type { WatchedProcessRunner, WatchedRunInput, WatchedRunResult } from "../watchdog/runner.js";
 import { runNative } from "../util/native.js";
@@ -74,9 +75,9 @@ describe("ClaudeWorkerAdapter", () => {
     // Non-default worker config so this proves the adapter FORWARDS config
     // values rather than coincidentally matching the schema defaults.
     const cfg = HarnessConfigSchema.parse({
-      worker: { exe: "claude-cli", maxTurns: 42, staleMinutes: 7, timeoutMinutes: 11 },
+      roles: { worker: { exe: "claude-cli", maxTurns: 42, staleMinutes: 7, timeoutMinutes: 11 } },
     });
-    expect(cfg.worker.exe).not.toBe(HarnessConfigSchema.parse({}).worker.exe);
+    expect(resolveWorkerExe(cfg)).not.toBe(resolveWorkerExe(HarnessConfigSchema.parse({})));
     const runner = new FakeRunner([okResult()]);
     const adapter = new ClaudeWorkerAdapter({ runner, cfg });
     const task = makeTask();
@@ -89,7 +90,7 @@ describe("ClaudeWorkerAdapter", () => {
     });
 
     const call = runner.calls[0]!;
-    expect(call.command).toBe(cfg.worker.exe);
+    expect(call.command).toBe(resolveWorkerExe(cfg));
     expect(call.args).toEqual([
       "-p",
       "--model",
@@ -97,7 +98,7 @@ describe("ClaudeWorkerAdapter", () => {
       "--permission-mode",
       "acceptEdits",
       "--max-turns",
-      String(cfg.worker.maxTurns),
+      String(cfg.roles.worker.maxTurns),
       "--verbose",
       "--output-format",
       "stream-json",
@@ -106,8 +107,8 @@ describe("ClaudeWorkerAdapter", () => {
     expect(call.cwd).toBe("/wt");
     expect(call.heartbeatPath).toBe(join("/rt", "heartbeat"));
     expect(call.activityPaths).toEqual(["/rt"]);
-    expect(call.staleSeconds).toBe(cfg.worker.staleMinutes * 60);
-    expect(call.timeoutSeconds).toBe(cfg.worker.timeoutMinutes * 60);
+    expect(call.staleSeconds).toBe(cfg.roles.worker.staleMinutes * 60);
+    expect(call.timeoutSeconds).toBe(cfg.roles.worker.timeoutMinutes * 60);
   });
 
   it("steps down to the next (cheaper) ladder entry on a non-contract rate limit", async () => {

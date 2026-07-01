@@ -22,10 +22,10 @@ export interface Router {
  * 4. Else (no `task.model`): full ladder.
  */
 export function createRouter(cfg: HarnessConfig): Router {
-  const fullLadder = cfg.worker.ladder;
+  const fullLadder = cfg.roles.worker.ladder;
   const topTier = fullLadder[0];
   if (topTier === undefined) {
-    throw new Error("createRouter: cfg.worker.ladder must be non-empty");
+    throw new Error("createRouter: cfg.roles.worker.ladder must be non-empty");
   }
 
   return {

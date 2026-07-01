@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { WorkerAdapter, WorkerResult, WorkerRunInput } from "./adapter.js";
 import { buildWorkerPrompt } from "./prompt.js";
 import type { HarnessConfig } from "../config/schema.js";
+import { resolveWorkerExe } from "../config/roles.js";
 import type { WatchedProcessRunner, WatchedRunResult } from "../watchdog/runner.js";
 
 export interface ClaudeWorkerAdapterDeps {
@@ -47,7 +48,7 @@ export class ClaudeWorkerAdapter implements WorkerAdapter {
 
     for (model of input.ladder) {
       result = await this.runner.run({
-        command: this.cfg.worker.exe,
+        command: resolveWorkerExe(this.cfg),
         args: [
           "-p",
           "--model",
@@ -55,7 +56,7 @@ export class ClaudeWorkerAdapter implements WorkerAdapter {
           "--permission-mode",
           "acceptEdits",
           "--max-turns",
-          String(this.cfg.worker.maxTurns),
+          String(this.cfg.roles.worker.maxTurns),
           "--verbose",
           "--output-format",
           "stream-json",
@@ -64,8 +65,8 @@ export class ClaudeWorkerAdapter implements WorkerAdapter {
         cwd: input.worktreePath,
         heartbeatPath: join(input.runtimeDir, "heartbeat"),
         activityPaths: [input.runtimeDir],
-        staleSeconds: this.cfg.worker.staleMinutes * 60,
-        timeoutSeconds: this.cfg.worker.timeoutMinutes * 60,
+        staleSeconds: this.cfg.roles.worker.staleMinutes * 60,
+        timeoutSeconds: this.cfg.roles.worker.timeoutMinutes * 60,
       });
 
       if (result.rateLimited && input.task.touches_contract_zone) {

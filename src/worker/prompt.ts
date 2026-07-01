@@ -22,7 +22,7 @@ import type { HarnessConfig } from "../config/schema.js";
  *    `git commit`/`git add` (except the one sanctioned `git add -N` for
  *    new-file diff visibility), never run the gate, touch the heartbeat file
  *    at every significant step, and always write `worker-report.md`.
- * 5. Each configured `cfg.worker.promptHints` line appended verbatim
+ * 5. Each configured `cfg.roles.worker.promptHints` line appended verbatim
  *    (coupling #7 — generalized "preferred code-nav tool" hint; empty by
  *    default).
  */
@@ -80,8 +80,8 @@ export function buildWorkerPrompt(task: Task, cfg: HarnessConfig, criticFeedback
     "",
   );
 
-  if (cfg.worker.promptHints.length > 0) {
-    sections.push("## Additional hints", "", ...cfg.worker.promptHints, "");
+  if (cfg.roles.worker.promptHints.length > 0) {
+    sections.push("## Additional hints", "", ...cfg.roles.worker.promptHints, "");
   }
 
   return sections.join("\n");

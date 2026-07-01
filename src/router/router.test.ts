@@ -81,10 +81,10 @@ describe("createRouter().resolveLadder", () => {
     expect(warnings[0]).toMatch(/not in ladder/i);
   });
 
-  it("returns a fresh array each call rather than aliasing cfg.worker.ladder", () => {
+  it("returns a fresh array each call rather than aliasing cfg.roles.worker.ladder", () => {
     const router = createRouter(cfg);
     const { ladder } = router.resolveLadder(makeTask({ model: null }));
     ladder.push("mutated");
-    expect(cfg.worker.ladder).toEqual(["opus", "sonnet", "haiku"]);
+    expect(cfg.roles.worker.ladder).toEqual(["opus", "sonnet", "haiku"]);
   });
 });

@@ -80,7 +80,7 @@ describe("buildWorkerPrompt", () => {
 
   it("appends each configured worker.promptHints line", () => {
     const cfg = HarnessConfigSchema.parse({
-      worker: { promptHints: ["Prefer the project's semantic code-nav tool over raw grep."] },
+      roles: { worker: { promptHints: ["Prefer the project's semantic code-nav tool over raw grep."] } },
     });
     const prompt = buildWorkerPrompt(makeTask(), cfg);
     expect(prompt).toContain("Prefer the project's semantic code-nav tool over raw grep.");
