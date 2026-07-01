@@ -94,30 +94,48 @@ function buildSummary(input: EscalationInput): string {
  * logged via `deps.log?.("WARN", ...)`.
  */
 export async function escalate(input: EscalationInput, deps: EscalateDeps): Promise<EscalateResult> {
+  // The "never throws" contract must hold even if the injected logger or env
+  // reader itself throws — those are the only side effects not already inside
+  // a protective try/catch below. safeLog swallows a broken logger; the env
+  // reads are guarded so a throwing env() degrades to "Telegram unconfigured".
+  const safeLog = (level: string, message: string): void => {
+    try {
+      deps.log?.(level, message);
+    } catch {
+      // a broken logger must never break escalation delivery
+    }
+  };
+
   const path = `${deps.escalationsDir}/${input.id}.md`;
 
   let artifactWritten = false;
   try {
     await deps.writeFile(path, buildBody(input));
     artifactWritten = true;
-    deps.log?.("ESCALATE", `Wrote escalation ${input.id} (${input.type}) -> ${path}`);
+    safeLog("ESCALATE", `Wrote escalation ${input.id} (${input.type}) -> ${path}`);
   } catch (err) {
-    deps.log?.("WARN", `Failed to write escalation artifact ${input.id}: ${String(err)}`);
+    safeLog("WARN", `Failed to write escalation artifact ${input.id}: ${String(err)}`);
   }
 
   const summary = buildSummary(input);
 
-  const token = deps.env("AUTODEV_TELEGRAM_TOKEN");
-  const chat = deps.env("AUTODEV_TELEGRAM_CHAT");
+  let token: string | undefined;
+  let chat: string | undefined;
+  try {
+    token = deps.env("AUTODEV_TELEGRAM_TOKEN");
+    chat = deps.env("AUTODEV_TELEGRAM_CHAT");
+  } catch (err) {
+    safeLog("WARN", `escalate: env read threw (${String(err)}); treating Telegram as unconfigured.`);
+  }
   let delivery: EscalateResult["delivery"] = "outbox";
 
   if (token && chat && deps.telegramPost) {
     try {
       await deps.telegramPost(token, chat, summary);
       delivery = "telegram";
-      deps.log?.("ESCALATE", `Pushed escalation ${input.id} to Telegram chat ${chat}.`);
+      safeLog("ESCALATE", `Pushed escalation ${input.id} to Telegram chat ${chat}.`);
     } catch (err) {
-      deps.log?.("WARN", `Telegram push failed for ${input.id} (${String(err)}); queued to _outbox.md.`);
+      safeLog("WARN", `Telegram push failed for ${input.id} (${String(err)}); queued to _outbox.md.`);
     }
   }
 
@@ -126,9 +144,9 @@ export async function escalate(input: EscalationInput, deps: EscalateDeps): Prom
     const outboxLine = `- [ ] ${summary}  (file: escalations/${input.id}.md)\n`;
     try {
       await deps.appendFile(outboxPath, outboxLine);
-      deps.log?.("ESCALATE", `Queued escalation ${input.id} to _outbox.md (no direct Telegram transport configured).`);
+      safeLog("ESCALATE", `Queued escalation ${input.id} to _outbox.md (no direct Telegram transport configured).`);
     } catch (err) {
-      deps.log?.("WARN", `Failed to append escalation ${input.id} to _outbox.md: ${String(err)}`);
+      safeLog("WARN", `Failed to append escalation ${input.id} to _outbox.md: ${String(err)}`);
     }
   }
 

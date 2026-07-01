@@ -92,8 +92,13 @@ function isUnderAnyPrefix(normalizedPath: string, prefixes: string[]): boolean {
 export function forbiddenTouches(touched: string[], forbiddenGlobs: string[]): string[] {
   const hit: string[] = [];
   if (forbiddenGlobs.length === 0) return hit;
+  // Parity: PS `Test-GlobMatch` runs `ConvertTo-NormalizedPath` over BOTH the
+  // path and the glob before matching. Normalizing only the returned hit (not
+  // the match input) would let a `./`-prefixed changed path slip past a
+  // forbidden glob — a fail-open on a security-relevant check.
   for (const f of touched) {
-    if (forbiddenGlobs.some((g) => globMatch(g, f))) hit.push(normalizePath(f));
+    const n = normalizePath(f);
+    if (forbiddenGlobs.some((g) => globMatch(normalizePath(g), n))) hit.push(n);
   }
   return hit;
 }

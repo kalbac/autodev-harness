@@ -103,6 +103,37 @@ describe("runAntiDrift", () => {
     expect(deps.appendDigest).toHaveBeenCalledTimes(1);
   });
 
+  it("degrades to UNCERTAIN when the model invocation THROWS, still appending one digest line (parity anti-drift.ps1:82-88)", async () => {
+    const deps = makeDeps({
+      runModel: vi.fn(async () => {
+        throw new Error("spawn ENOENT");
+      }),
+    });
+    const cfg = makeCfg();
+    const input = makeInput();
+
+    // Must NOT reject — a thrown model call is caught and degraded, not fatal.
+    const result = await runAntiDrift(input, cfg, deps);
+
+    expect(result).toBe("UNCERTAIN: anti-drift could not run (model exit 1) -- not asserting on-track.");
+    expect(deps.appendDigest).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the verdict even if the digest write fails (parity anti-drift.ps1:114-118)", async () => {
+    const deps = makeDeps({
+      runModel: vi.fn(async () => ({ exitCode: 0, output: "ON-TRACK: fine" })),
+      appendDigest: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    });
+    const cfg = makeCfg();
+    const input = makeInput();
+
+    const result = await runAntiDrift(input, cfg, deps);
+
+    expect(result).toBe("ON-TRACK: fine");
+  });
+
   describe("intent extraction", () => {
     it("feeds the whole file when headers is empty", async () => {
       const { runModel, getPrompt } = capturingRunModel();

@@ -184,6 +184,55 @@ describe("escalate", () => {
     expect(telegramCalls).toHaveLength(0);
   });
 
+  it("does not throw when the injected env reader itself throws (honors the never-throws contract)", async () => {
+    const { files, appends } = makeFakes();
+    const deps: EscalateDeps = {
+      escalationsDir: ESCALATIONS_DIR,
+      writeFile: async (path: string, content: string) => {
+        files.set(path, content);
+      },
+      appendFile: async (path: string, content: string) => {
+        const existing = appends.get(path) ?? [];
+        existing.push(content);
+        appends.set(path, existing);
+      },
+      env: () => {
+        throw new Error("env unavailable");
+      },
+    };
+
+    const result = await escalate(makeInput(), deps);
+
+    // A throwing env() degrades to "Telegram unconfigured" -> outbox, no throw.
+    expect(result.artifactWritten).toBe(true);
+    expect(result.delivery).toBe("outbox");
+    expect(appends.get(`${ESCALATIONS_DIR}/_outbox.md`)).toHaveLength(1);
+  });
+
+  it("does not throw when the injected logger throws", async () => {
+    const { files, appends } = makeFakes();
+    const deps: EscalateDeps = {
+      escalationsDir: ESCALATIONS_DIR,
+      writeFile: async (path: string, content: string) => {
+        files.set(path, content);
+      },
+      appendFile: async (path: string, content: string) => {
+        const existing = appends.get(path) ?? [];
+        existing.push(content);
+        appends.set(path, existing);
+      },
+      env: () => undefined,
+      log: () => {
+        throw new Error("logger down");
+      },
+    };
+
+    const result = await escalate(makeInput(), deps);
+
+    expect(result.delivery).toBe("outbox");
+    expect(result.artifactWritten).toBe(true);
+  });
+
   it("falls back to outbox when telegramPost is not provided even if env vars are set", async () => {
     const { deps, appends } = makeFakes({
       env: { AUTODEV_TELEGRAM_TOKEN: "tok-123", AUTODEV_TELEGRAM_CHAT: "chat-456" },

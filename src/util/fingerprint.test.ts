@@ -95,4 +95,11 @@ describe("forbiddenTouches", () => {
   it("returns [] when forbiddenGlobs is empty", () => {
     expect(forbiddenTouches(["docs/x-policy.md"], [])).toEqual([]);
   });
+
+  it("normalizes the path BEFORE matching so a './'-prefixed forbidden touch is still caught (parity Test-GlobMatch)", () => {
+    // A naive raw-path match against `docs/*-policy.md` would miss the leading
+    // './' and fail-open; PS normalizes both sides before matching.
+    const result = forbiddenTouches(["./docs/x-policy.md"], ["docs/*-policy.md"]);
+    expect(result).toEqual(["docs/x-policy.md"]);
+  });
 });

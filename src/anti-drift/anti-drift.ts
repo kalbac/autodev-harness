@@ -155,7 +155,22 @@ export async function runAntiDrift(
 
   deps.log?.("INFO", `Anti-drift: invoking model ${cfg.model} ...`);
 
-  const { exitCode, output } = await deps.runModel(cfg.model, prompt);
+  // Parity anti-drift.ps1:82-88 — the model invocation is wrapped so a thrown
+  // call (e.g. the model exe is missing) degrades to exit 1 rather than
+  // crashing the loop. The branch below turns that into an UNCERTAIN
+  // could-not-run verdict — never a false ON-TRACK, and a digest line is still
+  // written.
+  let exitCode: number;
+  let output: string;
+  try {
+    const r = await deps.runModel(cfg.model, prompt);
+    exitCode = r.exitCode;
+    output = r.output;
+  } catch (err) {
+    exitCode = 1;
+    output = "";
+    deps.log?.("WARN", `Anti-drift: model invocation threw (${String(err)}); degrading to UNCERTAIN.`);
+  }
 
   let driftLine: string;
   if (exitCode === 0 && output) {
@@ -173,7 +188,14 @@ export async function runAntiDrift(
 
   const stamp = formatTimestamp(deps.now());
   const digestEntry = `[${stamp}] [anti-drift] (window: ${input.commitsSinceLast} commits) ${driftLine}`;
-  await deps.appendDigest(digestEntry);
+  // Parity anti-drift.ps1:114-118 — a digest write failure is logged, never
+  // fatal: the returned verdict line (which the conductor routes on) must
+  // survive a scratch-file I/O hiccup.
+  try {
+    await deps.appendDigest(digestEntry);
+  } catch (err) {
+    deps.log?.("WARN", `Anti-drift: could not write digest line: ${String(err)}`);
+  }
 
   return driftLine;
 }
