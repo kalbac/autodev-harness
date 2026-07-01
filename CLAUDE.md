@@ -58,12 +58,26 @@ Proven layout carried over from the woodev-framework project:
   independent codex GPT-5.5 review before merge; re-critic in-place fixes — never
   self-certify (this is the whole point of the project).
 
+## Repo conventions (read this — do NOT re-discover every session)
+
+- **No roadmap file.** This project has NO `docs/*ROADMAP*.md`. The global session-save
+  protocol's "update the roadmap / check boxes" step is a **woodev-framework artifact and
+  does not apply here** — skip it silently, do not go looking for the file.
+- **`next-session-promt.md` is git-ignored** (local session-handoff scratch). Rewrite it each
+  session-end, but **never** `git add`/commit it and never treat it as an uncommitted change to
+  resolve — it is intentionally untracked.
+- **Merges are the agent's job; the operator only approves the gate.** The Claude Code
+  self-approval classifier will block the agent auto-merging its OWN PR and blocks direct pushes
+  to `main` — that is expected, not a bug you invented. The normal flow: branch → commit → push →
+  open PR → **ask the operator once to approve the merge**, then merge. Do not re-litigate this or
+  frame it as a novel blocker each session; batch small docs into one PR to minimize approvals.
+
 ## Session End Protocol
 
 1. Update `docs/CURRENT-STATE.md` — status, next actions (max ~3 lines of "last session")
 2. Prepend an entry to `docs/SESSION-LOG.md` (10–20 lines)
 3. Scan the new log entry for gotchas → `docs/gotchas/{slug}.md` + index in `GOTCHAS.md`
-4. Commit docs: `git commit -m "docs: <summary>"`
+4. Commit docs: `git commit -m "docs: <summary>"` (roadmap step from the global protocol N/A here)
 
 ## MCP Tools available (global)
 
