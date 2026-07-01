@@ -1,0 +1,11 @@
+Autodev Harness
+Copyright 2026 kalbac
+
+This product ports policies and patterns studied from, and reuses ideas from,
+the following open-source projects (see docs/superpowers/donor-extraction and
+references/MANIFEST.md for pinned SHAs):
+  - Agent Orchestrator (worktree isolation, kanban session model)
+  - OpenHands / software-agent-sdk
+  - Aider
+  - Open Design
+Original PowerShell autodev-loop authored in the woodev_framework project.
