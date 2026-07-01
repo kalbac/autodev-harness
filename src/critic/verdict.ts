@@ -25,7 +25,7 @@ const BrokenContractSchema = z
   .object({
     zone: z.string(),
     file: z.string(),
-    line: z.number(),
+    line: z.number().int(),
     evidence: z.string(),
   })
   .strict();

@@ -26,11 +26,20 @@ export async function withWorkerReportFenced<T>(
   const tempPath = join(tmpdir(), `adh-fenced-worker-report-${randomBytes(8).toString("hex")}.md`);
 
   await moveFile(workerReportPath, tempPath);
+
+  let result: T;
   try {
-    return await fn();
-  } finally {
-    await moveFile(tempPath, workerReportPath);
+    result = await fn();
+  } catch (err) {
+    // fn's error is primary; restore is best-effort here so a restore
+    // failure never masks the real error via finally-throw semantics.
+    await moveFile(tempPath, workerReportPath).catch(() => {});
+    throw err;
   }
+
+  // Success path: a restore failure here IS the error to surface.
+  await moveFile(tempPath, workerReportPath);
+  return result;
 }
 
 /** `rename` with a copy+unlink fallback for cross-device moves (EXDEV). */

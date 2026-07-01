@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexCriticAdapter } from "./codex-adapter.js";
+import { CodexCriticAdapter, DEFAULT_SCHEMA_PATH } from "./codex-adapter.js";
 import { buildCriticPrompt } from "./prompt.js";
 import { HarnessConfigSchema } from "../config/schema.js";
 import type { NativeOptions, NativeResult } from "../util/native.js";
@@ -212,6 +212,22 @@ describe("CodexCriticAdapter", () => {
     expect(result.rateLimited).toBe(false);
   });
 
+  it("does not read a stale outfile left over from a prior round when this run writes nothing", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    // Simulate a PRIOR round having written a valid clean verdict to the
+    // fixed outfile path. This run's codex exec writes nothing and rate
+    // limits -- the stale file must not be mistaken for this run's verdict.
+    writeFileSync(join(dir, "critic-last-message.json"), cleanVerdictJson);
+    const runner = new FakeRunner([{ result: okResult({ exitCode: 4, stdout: "rate limited", stderr: "" }) }]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict).toBeNull();
+    expect(result.rateLimited).toBe(true);
+  });
+
   it("unparseable output + non-4 exit -> null verdict, not rate-limited", async () => {
     const dir = makeTempDir();
     const cfg = HarnessConfigSchema.parse({});
@@ -247,6 +263,11 @@ describe("CodexCriticAdapter", () => {
     expect(sawAbsentDuringCall).toBe(true);
     expect(existsSync(reportPath)).toBe(true);
     expect(readFileSync(reportPath, "utf8")).toBe("original worker rationale");
+  });
+
+  it("DEFAULT_SCHEMA_PATH points at an existing critic-verdict.schema.json", () => {
+    expect(existsSync(DEFAULT_SCHEMA_PATH)).toBe(true);
+    expect(DEFAULT_SCHEMA_PATH.endsWith("critic-verdict.schema.json")).toBe(true);
   });
 
   // Live integration path is behind ADH_LIVE=1 and is not part of default CI.

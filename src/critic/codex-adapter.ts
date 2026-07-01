@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CriticAdapter, CriticResult, CriticRunInput } from "./adapter.js";
@@ -23,7 +23,7 @@ export interface CodexCriticAdapterDeps {
   schemaPath?: string;
 }
 
-const DEFAULT_SCHEMA_PATH = fileURLToPath(new URL("./critic-verdict.schema.json", import.meta.url));
+export const DEFAULT_SCHEMA_PATH = fileURLToPath(new URL("./critic-verdict.schema.json", import.meta.url));
 
 /**
  * Live codex-backed critic adapter — parity spec §5 `invoke-critic.ps1`.
@@ -66,6 +66,12 @@ export class CodexCriticAdapter implements CriticAdapter {
     return withWorkerReportFenced(input.workerReportPath, async () => {
       const prompt = buildCriticPrompt(input.diff);
       const outfile = join(input.runtimeDir, "critic-last-message.json");
+
+      // The outfile path is fixed per runtimeDir and reused across retry
+      // rounds. Delete any stale verdict left over from a prior round BEFORE
+      // spawning codex, so that "outfile exists after the run" only ever
+      // means "this run wrote it" — never a leftover from an earlier round.
+      await rm(outfile, { force: true });
 
       const result = await this.runner(
         this.cfg.critic.exe,

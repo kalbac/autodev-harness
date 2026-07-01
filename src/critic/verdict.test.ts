@@ -66,6 +66,18 @@ describe("parseVerdict", () => {
     });
     expect(parseVerdict(text)).toBeNull();
   });
+
+  it("returns null when a broken_contracts[].line is a fraction (must be an integer)", () => {
+    const text = JSON.stringify({
+      verdict: "broken",
+      broken_contracts: [
+        { zone: "billing", file: "src/billing/charge.ts", line: 42.5, evidence: "removed idempotency check" },
+      ],
+      notes: "contract violation found",
+      confidence: 0.8,
+    });
+    expect(parseVerdict(text)).toBeNull();
+  });
 });
 
 describe("attachDiffSha256", () => {
