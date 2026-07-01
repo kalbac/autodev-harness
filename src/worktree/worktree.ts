@@ -46,6 +46,11 @@ export function createWorktreeManager(mainRepoRoot: string, worktreesDir: string
     },
 
     async mergeAfterGate(wt: Worktree, intoBranch: string): Promise<MergeResult> {
+      const status = await runNative("git", ["status", "--porcelain"], { cwd: mainRepoRoot });
+      if (status.stdout.trim().length > 0) {
+        throw new Error("mergeAfterGate: main working tree is not clean; refusing to merge");
+      }
+
       const current = await mainGit.currentBranch();
       if (current !== intoBranch) {
         const r = await runNative("git", ["checkout", intoBranch], { cwd: mainRepoRoot });

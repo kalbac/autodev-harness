@@ -67,13 +67,15 @@ export function createGit(repoRoot: string): Git {
     },
 
     async worktreeAdd(path: string, branch: string, base: string): Promise<void> {
-      const args = ["worktree", "add", "-b", branch, path, base];
+      // `--` terminates options before the positional <path> so a path that
+      // happens to look like a flag can never be misparsed.
+      const args = ["worktree", "add", "-b", branch, "--", path, base];
       const r = await run(args);
       if (r.exitCode !== 0) fail("worktree add", args, r);
     },
 
     async worktreeRemove(path: string): Promise<void> {
-      const args = ["worktree", "remove", "--force", path];
+      const args = ["worktree", "remove", "--force", "--", path];
       const r = await run(args);
       if (r.exitCode !== 0) fail("worktree remove", args, r);
     },
@@ -83,13 +85,35 @@ export function createGit(repoRoot: string): Git {
       if (r.exitCode === 0) {
         return { ok: true, conflict: false };
       }
-      const output = `${r.stdout}\n${r.stderr}`;
-      const isConflict = /CONFLICT/i.test(output) || /Automatic merge failed/i.test(output);
-      // Whether it's a real conflict or some other merge failure, abort to
-      // leave the tree clean (fail-closed — never leave a half-merged state).
-      await run(["merge", "--abort"]);
-      if (isConflict) {
+
+      // Determine REAL conflict state by checking for unmerged paths rather
+      // than string-matching stdout/stderr (which false-positives on refs or
+      // file content that happen to contain the word "CONFLICT").
+      const unmerged = await run(["diff", "--name-only", "--diff-filter=U"]);
+      const hasUnmergedPaths = unmerged.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0).length > 0;
+
+      if (hasUnmergedPaths) {
+        // Genuine conflict — abort to leave the tree clean (fail-closed —
+        // never leave a half-merged state), then report it.
+        const abort = await run(["merge", "--abort"]);
+        if (abort.exitCode !== 0) {
+          throw new Error(`git merge --abort failed: ${abort.stderr.trim()}`);
+        }
         return { ok: false, conflict: true };
+      }
+
+      // Not a genuine conflict — some other merge failure (e.g. unknown
+      // branch). If a merge somehow got left in progress, clean it up before
+      // surfacing a real error; never silently report this as a conflict.
+      const mergeInProgress = await run(["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+      if (mergeInProgress.exitCode === 0) {
+        const abort = await run(["merge", "--abort"]);
+        if (abort.exitCode !== 0) {
+          throw new Error(`git merge --abort failed: ${abort.stderr.trim()}`);
+        }
       }
       fail("merge", [branch], r);
     },

@@ -103,6 +103,23 @@ describe("createWorktreeManager", () => {
     expect(status.stdout.trim()).toBe("");
   });
 
+  it("mergeAfterGate refuses to merge when the main working tree is dirty", async () => {
+    const wt = await manager.create("task-dirty", "main");
+    writeFileSync(join(wt.path, "merged.txt"), "merged content\n");
+    const wtGit = (await import("../util/git.js")).createGit(wt.path);
+    await wtGit.add(["merged.txt"]);
+    await wtGit.commit("add merged.txt");
+
+    // Dirty the main working tree with an uncommitted change.
+    writeFileSync(join(repoRoot, "a.txt"), "a1\nUNCOMMITTED-CHANGE\n");
+
+    await expect(manager.mergeAfterGate(wt, "main")).rejects.toThrow(
+      /main working tree is not clean/i,
+    );
+    // The dirty change is untouched, and no merge happened.
+    expect(existsSync(join(repoRoot, "merged.txt"))).toBe(false);
+  });
+
   it("teardown removes the worktree dir but keeps the branch (non-destructive)", async () => {
     const wt = await manager.create("task5", "main");
     expect(existsSync(wt.path)).toBe(true);

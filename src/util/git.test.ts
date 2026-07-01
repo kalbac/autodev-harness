@@ -123,4 +123,10 @@ describe("createGit", () => {
     expect(result).toEqual({ ok: true, conflict: false });
     expect(existsSync(join(repoRoot, "c.txt"))).toBe(true);
   });
+
+  it("merge() throws a real error for a non-existent branch instead of reporting a conflict", async () => {
+    await expect(git.merge("no-such-branch")).rejects.toThrow(/git merge failed/i);
+    const status = await runNative("git", ["status", "--porcelain=v1"], { cwd: repoRoot });
+    expect(status.stdout.trim()).toBe("");
+  });
 });
