@@ -1,6 +1,27 @@
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
 import { runNative } from "../util/native.js";
+
+/**
+ * A task id must be a single, safe path segment: it becomes both a directory
+ * name under `worktreesDir` and part of a branch name, and `create` performs
+ * DESTRUCTIVE cleanup (rm + branch -D) on the derived path. A traversal id like
+ * `../other` would let that cleanup escape the worktrees dir and clobber
+ * unrelated state, so reject anything with a separator, a `..`, or that is
+ * empty / `.`.
+ */
+function assertSafeTaskId(taskId: string): void {
+  if (
+    taskId === "" ||
+    taskId === "." ||
+    taskId.includes("..") ||
+    taskId.includes("/") ||
+    taskId.includes("\\")
+  ) {
+    throw new Error(`createWorktree: unsafe task id ${JSON.stringify(taskId)} (must be a single path segment)`);
+  }
+}
 
 export interface Worktree {
   path: string;
@@ -26,8 +47,31 @@ export function createWorktreeManager(mainRepoRoot: string, worktreesDir: string
 
   return {
     async create(taskId: string, baseBranch: string): Promise<Worktree> {
+      assertSafeTaskId(taskId);
       const branch = `autodev/wt-${taskId}`;
       const path = join(worktreesDir, taskId);
+
+      // Re-queue safety: the conductor re-claims the same task id after a
+      // rate-limit/timeout/gate-RETRY/escalate-then-operator-requeue, and
+      // `git worktree add -b <branch>` fails if the branch or worktree path
+      // from the earlier (discarded) attempt still exists. Best-effort clean
+      // up any leftovers of a prior attempt before creating fresh off
+      // `baseBranch` — a re-claimed task id must start from a clean base, so
+      // intentionally discarding the previous attempt's commits on the stale
+      // branch is correct (parity with the PS loop re-running the worker
+      // fresh). None of these steps may throw: there being nothing to clean
+      // up is the common case, not an error.
+      await runNative("git", ["worktree", "prune"], { cwd: mainRepoRoot });
+      await runNative("git", ["worktree", "remove", "--force", "--", path], { cwd: mainRepoRoot });
+      // `worktree remove` only clears a REGISTERED worktree; an interrupted
+      // earlier `worktree add` can leave an orphaned plain directory at `path`
+      // that would then make the fresh `worktree add` fail ("path already
+      // exists"). rm it (force = no error when absent) so create is idempotent
+      // even after a crash mid-add. Safe because `path` is under worktreesDir
+      // and taskId was validated as a single segment above.
+      await rm(path, { recursive: true, force: true });
+      await runNative("git", ["branch", "-D", branch], { cwd: mainRepoRoot });
+
       await mainGit.worktreeAdd(path, branch, baseBranch);
       return { path, branch, taskId };
     },
