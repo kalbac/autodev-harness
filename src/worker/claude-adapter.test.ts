@@ -1,0 +1,245 @@
+import { describe, it, expect } from "vitest";
+import { join } from "node:path";
+import { ClaudeWorkerAdapter } from "./claude-adapter.js";
+import { buildWorkerPrompt } from "./prompt.js";
+import { HarnessConfigSchema } from "../config/schema.js";
+import type { Task } from "../blackboard/types.js";
+import type { WatchedProcessRunner, WatchedRunInput, WatchedRunResult } from "../watchdog/runner.js";
+import { runNative } from "../util/native.js";
+
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "t1",
+    title: "Test task",
+    type: "tooling",
+    touches_contract_zone: false,
+    writes_guard: false,
+    model: null,
+    success_commands: [],
+    forbidden_paths: [],
+    max_rounds: null,
+    file_set: [],
+    depends_on: [],
+    contract_zones_touched: [],
+    needs_guard: false,
+    acceptance: [],
+    body: "# Task\nDo the thing.",
+    path: "p",
+    ...overrides,
+  };
+}
+
+function okResult(overrides: Partial<WatchedRunResult> = {}): WatchedRunResult {
+  return { exitCode: 0, timedOut: false, rateLimited: false, stdout: "", stderr: "", ...overrides };
+}
+
+/** Scripted fake runner: replays one result per call, in order, and records every input. */
+class FakeRunner implements WatchedProcessRunner {
+  public readonly calls: WatchedRunInput[] = [];
+  private readonly queue: WatchedRunResult[];
+
+  constructor(queue: WatchedRunResult[]) {
+    this.queue = [...queue];
+  }
+
+  run(input: WatchedRunInput): Promise<WatchedRunResult> {
+    this.calls.push(input);
+    const next = this.queue.shift();
+    if (next === undefined) {
+      throw new Error("FakeRunner: no more scripted results");
+    }
+    return Promise.resolve(next);
+  }
+}
+
+describe("ClaudeWorkerAdapter", () => {
+  it("returns DONE on the first ladder step", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([okResult({ exitCode: 0 })]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask();
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result).toEqual({ status: "DONE", model: "opus", exitCode: 0, rateLimited: false, timedOut: false });
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("constructs the command exactly as the parity spec pins", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([okResult()]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask();
+
+    await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus"],
+      runtimeDir: "/rt",
+    });
+
+    const call = runner.calls[0]!;
+    expect(call.command).toBe(cfg.worker.exe);
+    expect(call.args).toEqual([
+      "-p",
+      "--model",
+      "opus",
+      "--permission-mode",
+      "acceptEdits",
+      "--max-turns",
+      String(cfg.worker.maxTurns),
+      "--verbose",
+      "--output-format",
+      "stream-json",
+    ]);
+    expect(call.stdin).toBe(buildWorkerPrompt(task, cfg));
+    expect(call.cwd).toBe("/wt");
+    expect(call.heartbeatPath).toBe(join("/rt", "heartbeat"));
+    expect(call.activityPaths).toEqual(["/rt"]);
+    expect(call.staleSeconds).toBe(cfg.worker.staleMinutes * 60);
+    expect(call.timeoutSeconds).toBe(cfg.worker.timeoutMinutes * 60);
+  });
+
+  it("steps down to the next (cheaper) ladder entry on a non-contract rate limit", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ rateLimited: true, exitCode: 1 }),
+      okResult({ exitCode: 0 }),
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask({ touches_contract_zone: false });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["sonnet", "haiku"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result.status).toBe("DONE");
+    expect(result.model).toBe("haiku");
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1]!.args).toContain("haiku");
+  });
+
+  it("PAUSEs immediately on a contract-zone rate limit — never steps down", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ rateLimited: true, exitCode: 1 }),
+      okResult({ exitCode: 0 }), // would prove a step-down happened if ever consumed
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask({ touches_contract_zone: true });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus", "sonnet"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result).toEqual({ status: "RATE_LIMITED", model: "opus", exitCode: 1, rateLimited: true, timedOut: false });
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("breaks immediately on a timeout — no further ladder steps", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ timedOut: true, exitCode: 1 }),
+      okResult({ exitCode: 0 }),
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask();
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus", "sonnet"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result).toEqual({ status: "TIMED_OUT", model: "opus", exitCode: 1, rateLimited: false, timedOut: true });
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("returns RATE_LIMITED with the last model when every ladder step (non-contract) is rate-limited", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      okResult({ rateLimited: true, exitCode: 1 }),
+      okResult({ rateLimited: true, exitCode: 1 }),
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask({ touches_contract_zone: false });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["sonnet", "haiku"],
+      runtimeDir: "/rt",
+    });
+
+    expect(result).toEqual({ status: "RATE_LIMITED", model: "haiku", exitCode: 1, rateLimited: true, timedOut: false });
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it("forwards criticFeedback into the built prompt", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([okResult()]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask();
+    const feedback = "Your fix broke invariant X.";
+
+    await adapter.run({
+      task,
+      worktreePath: "/wt",
+      ladder: ["opus"],
+      runtimeDir: "/rt",
+      criticFeedback: feedback,
+    });
+
+    expect(runner.calls[0]!.stdin).toBe(buildWorkerPrompt(task, cfg, feedback));
+  });
+
+  it("throws a clear error when the ladder is empty", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+    const task = makeTask();
+
+    await expect(
+      adapter.run({ task, worktreePath: "/wt", ladder: [], runtimeDir: "/rt" }),
+    ).rejects.toThrow("ClaudeWorkerAdapter: ladder must be non-empty");
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  // Live integration path is behind ADH_LIVE=1 and is not part of default CI.
+  // The real watchdog lands in Task 20; this uses a thin stand-in runner
+  // built on runNative (no heartbeat/staleness enforcement) purely to prove
+  // the adapter can drive a real `claude -p` process end-to-end when asked.
+  const liveIt = process.env.ADH_LIVE === "1" ? it : it.skip;
+  liveIt("live: runs a real claude -p process (ADH_LIVE=1 only)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const thinRunner: WatchedProcessRunner = {
+      async run(input) {
+        const res = await runNative(input.command, input.args, { cwd: input.cwd, stdin: input.stdin });
+        return { exitCode: res.exitCode, timedOut: false, rateLimited: false, stdout: res.stdout, stderr: res.stderr };
+      },
+    };
+    const adapter = new ClaudeWorkerAdapter({ runner: thinRunner, cfg });
+    const task = makeTask({ file_set: ["README.md"] });
+
+    const result = await adapter.run({
+      task,
+      worktreePath: process.cwd(),
+      ladder: ["haiku"],
+      runtimeDir: process.cwd(),
+    });
+
+    expect(["DONE", "RATE_LIMITED", "TIMED_OUT"]).toContain(result.status);
+  });
+});
