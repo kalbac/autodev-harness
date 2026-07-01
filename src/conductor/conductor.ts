@@ -88,9 +88,9 @@ function buildEscalation(task: Task, fields: EscalationFields): EscalationInput 
   };
 }
 
-function buildDriftEscalation(line: string): EscalationInput {
+function buildDriftEscalation(line: string, nowMs: number): EscalationInput {
   return {
-    id: `drift-${Date.now()}`,
+    id: `drift-${nowMs}`,
     taskId: "(anti-drift)",
     title: "Anti-drift check reported drift",
     reason: "anti-drift verdict: DRIFT",
@@ -125,6 +125,18 @@ export function createConductor(deps: ConductorDeps): Conductor {
     sleep,
     log,
   } = deps;
+
+  // safeLog swallows a throwing injected logger. Load-bearing inside the
+  // teardown `finally` catch: without it, a throwing logger would re-throw out
+  // of `finally` and convert an already-decided iteration (e.g. a 429 refund)
+  // into a rejected promise -- the [ts/fail-closed] gotcha.
+  const safeLog = (level: string, message: string): void => {
+    try {
+      log(level, message);
+    } catch {
+      // a broken logger must never break the loop's control flow
+    }
+  };
 
   async function runIteration(): Promise<IterationResult> {
     // 1. CLAIM
@@ -345,19 +357,24 @@ export function createConductor(deps: ConductorDeps): Conductor {
       }
 
       if (gv.decision === "COMMIT") {
+        // Commit-time branch re-check (parity divergence #10): HEAD can move
+        // mid-run. Guard the branch we are ABOUT TO MERGE INTO -- it must still
+        // be allowed AND still be the exact loopBranch this worktree was
+        // branched off. A drift to a *different* allowed branch (loop-A ->
+        // loop-B) would otherwise silently merge into the stale loopBranch.
         const cur = await git.currentBranch();
-        if (cur === "main" || !new RegExp(cfg.allowedBranchPattern).test(cur)) {
+        if (cur === "main" || !new RegExp(cfg.allowedBranchPattern).test(cur) || cur !== loopBranch) {
           await repo.moveTask(task.id, "active", "escalated");
           await escalate(
             buildEscalation(task, {
-              reason: "branch moved off allowed pattern before commit",
+              reason: "branch moved before commit",
               type: "blocked",
-              what: `Task ${task.id} gate said COMMIT but the current branch '${cur}' is no longer allowed.`,
+              what: `Task ${task.id} gate said COMMIT but HEAD moved from '${loopBranch}' to '${cur}' (or off the allowed pattern).`,
               decision: "Restore the loop branch and re-run, or abandon.",
               optionA: "Restore the branch and re-queue.",
               optionB: "Abandon the task.",
-              costOfWrong: "Committing on the wrong branch could land the change on main.",
-              evidence: `currentBranch=${cur} allowedPattern=${cfg.allowedBranchPattern}`,
+              costOfWrong: "Committing/merging on the wrong branch could land the change on main or a stale branch.",
+              evidence: `currentBranch=${cur} loopBranch=${loopBranch} allowedPattern=${cfg.allowedBranchPattern}`,
             }),
           );
           return { claimedTaskId: task.id, committed: false, rateLimited: false };
@@ -410,7 +427,14 @@ export function createConductor(deps: ConductorDeps): Conductor {
       );
       return { claimedTaskId: task.id, committed: false, rateLimited: false };
     } finally {
-      await worktree.teardown(wt);
+      // Teardown is best-effort cleanup: a throw here must NEVER override the
+      // iteration's already-decided result (e.g. turn a clean 429 return into a
+      // rejected iteration that loses the rateLimited flag). Swallow + log.
+      try {
+        await worktree.teardown(wt);
+      } catch (err) {
+        safeLog("WARN", `conductor: worktree teardown for ${task.id} failed (ignored): ${String(err)}`);
+      }
     }
   }
 
@@ -439,7 +463,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const window = commitsSinceDrift;
           const line = await runAntiDrift({ sinceRef: `HEAD~${window}`, commitsSinceLast: window });
           if (/^\s*DRIFT:/i.test(line)) {
-            await escalate(buildDriftEscalation(line));
+            await escalate(buildDriftEscalation(line, clock.now()));
           }
           commitsSinceDrift = 0;
         }

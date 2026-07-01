@@ -221,6 +221,40 @@ function makeGit(branch: string): { git: Git; setBranch: (b: string) => void; cu
   return { git, setBranch: (b: string) => (current = b), currentBranchCalls };
 }
 
+/**
+ * A Git whose `currentBranch()` walks a scripted sequence (last value sticks).
+ * Used to simulate HEAD drifting mid-iteration: call 0 = the loopBranch captured
+ * at iteration start, call 1 = the commit-time re-check.
+ */
+function makeSequencedGit(branches: string[]): { git: Git; commitCalls: { count: number } } {
+  let i = 0;
+  const commitCalls = { count: 0 };
+  const git: Git = {
+    async currentBranch(): Promise<string> {
+      const b = branches[Math.min(i, branches.length - 1)]!;
+      i++;
+      return b;
+    },
+    async changedFiles(): Promise<string[]> {
+      return [];
+    },
+    async diffText(): Promise<string> {
+      return "";
+    },
+    async add(): Promise<void> {},
+    async commit(): Promise<string> {
+      commitCalls.count++;
+      throw new Error("commit should not be called on main git");
+    },
+    async worktreeAdd(): Promise<void> {},
+    async worktreeRemove(): Promise<void> {},
+    async merge(): Promise<MergeResult> {
+      return { ok: true, conflict: false };
+    },
+  };
+  return { git, commitCalls };
+}
+
 interface WorktreeGitSpy {
   add: { wt: Worktree; paths: string[] }[];
   commit: { wt: Worktree; msg: string }[];
@@ -621,6 +655,77 @@ describe("runIteration -- decision routing", () => {
     expect(state.doneMarks.has(task.id)).toBe(false);
     expect(escalateCalls.length).toBe(1);
     expect(escalateCalls[0]!.type).toBe("blocked");
+  });
+});
+
+describe("runIteration -- commit-time branch drift (divergence #10)", () => {
+  it("escalates (no commit, no merge) when HEAD drifts to a different allowed branch before commit", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktree, spy: wtSpy } = makeWorktree();
+    const { worktreeGit, spy: wgSpy } = makeWorktreeGitFactory();
+    // call 0 (loopBranch) = autodev/loop-A; call 1 (commit re-check) = autodev/loop-B.
+    // Both match ^autodev/, but HEAD drifted -> must NOT merge into the stale loop-A.
+    const { git } = makeSequencedGit(["autodev/loop-A", "autodev/loop-B"]);
+
+    const deps = buildDeps({ repo, scheduler, escalate, worktree, worktreeGit, git });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    expect(wgSpy.commit.length).toBe(0); // never committed
+    expect(wtSpy.merge.length).toBe(0); // never merged into a stale branch
+  });
+});
+
+describe("runIteration -- teardown is best-effort", () => {
+  it("a worktree.teardown throw does NOT reject the iteration or lose the 429 flag", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [{ result: { status: "RATE_LIMITED", model: "opus", rateLimited: true, timedOut: false, exitCode: 1 } }],
+      repo,
+    );
+    const worktree: WorktreeManager = {
+      async create(taskId: string, baseBranch: string): Promise<Worktree> {
+        return { path: `/wt/${taskId}`, branch: `autodev/wt-${taskId}`, taskId };
+      },
+      async diff(): Promise<string> {
+        return "";
+      },
+      async teardown(): Promise<void> {
+        throw new Error("teardown blew up");
+      },
+      async mergeAfterGate(): Promise<MergeResult> {
+        return { ok: true, conflict: false };
+      },
+    };
+
+    // A THROWING logger too: the finally's catch must swallow it via safeLog,
+    // otherwise the [ts/fail-closed] gotcha re-throws out of finally and the
+    // decided 429 result is lost.
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      worker,
+      worktree,
+      log: () => {
+        throw new Error("logger down");
+      },
+    });
+    const conductor = createConductor(deps);
+
+    // Must resolve (not reject) and preserve the rateLimited decision.
+    const res = await conductor.runIteration();
+    expect(res).toEqual({ claimedTaskId: task.id, committed: false, rateLimited: true });
+    expect(state.locations.get(task.id)).toBe("pending");
+    expect(state.attempts.get(task.id)).toBe(0); // refunded despite teardown throw
   });
 });
 

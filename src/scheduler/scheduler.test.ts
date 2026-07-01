@@ -38,16 +38,25 @@ class FakeRepo implements BlackboardRepository {
     quarantine: [],
   };
   private moveThrowsFor: Set<string>;
+  private sortPending: boolean;
 
-  constructor(seed: Partial<Record<QueueState, Task[]>>, moveThrowsFor: string[] = []) {
+  constructor(seed: Partial<Record<QueueState, Task[]>>, moveThrowsFor: string[] = [], sortPending = true) {
     for (const [state, tasks] of Object.entries(seed) as Array<[QueueState, Task[] | undefined]>) {
       this.queues[state] = [...(tasks ?? [])];
     }
     this.moveThrowsFor = new Set(moveThrowsFor);
+    this.sortPending = sortPending;
   }
 
   async listTasks(state: QueueState): Promise<Task[]> {
-    return [...this.queues[state]].sort((a, b) => a.id.localeCompare(b.id));
+    const list = [...this.queues[state]];
+    // A repo is NOT contractually required to return pending in id order; when
+    // sortPending is false we return insertion order to prove the scheduler
+    // imposes its own deterministic id ordering.
+    if (state === "pending" && !this.sortPending) {
+      return list;
+    }
+    return list.sort((a, b) => a.id.localeCompare(b.id));
   }
 
   async moveTask(id: string, from: QueueState, to: QueueState): Promise<void> {
@@ -190,6 +199,23 @@ describe("claimNextTask", () => {
     expect(claimed).toBeNull();
     const pendingIds = (await repo.listTasks("pending")).map((t) => t.id);
     expect(pendingIds).toContain("taskD"); // never actually moved
+  });
+
+  it("imposes id order itself even when the repo returns pending unsorted (does not rely on repo ordering)", async () => {
+    const taskA = makeTask({ id: "taskA", file_set: ["a.php"] });
+    const taskB = makeTask({ id: "taskB", file_set: ["b.php"] });
+    // Repo hands them back in reverse (non-id) order; both are claimable.
+    const repo = new FakeRepo({ pending: [taskB, taskA] }, [], /* sortPending */ false);
+    const scheduler = createScheduler(repo);
+
+    // claimNextTask must pick the lowest id (taskA), not the repo's first (taskB).
+    const claimed = await scheduler.claimNextTask();
+    expect(claimed?.id).toBe("taskA");
+
+    // listClaimable must also report in id order.
+    const repo2 = new FakeRepo({ pending: [taskB, taskA] }, [], false);
+    const report = await createScheduler(repo2).listClaimable();
+    expect(report.map((r) => r.id)).toEqual(["taskA", "taskB"]);
   });
 
   it("after a lost-race skip, proceeds to claim the next claimable task", async () => {

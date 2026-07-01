@@ -54,7 +54,12 @@ export function createScheduler(repo: BlackboardRepository): Scheduler {
       repo.listTasks("escalated"),
       repo.listTasks("done"),
     ]);
-    return { pending, active, escalated, doneIds: new Set(done.map((t) => t.id)) };
+    // Deterministic id order is a scheduler responsibility, not an assumption
+    // about the repo (parity: scheduler.ps1 Get-AutodevPendingTasks does
+    // `Sort-Object Name`). Sort here so claim order is stable regardless of
+    // what order a BlackboardRepository implementation returns pending tasks.
+    const pendingSorted = [...pending].sort((a, b) => a.id.localeCompare(b.id));
+    return { pending: pendingSorted, active, escalated, doneIds: new Set(done.map((t) => t.id)) };
   }
 
   async function claimNextTask(): Promise<Task | null> {
