@@ -1,66 +1,67 @@
-# Next-session prompt — Autodev Harness (paste this to start)
+# Autodev Harness — старт новой сессии (читай и приступай)
 
-> Handoff from session **s02** (2026-07-01). The brainstorm + donor-extraction phase is
-> **done and committed** (`3457c49`); architecture is **frozen and codex-verified**. This
-> session's job: stand up the repo and **build P1 (the core loop)**.
+Ты продолжаешь проект **Autodev Harness**. Предыдущая сессия (s02, 2026-07-01) завершила
+фазу брейншторма и donor-extraction: **архитектура заморожена и независимо верифицирована
+codex GPT-5.5**, спека P1 написана, всё закоммичено (`3457c49`, промт-хендофф `cbec5f5`).
+План и реализацию сознательно отложили сюда (там кончался контекст). **Твоя задача этой
+сессии — поднять репозиторий и построить P1 (ядро-луп).**
 
----
+Это не «черновик на подумать» — скелет уже решён оператором. Не переоткрывай замороженные
+решения без веской причины.
 
-## Paste-ready prompt
+## Шаг 1 — восстанови контекст (прочитай в этом порядке)
 
-```
-Продолжаем Autodev Harness. Прошлая сессия (s02) закончилась заморозкой архитектуры и
-написанием спеки P1 — всё закоммичено (3457c49). Контекст был полон, поэтому план и
-реализацию отложили на эту сессию.
+1. `docs/CURRENT-STATE.md` → раздел **NEXT ACTIONS** (главный ориентир).
+2. `docs/adr/002-build-own-harness-not-fork-ao.md` → решение о развороте + 6 замороженных осей.
+3. `docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md` → **спека P1** (что строим).
+4. `docs/superpowers/donor-extraction/autodev-loop-parity-spec.md` → поведение боевого
+   PS-лупа, которое портируем (это оракул паритета).
 
-Сделай по порядку:
+Примечание: `VISION.md` читается с баннером-поправкой; `adr/001` **устарел** (заменён `adr/002`).
+Полная матрица решений — `docs/superpowers/donor-extraction/decision-matrix.md` (VERIFIED),
+её проверка — `codex-verification.md`.
 
-1. Прочитай для контекста (в этом порядке):
-   - docs/CURRENT-STATE.md  → раздел NEXT ACTIONS (главное)
-   - docs/adr/002-build-own-harness-not-fork-ao.md  → решение о развороте (6 осей)
-   - docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md  → спека P1
-   - docs/superpowers/donor-extraction/autodev-loop-parity-spec.md  → поведение, которое портируем
-   (VISION.md читается с баннером-поправкой; adr/001 УСТАРЕЛ — заменён adr/002.)
+## Шаг 2 — что уже зафиксировано (НЕ переделывать)
 
-2. Создай remote-репозиторий github.com/kalbac/autodev-harness и подключи origin
-   (сейчас его нет). Определись с лицензией (доноры Apache-2.0/MIT).
+- **Разворот:** не форк AO — свой **Node LTS + TypeScript** харнес; **file-blackboard =
+  единый источник истины**; AO — один из 4 доноров (с OpenHands, Open Design, Aider); база —
+  наш проверенный PowerShell autodev-loop.
+- **6 осей скелета заморожены:** state = blackboard-only + repository-шов · pluggable
+  `WorkerAdapter`/`CriticAdapter` (MVP: `claude` + `codex`) · commit-after-gate + шов под PR ·
+  per-worktree изоляция (паттерн AO) · независимый diff-критик + machine-gate, **self-critique
+  отвергнут** · декларативный per-task `model:` роутинг + тонкая абстракция-шов.
+- **Клоны доноров** в `references/` (gitignored, SHA в `MANIFEST.md`). ⚠️ Реальный код
+  OpenHands — в `references/software-agent-sdk/`, не в `OpenHands/` (см. гочу).
 
-3. Запусти superpowers:writing-plans на спеке P1
-   (docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md) → план реализации.
+## Шаг 3 — сделай по порядку
 
-4. Реализуй P1 по порядку сборки (§10 спеки), TDD:
-   config+blackboard → worktree → worker-runner(claude)+router → critic-runner(codex)
-   → gate+guards+mutation → watchdog+escalate+anti-drift → conductor → thin api
-   → parity-harness + кросс-платформенный CI.
+1. **Создай remote** `github.com/kalbac/autodev-harness` и подключи `origin` (его ещё нет).
+   Реши вопрос лицензии (доноры Apache-2.0/MIT — код переиспользуем).
+2. **Запусти `superpowers:writing-plans`** на спеке P1
+   (`docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md`) → план реализации.
+3. **Реализуй P1** по порядку сборки (§10 спеки), через **TDD**:
+   `config`+`blackboard` → `worktree` → `worker-runner`(claude)+`router` →
+   `critic-runner`(codex) → `gate`+`guards`+`mutation-check` → `watchdog`+`escalate`+`anti-drift`
+   → `conductor` → тонкий `api` → parity-harness + кросс-платформенный CI.
 
-Definition of done для P1 — поведенческий ПАРИТЕТ с боевым PowerShell-лупом
-(D:/Projects/woodev_framework/tools/autodev/*.ps1) на фикстуре + одном живом woodev-ворклоаде.
-```
-
----
-
-## Что уже готово (не переделывать)
-
-- **Разворот зафиксирован** (`adr/002`): не форк AO — свой Node+TS харнес; blackboard = единый
-  источник истины; AO — один из 4 доноров.
-- **6 осей скелета заморожены** (см. CURRENT-STATE / adr/002): blackboard-only+шов ·
-  pluggable worker/critic adapter (MVP claude+codex) · commit-after-gate · per-worktree ·
-  независимый критик + self-critique отвергнут · декларативный per-task роутинг.
-- **Матрица VERIFIED** codex GPT-5.5 (17/18, 1 partial, 0 refuted): `donor-extraction/`.
-- **Клоны доноров** в `references/` (gitignored, SHA в MANIFEST.md). ⚠️ Реальный код
-  OpenHands — в `references/software-agent-sdk/`, не в `OpenHands/` (см. gotcha).
+**Definition of done для P1:** поведенческий **паритет** с боевым PowerShell-лупом
+(`D:/Projects/woodev_framework/tools/autodev/*.ps1`) на фикстуре + одном живом woodev-ворклоаде.
 
 ## Констрейнты
 
-- **Непрерывность:** боевой PowerShell-луп в woodev_framework НЕ трогать — он крутит
-  реальные задачи и служит parity-oracle, пока P1 не достигнет паритета.
-- **Дисциплина проекта:** существенные изменения → независимый codex GPT-5.5 ревью до мёржа;
-  re-critic собственных правок; self-critique гейтом не считается.
-- **Стек:** Node LTS + TypeScript, кросс-платформа (Win/mac/ubuntu), sonnet-5 доступен как
-  рабочая модель наравне с opus.
+- **Непрерывность:** боевой PS-луп в `woodev_framework` **НЕ трогать** — он крутит реальные
+  задачи и служит parity-oracle, пока P1 не достигнет паритета.
+- **Дисциплина проекта (дожфудинг):** существенные изменения → независимый codex GPT-5.5
+  ревью до мёржа; re-critic собственных правок; self-critique гейтом не считается.
+- **Стек:** Node LTS + TypeScript, кросс-платформа (Win/mac/ubuntu); `sonnet-5` доступен как
+  рабочая модель наравне с `opus` (в s02 отработал отлично на изучении доноров).
 
-## Открытые вопросы (решить в начале)
+## Открытые вопросы — реши в начале
 
 - Хостинг/лицензия для `kalbac/autodev-harness`.
 - Какой живой woodev-ворклоад берём как parity-таргет P1.
 - Формат per-project конфига (`.autodev/config.yaml` vs `harness.config.*`).
+
+---
+_Если по ходу возникнет скелетообразующее решение, не покрытое `adr/002` — вынеси его
+оператору как 🔴 (архитектурное), прежде чем кодить. Мелкие обратимые — решай сам._
