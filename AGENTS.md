@@ -24,8 +24,15 @@
   In that case: surface the exact command, get approval, then the agent runs it.
 - Do not ask the operator to "merge in the UI" or "run this yourself" as the default
   path — that is the fallback only when approval cannot be obtained in-session.
-- Commit/PR conventions: Conventional Commits; per-module PRs for P1 (tasks 11–29);
-  co-author trailer on commits and the Claude Code footer on PR bodies as configured.
+- Commit/PR conventions: Conventional Commits; co-author trailer on commits and the
+  Claude Code footer on PR bodies as configured.
+- **Batch merges — do NOT open a PR + merge for every small change.** Small/incremental
+  work (a doc tweak, a gotcha, a state-sync) is just **committed** on the working branch;
+  it rides to `main` with the next substantive PR. Reserve the PR + merge cycle for a
+  **meaningful batch** — a completed module (per-module PRs still apply), a coherent group
+  of changes, or an explicit "land this now" from the operator. When in doubt, keep
+  committing and merge less often. (Direct push to `main` is classifier-gated, so small
+  commits accumulate on a branch until the batch is worth a merge.)
 
 ## Review discipline (unchanged — the project's whole point)
 
