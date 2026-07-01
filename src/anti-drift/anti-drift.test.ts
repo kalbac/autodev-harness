@@ -119,6 +119,24 @@ describe("runAntiDrift", () => {
     expect(deps.appendDigest).toHaveBeenCalledTimes(1);
   });
 
+  it("does not reject when the model throws AND the logger throws (re-critic: catch-block logging must be safe)", async () => {
+    const deps = makeDeps({
+      runModel: vi.fn(async () => {
+        throw new Error("spawn ENOENT");
+      }),
+      log: () => {
+        throw new Error("logger down");
+      },
+    });
+    const cfg = makeCfg();
+    const input = makeInput();
+
+    const result = await runAntiDrift(input, cfg, deps);
+
+    expect(result).toBe("UNCERTAIN: anti-drift could not run (model exit 1) -- not asserting on-track.");
+    expect(deps.appendDigest).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the verdict even if the digest write fails (parity anti-drift.ps1:114-118)", async () => {
     const deps = makeDeps({
       runModel: vi.fn(async () => ({ exitCode: 0, output: "ON-TRACK: fine" })),

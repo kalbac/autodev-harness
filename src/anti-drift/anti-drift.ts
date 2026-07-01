@@ -148,12 +148,23 @@ export async function runAntiDrift(
   cfg: AntiDriftConfig,
   deps: AntiDriftDeps,
 ): Promise<string> {
+  // safeLog swallows a throwing logger so the fail-closed degradation paths
+  // below (model-threw / digest-failed) can never be re-thrown by a broken
+  // logger — the UNCERTAIN verdict + its single digest line must always win.
+  const safeLog = (level: string, message: string): void => {
+    try {
+      deps.log?.(level, message);
+    } catch {
+      // a broken logger must never break the anti-drift verdict path
+    }
+  };
+
   const intent = await getIntent(cfg, deps.readFile);
   const log = (await deps.gitLog(input.sinceRef)).trim();
   const diff = await deps.gitDiff(input.sinceRef);
   const prompt = buildPrompt(intent, log, diff);
 
-  deps.log?.("INFO", `Anti-drift: invoking model ${cfg.model} ...`);
+  safeLog("INFO", `Anti-drift: invoking model ${cfg.model} ...`);
 
   // Parity anti-drift.ps1:82-88 — the model invocation is wrapped so a thrown
   // call (e.g. the model exe is missing) degrades to exit 1 rather than
@@ -169,7 +180,7 @@ export async function runAntiDrift(
   } catch (err) {
     exitCode = 1;
     output = "";
-    deps.log?.("WARN", `Anti-drift: model invocation threw (${String(err)}); degrading to UNCERTAIN.`);
+    safeLog("WARN", `Anti-drift: model invocation threw (${String(err)}); degrading to UNCERTAIN.`);
   }
 
   let driftLine: string;
@@ -184,7 +195,7 @@ export async function runAntiDrift(
     driftLine = `UNCERTAIN: anti-drift could not run (model exit ${exitCode}) -- not asserting on-track.`;
   }
 
-  deps.log?.("INFO", `Anti-drift result: ${driftLine}`);
+  safeLog("INFO", `Anti-drift result: ${driftLine}`);
 
   const stamp = formatTimestamp(deps.now());
   const digestEntry = `[${stamp}] [anti-drift] (window: ${input.commitsSinceLast} commits) ${driftLine}`;
@@ -194,7 +205,7 @@ export async function runAntiDrift(
   try {
     await deps.appendDigest(digestEntry);
   } catch (err) {
-    deps.log?.("WARN", `Anti-drift: could not write digest line: ${String(err)}`);
+    safeLog("WARN", `Anti-drift: could not write digest line: ${String(err)}`);
   }
 
   return driftLine;
