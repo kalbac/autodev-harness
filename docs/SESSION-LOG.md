@@ -4,6 +4,32 @@
 
 ---
 
+## s10 — 2026-07-02 — `adr/003` design gate → **accepted** (role matrix + LLM orchestrator)
+
+**Context:** Continued from s09 (P1 DONE, 272 tests, all merged, no tail). s10 was a **design gate, not a
+build sprint** — the next-session prompt forbade starting orchestrator code until `adr/003`'s open questions
+were resolved with the operator. Read the anchors + `adr/003` fully, then ran the design conversation.
+
+**Resolved all 4 open questions with the operator (all recommended options chosen):**
+- **R1 boundary — orchestrator STRICTLY ABOVE the pure-code conductor.** The LLM gets exactly 4 capabilities:
+  enqueue a `queue/pending/*.md` task file, trigger the loop, read blackboard state, report + drive kanban.
+  Every enforcement step (`claim→worktree→worker→harvest→fence→critic→gate→commit`) stays in the deterministic
+  conductor; **no** `run_worker`/`run_critic`/`run_gate`/`commit` tool. The LLM's only enforcement-path write is
+  a task file the scheduler independently validates → preserves the PS-oracle "can't talk past the gate" 1:1.
+- **R2 planner — folded into the orchestrator for MVP**, reserved as a registry role id; output = `queue/pending/*.md`.
+- **R3 config — unified `roles:` registry** (`{adapter,model,effort?,exe?}` per role) + global defaults + sparse
+  per-project override + `policy.heterogeneity: warn`. Flat `worker`/`critic` blocks migrate in — the axis-2/6
+  generalization the frozen skeleton anticipated, not a break.
+- **R4 orchestrator window/session model — deferred to P2** (window-shaped, over the read-only `api` seam).
+
+**Deliverable:** `adr/003` proposed → **accepted** (Resolution R1–R4 + rewritten Consequences); `VISION.md` banner
++ `CURRENT-STATE.md` (open question resolved, NEXT ACTIONS re-pointed to s11) updated. **No source changed** — by
+design. Docs-only → **PR #18 merged to `main` (`6b7ab2b`)** (operator-approved the gated squash-merge; the
+self-approval classifier correctly blocked the agent's own auto-merge). No codex gate (pure docs, per restraint rule).
+
+**Next (s11), now buildable:** (1) role registry + per-adapter config (R3, config/adapter change, full discipline
++ codex gate), then (2) the additive orchestrator layer (R1/R2) on the existing scheduler + run entrypoint + `api` seam.
+
 ## s09 — 2026-07-02 — live build-step-9 on a real repo → **P1 real-world DoD reached** (green COMMIT)
 
 **Context:** Continued from s08 (265 tests, PR #13 merged). Step 0 tails: wrote the `[node/stdin-epipe]`
