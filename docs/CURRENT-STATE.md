@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (s08 — thin api + parity harness + cross-platform CI Tasks 27–29; **P1 DoD fixture-side reached**; 264 tests green; PR feat/p1-dod-api-parity-ci awaiting operator merge).
+> Last updated: 2026-07-01 (s08 — thin api + parity harness + cross-platform CI Tasks 27–29 + EPIPE fix; **P1 DoD fixture-side reached, PR #13 merged to `main`, all 4 CI cells green**; 265 tests green).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -41,15 +41,19 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   re-critic caught an over-broad partial-line drop. parity: 8 accepted incl. one "passes for the wrong reason";
   re-critic caught 2 vacuous label assertions. New gotchas `[ts/typecheck-scope]`, `[api/413-teardown]`,
   `[test/vacuous-assert]`.
+- **CI flake found+fixed:** first cross-platform run went red on ubuntu/node20 — real EPIPE race in
+  `src/util/native.ts` (`child.stdin` write with no `'error'` listener). Fixed at root + regression test
+  (`790ffc9`); re-run → **all 4 cells green**. PR **#13 merged to `main`** (`cde17a2`).
 
 ## NEXT ACTIONS (s09)
 
-1. **Merge `feat/p1-dod-api-parity-ci`** first (operator-approved `gh pr merge` — classifier blocks
-   self-authored). Watch the new CI matrix go green on the PR (first real cross-platform run).
-2. **Build step 9 — live woodev workload (real-world P1 DoD):** operator picks ONE live woodev-class task; run
+0. **Deferred tails from s08 (quick):** write the `[node/stdin-epipe]` gotcha file (+ index in GOTCHAS.md,
+   bump count 11→12); save 1–2 cross-project TS/Node learnings (`[ts/typecheck-scope]`, EPIPE) to Supermemory.
+1. **Build step 9 — live woodev workload (real-world P1 DoD):** operator picks ONE live woodev-class task; run
    it through the harness end-to-end (real claude worker + codex critic) and confirm parity with how the PS
-   loop would handle it. This is the last P1 gate.
-3. **🟡 Before the orchestrator layer:** resolve `adr/003` open questions with the operator (deterministic
+   loop would handle it. This is the last P1 gate. NOTE first-live-run risks: `[conductor/wiring]` deferred
+   limits (whitespace-split gate commands, main-root invariants) may bite real recipes.
+2. **🟡 Before the orchestrator layer:** resolve `adr/003` open questions with the operator (deterministic
    conductor already landed). Then P2 (web UI over the `api` seam) / P3.
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
