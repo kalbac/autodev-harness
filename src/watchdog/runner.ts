@@ -14,6 +14,8 @@ export interface WatchedRunInput {
   activityPaths: string[];
   staleSeconds: number;
   timeoutSeconds: number;
+  /** Liveness-poll interval in milliseconds. Optional — the real runner defaults it. */
+  pollMs?: number;
 }
 
 export interface WatchedRunResult {
