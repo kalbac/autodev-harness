@@ -1,7 +1,10 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s10 — **`adr/003` ACCEPTED**: role model = configurable matrix + LLM orchestrator; all 4 open questions resolved with operator (orchestrator strictly-above / planner folded-in + reserved / unified `roles:` registry / session model deferred to P2). Design gate passed — orchestrator layer now buildable. No code this session by design.).
+> Last updated: 2026-07-02 (s11 — **R3 role registry SHIPPED & merged (PR #21)**: flat `worker:`/`critic:` config
+> generalized into a unified `roles:` registry + `policy.heterogeneity`; codex-gated (2 fixes + re-critic clean),
+> CI green 4/4, merged. Also: AGENTS.md added to session-start protocol. R1/R2 orchestrator layer = design in
+> progress (skeleton-shaping forks being surfaced to operator before coding).).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -29,7 +32,21 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s10, 2026-07-02)
+## Last session (s11, 2026-07-02)
+
+- **R3 role registry SHIPPED (PR #21, merged `d07e72c`).** Flat `worker:`/`critic:` config blocks generalized into
+  a unified `roles: {orchestrator, worker, critic, planner}` registry + `policy.heterogeneity` (warn|off). Worker
+  keeps its `ladder` (parity §7 intact); orchestrator/planner are config-only (planner reserved, R2). New
+  `src/config/roles.ts` (adapter metadata/family/exe resolution, `assertKnownAdapters` fail-loud, heterogeneity
+  policy). Root schema `.strict()` (stale flat configs fail LOUD, not silent-revert) + `ladder.min(1)`. All 6
+  consumers migrated. codex GPT-5.5 gate: 2 findings fixed + regression tests, 1 declined w/ rationale, re-critic
+  clean. typecheck clean, 287 tests, CI green 4/4 (win+linux × node 20/22). aurora `.autodev/config.yaml` migrated.
+- **AGENTS.md** added to CLAUDE.md session-start protocol (was missing).
+- **R1/R2 orchestrator layer:** design in progress. ADR fixes the 4 capabilities (enqueue/trigger/read/report) but
+  leaves genuine forks open (execution model, entry point, orchestrator-adapter shape, headless "report") →
+  surfacing 🔴 to operator before coding.
+
+## Prior session (s10, 2026-07-02)
 
 - **`adr/003` design gate passed → accepted.** All 4 open questions resolved with the operator:
   - **R1 boundary — orchestrator STRICTLY ABOVE.** LLM touches enforcement via exactly 4 caps (enqueue task
@@ -43,13 +60,13 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s11)
+## NEXT ACTIONS (s11 → s12)
 
-1. **Build the role registry + per-adapter config (adr/003 R3).** Generalize flat `worker`/`critic` blocks into a
-   `roles:` map (global defaults + sparse per-project override) + `policy.heterogeneity`. Config/adapter change only
-   — must NOT break the parity spec or frozen skeleton (axes 2 + 6). Full discipline (sonnet impl → spec-check → codex gate → re-critic).
-2. **Then the orchestrator layer (adr/003 R1/R2):** additive LLM layer above the conductor with exactly the 4
-   capabilities (enqueue/trigger/read/report) on top of the existing scheduler + run entrypoint + `api` read seam.
+1. ✅ **DONE — role registry + per-adapter config (adr/003 R3).** Shipped in PR #21 (merged `d07e72c`). See Last session.
+2. **IN PROGRESS — orchestrator layer (adr/003 R1/R2):** additive LLM layer above the conductor with exactly the 4
+   capabilities (enqueue/trigger/read/report) on the existing scheduler + run entrypoint + `api` read seam. Design
+   underway; skeleton-shaping forks (execution model / entry point / orchestrator-adapter / headless report) to be
+   operator-approved before coding. Then full discipline (impl → spec-check → codex gate → re-critic).
 3. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs (`vendor/`,
    `node_modules/`, `.env`, sqlite) into each worktree before the gate → gates graduate `php -l` → `php artisan test`.
    Not a blocker. codex-gated.
