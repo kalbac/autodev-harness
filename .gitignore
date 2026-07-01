@@ -32,7 +32,9 @@ tmp/
 .tmp/
 scratch/
 
-# --- Donor reference clones (kept locally, NOT committed) ---
-# Reproduce from references/MANIFEST.md (repo URL + pinned SHA).
-references/*/
-!references/MANIFEST.md
+# --- Donor reference clones (kept locally, NEVER committed) ---
+# Reproduce from docs/superpowers/donor-extraction/DONOR-SOURCES.md (URL + pinned SHA).
+references/
+
+# --- Session handoff scratch (local only) ---
+next-session-promt.md
