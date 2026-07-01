@@ -3,6 +3,16 @@
 > The anchor document. Read this first, every session. 3-minute re-hydration.
 > Authored 2026-07-01. Immutable intent; tactics live in `CURRENT-STATE.md`.
 
+> ⚠️ **DIRECTION UPDATE (2026-07-01, same day) — read `adr/002` first.**
+> We are **no longer forking AO.** After a verified donor-extraction pass, the harness
+> is **our own Node+TypeScript build** assembling the best of four donors (AO, OpenHands,
+> Open Design, Aider) on top of our proven autodev-loop, with the **file-blackboard as the
+> single source of truth** (not AO's DB). The **mission below still holds** — critic
+> discipline, contract zones, model routing, anti-drift, "never merge bullshit." Only the
+> *base and single-source-of-truth* changed. Where this doc says "fork AO" / "AO's session
+> model as truth," it is **superseded by `adr/002`** and the frozen skeleton in
+> `superpowers/specs/2026-07-01-harness-p1-core-loop-design.md`.
+
 ## Slogan
 
 > **"Let agents code, but never let them merge bullshit."**

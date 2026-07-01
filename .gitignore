@@ -24,7 +24,15 @@ yarn-error.log*
 *.out
 vendor/
 
+# --- Tooling caches ---
+.serena/
+
 # --- Scratch ---
 tmp/
 .tmp/
 scratch/
+
+# --- Donor reference clones (kept locally, NOT committed) ---
+# Reproduce from references/MANIFEST.md (repo URL + pinned SHA).
+references/*/
+!references/MANIFEST.md

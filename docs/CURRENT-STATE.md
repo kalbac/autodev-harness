@@ -1,70 +1,73 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-01 (bootstrap session — project scaffolded).
+> Last updated: 2026-07-01 (s02 — pivot + donor extraction + P1 spec).
+
+## Direction (as of s02 — see `adr/002`)
+
+**Not forking AO.** Building our **own Node LTS + TypeScript harness** = headless
+daemon (a TS port of our proven autodev-loop) + local web UI, **file-blackboard as the
+single source of truth**, assembling the verified best-of from four donors. Skeleton is
+**frozen** (6 axes, codex-verified). Mission/discipline unchanged.
 
 ## Phase
 
 | Phase | Status |
 |---|---|
-| P0 — Bootstrap docs & charter | ✅ done (this session) |
-| P1 — Clone AO source, scope Tier-1 | ⬜ **NEXT** |
-| P2 — Fork hygiene setup (upstream remote, branch model) | ⬜ pending |
-| P3 — Tier-1 build (`--model` spawn, scroll fix, critic column) | ⬜ pending |
-| P4 — Tier-0 critic gate wired in practice | ⬜ pending |
+| P0 — Bootstrap docs & charter | ✅ done (s01) |
+| Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
+| **P1 — Core loop (headless TS daemon)** | 📝 **spec written; NEXT = plan + implement** |
+| P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
+| P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
-## Last session (2026-07-01, bootstrap)
+## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
-- Decided (with operator) to **fork AO** rather than wait — see `adr/001`.
-- Named the project **Autodev Harness**; locked slogan + vision (`VISION.md`).
-- Scaffolded the proven `docs/` structure; ported the two crown reference docs.
-- Fork has **not** been cloned yet — that is the first engineering task.
+1. **State:** file-blackboard = truth (git-tracked), behind `BlackboardRepository` seam.
+2. **Worker interface:** pluggable `WorkerAdapter`/`CriticAdapter`; MVP = `claude` + `codex`.
+3. **Checkpoint:** conductor commits-to-branch **after** gate; `Checkpoint` seam → PR later.
+4. **Isolation:** per-task `git worktree` (AO pattern), non-destructive teardown.
+5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
+6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## NEXT ACTIONS (do these when you open this project)
+## Last session (s02, 2026-07-01)
 
-1. **Clone the AO source.** `git clone https://github.com/AgentWrapper/agent-orchestrator`
-   into `D:\Projects\autodev-harness` (or a subdir). Confirm the actual repo URL/name
-   — the CLI reports version `dev`; verify the org/name before cloning.
-2. **Set up fork hygiene** (P2): add `upstream` remote, decide branch model so we can
-   pull AO updates cleanly. Do this BEFORE writing any of our code.
-3. **Scope Tier-1 with real numbers** — read the source and answer:
-   - `--model` on `ao spawn`: where does spawn resolve the model? How big a change?
-   - **Chat-scroll bug**: find the chat component in the Electron frontend; is it a
-     CSS overflow / auto-scroll-pinning bug? Estimate the fix.
-   - Critic verdict as a kanban column: how does the board read session state?
-4. Write `adr/002-fork-hygiene-branch-model.md` once the branch strategy is chosen.
+- Pivoted from "fork AO" to "build our own harness" (`adr/002`); AO → one of 4 donors.
+- Ran donor-extraction: 5 Sonnet-5 agents → briefs; synthesized `decision-matrix.md`;
+  **codex GPT-5.5 verified** the 🔴 claims (17/18 confirmed, 1 partial, none refuted).
+- Resolved 6 skeleton axes with operator; froze architecture; wrote the **P1 design spec**.
 
-## Known issues to fix (from operator)
+## NEXT ACTIONS (new session — context was full, deliberately deferred)
 
-- 🐛 **Chat-scroll bug** in AO desktop UI — can't scroll back through chat history
-  (operator loses earlier messages). Electron frontend. High-priority quality-of-life fix.
-- ⚠️ AO has **no per-task model routing** — only a static per-project `--model`
-  override. autodev-loop chose model by task complexity; we want that back.
-- ⚠️ AO has **no critic-reviewer setting** — `ao review submit` only records a verdict;
-  the critic (codex GPT-5.5) must be wired by us.
+1. **Create the remote repo** `github.com/kalbac/autodev-harness` and wire `origin`
+   (does not exist yet). Decide licensing (donors are Apache-2.0/MIT).
+2. **Run `superpowers:writing-plans`** on
+   `docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md` → implementation plan.
+3. **Implement P1** per the spec's build order (§10): `config`+`blackboard` → `worktree`
+   → `worker-runner`(claude)+`router` → `critic-runner`(codex) → `gate`+`guards`+`mutation`
+   → `watchdog`+`escalate`+`anti-drift` → `conductor` → thin `api` → parity harness + CI.
+4. **Definition of done for P1:** behavioral parity with the PS loop on a fixture + a live
+   woodev-class workload.
 
-## Donor-tool analysis
+## Continuity (do not break)
 
-- ✅ **OpenHands analyzed** (2026-07-01) → `wiki/openhands-analysis.md`. It's a
-  **pattern donor** (Python+TS, MIT — ideas not code-merge). Top steals: risk-based
-  action confirmation, event-stream trajectories, ACP-worker path, LiteLLM routing.
-  Candidates parked in `FUTURE-BACKLOG.md`.
-- ✅ **Open Design analyzed** (2026-07-01) → `wiki/opendesign-analysis.md`. UX/
-  extensibility donor (Electron, Apache-2.0). Top steals: **PATH-scan agent
-  auto-detection**, three-tier UI blueprint, model router + BYOK proxy, skills/
-  plugins/MCP extensibility, pre-emit self-critique lint. Candidates in `FUTURE-BACKLOG.md`.
-- Next donor-eval steps: (a) verify AO `--harness` ⇄ **OpenHands ACP** worker path;
-  (b) identify **AO's frontend framework** (decides how directly Open Design's UI
-  blueprint ports); (c) converge model-routing engine choice (BYOK-proxy vs LiteLLM);
-  (d) **analyze Aider** (proposed 5th donor — worker edit quality/economy).
+The **existing PowerShell autodev-loop** (`D:/Projects/woodev_framework/tools/autodev/*.ps1`)
+keeps running our real tasks until P1 reaches parity. It is the **parity oracle** — untouched.
+
+## Assets on disk
+
+- `references/` — 5 donor clones (git-ignored; URLs + pinned SHAs in `references/MANIFEST.md`).
+  Note gotcha: OpenHands real code is in `references/software-agent-sdk/`.
+- `docs/superpowers/donor-extraction/` — 5 briefs, `decision-matrix.md` (VERIFIED),
+  `codex-verification.md`, `autodev-loop-parity-spec.md`.
+- `docs/superpowers/specs/2026-07-01-harness-p1-core-loop-design.md` — the P1 design.
 
 ## Open questions
 
-- Exact AO upstream repo URL/name + license (must confirm before forking).
-- Electron frontend stack (framework? React/Svelte/vanilla?) — determines scroll-fix effort.
-- Do we vendor our critic logic as a plugin, or patch the daemon directly? (fork-hygiene tradeoff)
+- Repo hosting/licensing details for `kalbac/autodev-harness`.
+- Which live woodev-class workload to use as the P1 parity target.
+- Exact per-project config file format (`.autodev/config.yaml` vs `harness.config.*`).
 
 ## Related
-
-- `VISION.md` — anchor. `adr/001-fork-ao-not-wait.md` — the fork decision.
-- `reference/ao-codex-critic-protocol.md` — Tier-0 gate, ready to apply.
+- `adr/002-build-own-harness-not-fork-ao.md` — the pivot (supersedes `adr/001`).
+- `superpowers/specs/2026-07-01-harness-p1-core-loop-design.md` — P1 design.
+- `superpowers/donor-extraction/decision-matrix.md` — the verified basis.
