@@ -346,6 +346,10 @@ function makeParityHarness(opts: HarnessOptions = {}): Harness {
     runGate,
     escalate,
     runAntiDrift: async (): Promise<string> => "ON-TRACK: fine",
+    // No-op: this harness's worker fake (line ~174) already writes
+    // "worker-report.md" straight into repo runtime files, so there is
+    // nothing in a real worktree to relocate for these scripted scenarios.
+    harvestWorkerReport: async (): Promise<void> => {},
     gitChangedPaths,
     snapshotFingerprints,
     zonesTouchedInDiff,
