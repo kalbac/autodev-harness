@@ -1,0 +1,30 @@
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# --- Node / Electron (AO UI) ---
+node_modules/
+dist/
+out/
+build/
+*.log
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.env
+.env.local
+
+# --- Go (AO daemon) ---
+/bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# --- Scratch ---
+tmp/
+.tmp/
+scratch/
