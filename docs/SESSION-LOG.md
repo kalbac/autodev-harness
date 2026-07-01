@@ -19,23 +19,27 @@ worker = sonnet-5, mandatory codex GPT-5.5 critic per module**. Ran mostly auton
 - Ran `writing-plans` → `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md` (TDD, grounded
   in the parity spec, spec-coverage table).
 
-**Built (build-order steps 1–2; each = sonnet-5 implementer → I spec-check → codex GPT-5.5 gate → fix subagent):**
-- Task 0 scaffold (ESM/TS/vitest/zod/yaml), Tasks 1–2 `util/native`+`util/glob`, Task 3 `config`,
+**Built (build-order steps 1–2 + start of step 3; each = sonnet-5 implementer → I spec-check → codex GPT-5.5 gate → fix subagent):**
+- Steps 1–2: Task 0 scaffold (ESM/TS/vitest/zod/yaml), Tasks 1–2 `util/native`+`util/glob`, Task 3 `config`,
   Tasks 4–5 `blackboard` (task parser + file repo = state seam), Tasks 6–7 `util/git`+`worktree`.
-- **42 tests green, typecheck clean** (independently re-verified in the main context, not just trusted).
+- Step 3 (partial): Task 8 `router` (model-ladder resolution); Tasks 9–10 `worker/prompt` + `WorkerAdapter`
+  interface + fake adapter. **Task 11 (live `claude` spawn) NOT started** — needs the watchdog seam + live validation.
+- **60 tests green, typecheck clean** (independently re-verified in the main context, not just trusted).
 
 **Codex gate earned its keep — real defects caught pre-merge:** stdin-hang + multibyte-UTF-8
 corruption (native); non-object-YAML-root + keyless error (config); **exploitable path-traversal via
 task id** + frontmatter delimiter anchor + TOCTOU (blackboard); dirty-tree merge + string-based
-conflict false-positive + missing `--` arg terminators (git/worktree). Every finding → fix subagent
-+ regression test.
+conflict false-positive + missing `--` arg terminators (git/worktree); `router` was **clean**; verbatim-body
++ fenced prompt regions (worker). Every finding → fix subagent + regression test (weak findings rejected with reasoning, e.g. the worker `.trim()` and JSON-escape suggestions).
 
 **Decisions (minor/reversible, per handoff rule):** license Apache-2.0; config file `.autodev/config.yaml`;
-branch renamed `master`→`main`; worktrees via AO pattern (deliberate divergence #1 from PS shared-tree).
+branch renamed `master`→`main`; worktrees via AO pattern (deliberate divergence #1 from PS shared-tree);
+`WorkerAdapter` returns TRANSPORT status only (DONE/RATE_LIMITED/TIMED_OUT) — report statuses parsed by the
+conductor (parity §6), correcting the plan's mixed `WorkerStatus` sketch.
 
-**Not done / next:** build-order steps 3–9 (`router`→`worker`→`critic`→`gate`→`watchdog/escalate/anti-drift`
-→`conductor`→`api`→parity harness+CI). Operator to: merge PR #1; pick the live woodev parity target.
-See `CURRENT-STATE.md` → NEXT ACTIONS. New gotcha: codex-exec Windows sandbox.
+**Not done / next:** finish step 3 (`worker` Task 11 claude-adapter via injected watchdog runner) → steps 4–9
+(`critic`→`gate`→`watchdog/escalate/anti-drift`→`conductor`→`api`→parity harness+CI). Operator to: merge PR #1;
+pick the live woodev parity target. See `CURRENT-STATE.md` → NEXT ACTIONS. New gotcha: codex-exec Windows sandbox.
 
 ---
 
