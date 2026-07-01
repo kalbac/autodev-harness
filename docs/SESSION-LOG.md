@@ -45,9 +45,21 @@ in `tsc` → typecheck vacuously green there; separate `noEmit` typecheck config
 response `finish`). `[test/vacuous-assert]` (parity-harness lesson: assert the value, not an always-present
 label; isolate one OR-arm per test).
 
-**Next:** P1 fixture-side DoD reached. Remaining P1 real-world DoD = build step 9's live woodev workload
-(operator picks target). PR `feat/p1-dod-api-parity-ci` (3 commits) → operator-approved merge (classifier
-blocks self-authored `gh pr merge`).
+**CI flake found+fixed on the PR (`790ffc9`):** the first cross-platform run went red on ONE cell
+(ubuntu/node20) — a real EPIPE race in `src/util/native.ts`: writing `child.stdin` with no `'error'`
+listener, so a git child that closes its read end fast made `stdin.end()` throw an UNHANDLED EPIPE and crash
+the run (the other 3 cells passed on timing). Fixed at the root (swallow the benign stdin write error;
+stdout/stderr/exit are captured separately) + a deterministic regression test (exit-before-reading-1MB-stdin).
+NOT "re-run until green" — that would hide the bug. Re-run → **all 4 cells green** (ubuntu+windows × node
+20/22): the Windows lock is provably gone.
+
+**Merged:** PR **#13** → `main` (`cde17a2`, merge commit, 5 commits incl. the EPIPE fix). Branch deleted, `main`
+synced. **P1 fixture-side DoD = done.**
+
+**Deferred tails (→ s09):** write the `[node/stdin-epipe]` gotcha file; save 1–2 cross-project TS/Node learnings
+(`[ts/typecheck-scope]`, EPIPE) to Supermemory.
+
+**Next:** build step 9's live woodev workload (operator picks target) = the P1 real-world DoD.
 
 ---
 
