@@ -49,8 +49,13 @@
   **pattern donor** (Python+TS, MIT — ideas not code-merge). Top steals: risk-based
   action confirmation, event-stream trajectories, ACP-worker path, LiteLLM routing.
   Candidates parked in `FUTURE-BACKLOG.md`.
-- Next donor-eval step: verify whether AO `--harness` can host an **OpenHands ACP
-  worker** (decides "port ideas" vs "run OpenHands as a backend").
+- ✅ **Open Design analyzed** (2026-07-01) → `wiki/opendesign-analysis.md`. UX/
+  extensibility donor (Electron, Apache-2.0). Top steals: **PATH-scan agent
+  auto-detection**, three-tier UI blueprint, model router + BYOK proxy, skills/
+  plugins/MCP extensibility, pre-emit self-critique lint. Candidates in `FUTURE-BACKLOG.md`.
+- Next donor-eval steps: (a) verify AO `--harness` ⇄ **OpenHands ACP** worker path;
+  (b) identify **AO's frontend framework** (decides how directly Open Design's UI
+  blueprint ports); (c) converge model-routing engine choice (BYOK-proxy vs LiteLLM).
 
 ## Open questions
 

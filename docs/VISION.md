@@ -49,11 +49,16 @@ and **ports autodev's POLICIES, not its plumbing**:
 
 - **AO** — the fork base: body, UI, kanban, session/PR source of truth.
 - **autodev-loop** — the proven critic/gate/contract-zone/anti-drift policies.
-- **OpenHands** (`github.com/OpenHands/OpenHands`, MIT) — a **pattern donor** (Python +
-  TS, so ideas not code-merge): risk-based action confirmation, append-only
+- **OpenHands** (`github.com/OpenHands/OpenHands`, MIT) — **intelligence-pattern donor**
+  (Python + TS, so ideas not code-merge): risk-based action confirmation, append-only
   event-stream trajectories, ACP multi-backend, LiteLLM model portability,
   microagents, sandbox runtime, and an eval harness to *measure* the gate's value.
   Full analysis: `wiki/openhands-analysis.md`.
+- **Open Design** (`github.com/nexu-io/open-design`, Apache-2.0) — **UX/extensibility
+  donor** (also Electron, so UI patterns port well): PATH-scan **auto-detection of
+  installed CLI agents**, a clean three-tier UI, a model router + BYOK proxy, and
+  first-class skills / plugins / MCP integrations, plus a pre-emit self-critique lint.
+  Full analysis: `wiki/opendesign-analysis.md`.
 
 ## What we take from AO (keep & protect)
 

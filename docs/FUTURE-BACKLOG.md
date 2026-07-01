@@ -35,6 +35,24 @@ Ranked by fit with "never merge bullshit":
 - **Sandboxed Docker runtime** — optional stronger isolation than git worktrees for
   risky tasks.
 
+## Open Design-derived candidates (see `wiki/opendesign-analysis.md`)
+
+Ranked by fit (UX-first — the operator's reason to like it):
+
+- **PATH-scan agent auto-detection** — auto-discover installed CLI agents instead of
+  manual `--harness`. **Top UX steal.** Reuse Open Design's detection logic (Apache-2.0)
+  or reimplement in AO's Go daemon.
+- **Three-tier UI + sidebar blueprint** — adapt to Home / Board (kanban) / Automation /
+  Skills / Integrations(MCP). Both apps are Electron.
+- **Model router + BYOK proxy** (SSE, SSRF-protected, any OpenAI-compatible endpoint) —
+  engine candidate for Tier-1 per-task routing. Converge with OpenHands' LiteLLM idea.
+- **Extensibility trio: Skills (SKILL.md) + Plugins marketplace + Integrations (MCP)** —
+  make the harness pluggable, not hard-coded.
+- **Pre-emit self-critique lint** — cheap worker self-check *before* the independent
+  GPT-5.5 critic runs; layered gate.
+- **Comment-mode surgical edits** — targeted fix application when the critic sends
+  findings back.
+
 ## Tech debt / risks to watch
 
 - **Upstream merge debt** — the standing risk of any fork. Revisit branch model if

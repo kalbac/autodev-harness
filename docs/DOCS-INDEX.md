@@ -25,7 +25,8 @@
 |---|---|
 | `adr/` | Architecture Decision Records (`adr/README.md` = template + index) |
 | `wiki/` | Deep-dive topic references |
-| `wiki/openhands-analysis.md` | OpenHands analysis — 2nd donor tool, ranked "what to steal" |
+| `wiki/openhands-analysis.md` | OpenHands analysis — intelligence-pattern donor, ranked "what to steal" |
+| `wiki/opendesign-analysis.md` | Open Design analysis — UX/extensibility donor (agent auto-detect, model router, skills/plugins/MCP) |
 | `gotchas/` | Atomic gotcha detail files |
 | `archive/` | Resolved historical docs |
 
