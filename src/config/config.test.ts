@@ -30,6 +30,25 @@ describe("loadConfig", () => {
     expect(cfg.stateDir).toBe(".autodev");
   });
 
+  it("applies defaults when the config file is empty", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "");
+    const cfg = await loadConfig(dir);
+    expect(cfg.stateDir).toBe(".autodev");
+  });
+
+  it("rejects a config file whose root parses to null", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "null\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/\(root\)/);
+  });
+
+  it("rejects a config file whose root parses to an array", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "- one\n- two\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/\(root\)/);
+  });
+
   it("detectRepoRoot walks up to the nearest marker dir", () => {
     mkdirSync(join(dir, ".git"), { recursive: true });
     const nested = join(dir, "a", "b");

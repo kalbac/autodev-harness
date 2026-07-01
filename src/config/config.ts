@@ -9,11 +9,17 @@ export async function loadConfig(repoRoot: string): Promise<HarnessConfig> {
   const path = join(repoRoot, ".autodev", "config.yaml");
   let raw: unknown = {};
   if (existsSync(path)) {
-    raw = parseYaml(await readFile(path, "utf8")) ?? {};
+    const content = await readFile(path, "utf8");
+    // An empty/whitespace-only file means "use defaults". Anything else is passed
+    // through as-is so a non-object root (null, array, scalar) fails validation
+    // instead of being silently coerced into defaults.
+    raw = content.trim() === "" ? {} : parseYaml(content);
   }
   const parsed = HarnessConfigSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`)
+      .join("; ");
     throw new Error(`Invalid .autodev/config.yaml: ${issues}`);
   }
   return parsed.data;
