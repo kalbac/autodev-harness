@@ -45,6 +45,16 @@ and **ports autodev's POLICIES, not its plumbing**:
 | Anti-drift critic (intent vs diff) | Bespoke heartbeat/watchdog files |
 | Re-critic-own-fixes rule | — |
 
+## Donor tools (where "the best" comes from)
+
+- **AO** — the fork base: body, UI, kanban, session/PR source of truth.
+- **autodev-loop** — the proven critic/gate/contract-zone/anti-drift policies.
+- **OpenHands** (`github.com/OpenHands/OpenHands`, MIT) — a **pattern donor** (Python +
+  TS, so ideas not code-merge): risk-based action confirmation, append-only
+  event-stream trajectories, ACP multi-backend, LiteLLM model portability,
+  microagents, sandbox runtime, and an eval harness to *measure* the gate's value.
+  Full analysis: `wiki/openhands-analysis.md`.
+
 ## What we take from AO (keep & protect)
 
 - Minimalist Electron UI, kanban board, **process visibility** (the reason to switch).

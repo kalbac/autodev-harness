@@ -43,6 +43,15 @@
 - ⚠️ AO has **no critic-reviewer setting** — `ao review submit` only records a verdict;
   the critic (codex GPT-5.5) must be wired by us.
 
+## Donor-tool analysis
+
+- ✅ **OpenHands analyzed** (2026-07-01) → `wiki/openhands-analysis.md`. It's a
+  **pattern donor** (Python+TS, MIT — ideas not code-merge). Top steals: risk-based
+  action confirmation, event-stream trajectories, ACP-worker path, LiteLLM routing.
+  Candidates parked in `FUTURE-BACKLOG.md`.
+- Next donor-eval step: verify whether AO `--harness` can host an **OpenHands ACP
+  worker** (decides "port ideas" vs "run OpenHands as a backend").
+
 ## Open questions
 
 - Exact AO upstream repo URL/name + license (must confirm before forking).

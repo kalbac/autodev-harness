@@ -21,10 +21,11 @@
 
 ## Decisions & knowledge
 
-| Dir | Purpose |
+| Dir / doc | Purpose |
 |---|---|
 | `adr/` | Architecture Decision Records (`adr/README.md` = template + index) |
 | `wiki/` | Deep-dive topic references |
+| `wiki/openhands-analysis.md` | OpenHands analysis — 2nd donor tool, ranked "what to steal" |
 | `gotchas/` | Atomic gotcha detail files |
 | `archive/` | Resolved historical docs |
 
