@@ -13,7 +13,7 @@
 > model as truth," it is **superseded by `adr/002`** and the frozen skeleton in
 > `superpowers/specs/2026-07-01-harness-p1-core-loop-design.md`.
 
-> ⚠️ **ROLE MODEL (2026-07-01, s04) — see `adr/003` (proposed).**
+> ⚠️ **ROLE MODEL (2026-07-01, s04; accepted s10 2026-07-02) — see `adr/003` (accepted).**
 > Roles (**orchestrator, worker, critic, planner, …**) are a **configurable model matrix**:
 > the operator picks which model fills each role, via global defaults + per-project overrides.
 > **No vendor is bound to a role** — the current `claude` worker + `codex` critic are just the

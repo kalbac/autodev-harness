@@ -1,7 +1,7 @@
 # 003 — Roles are a configurable model matrix; the orchestrator is an in-harness LLM
 
-**Status:** proposed (operator clarification, s04 2026-07-01 — explicitly "discussable, not a hard rule")
-**Date:** 2026-07-01
+**Status:** accepted (operator sign-off, s10 2026-07-02 — all four open questions resolved below)
+**Date:** 2026-07-01 (proposed) · 2026-07-02 (accepted)
 **Refines:** frozen-skeleton axis 2 (pluggable `WorkerAdapter`/`CriticAdapter`) and axis 6
 (routing) from `002-build-own-harness-not-fork-ao.md`. Does not supersede them — extends
 the adapter model from a fixed `claude`-worker + `codex`-critic pair into a general
@@ -75,24 +75,77 @@ Supporting mechanics:
 - The gate/enforcement work proceeds unchanged and first (it is the substrate).
 - The file-blackboard remains the single source of truth (axis 1).
 
-## Open questions (to resolve with the operator before implementing the orchestrator layer)
+## Resolution (s10, 2026-07-02 — operator sign-off)
 
-1. **Orchestrator vs deterministic conductor boundary:** confirm the orchestrator LLM only
-   *triggers/oversees* the deterministic loop (recommended — preserves the gate), rather than
-   performing loop steps as judgment calls.
-2. **Where the orchestrator lives:** a long-lived agent session per project inside the daemon;
-   its transcript/window model (ties into the P2 multi-window UI + AO's session model).
-3. **`planner` role scope:** what the planner does vs the orchestrator (task decomposition?).
-4. **Config shape:** the global-defaults + per-project-override schema for role→model, and how
-   it coexists with `.autodev/config.yaml`.
+All four open questions were resolved with the operator in s10. The ADR moves to **accepted**.
+
+### R1 — Orchestrator ↔ deterministic-conductor boundary: **orchestrator sits STRICTLY ABOVE.**
+The LLM orchestrator touches the enforcement path through exactly four capabilities and no
+others:
+1. **enqueue** — write a task file into `queue/pending/*.md` (the scheduler already validates it);
+2. **trigger** — kick the deterministic conductor loop (the existing `--once`/run entrypoint);
+3. **read** — observe blackboard state (`queue/runtime/done`, reports, digest) read-only;
+4. **report** — narrate to the operator and drive the kanban.
+
+Every enforcement step — `claim → worktree → worker → harvestWorkerReport → dirty-file fence →
+critic → machine gate → commit-after-gate` — stays inside the pure-code conductor. The
+orchestrator has **no** `run_worker`/`run_critic`/`run_gate`/`commit` tool and cannot sequence,
+skip, or reorder enforcement. The LLM's *only* write into the enforcement path is a task file the
+scheduler independently validates. This preserves the PowerShell-oracle guarantee 1:1: the agent
+**physically cannot talk past the gate**, because the gate does not run in the agent's context.
+(This is the mechanical guarantee named in the Context section — not the agent's good behavior.)
+
+### R2 — `planner` role scope: **folded into the orchestrator for MVP; reserved in the registry.**
+For the MVP the orchestrator itself decomposes operator intent into task files; there is no
+separate live planner agent. `planner` is a **reserved role id in the role registry** (R3) so a
+future split is a config change, not a refactor: point `planner` at a cheaper/different model and
+have the orchestrator delegate decomposition to it. **Output contract (now and after any split):**
+`queue/pending/*.md` task files in the exact shape the scheduler already understands — decomposition
+never invents a new artifact.
+
+### R3 — Config shape: **a unified `roles:` registry with global defaults + sparse per-project override.**
+Global defaults (harness-level config) define every role; `.autodev/config.yaml` carries only
+per-project **overrides** (sparse — only the keys that differ). Each role entry is
+`{ adapter, model, effort?, exe? }`. The current flat `worker`/`critic` blocks **migrate into**
+this registry — this is the axis-2/axis-6 generalization the frozen skeleton anticipated, not a
+break of it. A `policy.heterogeneity` key (default `warn`) carries autodev-loop's "critic family
+must differ from worker family" as operator-configurable policy, never a hardcoded `critic = codex`.
+
+```yaml
+# global defaults (harness-level)
+roles:
+  orchestrator: { adapter: claude, model: opus }
+  worker:       { adapter: claude, model: sonnet }
+  critic:       { adapter: codex,  model: gpt-5.5, effort: high }
+  planner:      { adapter: claude, model: sonnet }   # reserved; MVP = orchestrator decomposes
+policy:
+  heterogeneity: warn        # warn when critic family == worker family
+
+# .autodev/config.yaml — per-project OVERRIDE (sparse, only what differs)
+roles:
+  worker: { model: haiku }
+```
+
+### R4 — Where the orchestrator lives: **one long-lived per-project agent session inside the daemon.**
+By default the operator has a single window — the orchestrator — and talks only to it; it authors
+tasks, triggers the loop, monitors, reports, and manages the kanban. Directly opening a window onto
+a running worker/critic/planner, and the "New task" direct-spawn (AO pattern), are **P2 UI**
+concerns — the transcript/window/session model is window-shaped and lands with the P2 dashboard
+over the read-only `api` seam, not in this design step.
 
 ## Consequences
 
-- The plan's `conductor` (Tasks 24–26) stays as the deterministic engine; an **orchestrator**
-  layer is added on top (new tasks, likely alongside/after the P2 UI, since it is
-  window/session-shaped). CURRENT-STATE tracks this.
-- The adapter/role-registry + per-adapter config generalization is scheduled at the config +
-  conductor stage, not retrofitted into the gate work.
+- The plan's `conductor` stays as the deterministic engine, unchanged; the **orchestrator** is an
+  additive layer above it (R1), buildable now that this ADR is accepted. Its four capabilities
+  (enqueue/trigger/read/report) sit on top of the existing scheduler + run entrypoint + `api`
+  read seam — no new hole in the enforcement substrate.
+- Next engineering step (a future session): the **role registry + per-adapter config** (R3) —
+  generalize the flat `worker`/`critic` blocks into `roles:` with global defaults + sparse
+  per-project override, plus a `policy.heterogeneity` key. This is a config/adapter change, not a
+  conductor change, and must not break the parity spec or the frozen skeleton (axes 2 + 6).
+- `planner` ships as a reserved registry id only (R2); no live planner agent in the MVP.
+- The orchestrator's window/session/transcript model (R4) is deferred to **P2** (localhost
+  dashboard over the read-only `api` seam), since it is window-shaped.
 
 ## Related
 - `002-build-own-harness-not-fork-ao.md` — the frozen skeleton this refines.

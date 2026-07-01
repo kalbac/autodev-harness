@@ -1,7 +1,7 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s09 — **P1 real-world DoD REACHED**: live build-step-9 on real repo `aurora` → green COMMIT with live claude+codex, oracle-equivalent. 2 harness fixes found+fixed live (worker-report harvest, Windows .cmd spawn), PR #16 merged to `main` (`d137f2b`), all 4 CI cells green; 272 tests).
+> Last updated: 2026-07-02 (s10 — **`adr/003` ACCEPTED**: role model = configurable matrix + LLM orchestrator; all 4 open questions resolved with operator (orchestrator strictly-above / planner folded-in + reserved / unified `roles:` registry / session model deferred to P2). Design gate passed — orchestrator layer now buildable. No code this session by design.).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -29,25 +29,31 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s09, 2026-07-02)
+## Last session (s10, 2026-07-02)
 
-- **P1 real-world DoD reached.** Live build-step-9 on `aurora` (disposable Laravel sandbox in `d:/projects/`):
-  CLAIM→worktree→live claude(sonnet)→harvest→fence→live codex(`clean`)→gate `php -l`→**COMMIT `3ffe028`**→done —
-  oracle-equivalent. 2 harness bugs found live, both codex-gated + re-critic, merged (**PR #16 `d137f2b`**, 4 CI green).
-- **Fix #4 `ded192e`** — `harvestWorkerReport` (`src/worker/report.ts`): worker writes `worker-report.md` into
-  the worktree → dirty-file fence flagged it stray → relocate to runtimeDir before status-read+fence.
-- **Fix #5 `76e0ab3`** — `runNative` via `cross-spawn`: node can't spawn the Windows `codex.cmd` shim (ENOENT).
-- Step-0 tails done (PR #15): `[node/stdin-epipe]` gotcha + Supermemory. Gotchas 12→15 (worker-report, win-cmd-spawn, real-repo-run).
+- **`adr/003` design gate passed → accepted.** All 4 open questions resolved with the operator:
+  - **R1 boundary — orchestrator STRICTLY ABOVE.** LLM touches enforcement via exactly 4 caps (enqueue task
+    file / trigger loop / read state / report+kanban); every step claim→worktree→worker→harvest→fence→critic→
+    gate→commit stays in the pure-code conductor. No `run_worker`/`run_critic`/`run_gate`/`commit` tool. Preserves
+    the PS-oracle "can't talk past the gate" guarantee 1:1.
+  - **R2 planner — folded into orchestrator for MVP**, reserved as a registry role id; output contract = the same
+    `queue/pending/*.md` the scheduler understands.
+  - **R3 config — unified `roles:` registry** (`{adapter,model,effort?,exe?}` per role) + global defaults + sparse
+    per-project override; flat `worker`/`critic` blocks migrate in; `policy.heterogeneity: warn` (default).
+  - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
+- No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s10)
+## NEXT ACTIONS (s11)
 
-1. **🟡 Resolve `adr/003` open questions with the operator BEFORE building the orchestrator layer:**
-   orchestrator↔conductor boundary, planner scope, config schema (role registry + per-adapter config).
-   The deterministic conductor is done; the LLM-orchestrator is the next architectural piece and needs sign-off.
-2. **Optional P1 hardening — Finding #1 (deps-provisioning):** a harness feature to symlink/junction configured
-   dirs (`vendor/`, `node_modules/`, `.env`, sqlite) into each worktree before the gate, so gates can graduate
-   from `php -l` to real test suites (`php artisan test`). Not a P1 blocker. codex-gated.
-3. **Then P2** (localhost dashboard over the read-only `api` seam) / P3.
+1. **Build the role registry + per-adapter config (adr/003 R3).** Generalize flat `worker`/`critic` blocks into a
+   `roles:` map (global defaults + sparse per-project override) + `policy.heterogeneity`. Config/adapter change only
+   — must NOT break the parity spec or frozen skeleton (axes 2 + 6). Full discipline (sonnet impl → spec-check → codex gate → re-critic).
+2. **Then the orchestrator layer (adr/003 R1/R2):** additive LLM layer above the conductor with exactly the 4
+   capabilities (enqueue/trigger/read/report) on top of the existing scheduler + run entrypoint + `api` read seam.
+3. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs (`vendor/`,
+   `node_modules/`, `.env`, sqlite) into each worktree before the gate → gates graduate `php -l` → `php artisan test`.
+   Not a blocker. codex-gated.
+4. **P2** (localhost dashboard over the read-only `api` seam; carries the R4 orchestrator window model) / P3.
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
 escalate,anti-drift,gate,conductor,api}/` + `src/index.ts` (composition root). Parity harness under
@@ -70,13 +76,13 @@ keeps running our real tasks until P1 reaches parity. It is the **parity oracle*
 
 ## Open questions
 
-- 🟡 **Role model = configurable matrix (see `adr/003`, proposed):** roles (orchestrator, worker,
-  critic, planner, …) map to models via global defaults + per-project overrides; no vendor bound to
-  a role; operator talks to an in-harness LLM **orchestrator** that drives the run while the
-  **gate/enforcement stays deterministic**. Current claude/codex adapters are valid MVP role-impls.
-  Generalization (role registry + per-adapter config + heterogeneity-as-policy) lands at the
-  config/conductor stage. `adr/003` open questions (orchestrator↔conductor boundary, planner scope,
-  config schema) to resolve with the operator before building the orchestrator layer.
+- ✅ **RESOLVED (s10) → `adr/003` ACCEPTED.** Role model = configurable matrix + LLM orchestrator.
+  Answers: (R1) orchestrator sits **strictly above** the pure-code conductor — 4 caps only
+  (enqueue/trigger/read/report), enforcement steps un-bypassable; (R2) `planner` **folded into the
+  orchestrator for MVP**, reserved as a registry role, output = `queue/pending/*.md`; (R3) unified
+  **`roles:` registry** (`{adapter,model,effort?,exe?}`) + global defaults + sparse per-project
+  override + `policy.heterogeneity: warn`; (R4) orchestrator window/session model **deferred to P2**.
+  Build order: role registry/config first (s11), then the orchestrator layer.
 - ✅ **RESOLVED (s05) → (b).** Gate/recipe design: confirmed from real `.autodev/GUARDS.md` + recipe files
   that the table's `contract_value` cell is human-facing (can list `+`-joined siblings; yandex row lists two
   values but the recipe carries one `canonical_value`) while the machine per-value key is `recipe.canonical_value`,
