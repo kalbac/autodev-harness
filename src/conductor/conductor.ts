@@ -36,6 +36,10 @@ export interface ConductorDeps {
   /** Never-throws contract; still called defensively. */
   escalate: (input: EscalationInput) => Promise<unknown>;
   runAntiDrift: (input: AntiDriftInput) => Promise<string>;
+  /** Move <worktree>/worker-report.md -> runtimeDir/worker-report.md, called right after the
+   * worker's rate-limit/timeout early-returns and BEFORE the status read + dirty-file fence
+   * (parity spec §6): the report belongs in runtimeDir, never in the worktree. */
+  harvestWorkerReport: (wt: Worktree, taskId: string) => Promise<void>;
   gitChangedPaths: (cwd: string) => Promise<string[]>;
   snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
   zonesTouchedInDiff: (diff: string) => Promise<string[]>;
@@ -118,6 +122,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     runGate,
     escalate,
     runAntiDrift,
+    harvestWorkerReport,
     gitChangedPaths,
     snapshotFingerprints,
     zonesTouchedInDiff,
@@ -201,6 +206,14 @@ export function createConductor(deps: ConductorDeps): Conductor {
           await repo.moveTask(task.id, "active", "pending");
           return { claimedTaskId: task.id, committed: false, rateLimited: false };
         }
+
+        // Relocate the worker's report out of the worktree into the runtime
+        // dir BEFORE reading status and BEFORE the dirty-file fence -- parity
+        // spec §6: the report belongs at runtime/<id>/worker-report.md.
+        // Leaving it in the worktree would (a) hide it from the status read
+        // below (which reads runtimeDir, not the worktree) and (b) get it
+        // flagged as a stray file by the dirty-file fence.
+        await harvestWorkerReport(wt, task.id);
 
         // WORKER-REPORT routing
         const report = (await repo.readRuntimeFile(task.id, "worker-report.md")) ?? "";

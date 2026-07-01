@@ -362,6 +362,11 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     runGate: partial.runGate ?? (async () => defaultGateVerdict()),
     escalate: partial.escalate ?? makeEscalate().escalate,
     runAntiDrift: partial.runAntiDrift ?? (async () => "ON-TRACK: fine"),
+    // Default is a no-op: the default `makeWorker` fake already writes
+    // "worker-report.md" straight into repo runtime files (simulating a report
+    // that's already where the conductor expects it), so no relocation is
+    // needed for the existing scripted tests below.
+    harvestWorkerReport: partial.harvestWorkerReport ?? (async () => {}),
     gitChangedPaths: partial.gitChangedPaths ?? (async () => []),
     snapshotFingerprints: partial.snapshotFingerprints ?? (() => new Map()),
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
@@ -1025,6 +1030,96 @@ describe("run -- sleep behavior", () => {
     await conductor.run({ maxIterations: 1 });
 
     expect(sleepCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// harvestWorkerReport wiring (parity spec §6 -- worker-report relocation fix)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- harvestWorkerReport wiring", () => {
+  it("calls harvestWorkerReport(wt, task.id) exactly once, BEFORE the status read", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // This worker fake deliberately does NOT write "worker-report.md" into
+    // repo runtime files -- simulating the real world, where the worker only
+    // ever writes the report into the WORKTREE. Only `harvestWorkerReport` can
+    // make it visible to the conductor's status read (`repo.readRuntimeFile`).
+    const worker: WorkerAdapter = {
+      async run(): Promise<WorkerResult> {
+        return { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 };
+      },
+    };
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const harvestCalls: { wt: Worktree; taskId: string }[] = [];
+    const harvestWorkerReport = async (wt: Worktree, taskId: string): Promise<void> => {
+      harvestCalls.push({ wt, taskId });
+      // Simulate the relocation: only NOW does the report become visible at
+      // runtimeDir, exactly like a real `rename(worktree/..., runtimeDir/...)`.
+      await repo.writeRuntimeFile(taskId, "worker-report.md", "status: TOO_BIG");
+    };
+
+    const deps = buildDeps({ repo, scheduler, worker, escalate, harvestWorkerReport });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(harvestCalls.length).toBe(1);
+    expect(harvestCalls[0]!.taskId).toBe(task.id);
+    expect(harvestCalls[0]!.wt.path).toBe(`/wt/${task.id}`);
+    // Load-bearing proof: the TOO_BIG status (written only by the harvest fake)
+    // was visible to the status read, which only happens if the conductor
+    // calls harvestWorkerReport BEFORE reading "worker-report.md". Without
+    // this call wired in, the read would see "" and the task would fall
+    // through to a normal COMMIT instead of being quarantined.
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("quarantine");
+    expect(escalateCalls[0]!.type).toBe("blocked");
+  });
+
+  it("relocates the report BEFORE the dirty-file fence snapshots the worktree", async () => {
+    // The other half of the original bug: worker-report.md must be out of the
+    // worktree BEFORE the fence's gitChangedPaths runs, else it is flagged as
+    // a stray file. This test drives a DONE flow that reaches the fence and
+    // records call order. Note the conductor calls gitChangedPaths TWICE: the
+    // pre-worker baseline (before harvest) and the fence snapshot (after
+    // harvest) -- so we assert harvest precedes the LAST gitChangedPaths call.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const worker: WorkerAdapter = {
+      async run(): Promise<WorkerResult> {
+        return { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 };
+      },
+    };
+
+    const order: string[] = [];
+    const harvestWorkerReport = async (_wt: Worktree, taskId: string): Promise<void> => {
+      order.push("harvest");
+      await repo.writeRuntimeFile(taskId, "worker-report.md", "status: DONE");
+    };
+    const gitChangedPaths = async (): Promise<string[]> => {
+      order.push("gitChangedPaths");
+      return [];
+    };
+
+    const deps = buildDeps({ repo, scheduler, worker, harvestWorkerReport, gitChangedPaths });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    // DONE + clean fence + COMMIT gate -> the flow reached (and passed) the fence.
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+    // The fence's snapshot is the LAST gitChangedPaths call; harvest must
+    // precede it. (The FIRST gitChangedPaths is the pre-worker baseline, which
+    // legitimately runs before harvest -- so we compare against lastIndexOf.)
+    const harvestIdx = order.indexOf("harvest");
+    const fenceIdx = order.lastIndexOf("gitChangedPaths");
+    expect(harvestIdx).toBeGreaterThanOrEqual(0);
+    expect(fenceIdx).toBeGreaterThan(harvestIdx);
   });
 });
 

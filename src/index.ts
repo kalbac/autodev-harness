@@ -31,6 +31,7 @@ import { mutationCheck, type MutationRecipe } from "./gate/mutation-check.js";
 import { escalate as escalateCore, type EscalationInput } from "./escalate/escalate.js";
 import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "./anti-drift/anti-drift.js";
 import { snapshot } from "./util/fingerprint.js";
+import { harvestWorkerReport as harvestWorkerReportCore } from "./worker/report.js";
 import { createConductor, type ConductorDeps, type ConductorRunOptions } from "./conductor/conductor.js";
 import { createLogger } from "./util/log.js";
 
@@ -259,6 +260,10 @@ async function main(): Promise<void> {
 
   const snapshotFingerprints = (cwd: string, rawPaths: string[]): Map<string, string> => snapshot(cwd, rawPaths);
 
+  const harvestWorkerReport = async (wt: Worktree, taskId: string): Promise<void> => {
+    await harvestWorkerReportCore(wt.path, repo.runtimeDir(taskId));
+  };
+
   const clock = { now: () => Date.now() };
   const sleep = (seconds: number): Promise<void> => new Promise((r) => setTimeout(r, seconds * 1000));
 
@@ -275,6 +280,7 @@ async function main(): Promise<void> {
     runGate,
     escalate,
     runAntiDrift,
+    harvestWorkerReport,
     gitChangedPaths,
     snapshotFingerprints,
     zonesTouchedInDiff,
