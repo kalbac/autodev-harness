@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/* Fonts are bundled via @fontsource (see main.tsx) — no CDN dependency, works
+   fully offline on a localhost daemon. */
+
+/*
+ * Design direction — "the checkpoint / control room".
+ * The harness's whole thesis is an independent critic gate that refuses to
+ * merge bad code. So COLOR IS RARE AND MEANINGFUL: the chrome is a calm,
+ * desaturated ink; the only saturated color on screen is a status/verdict tone.
+ * Type is mono-forward — the subject's world is diffs, task ids, digest lines.
+ */
+@theme {
+  /* Chrome — desaturated slate ink, not pure black. */
+  --color-ink: #0d1017; /* app background */
+  --color-panel: #12161f; /* sidebar / rails */
+  --color-surface: #161c27; /* cards */
+  --color-surface-2: #1c2432; /* raised / hover */
+  --color-line: #262e3b; /* hairline borders */
+  --color-line-strong: #333d4d; /* hover / focused borders */
+
+  --color-text: #e7ebf2; /* primary text */
+  --color-muted: #97a1b2; /* secondary text */
+  --color-subtle: #6b7484; /* tertiary / captions */
+
+  /* Status + verdict vocabulary — the ONLY saturated hues. */
+  --color-working: #e8833a; /* active / in-progress (orange, pulses) */
+  --color-uncertain: #e0a324; /* needs-you / escalated (amber) */
+  --color-broken: #e5484d; /* broken / quarantine (red) */
+  --color-clean: #3fb68b; /* clean / done / ready (jade) */
+  --color-accent: #5b6cff; /* interactive / focus (iris), used sparingly */
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-ink);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv05", "ss01";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizelegibility;
+  }
+
+  /* Dark, thin scrollbars that read as part of the chrome, not the OS. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+}
+
+/* The "working" heartbeat — used only on the single active-status dot so the
+   eye is drawn to what the agents are doing right now. Respects reduced motion. */
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-working) 55%, transparent);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-working) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
