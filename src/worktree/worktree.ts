@@ -1,4 +1,4 @@
-import { rm, symlink, unlink, rmdir, mkdir, lstat } from "node:fs/promises";
+import { rm, symlink, unlink, rmdir, mkdir, lstat, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, posix, win32 } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
@@ -84,6 +84,53 @@ export function createWorktreeManager(
     !posix.isAbsolute(p) &&
     !win32.isAbsolute(p) &&
     !p.split(/[\\/]/).includes("..");
+
+  // The current `provision` config is NOT an authoritative record of what a
+  // given worktree actually has linked into it: a worktree provisioned under
+  // an OLDER config, then left stale (crash / skipped teardown), can be
+  // re-queued after the config changed (e.g. an entry dropped). Deprovisioning
+  // driven solely by the CURRENT config would then miss the stale link
+  // entirely, letting a later recursive delete traverse it into real deps.
+  // Persist what was ACTUALLY provisioned, per task id, as a manifest file
+  // living OUTSIDE the worktree directory (a sibling under worktreesDir) so
+  // `git worktree remove` / recursive `rm` of the worktree dir never touches
+  // it. taskId is validated by `assertSafeTaskId` before this is ever called
+  // from `create`, so it is safe to use directly as a single path segment.
+  const manifestPath = (taskId: string): string => join(worktreesDir, `${taskId}.provision.json`);
+
+  // Best-effort: absent or corrupt manifest reads as "nothing recorded" ([]),
+  // never throws. Defensively accepts only an array of strings.
+  const readManifest = async (taskId: string): Promise<string[]> => {
+    try {
+      const raw = await readFile(manifestPath(taskId), "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((x): x is string => typeof x === "string");
+    } catch {
+      return [];
+    }
+  };
+
+  // Best-effort: writing the manifest must never break provisioning.
+  const writeManifest = async (taskId: string, entries: string[]): Promise<void> => {
+    try {
+      await writeFile(manifestPath(taskId), JSON.stringify(entries));
+    } catch (err) {
+      safeLog(
+        "WARN",
+        `provision: failed to write manifest for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  // Best-effort: absence (or removal failure) is not an error worth surfacing.
+  const removeManifest = async (taskId: string): Promise<void> => {
+    try {
+      await unlink(manifestPath(taskId));
+    } catch {
+      /* nothing to remove, or already gone — fine */
+    }
+  };
 
   // Link each configured dir from the main repo into a fresh worktree. Runs
   // AFTER `git worktree add`. Best-effort: never throws (a throw here would
@@ -190,13 +237,19 @@ export function createWorktreeManager(
   };
 
   // Unlink all provisioned links at a worktree path. MUST run before any
-  // recursive removal of that path (git worktree remove / rm -rf). Attempts
-  // EVERY entry regardless of earlier failures (so a stuck link doesn't mask
-  // others), and returns `true` only if ALL entries were confirmed safe.
-  const deprovisionWorktree = async (wtPath: string): Promise<boolean> => {
+  // recursive removal of that path (git worktree remove / rm -rf). Driven by
+  // the UNION of the per-worktree manifest (what was actually provisioned,
+  // possibly under an older config) and the current config — never by the
+  // current config alone, since that would miss stale links left by a config
+  // change (the exact stale-config data-loss blocker this manifest fixes).
+  // Attempts EVERY entry regardless of earlier failures (so a stuck link
+  // doesn't mask others), and returns `true` only if ALL entries were
+  // confirmed safe.
+  const deprovisionWorktree = async (wtPath: string, taskId: string): Promise<boolean> => {
+    const recorded = await readManifest(taskId);
+    const entries = Array.from(new Set([...recorded, ...provision])).filter(isSafeProvisionEntry);
     let safe = true;
-    for (const p of provision) {
-      if (!isSafeProvisionEntry(p)) continue;
+    for (const p of entries) {
       const ok = await removeLinkOnly(join(wtPath, p));
       safe = safe && ok;
     }
@@ -225,7 +278,7 @@ export function createWorktreeManager(
       // link could not be confirmed removed (or a real non-link entry was
       // found where a link should be), REFUSE the recursive cleanup entirely
       // — fail safe rather than risk deleting real deps near it.
-      const safe = await deprovisionWorktree(path);
+      const safe = await deprovisionWorktree(path, taskId);
       if (!safe) {
         throw new Error(
           `create: cannot clean stale worktree ${path}; a provisioned link could not be removed (refusing recursive delete near real deps)`,
@@ -244,6 +297,17 @@ export function createWorktreeManager(
 
       await mainGit.worktreeAdd(path, branch, baseBranch);
       await provisionWorktree(path);
+      // Record what THIS create actually provisioned so a future deprovision
+      // (teardown, or a later re-queue's stale-cleanup) stays authoritative
+      // even if the config changes again before then. An empty config writes
+      // no manifest — and removes any leftover manifest from an OLDER config
+      // for this taskId, so a stale manifest never lingers once the current
+      // config genuinely provisions nothing.
+      if (provision.length > 0) {
+        await writeManifest(taskId, provision);
+      } else {
+        await removeManifest(taskId);
+      }
       return { path, branch, taskId };
     },
 
@@ -261,7 +325,7 @@ export function createWorktreeManager(
       // (recursive) could otherwise traverse into the clone's real deps. If any
       // link could not be confirmed removed, REFUSE the recursive worktree
       // removal — fail safe rather than risk deleting real deps.
-      const safe = await deprovisionWorktree(wt.path);
+      const safe = await deprovisionWorktree(wt.path, wt.taskId);
       if (!safe) {
         safeLog(
           "ERROR",
@@ -270,6 +334,7 @@ export function createWorktreeManager(
         return;
       }
       await mainGit.worktreeRemove(wt.path);
+      await removeManifest(wt.taskId);
     },
 
     async mergeAfterGate(wt: Worktree, intoBranch: string): Promise<MergeResult> {

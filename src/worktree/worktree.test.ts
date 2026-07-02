@@ -235,6 +235,56 @@ describe("createWorktreeManager", () => {
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
   });
 
+  // --- re-review blocker: stale-config manifest (deprovision must be driven by
+  // what was ACTUALLY provisioned, not by the CURRENT config) ---
+
+  it("stale-config regression: re-queue after the provision config changes (drops the entry) must not delete the real target — manifest-driven cleanup", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m1 = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m1.create("t-cfg", "main");
+    expect(readFileSync(join(wt.path, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+
+    // Simulate a config change + re-queue: a NEW manager instance with an
+    // EMPTY provision list (vendor/deps dropped from config) re-claims the
+    // same task id. `wt` is left stale (crash / skipped teardown) — the
+    // worktree dir on disk still holds the "deps" junction from m1's config.
+    const m2 = createWorktreeManager(repoRoot, worktreesDir, { provision: [] });
+    await m2.create("t-cfg", "main");
+
+    // Without the manifest, m2's stale-cleanup deprovisions using ITS OWN
+    // (empty) provision list -> nothing removed -> the stale "deps" junction
+    // survives into the recursive rm() of the worktree path, which then
+    // traverses the junction and deletes the real target.
+    expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
+
+  it("stale-config regression: teardown after a config change (drops the entry) is manifest-driven and does not delete the real target", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m1 = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m1.create("t-cfg-td", "main");
+
+    const m2 = createWorktreeManager(repoRoot, worktreesDir, { provision: [] });
+    await m2.teardown(wt);
+
+    expect(existsSync(wt.path)).toBe(false);
+    expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
+
+  it("teardown removes the per-worktree provision manifest after a successful removal", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-cfg-manifest", "main");
+
+    const manifestPath = join(worktreesDir, "t-cfg-manifest.provision.json");
+    expect(existsSync(manifestPath)).toBe(true);
+
+    await m.teardown(wt);
+    expect(existsSync(manifestPath)).toBe(false);
+  });
+
   // --- code-review gate: findings 1 & 2 (removeLinkOnly verify-before-recursive-delete) ---
 
   it("PLATFORM PIN: a provisioned link is a real symlink/junction on this platform; teardown removes the worktree dir while the target survives", async () => {
