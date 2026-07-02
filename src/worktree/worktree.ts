@@ -177,6 +177,9 @@ export function createWorktreeManager(
     },
 
     async teardown(wt: Worktree): Promise<void> {
+      // Unlink provisioned links FIRST: a leaked junction + `git worktree remove`
+      // (recursive) could otherwise traverse into the clone's real deps.
+      await deprovisionWorktree(wt.path);
       await mainGit.worktreeRemove(wt.path);
     },
 

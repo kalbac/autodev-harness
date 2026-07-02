@@ -202,4 +202,18 @@ describe("createWorktreeManager", () => {
     const branches = await runNative("git", ["branch", "--list", wt.branch], { cwd: repoRoot });
     expect(branches.stdout).toContain(wt.branch);
   });
+
+  it("teardown: unlinks the provisioned link but the target dir + contents survive", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-td", "main");
+    expect(existsSync(join(wt.path, "deps", "dep.txt"))).toBe(true);
+
+    await m.teardown(wt);
+
+    // The REAL target dir + its sentinel must be intact after the worktree removal.
+    expect(existsSync(join(repoRoot, "deps", "dep.txt"))).toBe(true);
+    expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
 });
