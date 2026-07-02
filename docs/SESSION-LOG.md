@@ -4,6 +4,43 @@
 
 ---
 
+## s12 — 2026-07-02 — `orchestrate` LIVE-PROVEN end-to-end on aurora (green COMMIT)
+
+**Context:** s11 built the whole adr/003 layer; the ONE thing left was a live end-to-end proof of the
+`orchestrate` path (the orchestrator's equivalent of the s09 P1 live proof). Read all anchors. Ran the
+real thing on the disposable `aurora` sandbox (branch `autodev/s12-orch-proof` off `autodev/live-proof`;
+`.autodev/` git-excluded; dependency-free gate `php -l …/LlmServiceFactory.php`; orchestrator role
+defaults to `claude/opus`). Took **3 live runs** (the promt predicted decompose-prompt iteration).
+
+**Run 1 — `supports()` intent → ESCALATE `dirty-file`.** opus decompose emitted a self-contradictory
+spec: `forbidden_paths: ["…/Llm/*", "!…/LlmServiceFactory.php"]` — gitignore-style `!` negation the
+harness glob matcher (`*`/`?`/`**` only) does NOT support. The `*` glob matched the very file `file_set`
+required, so the dirty-file fence flagged the legit edit as forbidden → escalate before gate. `validateTaskSpec`
+had ACCEPTED the impossible spec. **Enforcement worked; the decompose output was bad.**
+
+**The fix (branch `autodev/s12-orch-liveproof`, commit `e7dbb46`):** sonnet subagent (TDD, no commit) →
+my spec-check (parity vs fence's `forbiddenTouches`) → **codex GPT-5.5 gate: APPROVE, no findings**.
+(1) `task-spec.ts` superRefine rejects any spec where a `forbidden_paths` glob matches a `file_set` entry,
+reusing the fence's EXACT normalize-then-`globMatch` semantics (validator never diverges from enforcement);
+(2) `decompose-prompt.ts` documents `forbidden_paths` semantics to the LLM (no `!`/gitignore, never overlap
+`file_set`, leave empty for "touch only these files"). `normalizePath` moved to `util/glob.ts` (exported,
+reused). +6 tests, typecheck clean, full suite 384 pass / 2 skip.
+
+**Run 2 — `supports()` (rebuilt) → ESCALATE `uncertain`.** Clean pipeline this time (decompose→validate→
+worker DONE→fence clean→gate), but the **codex critic correctly returned `uncertain` (0.86 conf)**: a new
+public contract with no test, and aurora's dependency-free gate can't run phpunit to prove parity with
+`make()`. The gate did its job — "never merge bullshit."
+
+**Run 3 — class-docblock intent → GREEN COMMIT.** Self-evident, no new contract. Full live path:
+opus decompose → clean spec → validate → enqueue → trigger → claude worker → gate `php -l` → **codex
+critic `clean`** → **COMMIT `2c77106`** → merge to branch → worktree torn down. Task in `done/`, tree clean.
+**R1 held**: orchestrator only authored the task file; all enforcement ran in the deterministic conductor.
+
+**Operational gotcha:** background `orchestrate` runs get KILLED during the nested `claude` (opus) decompose
+spawn in this Claude Code environment — **foreground runs succeed reliably**. Two gotchas filed.
+
+---
+
 ## s11 — 2026-07-02 — R3 role registry SHIPPED (PR #21) + orchestrator design started
 
 **Context:** First build session of the post-P1 architecture. Read all anchors (VISION, AGENTS, CURRENT-STATE,
