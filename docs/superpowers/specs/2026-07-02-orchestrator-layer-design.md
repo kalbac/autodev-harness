@@ -1,8 +1,13 @@
 # Orchestrator Layer — Design Spec (adr/003 R1/R2)
 
-> Status: **substrate landed; fork decisions PENDING operator sign-off.** Authored s11 (2026-07-02).
+> Status: **COMPLETE — all 5 forks operator-approved (s11, "да по всем") and BUILT.** Authored s11 (2026-07-02).
 > Implements the second half of s11 (the first half, R3 role registry, shipped in PR #21).
 > Anchor: `docs/adr/003-roles-are-a-configurable-vendor-matrix.md` (Resolution R1/R2/R4).
+>
+> **Built:** substrate (PR #22) + logic layer (adapter + staged pipeline, forks A1/C1) + composition-root
+> wiring & `orchestrate` CLI verb (fork B). The operator runs `node dist/index.js orchestrate "<intent>"`.
+> Forks resolved as recommended: A1 staged pipeline · B1 CLI verb · C1 decompose-only claude/opus adapter ·
+> D digest+stdout+return report · E strict validateTaskSpec.
 
 ## 1. What this layer is (from adr/003, accepted)
 
@@ -82,13 +87,20 @@ re-critic clean. 58 orchestrator tests; full suite 345 pass / 2 live-only skips.
 | **D** | "report" pre-kanban | structured return value + `[orchestrator]`-prefixed `digest.md` lines + stdout; **no** new kanban artifact (kanban data model is P2). | surface, lean-safe |
 | **E** | `validateTaskSpec` strictness | strict gate: required `id`(path-safe)/`title`/`type`/non-empty `file_set`, id uniqueness across queues. Sole trust boundary for LLM-authored tasks. **(Mechanism already built in the substrate; confirm the required-field set.)** | 🔴 |
 
-## 6. Build order once forks are signed off
+## 6. Build order — ALL COMPLETE
 
-1. ✅ Substrate (done — §4).
-2. `OrchestratorAdapter` interface + decompose-only `claude/opus` adapter (fork C), register in `assertKnownAdapters`.
-3. Refactor `index.ts` `main()` → export a composition-root factory; add `trigger` capability closure over it (fork B).
-4. `orchestrator.ts` — `createOrchestrator({caps, adapter, log}).handleIntent(intent)` staged pipeline (fork A).
-5. `orchestrate "<intent>"` CLI verb (fork B). Full discipline per change (impl → spec-check → codex gate → re-critic).
+1. ✅ Substrate (§4) — PR #22.
+2. ✅ `OrchestratorAdapter` interface + decompose-only `claude/opus` adapter (fork C1) — `adapter.ts`,
+   `claude-orchestrator-adapter.ts`, `decompose-prompt.ts`.
+3. ✅ `orchestrator.ts` — `createOrchestrator({caps, adapter, log}).handleIntent(intent)` staged pipeline (fork A1):
+   snapshot → decompose → validate-all-or-nothing → transactional enqueue (rollback on partial failure) →
+   bounded trigger (skipped on empty) → report.
+4. ✅ Composition-root wiring in `index.ts` + `orchestrate "<intent>"` CLI verb (fork B): the orchestrator gets
+   exactly the 4 capabilities; `trigger` is a closure over `conductor.run` (bounded default). Adapter selected by
+   `cfg.roles.orchestrator.adapter`, fail-loud on unregistered.
+
+Each landed via the full discipline (sonnet impl → controller spec-check → codex GPT-5.5 gate → re-critic). The
+orchestrator's window/session model (R4) remains **P2**.
 
 ## Related
 - `docs/adr/003-roles-are-a-configurable-vendor-matrix.md` — the accepted decision (R1/R2/R4).

@@ -24,10 +24,23 @@ after codex-gate + green CI, pre-authorized).
   is intentional; warning is forward-looking). **Re-critic clean.** typecheck clean, 287 tests, CI green 4/4.
 - aurora `.autodev/config.yaml` migrated to `roles:` (else `.strict()` would reject it).
 
-**R1/R2 orchestrator layer — design started (not yet coded):** ADR fixes the 4 capabilities but leaves genuine
-skeleton-shaping forks open (execution model: agentic tool-use vs staged pipeline; non-UI entry point;
-orchestrator-adapter shape; headless "report" pre-kanban). Plan subagent drafting the design + fork analysis;
-surfacing 🔴 to operator before writing code.
+**R1/R2 orchestrator layer — FULLY BUILT (overnight, subagent-driven + codex critic):** operator authorized
+overnight autonomy + pre-authorized merges (gate+green-CI). Plan subagent produced the design spec
+(`docs/superpowers/specs/2026-07-02-orchestrator-layer-design.md`), 5 skeleton-shaping forks surfaced 🔴, operator
+approved "да по всем" (A1 staged pipeline · B1 CLI verb · C1 decompose-only claude/opus adapter · D digest+stdout
+report · E strict validateTaskSpec).
+- **Substrate (PR #22):** `TaskSpec`/`validateTaskSpec` (sole trust boundary for LLM-authored tasks), `serializeTask`
+  (proven inverse of `parseTask`), standalone `writeTaskToPending` (frozen-seam-safe), read/report caps, and a
+  mechanical R1 import trip-wire. codex: 6 findings fixed + re-critic clean.
+- **Logic (wave 1):** decompose-only `ClaudeOrchestratorAdapter` (one-shot `claude -p`, `cwd:repoRoot`, tolerant
+  balanced-bracket JSON parse) + staged `createOrchestrator().handleIntent` (snapshot→decompose→validate-all-or-
+  nothing→transactional-enqueue-with-rollback→bounded-trigger(skip-on-empty)→report). codex: 4 findings + a
+  re-critic consistency fix (empty array = valid no-op).
+- **Wiring (wave 2):** `index.ts` composition root builds exactly the 4 caps; `trigger` = bounded `conductor.run`
+  closure (no gate/worker/commit handle reaches the orchestrator — R1 mechanically held). New `orchestrate
+  "<intent>"` CLI verb. codex: 1 finding (argless trigger unbounded) fixed. Build + CLI smoke-tested.
+- Result: `node dist/index.js orchestrate "<intent>"` decomposes intent → task files → triggers the un-bypassable
+  gate. 378 tests, typecheck clean. **NOT yet live-proven end-to-end on a real repo** (s12).
 
 ---
 

@@ -1,10 +1,9 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s11 — **R3 role registry SHIPPED & merged (PR #21)**: flat `worker:`/`critic:` config
-> generalized into a unified `roles:` registry + `policy.heterogeneity`; codex-gated (2 fixes + re-critic clean),
-> CI green 4/4, merged. Also: AGENTS.md added to session-start protocol. R1/R2 orchestrator layer = design in
-> progress (skeleton-shaping forks being surfaced to operator before coding).).
+> Last updated: 2026-07-02 (s11 — **adr/003 FULLY BUILT**: R3 role registry (PR #21) + the whole R1/R2 orchestrator
+> layer (substrate PR #22 + logic + `orchestrate` CLI wiring, all 5 forks operator-approved "да по всем" and
+> codex-gated). `node dist/index.js orchestrate "<intent>"` works. 378 tests. Orchestrator PR pending CI+merge.).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -20,7 +19,8 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
-| P2 — Web UI (localhost dashboard over the core) | ⬜ pending |
+| **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11).** R3 role registry (PR #21) + R1/R2 orchestrator layer (substrate PR #22 + logic + `orchestrate` CLI). 378 tests. |
+| P2 — Web UI (localhost dashboard over the core) | ⬜ pending (carries the R4 orchestrator window/session model) |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
@@ -42,9 +42,12 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   consumers migrated. codex GPT-5.5 gate: 2 findings fixed + regression tests, 1 declined w/ rationale, re-critic
   clean. typecheck clean, 287 tests, CI green 4/4 (win+linux × node 20/22). aurora `.autodev/config.yaml` migrated.
 - **AGENTS.md** added to CLAUDE.md session-start protocol (was missing).
-- **R1/R2 orchestrator layer:** design in progress. ADR fixes the 4 capabilities (enqueue/trigger/read/report) but
-  leaves genuine forks open (execution model, entry point, orchestrator-adapter shape, headless "report") →
-  surfacing 🔴 to operator before coding.
+- **R1/R2 orchestrator layer BUILT.** All 5 forks operator-approved ("да по всем") → substrate (PR #22: enqueue
+  trust-boundary + read/report caps + R1 import trip-wire) + logic (decompose-only claude/opus adapter + staged
+  `handleIntent` pipeline: snapshot→decompose→validate-all-or-nothing→transactional-enqueue→bounded-trigger→report)
+  + composition-root wiring & `orchestrate "<intent>"` CLI. R1 held mechanically (orchestrator sees exactly the 4
+  caps; `trigger` = bounded `conductor.run` closure, no gate/worker/commit handle). 4 codex gates across the layer,
+  all re-critic clean. See `docs/superpowers/specs/2026-07-02-orchestrator-layer-design.md`.
 
 ## Prior session (s10, 2026-07-02)
 
@@ -60,17 +63,16 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s11 → s12)
+## NEXT ACTIONS (s12)
 
-1. ✅ **DONE — role registry + per-adapter config (adr/003 R3).** Shipped in PR #21 (merged `d07e72c`). See Last session.
-2. **IN PROGRESS — orchestrator layer (adr/003 R1/R2):** additive LLM layer above the conductor with exactly the 4
-   capabilities (enqueue/trigger/read/report) on the existing scheduler + run entrypoint + `api` read seam. Design
-   underway; skeleton-shaping forks (execution model / entry point / orchestrator-adapter / headless report) to be
-   operator-approved before coding. Then full discipline (impl → spec-check → codex gate → re-critic).
-3. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs (`vendor/`,
-   `node_modules/`, `.env`, sqlite) into each worktree before the gate → gates graduate `php -l` → `php artisan test`.
-   Not a blocker. codex-gated.
-4. **P2** (localhost dashboard over the read-only `api` seam; carries the R4 orchestrator window model) / P3.
+1. ✅ **DONE (s11) — role registry (adr/003 R3)** PR #21 + **orchestrator layer (adr/003 R1/R2)** PR (waves 1+2).
+2. **Live proof of the `orchestrate` path.** The CLI is smoke-tested (dispatch + build) but the end-to-end
+   decompose→enqueue→trigger→COMMIT with a LIVE `claude` orchestrator has NOT been run on a real repo yet (aurora).
+   Do this next — it is the orchestrator's equivalent of the s09 P1 live proof.
+3. **P2 — localhost dashboard** over the read-only `api` seam; carries the R4 orchestrator window/session model.
+4. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree
+   so gates graduate `php -l` → `php artisan test`. Not a blocker; enforcement-adjacent (worktree axis) — codex-gated.
+   Operator-gated ("only if asked").
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
 escalate,anti-drift,gate,conductor,api}/` + `src/index.ts` (composition root). Parity harness under
