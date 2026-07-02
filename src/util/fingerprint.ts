@@ -1,19 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { globMatch } from "./glob.js";
-
-/**
- * Normalize a path the same way as the PS `ConvertTo-NormalizedPath`:
- * backslashes become forward slashes, then leading `.` and `/` characters
- * are stripped (mirrors `.TrimStart('./')`, which trims BOTH chars, not the
- * literal 2-char prefix). Used ONLY for set-comparison (stray/forbidden/prefix
- * checks) — never for reading files, since it would break a raw `.autodev/...`
- * path by stripping its leading dot.
- */
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").replace(/^[./]+/, "");
-}
+import { globMatch, normalizePath } from "./glob.js";
 
 /** Hex-lowercase SHA256 of a byte buffer. */
 export function bytesSha256(bytes: Buffer): string {
