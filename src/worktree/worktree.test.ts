@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
@@ -162,6 +162,12 @@ describe("createWorktreeManager", () => {
     // A normal id with dots/dashes is still accepted.
     const ok = await manager.create("s7-t1.conductor", "main");
     expect(ok.branch).toBe("autodev/wt-s7-t1.conductor");
+  });
+
+  it("provision: with no provision config, create() adds no extra links (behavior unchanged)", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    const wt = await manager.create("t-noprov", "main"); // default manager: no provision
+    expect(existsSync(join(wt.path, "deps"))).toBe(false);
   });
 
   it("teardown removes the worktree dir but keeps the branch (non-destructive)", async () => {

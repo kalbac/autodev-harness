@@ -1,7 +1,9 @@
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { rm, symlink, unlink, rmdir, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, dirname, isAbsolute } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
 import { runNative } from "../util/native.js";
+import type { Logger } from "../util/log.js";
 
 /**
  * A task id must be a single, safe path segment: it becomes both a directory
@@ -23,6 +25,16 @@ function assertSafeTaskId(taskId: string): void {
   }
 }
 
+export interface WorktreeManagerOptions {
+  /**
+   * Repo-root-relative dir paths (e.g. ["vendor", "plugins-reference"]) to link
+   * into each worktree so a real gate can find gitignored deps. Empty = off.
+   */
+  provision?: string[];
+  /** Optional logger for provision warnings (missing target, skips, failures). */
+  log?: Logger;
+}
+
 export interface Worktree {
   path: string;
   branch: string;
@@ -42,8 +54,86 @@ export interface WorktreeManager {
  * into the loop branch only after the gate passes. Teardown is
  * non-destructive: it removes the worktree directory but keeps the branch.
  */
-export function createWorktreeManager(mainRepoRoot: string, worktreesDir: string): WorktreeManager {
+export function createWorktreeManager(
+  mainRepoRoot: string,
+  worktreesDir: string,
+  opts: WorktreeManagerOptions = {},
+): WorktreeManager {
   const mainGit = createGit(mainRepoRoot);
+  const provision = opts.provision ?? [];
+  // Never throw from logging inside a best-effort / catch path (gotcha [ts/fail-closed]).
+  const safeLog: Logger = (level, message) => {
+    try {
+      opts.log?.(level, message);
+    } catch {
+      /* logging must never break provisioning */
+    }
+  };
+
+  // A provision entry must be a relative path within the repo (no absolute, no
+  // `..` segment). Config-load validates this too (fail-loud); this is the
+  // defense-in-depth guard at the fs-op site — the manager is also constructed
+  // directly (in tests) without going through config.
+  const isSafeProvisionEntry = (p: string): boolean =>
+    p !== "" && !isAbsolute(p) && !p.split(/[\\/]/).includes("..");
+
+  // Link each configured dir from the main repo into a fresh worktree. Runs
+  // AFTER `git worktree add`. Best-effort: never throws (a throw here would
+  // abort the whole task loop) — logs loudly and continues. A missing target is
+  // skipped (no dangling link) so the gate fails honestly instead.
+  const provisionWorktree = async (wtPath: string): Promise<void> => {
+    for (const p of provision) {
+      if (!isSafeProvisionEntry(p)) {
+        safeLog("WARN", `provision: unsafe entry skipped: ${JSON.stringify(p)}`);
+        continue;
+      }
+      const target = join(mainRepoRoot, p);
+      const link = join(wtPath, p);
+      try {
+        if (!existsSync(target)) {
+          safeLog("WARN", `provision: target missing, skipping ${p} (${target})`);
+          continue;
+        }
+        if (existsSync(link)) {
+          safeLog("WARN", `provision: path already exists in worktree, skipping ${p}`);
+          continue;
+        }
+        await mkdir(dirname(link), { recursive: true });
+        await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        safeLog("WARN", `provision: failed to link ${p}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  };
+
+  // Remove ONLY the link entry — NEVER recurse into its target. `unlink` clears a
+  // file-symlink (and POSIX dir-symlinks); a Windows junction / dir needs
+  // `rmdir`. Non-recursive `rmdir` can NEVER delete a populated real directory
+  // (ENOTEMPTY), so an anomalous real dir at the link path is left intact. This
+  // is THE safety invariant: a leaked junction must never let a recursive delete
+  // reach the clone's real deps.
+  const removeLinkOnly = async (link: string): Promise<void> => {
+    try {
+      await unlink(link);
+      return;
+    } catch {
+      /* not a plain file-symlink; fall through to rmdir */
+    }
+    try {
+      await rmdir(link); // junction / dir-symlink / empty dir; populated real dir -> ENOTEMPTY (left intact)
+    } catch {
+      /* absent, or a populated real dir we must not delete */
+    }
+  };
+
+  // Unlink all provisioned links at a worktree path. MUST run before any
+  // recursive removal of that path (git worktree remove / rm -rf).
+  const deprovisionWorktree = async (wtPath: string): Promise<void> => {
+    for (const p of provision) {
+      if (!isSafeProvisionEntry(p)) continue;
+      await removeLinkOnly(join(wtPath, p));
+    }
+  };
 
   return {
     async create(taskId: string, baseBranch: string): Promise<Worktree> {
