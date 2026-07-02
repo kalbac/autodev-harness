@@ -1,9 +1,10 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s11 — **adr/003 FULLY BUILT**: R3 role registry (PR #21) + the whole R1/R2 orchestrator
-> layer (substrate PR #22 + logic + `orchestrate` CLI wiring, all 5 forks operator-approved "да по всем" and
-> codex-gated). `node dist/index.js orchestrate "<intent>"` works. 378 tests. Orchestrator PR pending CI+merge.).
+> Last updated: 2026-07-02 (s11 — **adr/003 FULLY BUILT & MERGED**: R3 role registry (PR #21) + the whole R1/R2
+> orchestrator layer (substrate PR #22 + logic/wiring/CLI PR #23; all 5 forks operator-approved "да по всем" and
+> codex-gated). `node dist/index.js orchestrate "<intent>"` works. 378 tests. NOT yet live-proven end-to-end on a
+> real repo — that is the s12 priority.).
 
 ## Direction (as of s02 — see `adr/002`)
 
