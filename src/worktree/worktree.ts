@@ -121,6 +121,21 @@ export function createWorktreeManager(
           safeLog("WARN", `provision: path already exists in worktree, skipping ${p}`);
           continue;
         }
+        // Best-effort operator footgun warning (finding 5): a provisioned link
+        // whose repo-relative path is NOT gitignored will show up as untracked
+        // content in the worktree and can trip the dirty-file fence. This must
+        // never throw and never block provisioning — it's advisory only.
+        try {
+          const r = await runNative("git", ["check-ignore", "-q", "--", p], { cwd: mainRepoRoot });
+          if (r.exitCode !== 0) {
+            safeLog(
+              "WARN",
+              `provision: ${p} is not gitignored in the repo; its link may dirty the worktree / dirty-file fence`,
+            );
+          }
+        } catch {
+          /* best-effort — a git check-ignore failure must never block provisioning */
+        }
         await mkdir(dirname(link), { recursive: true });
         await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
       } catch (err) {

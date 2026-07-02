@@ -321,4 +321,21 @@ describe("createWorktreeManager", () => {
     expect(messages.some((m2) => /already exists/i.test(m2))).toBe(true);
     expect(messages.some((m2) => /failed to link/i.test(m2))).toBe(false);
   });
+
+  // --- code-review gate: finding 5 (non-blocking gitignore WARN) ---
+
+  it("finding 5 regression: provisioning a path that is NOT gitignored emits a non-blocking WARN", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "ok\n");
+    // Deliberately no .gitignore entry for "deps".
+
+    const messages: string[] = [];
+    const m = createWorktreeManager(repoRoot, worktreesDir, {
+      provision: ["deps"],
+      log: (level, message) => messages.push(`${level}: ${message}`),
+    });
+
+    await expect(m.create("t-notignored", "main")).resolves.toBeDefined();
+    expect(messages.some((m2) => /not gitignored/i.test(m2))).toBe(true);
+  });
 });
