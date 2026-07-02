@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync, symlinkSync } from "node:fs";
-import { lstat } from "node:fs/promises";
+import { lstat, readlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
-import { createWorktreeManager, type Worktree, type WorktreeManager } from "./worktree.js";
+import { createWorktreeManager, samePath, type Worktree, type WorktreeManager } from "./worktree.js";
 
 let repoRoot: string;
 let worktreesDir: string;
@@ -380,26 +380,64 @@ describe("createWorktreeManager", () => {
     expect(messages.some((m2) => /not gitignored/i.test(m2))).toBe(true);
   });
 
-  // --- ground-truth scan: stripLinks walks real dirs, removes reparse points ---
+  // --- signature-based deprovision: TOP-LEVEL only, identified by target ---
 
-  it("ground-truth scan: a link nested under a provisioned parent dir is stripped; the real target's sentinel survives", async () => {
+  it("PLATFORM PIN (critical): samePath(readlink(link), target) holds for a provisioned junction/symlink on this platform — pins the target-signature identification premise", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-pin-signature", "main");
+    const link = join(wt.path, "deps");
+
+    // If this ever reads FALSE on some platform, STOP: the target-signature
+    // identification premise (deprovision matches a top-level symlink by
+    // comparing its resolved readlink() target against
+    // join(mainRepoRoot, name)) does not hold here and must not be weakened —
+    // an alternative identification strategy (e.g. `git check-ignore`) is
+    // required instead.
+    const target = await readlink(link);
+    expect(samePath(target, join(repoRoot, "deps"))).toBe(true);
+  });
+
+  it("provision: a nested entry (containing a path separator) is rejected as unsafe and skipped — nesting is not provisioned (Part A)", async () => {
     mkdirSync(join(repoRoot, "a", "b"), { recursive: true });
     writeFileSync(join(repoRoot, "a", "b", "sentinel.txt"), "nested-keep\n");
-    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["a/b"] });
+    const messages: string[] = [];
+    const m = createWorktreeManager(repoRoot, worktreesDir, {
+      provision: ["a/b"],
+      log: (level, message) => messages.push(`${level}: ${message}`),
+    });
     const wt = await m.create("t-nested", "main");
 
-    const link = join(wt.path, "a", "b");
-    expect((await lstat(link)).isSymbolicLink()).toBe(true);
-    expect(readFileSync(join(link, "sentinel.txt"), "utf8")).toBe("nested-keep\n");
+    // Nested entries are unsafe (Part A) — the manager never links them.
+    expect(existsSync(join(wt.path, "a", "b"))).toBe(false);
+    expect(messages.some((msg) => /unsafe entry skipped/i.test(msg))).toBe(true);
 
     await m.teardown(wt);
-
-    // The worktree (and the "a/b" junction inside it) is gone, but the
-    // stripLinks walk had to descend through the worktree's REAL "a" dir to
-    // reach it — confirming recursion into real dirs works, without ever
-    // traversing the junction itself.
     expect(existsSync(wt.path)).toBe(false);
     expect(readFileSync(join(repoRoot, "a", "b", "sentinel.txt"), "utf8")).toBe("nested-keep\n");
+  });
+
+  it("finding 2 + junction-follow safety: a FOREIGN top-level symlink/junction (pointing OUTSIDE the worktree to real data) has its target survive teardown — deprovision link-only removes it BEFORE git's recursive removal so git can't follow it into the target", async () => {
+    // s15 platform fact (reproduced): `git worktree remove --force` FOLLOWS an
+    // NTFS junction and deletes its real target's content. So a foreign
+    // reparse point left in place at teardown is a data-loss vector. deprovision
+    // must link-only remove EVERY top-level reparse point (ours OR foreign)
+    // first; link-only removal never touches the target, so the sentinel below
+    // survives — whereas leaving the junction for git would delete it.
+    const wt = await manager.create("t-foreign", "main"); // no provision config
+    const foreignTargetDir = mkdtempSync(join(tmpdir(), "adh-wt-foreign-"));
+    writeFileSync(join(foreignTargetDir, "sentinel.txt"), "foreign-keep\n");
+    const link = join(wt.path, "foreign-link");
+    symlinkSync(foreignTargetDir, link, process.platform === "win32" ? "junction" : "dir");
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+
+    await manager.teardown(wt);
+
+    // Worktree gone (teardown proceeded), and the foreign junction's real target
+    // + its sentinel survive — the whole point of link-only, pre-git removal.
+    expect(existsSync(wt.path)).toBe(false);
+    expect(readFileSync(join(foreignTargetDir, "sentinel.txt"), "utf8")).toBe("foreign-keep\n");
+    rmSync(foreignTargetDir, { recursive: true, force: true });
   });
 
   it("ground-truth scan: a worktree with only real dirs and files (no links) tears down exactly as before — backward compat, no loop-brick", async () => {
@@ -417,8 +455,9 @@ describe("createWorktreeManager", () => {
     // config would otherwise provision — provisionWorktree's occupancy check
     // (existsSync/lstat) finds it present and skips linking, leaving the real
     // dir + its content in place, same shape as the finding-2 file case but
-    // for a directory (which stripLinks recurses into rather than skipping
-    // outright).
+    // for a directory. The top-level deprovision scan only removes confirmed
+    // reparse points (isSymbolicLink() === true), so a real dir is skipped —
+    // neither deleted nor treated as unsafe.
     mkdirSync(join(repoRoot, "deps"));
     writeFileSync(join(repoRoot, "deps", "real.txt"), "real dir content\n");
     await runNative("git", ["add", "-A"], { cwd: repoRoot });

@@ -1,6 +1,6 @@
-import { rm, symlink, unlink, rmdir, mkdir, lstat, readdir } from "node:fs/promises";
+import { rm, symlink, unlink, rmdir, mkdir, lstat, readdir, readlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, dirname, posix, win32 } from "node:path";
+import { join, dirname, posix, win32, resolve } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
 import { runNative } from "../util/native.js";
 import type { Logger } from "../util/log.js";
@@ -23,6 +23,24 @@ function assertSafeTaskId(taskId: string): void {
   ) {
     throw new Error(`createWorktree: unsafe task id ${JSON.stringify(taskId)} (must be a single path segment)`);
   }
+}
+
+// Canonicalize a link target for comparison: strip a Windows `\\?\` prefix
+// (readlink() on a junction can return one), resolve, and lowercase +
+// backslash-normalize on win32 (filesystem paths are case-insensitive and
+// `readlink` may return forward slashes). POSIX: resolve only. Exported and
+// unit-pinned (see the PLATFORM PIN test) because deprovision's whole safety
+// argument rests on this comparison correctly recognizing a provisioned
+// link's target.
+export function normalizeForCompare(p: string): string {
+  let s = p;
+  if (process.platform === "win32") s = s.replace(/^\\\\\?\\/, "");
+  s = resolve(s);
+  return process.platform === "win32" ? s.replace(/\//g, "\\").toLowerCase() : s;
+}
+
+export function samePath(a: string, b: string): boolean {
+  return normalizeForCompare(a) === normalizeForCompare(b);
 }
 
 export interface WorktreeManagerOptions {
@@ -70,20 +88,26 @@ export function createWorktreeManager(
     }
   };
 
-  // A provision entry must be a relative path within the repo (no absolute, no
-  // `..` segment). Config-load validates this too (fail-loud); this is the
-  // defense-in-depth guard at the fs-op site — the manager is also constructed
-  // directly (in tests) without going through config. `isAbsolute` from
-  // `node:path` resolves to the HOST platform's semantics only (win32 on
-  // Windows, posix elsewhere); check both explicitly so a Windows-style
-  // absolute path (`C:\...`) or a UNC path (`\\host\share\...`) is rejected
-  // even when the harness runs on Linux/mac, and a POSIX-style absolute path
-  // (`/etc`) is rejected even when it runs on Windows (finding 3).
+  // A provision entry must be a SINGLE top-level path segment within the repo
+  // (no absolute, no `..`, no separator at all — nesting is unused/YAGNI and
+  // is the root of a nested-stale-link blocker: a nested `a/b` junction under
+  // a real `a/` would survive a top-level-only scan). Config-load validates
+  // this too (fail-loud); this is the defense-in-depth guard at the fs-op
+  // site — the manager is also constructed directly (in tests) without going
+  // through config. `isAbsolute` from `node:path` resolves to the HOST
+  // platform's semantics only (win32 on Windows, posix elsewhere); check both
+  // explicitly so a Windows-style absolute path (`C:\...`) or a UNC path
+  // (`\\host\share\...`) is rejected even when the harness runs on Linux/mac,
+  // and a POSIX-style absolute path (`/etc`) is rejected even when it runs on
+  // Windows (finding 3).
   const isSafeProvisionEntry = (p: string): boolean =>
     p !== "" &&
+    p !== "." &&
+    p !== ".." &&
+    !p.includes("/") &&
+    !p.includes("\\") &&
     !posix.isAbsolute(p) &&
-    !win32.isAbsolute(p) &&
-    !p.split(/[\\/]/).includes("..");
+    !win32.isAbsolute(p);
 
   // Link each configured dir from the main repo into a fresh worktree. Runs
   // AFTER `git worktree add`. Best-effort: never throws (a throw here would
@@ -146,13 +170,13 @@ export function createWorktreeManager(
 
   // Remove ONLY the link entry — NEVER recurse into its target. Genuinely
   // link-only: `lstat` (no-follow) first identifies WHAT is at `link` before
-  // touching anything. `stripLinks` only ever calls this once it has already
-  // confirmed `isSymbolicLink()`, so the non-symlink branch below is a
+  // touching anything. `deprovisionWorktree` only ever calls this once it has
+  // already confirmed `isSymbolicLink()`, so the non-symlink branch below is a
   // defense-in-depth guard for any other caller, not a path exercised by the
-  // normal walk; only a confirmed symlink/junction is removed, and removal is
+  // normal scan; only a confirmed symlink/junction is removed, and removal is
   // verified by re-`lstat`-ing afterward. This is THE safety invariant: a
-  // leaked junction must never let a recursive delete reach the clone's real
-  // deps.
+  // reparse point must never let `git worktree remove` (which FOLLOWS a
+  // junction on Windows) or a recursive delete reach the clone's real deps.
   //
   // Returns `true` when, after the call, `link` is confirmed ABSENT (safe to
   // proceed with a recursive removal of its parent); `false` when a real
@@ -190,97 +214,81 @@ export function createWorktreeManager(
     }
   };
 
-  // Ground truth over bookkeeping: rather than trusting a record of what
-  // `provisionWorktree` intended to link (which can be absent, stale, or
-  // simply wrong relative to what config says *now*), walk the worktree on
-  // disk and remove every reparse point (symlink/junction) found, link-only.
-  // A manifest can lie — go crash between link creation and a manifest write,
-  // hand-edit a worktree, or run an older build that never wrote one — but
-  // `lstat().isSymbolicLink()` cannot. Never descends into a removed (or
-  // unremoved) link — only into REAL directories, so a leaked junction is
-  // never traversed. Best-effort: never throws; logs and treats an
-  // unreadable/absent dir as "nothing left to strip" (`true`).
+  // TOP-LEVEL-ONLY reparse-point scan. Part A restricts every provisioned
+  // entry to a single top-level segment, so a non-recursive top-level
+  // `readdir` covers all of OUR links — no source-tree walk is needed.
   //
-  // Skips `.git` — worktree internals live there and must not be disturbed.
+  // CRITICAL PLATFORM FACT (empirically reproduced on Windows / Git-for-
+  // Windows, s15): `git worktree remove --force` FOLLOWS an NTFS junction and
+  // recursively deletes its real target's content, rather than treating the
+  // junction as an opaque link entry. So a reparse point left in place at
+  // teardown is a data-loss vector regardless of who created it. We therefore
+  // link-only remove EVERY confirmed top-level reparse point BEFORE git's
+  // recursive removal — ours, a stale one from an older/emptied config, OR a
+  // foreign / tracked source symlink. This is STRICTLY SAFER than a
+  // signature-gated removal that leaves non-matching links for git to follow:
+  //  - `removeLinkOnly` unlinks/rmdirs ONLY the link entry (verified by lstat
+  //    before and after) and NEVER follows into the target, so removing a
+  //    link — even a tracked source symlink — cannot lose the target's data.
+  //    Leaving it for `git worktree remove` to "handle", by contrast, DOES
+  //    lose that data on this platform (finding: the very case we must guard).
+  //  - The worktree directory is fully removed immediately after every call
+  //    (both call sites), so pre-stripping a link inside a doomed directory
+  //    does not change the final state — it only denies git a junction to
+  //    follow. (Fail-safe: if a link can't be confirmed-removed we return
+  //    `false` and the caller SKIPS the recursive removal entirely.)
+  //  - Bounded: top-level only. `samePath(readlink, join(mainRepoRoot, name))`
+  //    no longer GATES removal (that gate is what leaked foreign junctions to
+  //    git); it now only LABELS the log line ours-vs-foreign for diagnostics.
   //
-  // Bounded: the only directories provisioned are the configured entries
-  // (vendor / plugins-reference / node_modules, etc.), which ARE the
-  // junctions removed at the point they're found — so this only ever
-  // recurses through the project's own real source tree, not through
-  // provisioned dep trees.
-  const stripLinks = async (dir: string): Promise<boolean> => {
-    let names: string[];
+  // Residual (documented, not closed here): a NESTED foreign reparse point —
+  // one a user/tool created deeper than top level — is not scanned and could
+  // still be followed by `git worktree remove`. Part A guarantees WE never
+  // create one; closing the foreign-nested case fully would require replacing
+  // git's recursive delete with our own non-following remover (out of scope).
+  //
+  // Returns `true` iff every top-level reparse point is confirmed gone (safe
+  // for the caller to proceed with the recursive removal). Best-effort: never
+  // throws. Skips `.git` — worktree internals must not be disturbed. Backward
+  // compat: a never-provisioned worktree has no top-level reparse point, so
+  // this removes nothing and costs one cheap top-level `readdir`.
+  const deprovisionWorktree = async (wtPath: string): Promise<boolean> => {
+    let entries: string[];
     try {
-      names = await readdir(dir);
+      entries = await readdir(wtPath);
     } catch {
-      return true; // dir absent (or unreadable) — nothing left to strip
+      return true; // worktree absent — nothing to clean
     }
-    let allOk = true;
-    for (const name of names) {
+    let ok = true;
+    for (const name of entries) {
       if (name === ".git") continue;
-      const p = join(dir, name);
+      const p = join(wtPath, name);
       let st;
       try {
         st = await lstat(p);
       } catch {
         continue; // vanished between readdir and lstat — nothing to do
       }
-      if (st.isSymbolicLink()) {
-        // Confirmed reparse point: remove it, link-only. Never descend.
-        const ok = await removeLinkOnly(p);
-        if (!ok) allOk = false;
-      } else if (st.isDirectory()) {
-        // lstat already confirmed this is a REAL directory, not a junction
-        // (the platform pin guarantees a junction reports
-        // isSymbolicLink()===true here), so recursing is safe — it can never
-        // walk into a leaked reparse point.
-        const ok = await stripLinks(p);
-        if (!ok) allOk = false;
-      }
-      // A regular file (or anything else) is neither a reparse point nor a
-      // directory to recurse into — it is simply not our concern here.
-    }
-    return allOk;
-  };
-
-  // Self-gated: a worktree that was never provisioned (or was provisioned
-  // under a config that has since been emptied and genuinely has nothing
-  // left to strip) must be a complete no-op — identical to prior behavior —
-  // rather than paying for a full source-tree walk on every teardown.
-  //
-  //  - Current config still provisions something: always do the full
-  //    ground-truth scan (the current config's targets ARE junctions, and
-  //    any stale ones from an older config are equally reparse points that
-  //    get caught by the same walk).
-  //  - Current config is empty: cheaply check the TOP LEVEL only for any
-  //    reparse point. A worktree provisioned under an OLDER (now-emptied)
-  //    config still has its junction sitting at the top level, so this still
-  //    catches it and falls through to the full scan. A worktree that was
-  //    NEVER provisioned has no top-level reparse point, so this returns
-  //    `true` without ever touching the tree — no behavior change for the
-  //    common (no provisioning) case.
-  const deprovisionWorktree = async (wtPath: string): Promise<boolean> => {
-    if (provision.length > 0) {
-      return await stripLinks(wtPath);
-    }
-    let names: string[];
-    try {
-      names = await readdir(wtPath);
-    } catch {
-      return true; // worktree absent — nothing to clean
-    }
-    for (const name of names) {
-      if (name === ".git") continue;
+      if (!st.isSymbolicLink()) continue; // real file/dir — git removes it safely (no reparse to follow)
+      // A confirmed reparse point. Identify (for logging only) whether it is
+      // one WE provisioned — points exactly where provisioning would have put
+      // it — then remove it link-only regardless. `readlink` may fail on an
+      // exotic reparse point; if so we still attempt the link-only removal
+      // (removeLinkOnly re-lstats and only ever touches the entry itself).
+      let ours = false;
       try {
-        const st = await lstat(join(wtPath, name));
-        if (st.isSymbolicLink()) {
-          return await stripLinks(wtPath);
-        }
+        ours = samePath(await readlink(p), join(mainRepoRoot, name));
       } catch {
-        continue;
+        ours = false;
       }
+      safeLog(
+        "INFO",
+        `deprovision: removing top-level ${ours ? "provisioned" : "foreign"} reparse point ${name} (link-only, before recursive worktree removal)`,
+      );
+      const removed = await removeLinkOnly(p);
+      if (!removed) ok = false;
     }
-    return true; // no reparse point at the top level — untouched, as before
+    return ok;
   };
 
   return {
