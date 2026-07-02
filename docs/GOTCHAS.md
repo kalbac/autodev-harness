@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 21.
+> Count: 22.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -27,6 +27,7 @@
 | `[config/zod-strict]` | A `z.object` STRIPS unknown keys by default — after a hard-cut of a config block (rename/remove), an OLD file using the removed key loads clean and silently reverts every field to defaults (no error). Bit the R3 `worker:`/`critic:`→`roles:` cut (aurora's real config). Fix = `.strict()` on the root schema (fail loud) + migrate every on-disk file. | `gotchas/zod-strip-unknown-keys-silent-config-revert.md` |
 | `[ui/serve-uidir-reporoot]` | `serve` resolves the UI bundle at `<project repoRoot>/dist/ui` (repoRoot = git root of cwd), NOT relative to the harness install. So orchestrating an EXTERNAL project (e.g. aurora) has no bundle unless one is placed there — and dropping `dist/ui` into the project tree DIRTIES it → `mergeAfterGate` throws (`[conductor/real-repo-run]`). For the s14 live proof: copy `dist/ui` into the project + add `dist/` to `.git/info/exclude`. Also: run `serve` DETACHED (Start-Process), NOT a bash-background — else the browser-triggered `orchestrate`'s nested `opus` decompose is killed (`[orchestrator/bg-spawn-killed]` applies to `serve` too). | `gotchas/ui-serve-uidir-reporoot.md` |
 | `[ui/verdict-not-persisted]` | The critic/gate verdict object (clean/broken/uncertain + confidence) is NOT written to a per-task runtime file — only a `digest.md` line + (on non-clean) the escalation body + `critic-feedback.md`. So the dashboard's "verdict first-class" is rich ONLY on escalation (via `GET /escalations/:id`); a CLEAN-committed task has no readable verdict artifact (just the digest line). To surface verdict+confidence for committed tasks, persist `critic-verdict.json` as a runtime file (backlog; touches the conductor → full gate). | `gotchas/ui-verdict-not-persisted.md` |
+| `[worktree/win-junction-follow]` | `git worktree remove --force` (and `rm -rf`) FOLLOWS an NTFS junction on Windows and recursively deletes the junction's REAL target (verified 6/6). Deps-provisioning links dep dirs as junctions, so teardown could wipe the clone's real `vendor/`. Rule: link-only-remove EVERY top-level reparse point (non-recursive `unlink`→`rmdir` + verify-gone) BEFORE any recursive worktree removal; refuse to recurse (teardown early-return / stale-cleanup throw) if a link can't be confirmed gone. Provision entries restricted to a single top-level segment so the non-recursive scan is complete. Residual: nested FOREIGN junctions (pre-existing git behavior, not ours). | `gotchas/win-git-worktree-remove-follows-junction.md` |
 
 ## Anticipated tag namespaces
 
