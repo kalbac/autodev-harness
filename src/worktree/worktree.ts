@@ -1,4 +1,4 @@
-import { rm, symlink, unlink, rmdir, mkdir } from "node:fs/promises";
+import { rm, symlink, unlink, rmdir, mkdir, lstat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, isAbsolute } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
@@ -106,33 +106,63 @@ export function createWorktreeManager(
     }
   };
 
-  // Remove ONLY the link entry — NEVER recurse into its target. `unlink` clears a
-  // file-symlink (and POSIX dir-symlinks); a Windows junction / dir needs
-  // `rmdir`. Non-recursive `rmdir` can NEVER delete a populated real directory
-  // (ENOTEMPTY), so an anomalous real dir at the link path is left intact. This
-  // is THE safety invariant: a leaked junction must never let a recursive delete
-  // reach the clone's real deps.
-  const removeLinkOnly = async (link: string): Promise<void> => {
+  // Remove ONLY the link entry — NEVER recurse into its target. Genuinely
+  // link-only: `lstat` (no-follow) first identifies WHAT is at `link` before
+  // touching anything. A real (non-symlink) entry — e.g. a mistakenly
+  // provisioned `README.md` or `.git` (finding 2) — is left untouched and
+  // reported unsafe; only a confirmed symlink/junction is removed, and removal
+  // is verified by re-`lstat`-ing afterward. This is THE safety invariant: a
+  // leaked junction (or a misconfigured real entry) must never let a
+  // recursive delete reach the clone's real deps.
+  //
+  // Returns `true` when, after the call, `link` is confirmed ABSENT (safe to
+  // proceed with a recursive removal of its parent); `false` when a real
+  // non-link entry was found, or a link could not be confirmed-removed — in
+  // either case the caller must NOT recursively delete.
+  const removeLinkOnly = async (link: string): Promise<boolean> => {
+    let st;
     try {
-      await unlink(link);
-      return;
+      st = await lstat(link);
     } catch {
-      /* not a plain file-symlink; fall through to rmdir */
+      return true; // nothing there — safe
+    }
+    if (!st.isSymbolicLink()) {
+      safeLog(
+        "WARN",
+        `provision: refusing to remove non-link entry at ${link} (not a provisioned link; leaving it and the recursive removal of its parent will be skipped)`,
+      );
+      return false;
     }
     try {
-      await rmdir(link); // junction / dir-symlink / empty dir; populated real dir -> ENOTEMPTY (left intact)
+      await unlink(link); // file-symlink (and POSIX dir-symlinks)
     } catch {
-      /* absent, or a populated real dir we must not delete */
+      try {
+        await rmdir(link); // junction / dir-symlink on Windows
+      } catch {
+        /* fall through to the verification below */
+      }
+    }
+    try {
+      await lstat(link);
+      safeLog("ERROR", `provision: failed to remove provisioned link at ${link}`);
+      return false; // still there — NOT safe to recurse
+    } catch {
+      return true; // confirmed gone
     }
   };
 
   // Unlink all provisioned links at a worktree path. MUST run before any
-  // recursive removal of that path (git worktree remove / rm -rf).
-  const deprovisionWorktree = async (wtPath: string): Promise<void> => {
+  // recursive removal of that path (git worktree remove / rm -rf). Attempts
+  // EVERY entry regardless of earlier failures (so a stuck link doesn't mask
+  // others), and returns `true` only if ALL entries were confirmed safe.
+  const deprovisionWorktree = async (wtPath: string): Promise<boolean> => {
+    let safe = true;
     for (const p of provision) {
       if (!isSafeProvisionEntry(p)) continue;
-      await removeLinkOnly(join(wtPath, p));
+      const ok = await removeLinkOnly(join(wtPath, p));
+      safe = safe && ok;
     }
+    return safe;
   };
 
   return {
@@ -153,8 +183,16 @@ export function createWorktreeManager(
       // up is the common case, not an error.
       // Unlink any provisioned links from a prior attempt BEFORE the recursive
       // cleanup below (`worktree remove --force` and `rm -rf`), so a stale
-      // junction can never let those deletes reach the clone's real deps.
-      await deprovisionWorktree(path);
+      // junction can never let those deletes reach the clone's real deps. If a
+      // link could not be confirmed removed (or a real non-link entry was
+      // found where a link should be), REFUSE the recursive cleanup entirely
+      // — fail safe rather than risk deleting real deps near it.
+      const safe = await deprovisionWorktree(path);
+      if (!safe) {
+        throw new Error(
+          `create: cannot clean stale worktree ${path}; a provisioned link could not be removed (refusing recursive delete near real deps)`,
+        );
+      }
       await runNative("git", ["worktree", "prune"], { cwd: mainRepoRoot });
       await runNative("git", ["worktree", "remove", "--force", "--", path], { cwd: mainRepoRoot });
       // `worktree remove` only clears a REGISTERED worktree; an interrupted
@@ -182,8 +220,17 @@ export function createWorktreeManager(
 
     async teardown(wt: Worktree): Promise<void> {
       // Unlink provisioned links FIRST: a leaked junction + `git worktree remove`
-      // (recursive) could otherwise traverse into the clone's real deps.
-      await deprovisionWorktree(wt.path);
+      // (recursive) could otherwise traverse into the clone's real deps. If any
+      // link could not be confirmed removed, REFUSE the recursive worktree
+      // removal — fail safe rather than risk deleting real deps.
+      const safe = await deprovisionWorktree(wt.path);
+      if (!safe) {
+        safeLog(
+          "ERROR",
+          `teardown: provisioned link(s) remain under ${wt.path}; skipping recursive worktree removal to avoid deleting real deps`,
+        );
+        return;
+      }
       await mainGit.worktreeRemove(wt.path);
     },
 

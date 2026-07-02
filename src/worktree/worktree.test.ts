@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
@@ -232,5 +233,52 @@ describe("createWorktreeManager", () => {
 
     // The real target must be intact after the stale-cleanup's recursive delete.
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
+
+  // --- code-review gate: findings 1 & 2 (removeLinkOnly verify-before-recursive-delete) ---
+
+  it("PLATFORM PIN: a provisioned link is a real symlink/junction on this platform; teardown removes the worktree dir while the target survives", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-pin", "main");
+    const link = join(wt.path, "deps");
+
+    // THE safety invariant depends on lstat().isSymbolicLink() being true for a
+    // provisioned link on this platform (junction on win32, dir-symlink on POSIX).
+    // If this assertion fails, the guard must NOT be weakened — an alternative
+    // (link-tracking) is required instead.
+    const st = await lstat(link);
+    expect(st.isSymbolicLink()).toBe(true);
+
+    await m.teardown(wt);
+    expect(existsSync(wt.path)).toBe(false);
+    expect(existsSync(join(repoRoot, "deps", "dep.txt"))).toBe(true);
+    expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
+
+  it("finding 2 regression: teardown refuses to delete a real (non-link) file occupying a provisioned entry's path, and skips the recursive worktree removal", async () => {
+    // keep.txt is a normal tracked file that happens to collide with a
+    // provision entry — provisionWorktree finds it already checked out at the
+    // link path (existsSync(link) true) and skips creating a symlink there,
+    // leaving the real checked-out file in place.
+    writeFileSync(join(repoRoot, "keep.txt"), "real content\n");
+    await runNative("git", ["add", "-A"], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "add keep.txt"], { cwd: repoRoot });
+
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["keep.txt"] });
+    const wt = await m.create("t-realfile", "main");
+    const link = join(wt.path, "keep.txt");
+    expect(existsSync(link)).toBe(true);
+    expect((await lstat(link)).isSymbolicLink()).toBe(false);
+
+    await m.teardown(wt);
+
+    // removeLinkOnly must find a real (non-link) entry and refuse to touch it;
+    // teardown must then skip the recursive worktree removal entirely rather
+    // than risk deleting real content near the leaked non-link entry.
+    expect(existsSync(wt.path)).toBe(true);
+    // Tolerate git's core.autocrlf normalizing line endings on Windows.
+    expect(readFileSync(link, "utf8").replace(/\r\n/g, "\n")).toBe("real content\n");
   });
 });
