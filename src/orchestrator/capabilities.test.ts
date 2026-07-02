@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import type { QueueState } from "../blackboard/repository.js";
 import type { Logger } from "../util/log.js";
-import { createEnqueueCapability, createReadCapability, createReportCapability } from "./capabilities.js";
-import { validateTaskSpec } from "./task-spec.js";
+import {
+  createEnqueueCapability,
+  createReadCapability,
+  createRecordRunCapability,
+  createReportCapability,
+} from "./capabilities.js";
+import { isPathSafeId, validateTaskSpec } from "./task-spec.js";
 
 let root: string;
 let repo: FileBlackboardRepository;
@@ -119,5 +124,173 @@ describe("createEnqueueCapability", () => {
     expect(result.id).toBe("t1");
 
     await expect(enqueue(spec)).rejects.toThrow(/t1/);
+  });
+});
+
+describe("createRecordRunCapability", () => {
+  function makeLog(): { log: Logger; entries: Array<{ level: string; message: string }> } {
+    const entries: Array<{ level: string; message: string }> = [];
+    const log: Logger = (level, message) => entries.push({ level, message });
+    return { log, entries };
+  }
+
+  it("writes a well-formed manifest to <runsDir>/<runId>.json with the injected now as 'at'", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    const { log } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 1234567890, log });
+
+    const result = await recordRun({ intent: "build the thing", taskIds: ["t1", "t2"] });
+
+    expect(result).not.toBeNull();
+    expect(result!.path).toBe(join(runsDir, `${result!.runId}.json`));
+    expect(existsSync(result!.path)).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(result!.path, "utf8"));
+    expect(manifest).toEqual({
+      runId: result!.runId,
+      intent: "build the thing",
+      taskIds: ["t1", "t2"],
+      at: 1234567890,
+    });
+  });
+
+  it("the generated runId always passes isPathSafeId", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    const { log } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 42, log });
+
+    const result = await recordRun({ intent: "normal intent", taskIds: [] });
+
+    expect(result).not.toBeNull();
+    expect(isPathSafeId(result!.runId)).toBe(true);
+  });
+
+  it("a hostile intent (separators, '..', control chars, very long) still yields a path-safe run-id and a manifest that does not escape runsDir", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    const { log } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 999, log });
+
+    const hostileIntent = "../../etc/passwd\0\r\n" + "a".repeat(500) + "..";
+    const result = await recordRun({ intent: hostileIntent, taskIds: [] });
+
+    expect(result).not.toBeNull();
+    expect(isPathSafeId(result!.runId)).toBe(true);
+    // Resolved manifest path must stay a direct child of runsDir.
+    expect(dirname(result!.path)).toBe(runsDir);
+    expect(existsSync(result!.path)).toBe(true);
+  });
+
+  it("an empty/all-special-character intent still yields a valid manifest (falls back to a bare run-<now> id)", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    const { log } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 7, log });
+
+    const result = await recordRun({ intent: "///...///", taskIds: [] });
+
+    expect(result).not.toBeNull();
+    expect(isPathSafeId(result!.runId)).toBe(true);
+  });
+
+  it("on an fs error (runsDir path occupied by a plain file) it logs a WARN and returns null — never throws", async () => {
+    // Occupy the exact path the capability would try to mkdir -p into, so
+    // `mkdir(runsDir, { recursive: true })` fails (ENOTDIR/EEXIST-style).
+    const runsDirParent = join(root, ".autodev");
+    mkdirSync(runsDirParent, { recursive: true });
+    const runsDir = join(runsDirParent, "runs-is-a-file");
+    writeFileSync(runsDir, "not a directory");
+
+    const { log, entries } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 1, log });
+
+    const result = await recordRun({ intent: "whatever", taskIds: [] });
+
+    expect(result).toBeNull();
+    expect(entries.some((e) => e.level === "WARN")).toBe(true);
+  });
+
+  it("never throws even when the injected logger ALSO throws on the failure path (fail-closed, gotcha [ts/fail-closed])", async () => {
+    // Both the primary op AND the WARN logger throw: occupy runsDir with a
+    // plain file so mkdir -p fails, then inject a logger that throws. A raw
+    // `deps.log` in the catch would re-throw straight out of recordRun and
+    // (since handleIntent awaits it before trigger) fail a real run.
+    const runsDirParent = join(root, ".autodev");
+    mkdirSync(runsDirParent, { recursive: true });
+    const runsDir = join(runsDirParent, "runs-is-a-file-2");
+    writeFileSync(runsDir, "not a directory");
+
+    const throwingLog: Logger = () => {
+      throw new Error("logger down");
+    };
+    const recordRun = createRecordRunCapability({ runsDir, now: () => 1, log: throwingLog });
+
+    // Must RESOLVE to null, not reject, despite mkdir AND the logger throwing.
+    await expect(recordRun({ intent: "x", taskIds: ["t1"] })).resolves.toBeNull();
+  });
+
+  it("never throws even when the caught error's own message getter throws (fail-closed stringify)", async () => {
+    // A raw `String((err as Error).message ?? err)` in the catch would re-throw
+    // here: `err` is an Error (so `.message` is read) whose getter throws,
+    // BEFORE safeLog's own try/catch runs. safeErrorMessage must swallow it.
+    const hostileErr = new Error("placeholder");
+    Object.defineProperty(hostileErr, "message", {
+      get(): string {
+        throw new Error("message getter boom");
+      },
+    });
+    const runsDir = join(root, ".autodev", "runs");
+    const recordRun = createRecordRunCapability({
+      runsDir,
+      now: () => {
+        throw hostileErr;
+      },
+      log: () => {},
+    });
+
+    await expect(recordRun({ intent: "x", taskIds: [] })).resolves.toBeNull();
+  });
+
+  it("never throws when the caught Error's message getter returns a non-string whose toString throws (coercion is fail-closed)", async () => {
+    // `err.message` returns an object with a throwing `toString`. Returning
+    // `err.message` raw would push the coercion to the interpolation site
+    // OUTSIDE the helper's try; the helper must `String(...)` it internally.
+    const hostileErr = new Error("placeholder");
+    Object.defineProperty(hostileErr, "message", {
+      get: () => ({
+        toString: () => {
+          throw new Error("coerce boom");
+        },
+      }),
+    });
+    const runsDir = join(root, ".autodev", "runs");
+    const recordRun = createRecordRunCapability({
+      runsDir,
+      now: () => {
+        throw hostileErr;
+      },
+      log: () => {},
+    });
+
+    await expect(recordRun({ intent: "x", taskIds: [] })).resolves.toBeNull();
+  });
+
+  it("on a wx collision (manifest path already exists) it logs a WARN and returns null — never throws", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    mkdirSync(runsDir, { recursive: true });
+    // Deterministic now + intent => deterministic runId, so we can pre-seed
+    // the exact target path and force the exclusive `wx` write to collide.
+    const now = () => 55;
+    const { log: probeLog } = makeLog();
+    const probe = createRecordRunCapability({ runsDir: join(root, ".autodev", "runs-probe"), now, log: probeLog });
+    const probeResult = await probe({ intent: "collide-me", taskIds: [] });
+    expect(probeResult).not.toBeNull();
+
+    writeFileSync(join(runsDir, `${probeResult!.runId}.json`), "{}");
+
+    const { log, entries } = makeLog();
+    const recordRun = createRecordRunCapability({ runsDir, now, log });
+    const result = await recordRun({ intent: "collide-me", taskIds: [] });
+
+    expect(result).toBeNull();
+    expect(entries.some((e) => e.level === "WARN")).toBe(true);
   });
 });

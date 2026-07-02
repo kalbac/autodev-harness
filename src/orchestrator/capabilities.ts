@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
 import { writeTaskToPending, type WriteTaskDeps } from "./enqueue.js";
-import type { TaskSpec } from "./task-spec.js";
+import { isPathSafeId, type TaskSpec } from "./task-spec.js";
 
 const ALL_QUEUE_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -25,6 +25,21 @@ export interface OrchestratorCapabilities {
     digestTail(): Promise<string>;
   };
   report(entry: { level: string; message: string }): Promise<void>;
+  /**
+   * Part of the `report` capability family, not a new power: writes a small
+   * JSON "run manifest" (`<runsDir>/<run-id>.json`) that indexes a completed
+   * decomposition's task ids for the (later) dashboard's run-correlation
+   * view. This is a CONVENIENCE INDEX, NOT authoritative state — the
+   * blackboard's queue files remain the single source of truth; a caller
+   * must never treat this manifest as anything more than a hint. It carries
+   * no gate/worker/critic/worktree/commit power — it is a plain fs write,
+   * exactly like `report`'s digest append.
+   *
+   * Best-effort by design: it must NEVER throw. On any failure (unwritable
+   * runsDir, `wx` collision, etc.) it logs a WARN and returns `null`, so a
+   * manifest-write failure can never fail a real orchestrated run.
+   */
+  recordRun(run: { intent: string; taskIds: string[] }): Promise<{ runId: string; path: string } | null>;
 }
 
 /** Number of trailing lines `read.digestTail()` returns (undocumented in the
@@ -90,4 +105,99 @@ export function createReportCapability(repo: BlackboardRepository, log: Logger):
 /** Closure over `writeTaskToPending` — the only way an orchestrator can add work. */
 export function createEnqueueCapability(deps: WriteTaskDeps): OrchestratorCapabilities["enqueue"] {
   return (spec: TaskSpec) => writeTaskToPending(spec, deps);
+}
+
+/** Cap on the slug portion of a generated run-id, keeping filenames short even
+ *  for a very long operator intent. */
+const RUN_SLUG_MAX_LEN = 40;
+
+/**
+ * Best-effort, human-skimmable slug of an intent for a run-id. Deliberately
+ * loose (any run of characters outside the `isPathSafeId` allowlist collapses
+ * to a single `-`): the CALLER is responsible for re-validating the final
+ * assembled run-id with `isPathSafeId` and falling back if this still
+ * produces something unsafe (e.g. an intent built entirely of literal `.`
+ * characters can slip a `..` past this collapse step).
+ */
+function slugifyIntent(intent: string): string {
+  const collapsed = intent
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+  return collapsed.slice(0, RUN_SLUG_MAX_LEN);
+}
+
+/**
+ * Fail-closed error → string. Never throws, even on an `err` that is an
+ * `Error` whose `message` getter throws, or a value whose `toString`/`String`
+ * coercion throws (gotcha [ts/fail-closed]): the ONLY guarantee that
+ * `recordRun` never rejects is its `catch`, and formatting the caught error
+ * for the log must not itself be able to re-throw out of that `catch`.
+ */
+function safeErrorMessage(err: unknown): string {
+  try {
+    // Coerce INSIDE the try: a hostile `err.message` getter can return a
+    // non-string whose own `toString` throws, so the `String(...)` must run
+    // here (fail-closed), never at the interpolation site outside this catch.
+    if (err instanceof Error) return String(err.message);
+    return String(err);
+  } catch {
+    return "<unstringifiable error>";
+  }
+}
+
+/**
+ * Implements `OrchestratorCapabilities["recordRun"]` (see the interface
+ * doc-comment — this is a `report`-family convenience index, not a new
+ * power). Generates a clock-derived, path-safe run-id (`run-<now>` optionally
+ * suffixed with a sanitized slug of the intent), `mkdir -p`s `runsDir`, and
+ * writes the manifest with an exclusive `wx` flag — matching `enqueue.ts`'s
+ * own id-safety + exclusive-write style. Never throws: any failure (bad
+ * runsDir, `wx` collision, …) is logged at WARN and yields `null`.
+ */
+export function createRecordRunCapability(deps: {
+  runsDir: string;
+  now: () => number;
+  log: Logger;
+}): OrchestratorCapabilities["recordRun"] {
+  // safeLog swallows a throwing injected logger so the best-effort/never-throws
+  // contract holds even on the failure path: the `catch` below is the ONLY
+  // guarantee that a manifest failure can't fail a real run, and a raw
+  // `deps.log` there would re-throw a broken logger straight out of `recordRun`
+  // (gotcha [ts/fail-closed]).
+  const safeLog = (level: string, message: string): void => {
+    try {
+      deps.log(level, message);
+    } catch {
+      /* a broken logger must never break the fail-closed path */
+    }
+  };
+  return async (run: { intent: string; taskIds: string[] }) => {
+    try {
+      const at = deps.now();
+      const baseId = `run-${at}`;
+      const slug = slugifyIntent(run.intent);
+      const candidateId = slug ? `${baseId}-${slug}` : baseId;
+      const runId = isPathSafeId(candidateId) ? candidateId : baseId;
+      if (!isPathSafeId(runId)) {
+        // Defense in depth: `at` is always a finite number, so `baseId`
+        // should always be path-safe — but never write outside runsDir on
+        // an unforeseen clock value instead of guaranteeing it here.
+        throw new Error(`generated run-id is not path-safe: ${JSON.stringify(runId)}`);
+      }
+
+      await mkdir(deps.runsDir, { recursive: true });
+      const path = join(deps.runsDir, `${runId}.json`);
+      const manifest = { runId, intent: run.intent, taskIds: run.taskIds, at };
+      await writeFile(path, JSON.stringify(manifest, null, 2), { flag: "wx" });
+
+      return { runId, path };
+    } catch (err) {
+      safeLog(
+        "WARN",
+        `orchestrator: recordRun failed (best-effort, run continues unaffected): ${safeErrorMessage(err)}`,
+      );
+      return null;
+    }
+  };
 }

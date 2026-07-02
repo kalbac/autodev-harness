@@ -17,9 +17,9 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { open, stat, writeFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { open, stat, lstat, realpath, writeFile, mkdir, readdir, type FileHandle } from "node:fs/promises";
+import { existsSync, constants } from "node:fs";
+import { join, resolve, sep, extname } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
@@ -46,33 +46,117 @@ const MAX_DIGEST_READ_BYTES = 64 * 1024;
  */
 const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * Hard cap on how many bytes of a `GET /tasks/:id/runtime/:name` file are read into
+ * memory. Runtime files (worker reports, gate verdicts) are written by agents and can
+ * grow large; mirrors the digest-tail bounding philosophy above -- read only a bounded
+ * prefix via a positioned read rather than loading an unbounded file whole. A file over
+ * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500.
+ */
+const MAX_RUNTIME_FILE_READ_BYTES = 1_000_000;
+
+/** Appended to a runtime file's content when it exceeds `MAX_RUNTIME_FILE_READ_BYTES`. */
+const TRUNCATION_MARKER = "\n...[truncated]";
+
+/**
+ * Hard cap on a single static UI-bundle asset read (production-convenience serving,
+ * `ApiServerDeps.uiDir`). Unlike the runtime-file endpoint, assets can be binary
+ * (png/woff2), so an oversized file is never served truncated (that would silently
+ * corrupt binary content) -- it is simply treated as unservable (404) and logged.
+ * A few MB comfortably covers a built dashboard's JS/CSS chunks and small images.
+ */
+const MAX_STATIC_ASSET_READ_BYTES = 8 * 1024 * 1024;
+
+/** Content-type by lowercased file extension for static UI-bundle assets. Unlisted
+ *  extensions fall back to `application/octet-stream`. */
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+  ".map": "application/json; charset=utf-8",
+};
+
+/**
+ * Hard cap on a single `<stateDir>/runs/*.json` manifest read. A manifest is our own
+ * small index ({runId,intent,taskIds,at}); a file over this cap is corrupt/hostile and
+ * is SKIPPED (best-effort) rather than read whole -- bounding memory before `JSON.parse`
+ * so `GET /runs` can never be OOM'd by a poisoned oversized manifest.
+ */
+const MAX_RUN_MANIFEST_BYTES = 256 * 1024;
+
+/**
+ * Soft cap on `POST /orchestrate`'s `intent` string, tighter than the 1MB
+ * `MAX_BODY_BYTES` body cap. The body cap alone already bounds memory, but an
+ * operator intent is meant to be a short instruction (a few sentences at
+ * most) -- a multi-hundred-KB "intent" is almost certainly a mistake or abuse,
+ * not a legitimate request, so it is rejected with a clear 400 rather than
+ * silently accepted and handed to the LLM decomposer.
+ */
+const MAX_INTENT_LENGTH = 4000;
+
 /** Signals that a request body exceeded `MAX_BODY_BYTES` (mapped to HTTP 413). */
 class PayloadTooLargeError extends Error {}
 
 /**
- * Positive allowlist for an escalation id. Real ids are kebab/underscore task slugs
- * (e.g. `s7-t1-model-tiering`) or `drift-<ms>` -- all within this set. Stricter than a
- * traversal denylist: it also blocks `:` (Windows alternate-data-stream syntax),
- * control characters, and newlines (log forging), which a `/`+`\`+`..`+NUL denylist
- * would let through.
+ * Positive allowlist for a bare id segment -- an escalation id, a task id (`:id` in
+ * `/tasks/:id/runtime...`), or a run id (`:id` in `/runs/:id`). Real ids are
+ * kebab/underscore slugs (e.g. `s7-t1-model-tiering`, `run-1234-build-the-thing`) or
+ * `drift-<ms>` -- all within this set. Stricter than a traversal denylist: it also
+ * blocks `:` (Windows alternate-data-stream syntax), control characters, and newlines
+ * (log forging), which a `/`+`\`+`..`+NUL denylist would let through.
  */
-const VALID_ESCALATION_ID = /^[A-Za-z0-9_-]+$/;
+const VALID_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Positive allowlist for a runtime file NAME (`:name` in `/tasks/:id/runtime/:name`).
+ * Unlike a bare id, a runtime file name legitimately contains a `.` (`worker-report.md`,
+ * `gate-verdict.json`), so the charset is widened to include it -- but `/`, `\`, `:`,
+ * control chars, and newlines stay forbidden, and a name containing `..` anywhere
+ * (e.g. `worker..report`, not just the bare `..` segment) is explicitly rejected so a
+ * widened charset can't be abused for traversal.
+ */
+const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 
 export interface ApiServerDeps {
   repo: BlackboardRepository;
   /** Absolute path to the stateDir (e.g. <repoRoot>/.autodev). digest.md + escalations/ live under here. */
   stateDir: string;
+  /**
+   * OPTIONAL absolute path to a built UI bundle dir (production convenience only --
+   * dev mode runs `vite` separately and proxies to this API). When unset, behavior is
+   * completely unchanged: API-only, unknown GET routes still 404. When set, static
+   * serving is added as the LAST fallback in `handleRequest`, AFTER every API route,
+   * so the API always wins. See module header / `resolveStaticPath` / `tryServeStaticFile`.
+   */
+  uiDir?: string;
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching `stateDir`. Must be swappable. */
   watchFactory?: (stateDir: string, onChange: (path: string) => void) => { close(): Promise<void> | void };
   /** Injected clock for the reply timestamp (default () => Date.now()). Keeps tests deterministic. */
   now?: () => number;
   log?: (level: string, message: string) => void;
+  /**
+   * OPTIONAL launcher for `POST /orchestrate`. When unset, `POST /orchestrate`
+   * -> 404 (read-only deployment). The callback receives the operator intent
+   * and MUST only enqueue+trigger via the orchestrator (R1) -- the server
+   * never sees a gate/worker/critic/commit handle. It is invoked in the
+   * BACKGROUND (202-async); its promise rejection is logged, never surfaced
+   * to the already-sent response.
+   */
+  onOrchestrate?: (intent: string) => Promise<unknown>;
 }
 
 export interface ApiServerHandle {
-  /** Starts listening; resolves with the actual bound port (0 => OS-assigned ephemeral port). */
-  listen(port?: number): Promise<number>;
+  /** Starts listening; resolves with the actual bound port (0 => OS-assigned ephemeral port).
+   *  `host` defaults to Node's normal `http.Server#listen` default (all interfaces) when
+   *  omitted -- pass `"127.0.0.1"` to bind loopback-only (used by the `serve` CLI verb). */
+  listen(port?: number, host?: string): Promise<number>;
   /** Closes the http server, the ws server (+ all connected clients), and the watcher. */
   close(): Promise<void>;
   readonly port: number;
@@ -84,6 +168,75 @@ interface EscalationReply {
   /** Free-form operator context -- NEVER an executable instruction. See module header. */
   note: string;
   at: number;
+}
+
+/** Shape written by `createRecordRunCapability` (`src/orchestrator/capabilities.ts`) to
+ *  `<stateDir>/runs/<runId>.json`. */
+interface RunManifest {
+  runId: string;
+  intent: string;
+  taskIds: string[];
+  at: number;
+}
+
+/** Narrow, best-effort validation of a parsed run manifest -- a file that parses as
+ *  JSON but doesn't have this shape is treated the same as unparseable: skipped. */
+function isRunManifest(value: unknown): value is RunManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.runId === "string" &&
+    // A poisoned manifest with an unsafe runId (separators, `..`) must not be
+    // surfaced to the UI as an openable run -- hold it to the same allowlist the
+    // `/runs/:id` route enforces. (Defense in depth; the orchestrator writes safe
+    // ids, but a hand-edited/corrupt file must not leak an unusable id.)
+    safeIdSegment(v.runId) &&
+    typeof v.intent === "string" &&
+    Array.isArray(v.taskIds) &&
+    v.taskIds.every((t) => typeof t === "string") &&
+    typeof v.at === "number" &&
+    Number.isFinite(v.at)
+  );
+}
+
+/**
+ * Read-only open flags that do NOT follow a final-component symlink on POSIX
+ * (`O_NOFOLLOW` -> `ELOOP`). Windows has no reliable `O_NOFOLLOW`, so it opens
+ * normally there -- a STATIC symlink is still caught by the caller's `lstat`/
+ * `fstat` `isFile()` guard, and concurrent symlink creation on Windows is
+ * privilege-gated. Reading from this one fd (fstat + read on the same handle)
+ * also closes the `stat`->`read` TOCTOU where a file is swapped after the check.
+ */
+const READ_NO_FOLLOW_FLAGS =
+  process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+
+/**
+ * Best-effort bounded read of one run manifest, hardened against TOCTOU: opens a
+ * single no-follow fd, `fstat`s THAT handle (256 KiB size cap + regular-file
+ * check), and reads from the same handle -- so a concurrent size-swap or
+ * symlink-swap can neither bypass the cap nor escape `runs/`. Returns `null`
+ * (never throws) for a missing / oversized / non-file / malformed / poisoned
+ * manifest.
+ */
+async function readBoundedManifest(path: string): Promise<RunManifest | null> {
+  let fh: FileHandle;
+  try {
+    fh = await open(path, READ_NO_FOLLOW_FLAGS);
+  } catch {
+    return null;
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > MAX_RUN_MANIFEST_BYTES) return null;
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    const parsed: unknown = JSON.parse(buf.subarray(0, bytesRead).toString("utf8"));
+    return isRunManifest(parsed) ? parsed : null;
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Default (production) watcher: chokidar over the whole stateDir tree. */
@@ -135,13 +288,185 @@ async function readDigestTail(digestPath: string): Promise<string> {
 }
 
 /**
- * Guard against path traversal / separator injection in an escalation id --
- * mirrors `FileBlackboardRepository.safePathSegment`. Checked AFTER
- * percent-decoding so an encoded `..` or `/` cannot slip past the route's
- * single-segment match.
+ * Guard against path traversal / separator injection in a bare id segment (escalation
+ * id, task id, or run id) -- mirrors `FileBlackboardRepository.safePathSegment`.
+ * Checked AFTER percent-decoding so an encoded `..` or `/` cannot slip past the
+ * route's single-segment match.
  */
-function safeEscalationId(id: string): boolean {
-  return VALID_ESCALATION_ID.test(id);
+function safeIdSegment(id: string): boolean {
+  return VALID_ID_SEGMENT.test(id);
+}
+
+/** Kept as a named alias at the escalation-reply call site for readability. */
+const safeEscalationId = safeIdSegment;
+
+/**
+ * Guard against path traversal / separator injection in a runtime file name. Wider
+ * charset than `safeIdSegment` (permits `.`) but explicitly rejects any name
+ * containing `..` -- see `VALID_RUNTIME_FILE_NAME` doc comment.
+ */
+function safeRuntimeFileName(name: string): boolean {
+  return VALID_RUNTIME_FILE_NAME.test(name) && !name.includes("..");
+}
+
+/** Percent-decode a raw URL path segment; `null` on malformed encoding. */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a request pathname (raw, percent-encoded, e.g. `url.pathname`) to an
+ * absolute path INSIDE `uiDir`, or `null` if the request is malformed or attempts
+ * to escape `uiDir`. This is the sole traversal guard for static serving -- mirrors
+ * the `decodeSegment` + positive-allowlist rigor used elsewhere in this file, but
+ * static paths are multi-segment so the guard works segment-by-segment instead of
+ * a single-segment regex allowlist.
+ *
+ * Decodes the WHOLE pathname first (so an encoded separator like `%2f` or an
+ * encoded dot like `%2e` is caught, not just a literal `..`), then walks the
+ * decoded path split on `/`: empty and `.` segments are dropped, a `..` segment
+ * is rejected outright (never resolved away), and any segment containing a NUL
+ * byte, backslash, or colon (Windows separator / drive / ADS syntax) is rejected.
+ * `path.resolve` + an explicit prefix check is kept as defense-in-depth even
+ * though the `..` rejection alone already prevents escaping `uiDir`.
+ */
+function resolveStaticPath(uiDir: string, rawPathname: string): string | null {
+  const decoded = decodeSegment(rawPathname);
+  if (decoded === null) return null;
+  if (decoded.includes("\u0000")) return null;
+
+  const segments: string[] = [];
+  for (const seg of decoded.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") return null;
+    if (seg.includes("\\") || seg.includes(":") || seg.includes("\u0000")) return null;
+    segments.push(seg);
+  }
+
+  const resolved = resolve(uiDir, ...segments);
+  if (resolved !== uiDir && !resolved.startsWith(uiDir + sep)) return null;
+  return resolved;
+}
+
+/** `realpath` that returns `null` instead of throwing (missing path, broken link,
+ *  permission error). Used to canonicalize both `uiDir` and a candidate asset so an
+ *  INTERMEDIATE symlink dir (e.g. `uiDir/assets -> /outside`) cannot escape `uiDir`
+ *  -- a lexical prefix check + a final-component no-follow open do NOT catch that. */
+async function realpathSafe(p: string): Promise<string | null> {
+  try {
+    return await realpath(p);
+  } catch {
+    return null;
+  }
+}
+
+/** Content-type for a static asset by extension; unknown extensions get the safe
+ *  binary default rather than being sniffed. */
+function staticContentType(absPath: string): string {
+  return STATIC_CONTENT_TYPES[extname(absPath).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** Flatten a value for single-line logging: collapse CR/LF/control chars to spaces and
+ *  truncate, so an operator-supplied string (e.g. a POST /orchestrate `intent`) cannot
+ *  forge extra log lines or bloat the log. Mirrors the CR/LF flattening the orchestrator's
+ *  `report` capability does before writing the shared digest. */
+function flattenForLog(s: string, max = 200): string {
+  const flat = Array.from(s, (ch) => { const c = ch.codePointAt(0) ?? 0; return c < 0x20 || c === 0x7f ? " " : ch; }).join("").replace(/ {2,}/g, " ");
+  return flat.length > max ? `${flat.slice(0, max)}...` : flat;
+}
+
+/** Fail-closed error -> string: never throws, even on an `Error` whose `message` getter
+ *  or a value whose `toString` throws (gotcha [ts/fail-closed]). Used in best-effort
+ *  background chains where a throwing error-format must not become an unhandled rejection. */
+function safeErrorText(err: unknown): string {
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return "<unstringifiable error>";
+  }
+}
+
+/**
+ * `"served"` -- response sent (200). `"missing"` -- nothing at this path (ENOENT);
+ * eligible for SPA fallback. `"blocked"` -- something exists at this path but it is
+ * NOT servable (a directory, a symlink, an oversized file, ...); NEVER eligible for
+ * SPA fallback, because falling back to `index.html` for a real directory would
+ * silently mask it as a client-side route instead of 404ing.
+ */
+type StaticServeResult = "served" | "missing" | "blocked";
+
+/**
+ * Attempts to serve one static file at a lexically-checked absolute path. Two
+ * layers of containment: (1) `absPath` already passed `resolveStaticPath`'s lexical
+ * `..`/prefix check; (2) here we `realpath` the target and re-verify it is STILL
+ * inside `canonicalUiDir` -- this is what stops an INTERMEDIATE symlink directory
+ * (`uiDir/assets -> /outside`) from escaping, which `lstat`+`O_NOFOLLOW` (final
+ * component only) do NOT catch. Then the fd-open + fstat + isFile TOCTOU-hardened
+ * read pattern from `handleReadRuntimeFile` serves the canonical path.
+ *
+ * `lstat`/`realpath` failures are mapped precisely: only `ENOENT` (truly nothing
+ * there) is `"missing"` (SPA-fallback-eligible); every other error (`ENOTDIR` for a
+ * path under a file, `EACCES`, a symlink escape, oversize) is `"blocked"` so it can
+ * NEVER be masked as a client-side route by the SPA fallback.
+ */
+async function tryServeStaticFile(
+  absPath: string,
+  canonicalUiDir: string,
+  res: ServerResponse,
+  log: (level: string, message: string) => void,
+): Promise<StaticServeResult> {
+  let lst;
+  try {
+    lst = await lstat(absPath);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "blocked";
+  }
+  if (!lst.isFile()) return "blocked"; // directory / (final) symlink / fifo / etc.
+
+  // Canonicalize and re-check containment: catches an intermediate symlink dir that
+  // the lexical check and the final-component no-follow open both miss.
+  //
+  // ACCEPTED RESIDUAL (documented): a realpath->open gap remains for a concurrent
+  // adversary who swaps an intermediate dir INSIDE canonicalUiDir to a symlink
+  // between this realpath and the open below. Fully closing it needs per-component
+  // no-follow resolution (openat2 RESOLVE_BENEATH) which Node exposes on no platform
+  // portably; realpath containment is exactly what industry static servers
+  // (serve-static lineage) do and is accepted for this threat model -- a localhost,
+  // single-operator, no-auth daemon serving its OWN build output (`<repoRoot>/dist/ui`).
+  // Such an adversary already has same-user FS access and can read any file directly,
+  // so the gap grants no new capability.
+  const canonical = await realpathSafe(absPath);
+  if (canonical === null) return "blocked";
+  if (canonical !== canonicalUiDir && !canonical.startsWith(canonicalUiDir + sep)) return "blocked";
+
+  let fh: FileHandle;
+  try {
+    fh = await open(canonical, READ_NO_FOLLOW_FLAGS);
+  } catch {
+    // ELOOP / raced delete after the checks above -- blocked (never SPA fallback).
+    return "blocked";
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) return "blocked";
+    if (st.size > MAX_STATIC_ASSET_READ_BYTES) {
+      // Never serve a truncated binary asset (would silently corrupt it) -- log and
+      // treat as unservable instead.
+      log("WARN", `api: static asset over ${MAX_STATIC_ASSET_READ_BYTES} bytes, refusing to serve: ${canonical}`);
+      return "blocked";
+    }
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    res.writeHead(200, { "content-type": staticContentType(canonical) });
+    res.end(buf.subarray(0, bytesRead));
+    return "served";
+  } finally {
+    await fh.close();
+  }
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -191,6 +516,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const log = deps.log ?? ((): void => {});
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
 
+  // Single-flight guard for POST /orchestrate: an orchestrate run (LLM
+  // decompose + bounded conductor loop) takes minutes, and only one may run
+  // at a time. Set synchronously before the 202 response is sent so a
+  // concurrent request can never race past it; cleared in the background
+  // chain's `finally` once the (unawaited) run settles.
+  let orchestrateInFlight = false;
+
   async function handleState(res: ServerResponse): Promise<void> {
     const queues = {} as Record<QueueState, Awaited<ReturnType<BlackboardRepository["listTasks"]>>>;
     for (const state of QUEUE_STATES) {
@@ -212,10 +544,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   async function handleReply(rawId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    let id: string;
-    try {
-      id = decodeURIComponent(rawId);
-    } catch {
+    const id = decodeSegment(rawId);
+    if (id === null) {
       sendJson(res, 400, { error: "invalid escalation id encoding" });
       return;
     }
@@ -260,6 +590,253 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, reply);
   }
 
+  /**
+   * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
+   * body, then -- WITHOUT awaiting it -- kicks off `deps.onOrchestrate(intent)` in
+   * the background and returns `202 {accepted:true,intent}` immediately. The
+   * orchestration itself (LLM decompose + bounded conductor loop) can take
+   * minutes; this handler's job is only to validate and enqueue+trigger via the
+   * injected closure, never to hold the connection open.
+   *
+   * Single-flight: `orchestrateInFlight` is set synchronously before the 202 is
+   * sent, so a second POST received before the run finishes gets `409`. The flag
+   * is cleared in the background chain's `finally`, regardless of success,
+   * rejection, or a SYNCHRONOUS throw from `deps.onOrchestrate` -- the
+   * `Promise.resolve().then(...)` wrapper normalizes a sync throw into a
+   * rejection so it can never leak an unhandled exception or a second (500)
+   * response after the 202 has already been sent.
+   */
+  async function handleOrchestrate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.onOrchestrate) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { intent?: unknown } | null;
+    const rawIntent = parsed?.intent;
+    if (typeof rawIntent !== "string") {
+      sendJson(res, 400, { error: "intent must be a string" });
+      return;
+    }
+    const intent = rawIntent.trim();
+    if (intent === "") {
+      sendJson(res, 400, { error: "intent must not be empty" });
+      return;
+    }
+    if (intent.length > MAX_INTENT_LENGTH) {
+      sendJson(res, 400, { error: `intent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    if (orchestrateInFlight) {
+      sendJson(res, 409, { error: "an orchestrate run is already in progress" });
+      return;
+    }
+    orchestrateInFlight = true;
+
+    // Fire-and-forget: NOT awaited, so the 202 below is sent before the run
+    // (which can take minutes) does anything. `Promise.resolve().then(...)`
+    // wraps the call so a SYNCHRONOUS throw from `deps.onOrchestrate` becomes a
+    // rejection here rather than escaping this function's synchronous frame
+    // (which would otherwise crash out of the request handler after a 202 was
+    // already queued).
+    const onOrchestrate = deps.onOrchestrate;
+    // `safeIntent` is flattened (control chars -> spaces, truncated) so an operator
+    // intent can never forge extra log lines. `safeLog` + `safeErrorText` keep this
+    // best-effort background chain from EVER producing an unhandled rejection after the
+    // 202 has been sent -- a throwing logger or a hostile error whose stringify throws
+    // must not escape (gotcha [ts/fail-closed]); the terminal `.catch` is the backstop.
+    const safeIntent = flattenForLog(intent);
+    const safeLog = (level: string, message: string): void => {
+      try {
+        log(level, message);
+      } catch {
+        /* a broken logger must never crash the post-202 background path */
+      }
+    };
+    Promise.resolve()
+      .then(() => onOrchestrate(intent))
+      .then(() => safeLog("INFO", `api: orchestrate run completed for intent: ${safeIntent}`))
+      .catch((err: unknown) =>
+        safeLog("ERROR", `api: orchestrate run failed for intent "${safeIntent}": ${safeErrorText(err)}`),
+      )
+      .finally(() => {
+        orchestrateInFlight = false;
+      })
+      .catch(() => {
+        /* terminal backstop: nothing from this chain may surface as an unhandled rejection */
+      });
+
+    sendJson(res, 202, { accepted: true, intent });
+  }
+
+  /**
+   * Reads and best-effort parses every `*.json` manifest under `<stateDir>/runs/`.
+   * A malformed or unreadable manifest is logged at WARN and SKIPPED -- it never
+   * fails the whole listing (mirrors the `digest.md` best-effort philosophy above).
+   * Missing `runs/` (no orchestrator run recorded yet) yields `[]`, not an error.
+   * Sorted newest-first by `at`; ties keep filesystem-directory-listing order
+   * (Array#sort is a stable sort, so equal `at` values preserve their relative order
+   * from the pre-sorted file list).
+   */
+  async function listRunManifests(): Promise<RunManifest[]> {
+    const runsDir = join(deps.stateDir, "runs");
+    let files: string[];
+    try {
+      files = (await readdir(runsDir)).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      // Best-effort: a missing runs/ dir is the normal "no run yet" case (-> []).
+      // Any OTHER readdir failure (ENOTDIR if runs/ is a file, EACCES, ...) must
+      // also degrade to [] rather than 500 the dashboard's run list.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log("WARN", `api: cannot list run manifests: ${String(err)}`);
+      }
+      return [];
+    }
+    files.sort(); // deterministic base order before the stable sort-by-at below
+    const manifests: RunManifest[] = [];
+    for (const f of files) {
+      // readBoundedManifest is TOCTOU-hardened + best-effort: it returns null
+      // (never throws) for an oversized/malformed/poisoned/non-file manifest,
+      // which we simply skip so one bad file can't fail the whole listing.
+      const manifest = await readBoundedManifest(join(runsDir, f));
+      if (manifest) manifests.push(manifest);
+      else log("WARN", `api: skipping unreadable/invalid run manifest ${f}`);
+    }
+    manifests.sort((a, b) => b.at - a.at);
+    return manifests;
+  }
+
+  async function handleListRuns(res: ServerResponse): Promise<void> {
+    sendJson(res, 200, await listRunManifests());
+  }
+
+  async function handleGetRun(rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+    // Same TOCTOU-hardened bounded read as the list path. A missing / oversized /
+    // malformed / poisoned manifest is treated as absent (-> 404), never a 500 over
+    // an on-disk file the orchestrator (or an operator) may still be writing.
+    const manifest = await readBoundedManifest(join(deps.stateDir, "runs", `${id}.json`));
+    if (!manifest) {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+    sendJson(res, 200, manifest);
+  }
+
+  async function handleListRuntimeFiles(rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid task id" });
+      return;
+    }
+    const dir = deps.repo.runtimeDir(id);
+    try {
+      const names = await readdir(dir);
+      sendJson(res, 200, names);
+    } catch (err) {
+      // Best-effort (mirrors `/runs`): a missing runtime dir is the normal
+      // "task not started" case (-> []); any other readdir failure (ENOTDIR,
+      // EACCES, ...) also degrades to [] rather than a 500.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log("WARN", `api: cannot list runtime files for ${id}: ${String(err)}`);
+      }
+      sendJson(res, 200, []);
+    }
+  }
+
+  async function handleReadRuntimeFile(rawId: string, rawName: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid task id" });
+      return;
+    }
+    const name = decodeSegment(rawName);
+    if (name === null || !safeRuntimeFileName(name)) {
+      sendJson(res, 400, { error: "invalid runtime file name" });
+      return;
+    }
+
+    const filePath = join(deps.repo.runtimeDir(id), name);
+
+    // Cheap cross-platform pre-check: reject a STATIC symlink / dir / fifo up
+    // front (lstat describes the link itself). On Windows, where the no-follow
+    // open below has no O_NOFOLLOW, this is what catches a pre-existing symlink.
+    let lst;
+    try {
+      lst = await lstat(filePath);
+    } catch {
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+    if (!lst.isFile()) {
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+
+    // Open a single no-follow fd and do BOTH the size check (fstat on this
+    // handle) and the read from it -- closing the lstat->read TOCTOU (a swap to a
+    // symlink after the lstat fails the O_NOFOLLOW open with ELOOP on POSIX; a
+    // swap to a dir is caught by the fstat isFile() re-check).
+    let fh: FileHandle;
+    try {
+      fh = await open(filePath, READ_NO_FOLLOW_FLAGS);
+    } catch {
+      // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+    let text: string;
+    let truncated = false;
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) {
+        sendJson(res, 404, { error: "runtime file not found" });
+        return;
+      }
+      // Never load more than the cap. `bytesRead` guards against a short read /
+      // concurrent shrink emitting trailing NUL padding from the alloc'd buffer.
+      const readLen = Math.min(st.size, MAX_RUNTIME_FILE_READ_BYTES);
+      const buf = Buffer.alloc(readLen);
+      const { bytesRead } = await fh.read(buf, 0, readLen, 0);
+      text = buf.subarray(0, bytesRead).toString("utf8");
+      if (st.size > MAX_RUNTIME_FILE_READ_BYTES) {
+        text += TRUNCATION_MARKER;
+        truncated = true;
+      }
+    } finally {
+      await fh.close();
+    }
+
+    // A truncated body is prefix + marker -- no longer valid JSON -- so it must
+    // never be labelled application/json. Serve truncated content as text with an
+    // explicit `x-truncated` header; only an untruncated `.json` file is JSON.
+    const headers: Record<string, string> = truncated
+      ? { "content-type": "text/plain; charset=utf-8", "x-truncated": "true" }
+      : { "content-type": name.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8" };
+    res.writeHead(200, headers);
+    res.end(text);
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -268,10 +845,75 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/runs") {
+      await handleListRuns(res);
+      return;
+    }
+
+    const runMatch = /^\/runs\/([^/]+)\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runMatch) {
+      await handleGetRun(runMatch[1]!, res);
+      return;
+    }
+
+    const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runtimeFileMatch) {
+      await handleReadRuntimeFile(runtimeFileMatch[1]!, runtimeFileMatch[2]!, res);
+      return;
+    }
+
+    const runtimeListMatch = /^\/tasks\/([^/]+)\/runtime\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runtimeListMatch) {
+      await handleListRuntimeFiles(runtimeListMatch[1]!, res);
+      return;
+    }
+
     const replyMatch = /^\/escalations\/([^/]+)\/reply\/?$/.exec(url.pathname);
     if (req.method === "POST" && replyMatch) {
       await handleReply(replyMatch[1]!, req, res);
       return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/orchestrate") {
+      await handleOrchestrate(req, res);
+      return;
+    }
+
+    // Static UI-bundle serving -- LAST fallback, only when uiDir is configured, and
+    // only for GET (a non-GET that matched no API route above still falls through
+    // to the plain 404 below, unchanged). See ApiServerDeps.uiDir doc comment.
+    if (req.method === "GET" && deps.uiDir) {
+      // Canonicalize uiDir ONCE per request: every containment check below is against
+      // the real (symlink-resolved) uiDir, so an intermediate symlink dir can't escape.
+      const canonicalUiDir = await realpathSafe(deps.uiDir);
+      if (canonicalUiDir !== null) {
+        const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
+
+        const resolved = resolveStaticPath(canonicalUiDir, requestPath);
+        if (resolved === null) {
+          sendJson(res, 400, { error: "invalid path" });
+          return;
+        }
+
+        const result = await tryServeStaticFile(resolved, canonicalUiDir, res, log);
+        if (result === "served") return;
+
+        // SPA fallback: serve index.html only for a truly-missing path that looks
+        // like a client route -- i.e. NO segment of the resolved-relative path carries
+        // a file extension. Checking EVERY segment on the DECODED, resolved path (not
+        // errno, not just the last segment) is deliberately cross-platform: it treats
+        // `/missing.js`, `/missing%2ejs` (decoded), AND `/assets/app.js/foo` (a path
+        // under a file -- ENOTDIR on POSIX but ENOENT on Windows) all as assets -> 404,
+        // never a route. A "blocked" result (dir, symlink escape, oversize) is never
+        // eligible either.
+        const relSegments = resolved.slice(canonicalUiDir.length).split(sep);
+        if (result === "missing" && !relSegments.some((s) => s.includes("."))) {
+          const indexPath = resolveStaticPath(canonicalUiDir, "/index.html");
+          if (indexPath !== null && (await tryServeStaticFile(indexPath, canonicalUiDir, res, log)) === "served") {
+            return;
+          }
+        }
+      }
     }
 
     sendJson(res, 404, { error: "not found" });
@@ -308,14 +950,18 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return boundPort;
     },
 
-    listen(port = 0): Promise<number> {
-      return new Promise((resolve, reject) => {
+    listen(port = 0, host?: string): Promise<number> {
+      return new Promise((resolvePromise, reject) => {
         httpServer.once("error", reject);
-        httpServer.listen(port, () => {
+        const onListening = (): void => {
           const addr = httpServer.address() as AddressInfo;
           boundPort = addr.port;
-          resolve(boundPort);
-        });
+          resolvePromise(boundPort);
+        };
+        // Preserve exact prior behavior when host is omitted (tests rely on this):
+        // call the 1-arg overload rather than passing `undefined` as a second arg.
+        if (host !== undefined) httpServer.listen(port, host, onListening);
+        else httpServer.listen(port, onListening);
       });
     },
 

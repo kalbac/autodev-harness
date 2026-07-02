@@ -10,6 +10,11 @@ export interface OrchestratorResult {
   enqueued: { id: string; path: string }[];
   triggered: boolean;
   triggerOutcome?: unknown;
+  /** Set when `caps.recordRun` (a best-effort report-family convenience
+   *  index, see capabilities.ts) succeeded. Absent on a 0-task decomposition
+   *  or when the manifest write failed — a missing `runId` must never be
+   *  treated as `handleIntent` having failed. */
+  runId?: string;
 }
 
 export interface CreateOrchestratorDeps {
@@ -80,15 +85,19 @@ function validateBatch(specs: TaskSpec[], existingIds: string[]): string[] {
  *    race-free: `trigger` has not run yet at this point, so nothing has
  *    claimed (moved out of `pending/`) any of these files.
  * 5. If the batch was empty (0 specs — a valid decomposition of "no work
- *    needed"), skip `trigger` entirely and return early; there is nothing
- *    for a run to process. Otherwise trigger a BOUNDED run (`maxIterations`
- *    = the number of tasks just enqueued) so the batch actually gets
- *    processed, while `handleIntent` itself still terminates. Any task that
- *    needs more rounds than the bound allows (retries, escalations) simply
- *    stays in the blackboard for a follow-up `trigger()` call — this
- *    function makes no promise that every enqueued task reaches `done`
- *    before returning.
- * 6. Report one summary digest line.
+ *    needed"), skip `trigger` (and the manifest write in step 6) entirely
+ *    and return early; there is nothing for a run to process.
+ * 6. Best-effort: `caps.recordRun` writes a run manifest indexing this
+ *    batch's task ids (report family, see capabilities.ts — a convenience
+ *    index for the dashboard, NOT authoritative state). It never throws, so
+ *    a manifest failure can never fail the run; a `null` result is ignored.
+ * 7. Trigger a BOUNDED run (`maxIterations` = the number of tasks just
+ *    enqueued) so the batch actually gets processed, while `handleIntent`
+ *    itself still terminates. Any task that needs more rounds than the
+ *    bound allows (retries, escalations) simply stays in the blackboard for
+ *    a follow-up `trigger()` call — this function makes no promise that
+ *    every enqueued task reaches `done` before returning.
+ * 8. Report one summary digest line.
  */
 export function createOrchestrator(deps: CreateOrchestratorDeps): {
   handleIntent(intent: string): Promise<OrchestratorResult>;
@@ -146,6 +155,11 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
         throw new Error(message);
       }
 
+      // Best-effort convenience index (report family, see capabilities.ts
+      // doc-comment) — `recordRun` never throws, so no try/catch is needed
+      // here, and a `null` result must not affect the rest of the flow.
+      const runRecord = await caps.recordRun({ intent, taskIds: enqueued.map((e) => e.id) });
+
       const maxIterations = Math.max(1, specs.length);
       log("INFO", `orchestrator: triggering a bounded run (maxIterations=${maxIterations})`);
       const triggerOutcome = await caps.trigger({ maxIterations });
@@ -155,7 +169,7 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
         message: `orchestrated intent -> ${enqueued.length} task(s) enqueued and triggered`,
       });
 
-      return { intent, enqueued, triggered: true, triggerOutcome };
+      return { intent, enqueued, triggered: true, triggerOutcome, ...(runRecord ? { runId: runRecord.runId } : {}) };
     },
   };
 }
