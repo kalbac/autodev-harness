@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -280,5 +280,45 @@ describe("createWorktreeManager", () => {
     expect(existsSync(wt.path)).toBe(true);
     // Tolerate git's core.autocrlf normalizing line endings on Windows.
     expect(readFileSync(link, "utf8").replace(/\r\n/g, "\n")).toBe("real content\n");
+  });
+
+  // --- code-review gate: finding 4 (dangling-link detection at provision time) ---
+
+  it("finding 4 regression: a pre-existing dangling link at the link path (checked out from git) is detected via lstat and skipped, not silently EEXIST-swallowed", async () => {
+    // Real target dir + content on "main" — what provisioning normally links to.
+    mkdirSync(join(repoRoot, "collide"));
+    writeFileSync(join(repoRoot, "collide", "dep.txt"), "real dep\n");
+    await runNative("git", ["add", "-A"], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "add collide dir"], { cwd: repoRoot });
+
+    // A second branch where "collide" is instead a DANGLING file-symlink —
+    // simulates a leftover/foreign tracked entry that happens to collide with
+    // the provision path name in whatever ref a worktree checks out.
+    await runNative("git", ["checkout", "-b", "stale-branch"], { cwd: repoRoot });
+    rmSync(join(repoRoot, "collide"), { recursive: true, force: true });
+    symlinkSync("nonexistent-target.txt", join(repoRoot, "collide"), "file");
+    await runNative("git", ["add", "-A"], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "collide becomes a dangling symlink"], { cwd: repoRoot });
+    // Back to main: mainRepoRoot's own working copy has the REAL directory again
+    // (this is what `target` resolves against).
+    await runNative("git", ["checkout", "main"], { cwd: repoRoot });
+    expect(existsSync(join(repoRoot, "collide", "dep.txt"))).toBe(true);
+
+    const messages: string[] = [];
+    const m = createWorktreeManager(repoRoot, worktreesDir, {
+      provision: ["collide"],
+      log: (level, message) => messages.push(`${level}: ${message}`),
+    });
+
+    // Fresh worktree built off stale-branch: "collide" checks out as the
+    // pre-existing dangling symlink BEFORE provisionWorktree ever examines it.
+    const wt = await m.create("t-dangling", "stale-branch");
+    const link = join(wt.path, "collide");
+
+    const st = await lstat(link);
+    expect(st.isSymbolicLink()).toBe(true); // still the pre-existing dangling link, untouched
+
+    expect(messages.some((m2) => /already exists/i.test(m2))).toBe(true);
+    expect(messages.some((m2) => /failed to link/i.test(m2))).toBe(false);
   });
 });

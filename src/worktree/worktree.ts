@@ -102,7 +102,22 @@ export function createWorktreeManager(
           safeLog("WARN", `provision: target missing, skipping ${p} (${target})`);
           continue;
         }
-        if (existsSync(link)) {
+        // `existsSync` FOLLOWS a symlink, so a DANGLING pre-existing link (e.g.
+        // checked out from a tracked git entry that happens to collide with a
+        // provision path) reads as "absent" here even though the path is
+        // occupied on disk. `symlink()` then throws EEXIST, which the outer
+        // catch swallows as a generic "failed to link" — silently leaving the
+        // stale dangling link in place instead of reporting it (finding 4).
+        // `lstat` (no-follow) reports the entry regardless of where — or
+        // whether — it resolves.
+        let occupied = false;
+        try {
+          await lstat(link);
+          occupied = true;
+        } catch {
+          occupied = false;
+        }
+        if (occupied) {
           safeLog("WARN", `provision: path already exists in worktree, skipping ${p}`);
           continue;
         }
