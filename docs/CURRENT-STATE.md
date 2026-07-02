@@ -1,10 +1,10 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s12 — **`orchestrate` LIVE-PROVEN end-to-end on aurora with a green COMMIT**:
-> opus decompose → clean spec → validate → enqueue → trigger → claude worker → gate → codex critic `clean`
-> → COMMIT `2c77106` → merge; R1 held. Live run surfaced + fixed a decompose bug (forbidden_paths `!` negation
-> overlapping file_set; validator guard + prompt doc, codex-gated APPROVE). 384 tests. **P2 is next.**).
+> Last updated: 2026-07-02 (s13 — **P2 dashboard BACKEND shipped**: design-gate (donor-referenced: stack from
+> open-warehouse, transport/run-model from AO/OD) → 4 codex-gated modules (run manifest, read endpoints, serve+
+> static, `POST /orchestrate`) → PR **#26 squash-merged → `main` `5a7963a`**. 447 tests, CI green 4/4, R1 held.
+> **Module 5 = the React/Vite UI itself is NEXT** (paused for operator layout/UX input).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -21,7 +21,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
-| P2 — Web UI (localhost dashboard over the core) | ⬜ **NEXT** (carries the R4 orchestrator window/session model) |
+| **P2 — Web UI (localhost dashboard over the core)** | 🟡 **BACKEND DONE (s13, PR #26).** Design-gated; 4 codex-gated modules: run manifest (`recordRun`), read endpoints (`/runs`, `/tasks/:id/runtime`), `serve` verb + static (127.0.0.1), `POST /orchestrate` (202-async, single-flight, R1-safe). Carries R4 via the per-run manifest. **Module 5 = the React/Vite UI itself is NEXT.** |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
@@ -33,7 +33,18 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s12, 2026-07-02)
+## Last session (s13, 2026-07-02)
+
+- **P2 dashboard BACKEND shipped — PR #26 squash-merged → `main` `5a7963a`.** Design-gate first (Plan spec
+  `docs/superpowers/specs/2026-07-02-p2-dashboard-design.md`), forks resolved with operator. Stack = open-warehouse's
+  (React 19 + Vite + TanStack + shadcn/Tailwind + zustand); transport (keep WS) + run-model (per-run manifest) chosen
+  from AO/OD donor recon. 4 modules, each sonnet TDD → spec-check → **codex GPT-5.5 gate → re-critic**: (1) `recordRun`
+  run manifest; (2) read endpoints (symlink+size TOCTOU-hardened); (3) `serve`+static (realpath containment for the
+  intermediate-symlink-dir escape; 1 documented+accepted TOCTOU residual); (4) `POST /orchestrate` (202-async,
+  single-flight, R1-safe thin callback). 447 tests, CI green 4/4. R1 held everywhere.
+- New gotcha `[api/static-traversal]`; new feedback memory "check donor refs first on architectural forks".
+
+## Prior session (s12, 2026-07-02)
 
 - **`orchestrate` LIVE-PROVEN end-to-end on aurora → green COMMIT.** 3 live runs (decompose-prompt iteration,
   as the promt predicted). Run 3 (class-docblock intent): opus decompose → clean spec → validate → enqueue →
@@ -81,18 +92,23 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s13)
+## NEXT ACTIONS (s14)
 
-1. ✅ **DONE (s12) — `orchestrate` LIVE-PROVEN end-to-end on aurora** (green COMMIT `2c77106`, codex critic
-   `clean`, R1 held). Decompose bug fixed + codex-gated (`e7dbb46` on `autodev/s12-orch-liveproof`).
-2. **Merge the s12 fix.** Branch `autodev/s12-orch-liveproof` (fix `e7dbb46` + s12 docs) → PR → gated merge to
-   `main`. codex-gated APPROVE; needs green CI. (Pending as of s12 end.)
-3. **P2 — localhost dashboard** over the read-only `api` seam; carries the R4 orchestrator window/session/
-   transcript model (deferred from adr/003). **Design-gate it first** (surface 🔴 forks) before building — same
-   pattern as s11.
-4. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree
-   so gates graduate `php -l` → `php artisan test` (would let the critic clear new-public-contract tasks like
-   `supports()` that s12 run 2 correctly escalated). Not a blocker; enforcement-adjacent — codex-gated. Operator-gated.
+1. ✅ **DONE (s13) — P2 dashboard BACKEND** (PR #26 → `main` `5a7963a`; 4 codex-gated modules; 447 tests, CI 4/4).
+2. **Module 5 — the React/Vite UI itself (NEXT).** Stack decided: React 19 + Vite + TanStack Router/Query +
+   shadcn/@base-ui + Tailwind 4 + zustand (= open-warehouse). **Operator wants to discuss layout/UX first** before
+   building. Screens: kanban (queues from `/state`) + run/transcript view (from `/runs` + per-task `/tasks/:id/runtime`)
+   + **critic verdict surfaced first-class** ("never merge bullshit") + a "new run" intent box (`POST /orchestrate`) +
+   escalation A/B reply. Live via the existing WS `{type:"change"}` → React-Query invalidate. Build to `dist/ui` (what
+   `serve` serves); dev = `vite` proxying `/api`+`/ws` to the daemon. Static UI = reviewed, not codex-gated; but any
+   NEW backend/API piece it needs still gets the full gate.
+3. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree so
+   gates graduate `php -l` → `php artisan test`. Not a blocker; enforcement-adjacent — codex-gated. Operator-gated.
+
+**P2 backend assets:** `src/api/server.ts` (`/state`, `/runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`,
+`POST /escalations/:id/reply`, `POST /orchestrate`, WS, static-serving via `uiDir`); `src/index.ts` `serve` verb +
+`buildOrchestrator` factory; `recordRun` in `src/orchestrator/capabilities.ts`. Design spec:
+`docs/superpowers/specs/2026-07-02-p2-dashboard-design.md` (APPROVED).
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
 escalate,anti-drift,gate,conductor,api}/` + `src/index.ts` (composition root). Parity harness under

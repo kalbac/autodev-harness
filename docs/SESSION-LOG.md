@@ -4,6 +4,43 @@
 
 ---
 
+## s13 — 2026-07-02 — P2 dashboard BACKEND shipped (design-gate → 4 gated modules → PR #26 merged)
+
+**Context:** s12 closed the orchestrate live-proof; s13 priority = P2 localhost dashboard. Ran a **design
+gate FIRST** (s11 pattern): Plan subagent authored `docs/superpowers/specs/2026-07-02-p2-dashboard-design.md`;
+🔴 forks surfaced to the operator. Operator steered two ways that reshaped the spec: (1) frontend on the
+**same stack as open-warehouse** (React 19 + Vite + TanStack + shadcn/Tailwind + zustand — shadcn/Tailwind
+is the point, NOT open-warehouse's axios→Laravel coupling); (2) pick transport + run-model **from our donor
+references, not invent** → dispatched parallel Explore agents over **AO** and **OD**. Findings: both donors
+use HTTP `/api` + React-Query + **SSE**; OD has a per-run `runs/<id>/events.jsonl`; **AO has no transcript
+UI** (confirms `[ao/ui]`). Resolved forks: keep our WS (not SSE — already gated), OD-style per-run **manifest**,
+read + escalation + **launch orchestrate** in scope, bind 127.0.0.1. New feedback memory: **check donor refs
+first on any architectural fork.**
+
+**Four backend modules — each sonnet TDD → controller spec-check → codex GPT-5.5 gate → re-critic (never
+self-certified):**
+1. **run manifest** (`recordRun` capability) — `<stateDir>/runs/<run-id>.json` after enqueue; best-effort,
+   R1-safe (report family). codex: 1 High + 2 residuals, all `[ts/fail-closed]` (throwing logger / message
+   getter / non-string toString) → fixed + regression tests → APPROVE.
+2. **read endpoints** — `GET /runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`. codex: 1 High (symlink
+   follow) + 4 Med → symlink+size **TOCTOU-hardened** (no-follow fd + fstat), best-effort never-500, bounded
+   reads → APPROVE.
+3. **serve verb + static** — `serve [--port N]` binds 127.0.0.1, serves `dist/ui` as LAST fallback. codex:
+   1 High (**intermediate symlink-dir escape** — lstat+O_NOFOLLOW only guard the FINAL component) → **realpath
+   containment**; SPA fallback via cross-platform lexical check (errno differs by OS). 1 TOCTOU residual
+   documented + codex-accepted (needs openat2, unavailable in Node; matches serve-static). → APPROVE.
+4. **POST /orchestrate** — 202-async + single-flight (409), R1 preserved (api gets only a thin `onOrchestrate`
+   callback; `buildOrchestrator` shared with the CLI verb). codex: 1 Med + 1 Low (`[ts/fail-closed]` again +
+   log-forging) → fail-closed background chain + `flattenForLog` → APPROVE.
+
+**Result:** 447 tests / 2 skip, typecheck clean, **CI green 4/4**, PR **#26 squash-merged → `main` `5a7963a`**.
+R1 trip-wire green; no new `BlackboardRepository` method; `src/api/**` imports nothing from gate/worker/
+critic/worktree/orchestrator. **Module 5 (the React/Vite UI itself) is NEXT** — paused for operator layout/UX
+input. Editing note: literal control-byte regex literals are unmaintainable via the Edit tool — write control
+classes via char-code checks (`codePointAt`) or `\r\n`-style escapes, never literal bytes.
+
+---
+
 ## s12 — 2026-07-02 — `orchestrate` LIVE-PROVEN end-to-end on aurora (green COMMIT)
 
 **Context:** s11 built the whole adr/003 layer; the ONE thing left was a live end-to-end proof of the

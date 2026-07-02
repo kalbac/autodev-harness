@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 18.
+> Count: 19.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -23,6 +23,7 @@
 | `[conductor/real-repo-run]` | Running on a REAL repo surfaces 3 prereqs the fixture never did: (1) fresh worktree has NO gitignored deps (vendor/node_modules) → use a dependency-free gate (`php -l`) or provision deps; (2) main tree must be CLEAN or `mergeAfterGate` throws; (3) `.autodev/` must be git-excluded or its runtime churn dirties the tree → merge throws. Plus: branch must match `^autodev/`. | `gotchas/harness-on-real-repo-prerequisites.md` |
 | `[orchestrator/forbidden-paths]` | An LLM decompose can emit `forbidden_paths` using gitignore-style `!` negation the harness glob matcher (`*`/`?`/`**` only) does NOT support, overlapping `file_set` → the dirty-file fence flags the task's OWN required file as forbidden → escalate before gate. `validateTaskSpec` accepted the impossible spec (no cross-field check). Fix = superRefine rejects `file_set`∩`forbidden_paths` overlap (reuses fence's exact `globMatch`) + decompose-prompt documents glob semantics. | `gotchas/orchestrator-forbidden-paths-overlap.md` |
 | `[orchestrator/bg-spawn-killed]` | Running `orchestrate` as a BACKGROUND command gets killed during the nested `claude -p --model opus` decompose spawn (silent, stops at "decomposing intent"); foreground runs complete. Intermittent. Run live proofs in the FOREGROUND (surfaces real exit/stderr). Killed runs leave aurora clean (transactional enqueue-after-validate). | `gotchas/orchestrate-background-run-killed.md` |
+| `[api/static-traversal]` | Static file serving with only a lexical `..`-guard + a final-component `O_NOFOLLOW`/`lstat` still lets an INTERMEDIATE symlink DIR (`uiDir/assets -> /outside`) escape — `O_NOFOLLOW` guards only the LAST segment. Fix = `realpath` containment vs a canonicalized `uiDir` (serve-static pattern); one `realpath`→`open` TOCTOU residual accepted (needs openat2, not portable in Node). Siblings: SPA-fallback must be cross-platform LEXICAL not errno (ENOTDIR/ENOENT differ by OS); a truncated file must not keep `application/json`. | `gotchas/static-file-serving-symlink-traversal.md` |
 | `[config/zod-strict]` | A `z.object` STRIPS unknown keys by default — after a hard-cut of a config block (rename/remove), an OLD file using the removed key loads clean and silently reverts every field to defaults (no error). Bit the R3 `worker:`/`critic:`→`roles:` cut (aurora's real config). Fix = `.strict()` on the root schema (fail loud) + migrate every on-disk file. | `gotchas/zod-strip-unknown-keys-silent-config-revert.md` |
 
 ## Anticipated tag namespaces
