@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 
 // worker role (ladder-shaped — preserves parity §7: multi-tier ladder,
 // rate-limit step-down, contract-zone pin to ladder[0]). No `model` key: the
@@ -46,6 +47,30 @@ export const HarnessConfigSchema = z.object({
   repoRoot: z
     .object({ markers: z.array(z.string()).default([".git"]) })
     .default({ markers: [".git"] }),
+
+  // Gitignored dependency dirs (e.g. vendor, plugins-reference) to link into
+  // each per-task worktree so a real gate (composer check / phpunit) can run.
+  // Each entry is a relative path WITHIN the repo: it is used as both a link
+  // target under repoRoot and a link path under the worktree, and teardown
+  // removes it, so an absolute path or a `..` segment is rejected (fail-loud
+  // here; the worktree manager guards again at the fs-op site). Empty = off.
+  worktree: z
+    .object({
+      provision: z
+        .array(z.string())
+        .superRefine((arr, ctx) => {
+          for (const p of arr) {
+            if (p === "" || isAbsolute(p) || p.split(/[\\/]/).includes("..")) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `worktree.provision entry must be a relative path within the repo (no absolute, no "..") : ${JSON.stringify(p)}`,
+              });
+            }
+          }
+        })
+        .default([]),
+    })
+    .default({ provision: [] }),
 
   gate: z
     .object({

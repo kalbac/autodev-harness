@@ -72,4 +72,28 @@ describe("loadConfig", () => {
     mkdirSync(nested, { recursive: true });
     expect(detectRepoRoot(nested, [".git"])).toBe(dir);
   });
+
+  it("defaults worktree.provision to an empty list", async () => {
+    const cfg = await loadConfig(dir);
+    expect(cfg.worktree.provision).toEqual([]);
+  });
+
+  it("accepts a worktree.provision list", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: [vendor, plugins-reference]\n");
+    const cfg = await loadConfig(dir);
+    expect(cfg.worktree.provision).toEqual(["vendor", "plugins-reference"]);
+  });
+
+  it("rejects a worktree.provision entry with a .. segment", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['../escape']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects an absolute worktree.provision entry", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['/etc']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
 });
