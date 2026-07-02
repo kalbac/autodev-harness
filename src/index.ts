@@ -21,6 +21,15 @@ import { RealWatchedProcessRunner } from "./watchdog/watchdog.js";
 import { CodexCriticAdapter } from "./critic/codex-adapter.js";
 import type { CriticAdapter } from "./critic/adapter.js";
 import { assertKnownAdapters, heterogeneityWarnings, resolveWorkerExe } from "./config/roles.js";
+import {
+  createEnqueueCapability,
+  createReadCapability,
+  createReportCapability,
+  type OrchestratorCapabilities,
+} from "./orchestrator/capabilities.js";
+import { ClaudeOrchestratorAdapter } from "./orchestrator/claude-orchestrator-adapter.js";
+import type { OrchestratorAdapter } from "./orchestrator/adapter.js";
+import { createOrchestrator } from "./orchestrator/orchestrator.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "./gate/gate.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "./gate/invariants.js";
 import {
@@ -35,8 +44,9 @@ import { escalate as escalateCore, type EscalationInput } from "./escalate/escal
 import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "./anti-drift/anti-drift.js";
 import { snapshot } from "./util/fingerprint.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "./worker/report.js";
-import { createConductor, type ConductorDeps, type ConductorRunOptions } from "./conductor/conductor.js";
-import { createLogger } from "./util/log.js";
+import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "./conductor/conductor.js";
+import { createLogger, type Logger } from "./util/log.js";
+import type { HarnessConfig } from "./config/schema.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -80,6 +90,28 @@ function parseArgs(argv: string[]): ConductorRunOptions {
   };
 }
 
+type CliCommand =
+  | { mode: "run"; runOpts: ConductorRunOptions }
+  | { mode: "orchestrate"; intent: string };
+
+/**
+ * Top-level CLI dispatch. `orchestrate <intent...>` runs the LLM orchestrator
+ * over the operator's intent (decompose → enqueue → bounded trigger); anything
+ * else is the default deterministic run mode, honoring `--once` /
+ * `--max-iterations`. The remaining args after `orchestrate` are joined so
+ * both `orchestrate "build X"` and `orchestrate build X` work.
+ */
+function parseCli(argv: string[]): CliCommand {
+  if (argv[0] === "orchestrate") {
+    const intent = argv.slice(1).join(" ").trim();
+    if (intent === "") {
+      throw new Error('orchestrate: missing intent (usage: orchestrate "<what to build>")');
+    }
+    return { mode: "orchestrate", intent };
+  }
+  return { mode: "run", runOpts: parseArgs(argv) };
+}
+
 /** Split a shell-style single-line command into `[cmd, ...args]`, guarding the noUncheckedIndexedAccess `[0]`. */
 function splitCommand(cmd: string): { c: string; a: string[] } {
   const parts = cmd.trim().split(/\s+/);
@@ -89,7 +121,7 @@ function splitCommand(cmd: string): { c: string; a: string[] } {
 }
 
 async function main(): Promise<void> {
-  const runOpts = parseArgs(process.argv.slice(2));
+  const command = parseCli(process.argv.slice(2));
 
   const repoRoot = detectRepoRoot(process.cwd());
   const cfg = await loadConfig(repoRoot);
@@ -315,7 +347,60 @@ async function main(): Promise<void> {
   };
 
   const conductor = createConductor(deps);
-  await conductor.run(runOpts);
+
+  if (command.mode === "orchestrate") {
+    await runOrchestrate(command.intent, { cfg, repoRoot, repo, conductor, log });
+    return;
+  }
+  await conductor.run(command.runOpts);
+}
+
+/**
+ * Wire the orchestrator layer (adr/003 R1/R2) and run one intent. The
+ * orchestrator receives EXACTLY the four capabilities and nothing else —
+ * `trigger` is a closure over `conductor.run`, the ONLY enforcement handle it
+ * sees, and it can only START the (bounded) loop, never sequence/skip/gate/
+ * commit. There is no worker/critic/gate/worktree handle in its dependency
+ * surface, so it physically cannot talk past the gate (adr/003 R1).
+ */
+async function runOrchestrate(
+  intent: string,
+  ctx: { cfg: HarnessConfig; repoRoot: string; repo: FileBlackboardRepository; conductor: Conductor; log: Logger },
+): Promise<void> {
+  const { cfg, repoRoot, repo, conductor, log } = ctx;
+
+  const existingIds = async (): Promise<string[]> => {
+    const states = ["pending", "active", "done", "escalated", "quarantine"] as const;
+    const all = await Promise.all(states.map((s) => repo.listTasks(s)));
+    return all.flat().map((t) => t.id);
+  };
+
+  const caps: OrchestratorCapabilities = {
+    enqueue: createEnqueueCapability({ repoRoot, stateDir: cfg.stateDir, existingIds }),
+    // Bounded default: an argless `trigger()` must NOT start the unbounded
+    // run loop (`{}` = run-until-session-cap). The orchestrator always passes
+    // `{maxIterations}`, but the capability itself defaults to a single pass so
+    // no caller can accidentally launch an unbounded run through this handle.
+    trigger: (opts) => conductor.run(opts ?? { once: true }),
+    read: createReadCapability(repo),
+    report: createReportCapability(repo, log),
+  };
+
+  const adapter = ((): OrchestratorAdapter => {
+    switch (cfg.roles.orchestrator.adapter) {
+      case "claude":
+        return new ClaudeOrchestratorAdapter({ cfg, repoRoot });
+      default:
+        throw new Error(
+          `no orchestrator adapter registered for '${cfg.roles.orchestrator.adapter}' (MVP supports: claude)`,
+        );
+    }
+  })();
+
+  const orchestrator = createOrchestrator({ caps, adapter, log });
+  const result = await orchestrator.handleIntent(intent);
+  log("INFO", `orchestrate: ${result.enqueued.length} task(s) enqueued; triggered=${result.triggered}`);
+  for (const t of result.enqueued) log("INFO", `  - ${t.id} -> ${t.path}`);
 }
 
 main().catch((err) => {
