@@ -163,6 +163,7 @@ export function createWorktreeManager(
       await runNative("git", ["branch", "-D", branch], { cwd: mainRepoRoot });
 
       await mainGit.worktreeAdd(path, branch, baseBranch);
+      await provisionWorktree(path);
       return { path, branch, taskId };
     },
 

@@ -170,6 +170,19 @@ describe("createWorktreeManager", () => {
     expect(existsSync(join(wt.path, "deps"))).toBe(false);
   });
 
+  it("provision: links configured dirs into the worktree; the link resolves to the target", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "installed\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-prov", "main");
+
+    // Content is visible THROUGH the link.
+    expect(readFileSync(join(wt.path, "deps", "dep.txt"), "utf8")).toBe("installed\n");
+    // It's a link, not a copy: a new file in the target shows through the worktree.
+    writeFileSync(join(repoRoot, "deps", "extra.txt"), "x\n");
+    expect(existsSync(join(wt.path, "deps", "extra.txt"))).toBe(true);
+  });
+
   it("teardown removes the worktree dir but keeps the branch (non-destructive)", async () => {
     const wt = await manager.create("task5", "main");
     expect(existsSync(wt.path)).toBe(true);
