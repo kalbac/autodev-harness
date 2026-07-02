@@ -78,6 +78,125 @@ function buildBody(input: EscalationInput): string {
   return lines.join("\n");
 }
 
+const ESCALATION_TYPES: readonly EscalationType[] = [
+  "needs-guard",
+  "disagreement",
+  "constitution",
+  "uncertain",
+  "poison",
+  "blocked",
+  "dirty-file",
+  "drift",
+];
+
+function isEscalationType(value: string): value is EscalationType {
+  return (ESCALATION_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Splits `text` on the FIRST occurrence of `sep` only -- `null` if `sep` is absent.
+ * Used for the header (`<id> -- <reason>`) and Task (`<taskId> -- <title>`) lines,
+ * whose second half (`reason` / `title`) may itself contain ` -- `.
+ */
+function splitFirst(text: string, sep: string): [string, string] | null {
+  const idx = text.indexOf(sep);
+  if (idx < 0) return null;
+  return [text.slice(0, idx), text.slice(idx + sep.length)];
+}
+
+/**
+ * Value of the first line starting with `prefix` (prefix stripped), or `null` if no
+ * such line exists. Callers pass the pre-evidence slice (see `parseEscalation`), so
+ * evidence content that happens to start with the same prefix (`**Bold:**` etc.) can
+ * never be matched here -- evidence itself is deliberately NOT extracted this way
+ * (see the fenced-block extraction below).
+ */
+function findFieldLine(lines: readonly string[], prefix: string): string | null {
+  const line = lines.find((l) => l.startsWith(prefix));
+  return line === undefined ? null : line.slice(prefix.length);
+}
+
+/**
+ * Inverse of `buildBody`: parses one escalation artifact back into its
+ * `EscalationInput`. Tolerant by design -- ANY malformed or missing field returns
+ * `null` rather than throwing or returning a partial object, so a caller (the
+ * `GET /escalations/:id` API handler) can treat "unparseable" the same as "not
+ * found" without a try/catch. Field lines are matched by fixed `buildBody` prefixes;
+ * `evidence` is the one multi-line field and is extracted purely from the fenced
+ * code block after the `**Evidence:**` line, never by prefix matching, so evidence
+ * containing lines that look like other fields (`**Bold:**`), backticks, or
+ * `{`/`}` cannot corrupt the other fields or itself.
+ *
+ * The evidence header (`**Evidence:**`) is located FIRST, before any other field is
+ * read, and every field lookup below (including the `# ESCALATION` header line)
+ * runs only against the pre-evidence slice `lines.slice(0, evidenceHeaderIdx)`. A
+ * well-formed artifact is unaffected -- every real field line already sits before
+ * `**Evidence:**` -- but a MALFORMED artifact that is missing a real field can no
+ * longer "borrow" a look-alike line (e.g. `**Option A:** ...`) that happens to
+ * appear inside the evidence block itself.
+ */
+export function parseEscalation(markdown: string): EscalationInput | null {
+  const lines = markdown.split(/\r?\n/);
+
+  const evidenceHeaderIdx = lines.findIndex((l) => l === "**Evidence:**");
+  if (evidenceHeaderIdx < 0) return null;
+  const fieldLines = lines.slice(0, evidenceHeaderIdx);
+
+  const HEADER_PREFIX = "# ESCALATION ";
+  if (fieldLines.length === 0 || !fieldLines[0]!.startsWith(HEADER_PREFIX)) return null;
+
+  const headerSplit = splitFirst(fieldLines[0]!.slice(HEADER_PREFIX.length), " -- ");
+  if (headerSplit === null) return null;
+  const [id, reason] = headerSplit;
+
+  const taskRaw = findFieldLine(fieldLines, "**Task:** ");
+  if (taskRaw === null) return null;
+  const taskSplit = splitFirst(taskRaw, " -- ");
+  if (taskSplit === null) return null;
+  const [taskId, title] = taskSplit;
+
+  const typeRaw = findFieldLine(fieldLines, "**Type:** ");
+  if (typeRaw === null || !isEscalationType(typeRaw)) return null;
+  const type = typeRaw;
+
+  const what = findFieldLine(fieldLines, "**What happened:** ");
+  if (what === null) return null;
+
+  const decision = findFieldLine(fieldLines, "**Decision you need to make:** ");
+  if (decision === null) return null;
+
+  const optionA = findFieldLine(fieldLines, "**Option A:** ");
+  if (optionA === null) return null;
+
+  const optionB = findFieldLine(fieldLines, "**Option B:** ");
+  if (optionB === null) return null;
+
+  const costOfWrong = findFieldLine(fieldLines, "**Cost of being wrong:** ");
+  if (costOfWrong === null) return null;
+
+  // Fenced-block extraction (see doc comment): the "**Evidence:**" header line was
+  // already located above; require the very next line to open the fence, then find
+  // the CLOSING fence as the LAST line equal to "```" from the end of the file back
+  // to the open -- the fixed `buildBody` trailer after the real close (a blank line,
+  // then the "**Reply:**" paragraph) never itself contains a bare "```" line, so the
+  // last such line is reliably the true close even when evidence contains its own
+  // fenced blocks. Anything in between -- verbatim, including embedded blank lines
+  // and nested fences -- is the evidence.
+  const fenceOpenIdx = evidenceHeaderIdx + 1;
+  if (lines[fenceOpenIdx] !== "```") return null;
+  let fenceCloseIdx = -1;
+  for (let i = lines.length - 1; i >= fenceOpenIdx + 1; i--) {
+    if (lines[i] === "```") {
+      fenceCloseIdx = i;
+      break;
+    }
+  }
+  if (fenceCloseIdx < 0) return null;
+  const evidence = lines.slice(fenceOpenIdx + 1, fenceCloseIdx).join("\n");
+
+  return { id, reason, type, taskId, title, what, decision, optionA, optionB, costOfWrong, evidence };
+}
+
 /** Builds the one-line delivery summary exactly like `escalate.ps1:73`. */
 function buildSummary(input: EscalationInput): string {
   return (
