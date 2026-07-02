@@ -24,6 +24,7 @@ import { assertKnownAdapters, heterogeneityWarnings, resolveWorkerExe } from "./
 import {
   createEnqueueCapability,
   createReadCapability,
+  createRecordRunCapability,
   createReportCapability,
   type OrchestratorCapabilities,
 } from "./orchestrator/capabilities.js";
@@ -384,6 +385,11 @@ async function runOrchestrate(
     trigger: (opts) => conductor.run(opts ?? { once: true }),
     read: createReadCapability(repo),
     report: createReportCapability(repo, log),
+    recordRun: createRecordRunCapability({
+      runsDir: join(repoRoot, cfg.stateDir, "runs"),
+      now: () => Date.now(),
+      log,
+    }),
   };
 
   const adapter = ((): OrchestratorAdapter => {

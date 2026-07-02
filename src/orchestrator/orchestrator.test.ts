@@ -21,6 +21,7 @@ interface FakeCapsRecorder {
   enqueueCalls: TaskSpec[];
   triggerCalls: Array<{ once?: boolean; maxIterations?: number } | undefined>;
   reportCalls: Array<{ level: string; message: string }>;
+  recordRunCalls: Array<{ intent: string; taskIds: string[] }>;
 }
 
 function makeFakeCaps(
@@ -28,9 +29,10 @@ function makeFakeCaps(
     queues: Record<QueueState, Task[]>;
     triggerOutcome: unknown;
     enqueueImpl: (spec: TaskSpec) => Promise<{ id: string; path: string }>;
+    recordRunResult: { runId: string; path: string } | null;
   }> = {},
 ): { caps: OrchestratorCapabilities; recorder: FakeCapsRecorder } {
-  const recorder: FakeCapsRecorder = { enqueueCalls: [], triggerCalls: [], reportCalls: [] };
+  const recorder: FakeCapsRecorder = { enqueueCalls: [], triggerCalls: [], reportCalls: [], recordRunCalls: [] };
   const queues = overrides.queues ?? emptyQueues();
 
   const caps: OrchestratorCapabilities = {
@@ -56,6 +58,11 @@ function makeFakeCaps(
     },
     async report(entry) {
       recorder.reportCalls.push(entry);
+    },
+    async recordRun(run) {
+      recorder.recordRunCalls.push(run);
+      if ("recordRunResult" in overrides) return overrides.recordRunResult ?? null;
+      return { runId: "run-fake", path: "runs/run-fake.json" };
     },
   };
 
@@ -92,6 +99,8 @@ describe("createOrchestrator / handleIntent", () => {
     expect(result.triggered).toBe(true);
     expect(result.triggerOutcome).toEqual({ ok: true });
     expect(recorder.reportCalls.at(-1)?.message).toMatch(/3 task\(s\) enqueued and triggered/);
+
+    expect(recorder.recordRunCalls).toEqual([{ intent: "build the thing", taskIds: ["s1-t1", "s1-t2", "s1-t3"] }]);
   });
 
   it("all-or-nothing: one structurally invalid spec -> throws, zero enqueue calls made", async () => {
@@ -164,6 +173,20 @@ describe("createOrchestrator / handleIntent", () => {
     expect(recorder.reportCalls.at(-1)?.message).toMatch(
       /decomposition produced 0 tasks; nothing enqueued, trigger skipped/,
     );
+    expect(recorder.recordRunCalls).toEqual([]);
+  });
+
+  it("recordRun best-effort failure (returns null) does NOT fail handleIntent — normal success result still returned", async () => {
+    const specs = [makeSpec("s1-t1"), makeSpec("s1-t2")];
+    const { caps, recorder } = makeFakeCaps({ recordRunResult: null });
+    const adapter = makeFakeAdapter(specs);
+    const orchestrator = createOrchestrator({ caps, adapter, log: noopLog });
+
+    const result = await orchestrator.handleIntent("intent");
+
+    expect(recorder.recordRunCalls).toEqual([{ intent: "intent", taskIds: ["s1-t1", "s1-t2"] }]);
+    expect(result.triggered).toBe(true);
+    expect(result.enqueued).toHaveLength(2);
   });
 
   it("transactional enqueue: an fs error mid-batch rolls back already-written paths and does NOT trigger", async () => {
