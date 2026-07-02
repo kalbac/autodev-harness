@@ -4,6 +4,41 @@
 
 ---
 
+## s14 — 2026-07-02 — P2 Module 5 (dashboard UI) shipped + LIVE-PROVEN on aurora through the browser
+
+**Context:** s13 shipped the P2 backend; the ONE thing left was Module 5 — the React/Vite UI itself. Operator
+chose to **discuss layout FIRST**. Read all anchors; reconned the in-project donor frontends (AO + OD) BEFORE
+designing (reference-first). **open-warehouse dropped as a reference** — operator: refs live only in `references/`
+(the design spec + s13 promt wrongly cited it). Saved a feedback memory.
+
+**Layout, signed off:** operator steered to an **agent-desktop IA** (Claude Code / Codex / Devin desktop) — not a
+kanban-hero: sidebar runs-list + transcript-forward main + inspector rail, **critic verdict FIRST-CLASS** as a
+"verdict seal" (the thesis, made visible). Task detail = its own 2-pane route. Design direction (frontend-design
+skill): control-room dark ink, verdict tones the only saturated color, mono-forward type (Plex Mono/Sans + Space Grotesk).
+
+**One gated backend add — `GET /escalations/:id`** (the A/B card needs the escalation body; escalation id == task id,
+so no list endpoint). sonnet TDD (`parseEscalation` inverts `buildBody`; TOCTOU-hardened bounded read) → my spec-check
+→ **codex GPT-5.5 gate `broken`, 4 findings** → 3 fixed w/ regression tests (evidence containing a ``` fence
+round-trips via backward close-scan; field lookup restricted to pre-evidence; `parsed.id === :id`), **1 declined w/
+rationale** (final-component no-follow is consistent with sibling endpoints) → **re-critic `clean`**. 480 tests.
+
+**UI (reviewed, not gated):** own `ui/` workspace (heavy toolchain out of the daemon build), Vite → `dist/ui`;
+hand-rolled shadcn-idiom primitives (no headless dep → reliable build); `@fontsource` (offline). Screens: Home
+(hero + composer), Board (5 queues by attention tone, done collapsed), Run transcript, Task detail (2-pane:
+escalation A/B + spec + lifecycle | inspector Verdict/Diff/Report/Files). Live via existing WS → React-Query invalidate.
+
+**Verified for real (Playwright — Claude-in-Chrome was offline):** (1) demo — real api-server over a seeded stateDir:
+board/detail render, escalation A/B reply writes the file, diff colors, BROKEN seal, `POST /orchestrate` → 202 → WS →
+new run appears live. (2) **LIVE on aurora via `serve` (detached — sidesteps `[orchestrator/bg-spawn-killed]`),
+driven from the browser composer:** opus decompose (~20s) → claude worker → `php -l` gate → **codex critic `uncertain`
+→ escalated** → new endpoint → A/B card + UNCERTAIN seal (real critic notes: "unverified contract statement… no test")
+→ **reply B written to the live daemon**. The gate refused an unverified docblock contract claim — the thesis, live.
+
+**Git:** branch `autodev/s14-dashboard-ui` (3 code commits + folds the s13-session-save docs). PR pending (supersedes #27).
+**Gotchas:** `[ui/serve-uidir-reporoot]`, `[ui/verdict-not-persisted]`. Aurora reset to master, temp branch deleted.
+
+---
+
 ## s13 — 2026-07-02 — P2 dashboard BACKEND shipped (design-gate → 4 gated modules → PR #26 merged)
 
 **Context:** s12 closed the orchestrate live-proof; s13 priority = P2 localhost dashboard. Ran a **design

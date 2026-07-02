@@ -1,10 +1,11 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s13 — **P2 dashboard BACKEND shipped**: design-gate (donor-referenced: stack from
-> open-warehouse, transport/run-model from AO/OD) → 4 codex-gated modules (run manifest, read endpoints, serve+
-> static, `POST /orchestrate`) → PR **#26 squash-merged → `main` `5a7963a`**. 447 tests, CI green 4/4, R1 held.
-> **Module 5 = the React/Vite UI itself is NEXT** (paused for operator layout/UX input).
+> Last updated: 2026-07-02 (s14 — **P2 Module 5 (dashboard UI) SHIPPED + LIVE-PROVEN on aurora through the browser**:
+> discussed layout first (agent-desktop IA), built the React/Vite UI to `dist/ui`, + one gated backend add
+> (`GET /escalations/:id`). Browser-verified the whole loop; then a real `serve` on aurora ran opus decompose →
+> claude worker → `php -l` gate → **codex critic `uncertain` → escalated**, surfaced live in the UI, A/B reply
+> written — all from the browser composer. 480 tests. **P2 essentially complete; next = PR + P3.**)
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -21,8 +22,8 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
-| **P2 — Web UI (localhost dashboard over the core)** | 🟡 **BACKEND DONE (s13, PR #26).** Design-gated; 4 codex-gated modules: run manifest (`recordRun`), read endpoints (`/runs`, `/tasks/:id/runtime`), `serve` verb + static (127.0.0.1), `POST /orchestrate` (202-async, single-flight, R1-safe). Carries R4 via the per-run manifest. **Module 5 = the React/Vite UI itself is NEXT.** |
-| P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
+| **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
+| P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ **NEXT** |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -33,7 +34,29 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s13, 2026-07-02)
+## Last session (s14, 2026-07-02)
+
+- **P2 Module 5 (dashboard UI) SHIPPED + LIVE-PROVEN on aurora through the browser.** Layout discussed first
+  (operator steer: agent-desktop IA — sidebar runs-list + transcript-forward main + inspector rail; critic
+  verdict FIRST-CLASS as a "verdict seal"). Built the React/Vite UI in an own `ui/` workspace → `dist/ui`
+  (React 19 + Vite + TanStack Router/Query + zustand + Tailwind 4; hand-rolled shadcn-idiom primitives, no
+  headless dep; `@fontsource`). Screens: Home (hero + new-run composer), Board (5 queues by attention tone),
+  Run transcript, Task detail (2-pane). Live via the existing WS `{type:"change"}` → React-Query invalidate.
+  **Reviewed, not codex-gated** (presentation).
+- **One gated backend add — `GET /escalations/:id`** (the A/B card needs the escalation body; the only new
+  API piece). sonnet TDD → spec-check → **codex GPT-5.5 gate `broken` (4 findings)** → 3 fixed w/ regression
+  tests (evidence-fence round-trip, field-borrow, id-match), 1 declined w/ rationale (final-component no-follow
+  is consistent with sibling endpoints) → **re-critic `clean`**. 480 tests, typecheck clean.
+- **LIVE PROOF (real `serve` on aurora, driven entirely from the browser):** composer → `POST /orchestrate` →
+  **opus decompose** (~20s) → 1 task enqueued → **claude worker** → `php -l` gate → **codex critic `uncertain`**
+  → escalated → new `GET /escalations/:id` → A/B card + UNCERTAIN verdict seal (real critic notes) → **reply B
+  written to the live daemon**. The gate refused to auto-merge an unverified contract claim — the thesis, live.
+- Reference-first: donor recon (AO shell/board/inspector + SSE→invalidate; OD run-timeline fold) BEFORE building.
+  open-warehouse dropped as a reference (operator: refs live only in `references/`). Serving caveat found:
+  `serve` looks for `dist/ui` under the *project* repoRoot (see new gotchas).
+- Branch `autodev/s14-dashboard-ui` (also folds in the s13-session-save docs); PR pending.
+
+## Prior session (s13, 2026-07-02)
 
 - **P2 dashboard BACKEND shipped — PR #26 squash-merged → `main` `5a7963a`.** Design-gate first (Plan spec
   `docs/superpowers/specs/2026-07-02-p2-dashboard-design.md`), forks resolved with operator. Stack = open-warehouse's
@@ -92,22 +115,26 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s14)
+## NEXT ACTIONS (s15)
 
-1. ✅ **DONE (s13) — P2 dashboard BACKEND** (PR #26 → `main` `5a7963a`; 4 codex-gated modules; 447 tests, CI 4/4).
-2. **Module 5 — the React/Vite UI itself (NEXT).** Stack decided: React 19 + Vite + TanStack Router/Query +
-   shadcn/@base-ui + Tailwind 4 + zustand (= open-warehouse). **Operator wants to discuss layout/UX first** before
-   building. Screens: kanban (queues from `/state`) + run/transcript view (from `/runs` + per-task `/tasks/:id/runtime`)
-   + **critic verdict surfaced first-class** ("never merge bullshit") + a "new run" intent box (`POST /orchestrate`) +
-   escalation A/B reply. Live via the existing WS `{type:"change"}` → React-Query invalidate. Build to `dist/ui` (what
-   `serve` serves); dev = `vite` proxying `/api`+`/ws` to the daemon. Static UI = reviewed, not codex-gated; but any
-   NEW backend/API piece it needs still gets the full gate.
-3. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree so
+1. ✅ **DONE (s14) — P2 Module 5 (dashboard UI)** shipped to `dist/ui` + live-proven on aurora through the browser;
+   `GET /escalations/:id` codex-gated. Branch `autodev/s14-dashboard-ui` (folds the s13-session-save docs). **Open the
+   PR** (gated merge → `main`; needs operator OK + green CI). Supersedes/closes PR #27 (its docs are folded in).
+2. **P3 — Product phase.** Electron/Tauri wrap + donor grafts. **Design-gate it first** (surface 🔴 forks) as with s11/s13.
+   Also fold the serving story: `serve` looks for `dist/ui` under the *project* repoRoot — decide where the bundle lives
+   for an external project (ship-with-daemon vs. per-project copy). See gotchas `[ui/serve-uidir-reporoot]`.
+3. **Optional UI follow-ups (backlog, NOT blockers):** (a) persist the critic verdict as a runtime file so the
+   dashboard's verdict-first-class is rich for *committed* tasks too, not just escalations (touches conductor → gated) —
+   gotcha `[ui/verdict-not-persisted]`; (b) run-transcript could join digest lines per task; (c) escalation A/B on
+   `active`/other queues (currently only rendered for `escalated`).
+4. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree so
    gates graduate `php -l` → `php artisan test`. Not a blocker; enforcement-adjacent — codex-gated. Operator-gated.
 
-**P2 backend assets:** `src/api/server.ts` (`/state`, `/runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`,
-`POST /escalations/:id/reply`, `POST /orchestrate`, WS, static-serving via `uiDir`); `src/index.ts` `serve` verb +
-`buildOrchestrator` factory; `recordRun` in `src/orchestrator/capabilities.ts`. Design spec:
+**P2 assets:** backend — `src/api/server.ts` (`/state`, `/runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`,
+`GET /escalations/:id` (s14) + `parseEscalation` in `src/escalate/escalate.ts`, `POST /escalations/:id/reply`,
+`POST /orchestrate`, WS, static-serving via `uiDir`); `src/index.ts` `serve` verb + `buildOrchestrator` factory;
+`recordRun` in `src/orchestrator/capabilities.ts`. UI — the `ui/` workspace (own package.json, Vite → `dist/ui`;
+root `npm run build:ui`/`dev:ui`; `ui/README.md`). Design spec:
 `docs/superpowers/specs/2026-07-02-p2-dashboard-design.md` (APPROVED).
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,

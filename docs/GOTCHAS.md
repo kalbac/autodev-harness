@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 19.
+> Count: 21.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -25,6 +25,8 @@
 | `[orchestrator/bg-spawn-killed]` | Running `orchestrate` as a BACKGROUND command gets killed during the nested `claude -p --model opus` decompose spawn (silent, stops at "decomposing intent"); foreground runs complete. Intermittent. Run live proofs in the FOREGROUND (surfaces real exit/stderr). Killed runs leave aurora clean (transactional enqueue-after-validate). | `gotchas/orchestrate-background-run-killed.md` |
 | `[api/static-traversal]` | Static file serving with only a lexical `..`-guard + a final-component `O_NOFOLLOW`/`lstat` still lets an INTERMEDIATE symlink DIR (`uiDir/assets -> /outside`) escape — `O_NOFOLLOW` guards only the LAST segment. Fix = `realpath` containment vs a canonicalized `uiDir` (serve-static pattern); one `realpath`→`open` TOCTOU residual accepted (needs openat2, not portable in Node). Siblings: SPA-fallback must be cross-platform LEXICAL not errno (ENOTDIR/ENOENT differ by OS); a truncated file must not keep `application/json`. | `gotchas/static-file-serving-symlink-traversal.md` |
 | `[config/zod-strict]` | A `z.object` STRIPS unknown keys by default — after a hard-cut of a config block (rename/remove), an OLD file using the removed key loads clean and silently reverts every field to defaults (no error). Bit the R3 `worker:`/`critic:`→`roles:` cut (aurora's real config). Fix = `.strict()` on the root schema (fail loud) + migrate every on-disk file. | `gotchas/zod-strip-unknown-keys-silent-config-revert.md` |
+| `[ui/serve-uidir-reporoot]` | `serve` resolves the UI bundle at `<project repoRoot>/dist/ui` (repoRoot = git root of cwd), NOT relative to the harness install. So orchestrating an EXTERNAL project (e.g. aurora) has no bundle unless one is placed there — and dropping `dist/ui` into the project tree DIRTIES it → `mergeAfterGate` throws (`[conductor/real-repo-run]`). For the s14 live proof: copy `dist/ui` into the project + add `dist/` to `.git/info/exclude`. Also: run `serve` DETACHED (Start-Process), NOT a bash-background — else the browser-triggered `orchestrate`'s nested `opus` decompose is killed (`[orchestrator/bg-spawn-killed]` applies to `serve` too). | `gotchas/ui-serve-uidir-reporoot.md` |
+| `[ui/verdict-not-persisted]` | The critic/gate verdict object (clean/broken/uncertain + confidence) is NOT written to a per-task runtime file — only a `digest.md` line + (on non-clean) the escalation body + `critic-feedback.md`. So the dashboard's "verdict first-class" is rich ONLY on escalation (via `GET /escalations/:id`); a CLEAN-committed task has no readable verdict artifact (just the digest line). To surface verdict+confidence for committed tasks, persist `critic-verdict.json` as a runtime file (backlog; touches the conductor → full gate). | `gotchas/ui-verdict-not-persisted.md` |
 
 ## Anticipated tag namespaces
 
