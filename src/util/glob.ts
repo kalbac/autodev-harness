@@ -12,6 +12,18 @@ export function globMatch(pattern: string, path: string): boolean {
   return re.test(p);
 }
 
+/**
+ * Normalize a path the same way as the PS `ConvertTo-NormalizedPath`:
+ * backslashes become forward slashes, then leading `.` and `/` characters
+ * are stripped (mirrors `.TrimStart('./')`, which trims BOTH chars, not the
+ * literal 2-char prefix). Used ONLY for set-comparison (stray/forbidden/prefix
+ * checks) — never for reading files, since it would break a raw `.autodev/...`
+ * path by stripping its leading dot.
+ */
+export function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^[./]+/, "");
+}
+
 function globToRegExp(glob: string): RegExp {
   let re = "^";
   for (let i = 0; i < glob.length; i++) {

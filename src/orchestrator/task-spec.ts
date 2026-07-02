@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { stringify } from "yaml";
 import { parseTask } from "../blackboard/task.js";
+import { globMatch, normalizePath } from "../util/glob.js";
 
 /**
  * Mirrors `FileBlackboardRepository`'s private `safePathSegment` guard (that
@@ -61,7 +62,29 @@ export const TaskSpecSchema = z
     phase: z.string().optional(),
     body: z.string().default(""),
   })
-  .strict();
+  .strict()
+  .superRefine((spec, ctx) => {
+    // A spec that requires touching a file AND forbids touching it can NEVER
+    // pass the fence (`forbiddenTouches` in fingerprint.ts) — reject it here,
+    // at the trust boundary, instead of letting it reach the queue and
+    // deadlock a worker. Reuses the fence's EXACT matching semantics
+    // (normalize both sides, then globMatch) so this check never diverges
+    // from what actually gets enforced at commit time.
+    for (const file of spec.file_set) {
+      for (const glob of spec.forbidden_paths) {
+        if (globMatch(normalizePath(glob), normalizePath(file))) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["forbidden_paths"],
+            message:
+              `forbidden_paths glob "${glob}" matches file_set entry "${file}", making this ` +
+              `spec impossible to satisfy (forbidden_paths globs support only "*", "?", and "**" ` +
+              `wildcards — NOT "!" negation or gitignore-style semantics)`,
+          });
+        }
+      }
+    }
+  });
 
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;
 

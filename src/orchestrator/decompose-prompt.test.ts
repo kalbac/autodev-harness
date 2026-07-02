@@ -77,4 +77,13 @@ describe("buildDecomposePrompt", () => {
     expect(prompt).toMatch(/ONLY a JSON array/);
     expect(prompt).toContain("smallest");
   });
+
+  it("documents forbidden_paths semantics: no negation/gitignore support, must not overlap file_set", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot());
+    expect(prompt).toContain("forbidden_paths");
+    expect(prompt).toMatch(/negation|gitignore/i);
+    // file_set guidance must appear right alongside the forbidden_paths
+    // overlap warning, not just anywhere else in the prompt.
+    expect(prompt).toMatch(/file_set[\s\S]{0,200}already defines/);
+  });
 });

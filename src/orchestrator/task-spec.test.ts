@@ -9,6 +9,11 @@ const MINIMAL: TaskSpec = TaskSpecSchema.parse({
   file_set: ["src/orchestrator/task-spec.ts"],
 });
 
+/** Minimal valid spec input — required fields only, overridable for one-off tests. */
+function minimalSpec(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id: "t1", title: "Title", type: "tooling", file_set: ["src/a.ts"], ...overrides };
+}
+
 describe("isPathSafeId", () => {
   it.each(["t1\nowned", "a b", "a/b", "..", "a..b"])("rejects %j", (badId) => {
     expect(isPathSafeId(badId)).toBe(false);
@@ -131,6 +136,42 @@ describe("validateTaskSpec", () => {
       expect(msg).toMatch(/type/);
       expect(msg).toMatch(/file_set/);
     }
+  });
+});
+
+describe("forbidden_paths / file_set overlap (cross-field trust-boundary check)", () => {
+  it("rejects the real-world negation case: a forbidden_paths glob matches a required file_set entry", () => {
+    // The exact spec an LLM emitted in a live run: `!`-negation is NOT
+    // supported by the harness glob matcher, so the wildcard glob matches the
+    // very file the task is required to touch — an impossible spec.
+    expect(() =>
+      validateTaskSpec(
+        minimalSpec({
+          file_set: ["server/app/Services/Llm/LlmServiceFactory.php"],
+          forbidden_paths: ["server/app/Services/Llm/*", "!server/app/Services/Llm/LlmServiceFactory.php"],
+        }),
+      ),
+    ).toThrow(/forbidden_paths/);
+  });
+
+  it("rejects an exact-equal overlap between file_set and forbidden_paths", () => {
+    expect(() =>
+      validateTaskSpec(minimalSpec({ file_set: ["src/a.ts"], forbidden_paths: ["src/a.ts"] })),
+    ).toThrow(/forbidden_paths/);
+  });
+
+  it("accepts a non-overlapping file_set / forbidden_paths pair", () => {
+    expect(() =>
+      validateTaskSpec(minimalSpec({ file_set: ["src/a.ts"], forbidden_paths: ["src/generated/**"] })),
+    ).not.toThrow();
+  });
+
+  it("accepts an empty forbidden_paths (regression)", () => {
+    expect(() => validateTaskSpec(minimalSpec({ forbidden_paths: [] }))).not.toThrow();
+  });
+
+  it("accepts an omitted forbidden_paths (regression)", () => {
+    expect(() => validateTaskSpec(minimalSpec())).not.toThrow();
   });
 });
 

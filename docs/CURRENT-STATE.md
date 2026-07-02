@@ -1,10 +1,10 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-02 (s11 — **adr/003 FULLY BUILT & MERGED**: R3 role registry (PR #21) + the whole R1/R2
-> orchestrator layer (substrate PR #22 + logic/wiring/CLI PR #23; all 5 forks operator-approved "да по всем" and
-> codex-gated). `node dist/index.js orchestrate "<intent>"` works. 378 tests. NOT yet live-proven end-to-end on a
-> real repo — that is the s12 priority.).
+> Last updated: 2026-07-02 (s12 — **`orchestrate` LIVE-PROVEN end-to-end on aurora with a green COMMIT**:
+> opus decompose → clean spec → validate → enqueue → trigger → claude worker → gate → codex critic `clean`
+> → COMMIT `2c77106` → merge; R1 held. Live run surfaced + fixed a decompose bug (forbidden_paths `!` negation
+> overlapping file_set; validator guard + prompt doc, codex-gated APPROVE). 384 tests. **P2 is next.**).
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -20,8 +20,8 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | P0 — Bootstrap docs & charter | ✅ done (s01) |
 | Pivot — build-own vs fork; donor extraction; freeze skeleton | ✅ done (s02, `adr/002`) |
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
-| **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11).** R3 role registry (PR #21) + R1/R2 orchestrator layer (substrate PR #22 + logic + `orchestrate` CLI). 378 tests. |
-| P2 — Web UI (localhost dashboard over the core) | ⬜ pending (carries the R4 orchestrator window/session model) |
+| **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
+| P2 — Web UI (localhost dashboard over the core) | ⬜ **NEXT** (carries the R4 orchestrator window/session model) |
 | P3 — Product phase (Electron/Tauri wrap + grafts) | ⬜ pending |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
@@ -33,7 +33,24 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s11, 2026-07-02)
+## Last session (s12, 2026-07-02)
+
+- **`orchestrate` LIVE-PROVEN end-to-end on aurora → green COMMIT.** 3 live runs (decompose-prompt iteration,
+  as the promt predicted). Run 3 (class-docblock intent): opus decompose → clean spec → validate → enqueue →
+  trigger → claude worker → gate `php -l` → **codex critic `clean` (0.86)** → **COMMIT `2c77106`** → merge →
+  worktree torn down. Task in aurora `done/`. **R1 held** (orchestrator only authored the task file; all
+  enforcement in the deterministic conductor). aurora proof branch: `autodev/s12-orch-proof`.
+- **Decompose bug found + fixed (branch `autodev/s12-orch-liveproof`, commit `e7dbb46`).** Run 1 escalated
+  `dirty-file`: opus emitted `forbidden_paths: ["…/Llm/*", "!…/LlmServiceFactory.php"]` (gitignore `!` negation
+  the `*`/`?`/`**` matcher doesn't support) overlapping `file_set` → fence flagged the required file forbidden;
+  `validateTaskSpec` had accepted the impossible spec. Fix: superRefine rejects `file_set`∩`forbidden_paths`
+  overlap (reuses fence's exact `globMatch` semantics) + decompose-prompt documents glob semantics. sonnet TDD →
+  spec-check → **codex GPT-5.5 gate APPROVE (no findings)**. +6 tests, 384 pass / 2 skip. NOT yet merged to `main`.
+- Run 2 (`supports()`, post-fix) escalated `uncertain` — critic correctly refused a new public contract with no
+  test (dependency-free gate can't run phpunit). The gate working as designed. Gotchas: `[orchestrator/forbidden-paths]`,
+  `[orchestrator/bg-spawn-killed]`.
+
+## Prior session (s11, 2026-07-02)
 
 - **R3 role registry SHIPPED (PR #21, merged `d07e72c`).** Flat `worker:`/`critic:` config blocks generalized into
   a unified `roles: {orchestrator, worker, critic, planner}` registry + `policy.heterogeneity` (warn|off). Worker
@@ -64,16 +81,18 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s12)
+## NEXT ACTIONS (s13)
 
-1. ✅ **DONE (s11) — role registry (adr/003 R3)** PR #21 + **orchestrator layer (adr/003 R1/R2)** PR (waves 1+2).
-2. **Live proof of the `orchestrate` path.** The CLI is smoke-tested (dispatch + build) but the end-to-end
-   decompose→enqueue→trigger→COMMIT with a LIVE `claude` orchestrator has NOT been run on a real repo yet (aurora).
-   Do this next — it is the orchestrator's equivalent of the s09 P1 live proof.
-3. **P2 — localhost dashboard** over the read-only `api` seam; carries the R4 orchestrator window/session model.
+1. ✅ **DONE (s12) — `orchestrate` LIVE-PROVEN end-to-end on aurora** (green COMMIT `2c77106`, codex critic
+   `clean`, R1 held). Decompose bug fixed + codex-gated (`e7dbb46` on `autodev/s12-orch-liveproof`).
+2. **Merge the s12 fix.** Branch `autodev/s12-orch-liveproof` (fix `e7dbb46` + s12 docs) → PR → gated merge to
+   `main`. codex-gated APPROVE; needs green CI. (Pending as of s12 end.)
+3. **P2 — localhost dashboard** over the read-only `api` seam; carries the R4 orchestrator window/session/
+   transcript model (deferred from adr/003). **Design-gate it first** (surface 🔴 forks) before building — same
+   pattern as s11.
 4. **Optional P1 hardening — Finding #1 (deps-provisioning):** symlink/junction configured dirs into each worktree
-   so gates graduate `php -l` → `php artisan test`. Not a blocker; enforcement-adjacent (worktree axis) — codex-gated.
-   Operator-gated ("only if asked").
+   so gates graduate `php -l` → `php artisan test` (would let the critic clear new-public-contract tasks like
+   `supports()` that s12 run 2 correctly escalated). Not a blocker; enforcement-adjacent — codex-gated. Operator-gated.
 
 **Assets:** all P1 modules under `src/{util,config,blackboard,scheduler,worktree,router,worker,critic,watchdog,
 escalate,anti-drift,gate,conductor,api}/` + `src/index.ts` (composition root). Parity harness under
