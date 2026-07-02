@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -263,5 +263,306 @@ describe("createApiServer / GET /state digest tail is bounded", () => {
     expect(tail.length).toBe(32);
     expect(tail[0]).toContain("digest line 8");
     expect(tail[tail.length - 1]).toContain(`digest line ${lineCount - 1}`);
+  });
+});
+
+/** Seed a run manifest at `<stateDir>/runs/<runId>.json`, mirroring the shape
+ * written by `createRecordRunCapability` (`src/orchestrator/capabilities.ts`). */
+function seedRun(runId: string, at: number, intent = "an intent", taskIds: string[] = []): void {
+  const dir = join(stateDir, "runs");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${runId}.json`), JSON.stringify({ runId, intent, taskIds, at }, null, 2));
+}
+
+describe("createApiServer / GET /runs", () => {
+  it("returns [] when runs/ does not exist", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it("returns manifests sorted newest-first by at", async () => {
+    seedRun("run-1", 100);
+    seedRun("run-2", 300);
+    seedRun("run-3", 200);
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; at: number }[];
+    expect(body.map((r) => r.runId)).toEqual(["run-2", "run-3", "run-1"]);
+  });
+
+  it("skips a malformed manifest file (never 500s), still returns the valid ones", async () => {
+    seedRun("run-good-1", 100);
+    seedRun("run-good-2", 200);
+    const runsDir = join(stateDir, "runs");
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, "run-bad.json"), "{ not valid json ");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string }[];
+    expect(body.map((r) => r.runId).sort()).toEqual(["run-good-1", "run-good-2"]);
+  });
+
+  it("skips an oversized manifest (bounded before parse) and a poisoned-runId manifest, keeps the valid one", async () => {
+    seedRun("run-good", 100);
+    const runsDir = join(stateDir, "runs");
+    mkdirSync(runsDir, { recursive: true });
+    // Oversized (> MAX_RUN_MANIFEST_BYTES = 256 KiB) but otherwise valid JSON.
+    writeFileSync(
+      join(runsDir, "run-huge.json"),
+      JSON.stringify({ runId: "run-huge", intent: "x".repeat(300 * 1024), taskIds: [], at: 1 }),
+    );
+    // Valid JSON but a path-unsafe runId -- isRunManifest must reject it so the UI
+    // never gets an unopenable id.
+    writeFileSync(join(runsDir, "run-poison.json"), JSON.stringify({ runId: "../evil", intent: "i", taskIds: [], at: 1 }));
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string }[];
+    expect(body.map((r) => r.runId)).toEqual(["run-good"]);
+  });
+
+  it("returns [] (never 500s) when runs/ exists but is a plain file, not a directory", async () => {
+    // runs/ occupied by a file -> readdir throws ENOTDIR; best-effort must degrade to [].
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "runs"), "not a directory");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+});
+
+describe("createApiServer / GET /runs/:id", () => {
+  it("returns the manifest for a known run id", async () => {
+    seedRun("run-abc", 42, "build the thing", ["t1", "t2"]);
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs/run-abc`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; intent: string; taskIds: string[]; at: number };
+    expect(body).toEqual({ runId: "run-abc", intent: "build the thing", taskIds: ["t1", "t2"], at: 42 });
+  });
+
+  it("404s for a missing run id", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs/does-not-exist`);
+    expect(res.status).toBe(404);
+  });
+
+  it("400s for an id containing '..'", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs/foo..bar`);
+    expect(res.status).toBe(400);
+  });
+
+  it("400s for an id with an encoded slash (path-traversal guard is post-decode)", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs/a%2Fb`);
+    expect(res.status).toBe(400);
+  });
+
+  it("a traversal id can never read a file outside runs/ (sentinel one dir up is unreachable)", async () => {
+    seedRun("run-x", 1);
+    // Sentinel sits directly under stateDir, one directory above runs/.
+    writeFileSync(join(stateDir, "sentinel.json"), JSON.stringify({ secret: "leak-me-not" }));
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/runs/..%2Fsentinel`);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain("leak-me-not");
+  });
+});
+
+describe("createApiServer / GET /tasks/:id/runtime", () => {
+  it("lists runtime file names for a task", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "worker-report.md"), "# report");
+    writeFileSync(join(dir, "gate-verdict.json"), JSON.stringify({ verdict: "pass" }));
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as string[];
+    expect(body.sort()).toEqual(["gate-verdict.json", "worker-report.md"]);
+  });
+
+  it("returns [] when the task's runtime dir does not exist", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/no-such-task/runtime`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it("400s for a bad task id", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/a%2Fb/runtime`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
+  it("returns text content with text/plain content-type for a non-json file", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "worker-report.md"), "# hello world");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/worker-report.md`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(await res.text()).toBe("# hello world");
+  });
+
+  it("returns application/json content-type for a .json file", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "gate-verdict.json"), JSON.stringify({ verdict: "pass" }));
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/gate-verdict.json`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as { verdict: string };
+    expect(body.verdict).toBe("pass");
+  });
+
+  it("404s when the runtime file does not exist", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/missing.md`);
+    expect(res.status).toBe(404);
+  });
+
+  it("400s for a bad task id", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/a%2Fb/runtime/report.md`);
+    expect(res.status).toBe(400);
+  });
+
+  it("400s for a name containing '..' (even embedded, e.g. worker..report)", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/worker..report`);
+    expect(res.status).toBe(400);
+  });
+
+  it("400s for a name with an encoded slash (path-traversal guard is post-decode)", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/a%2Fb`);
+    expect(res.status).toBe(400);
+  });
+
+  it("a traversal name can never read a file outside the task's runtimeDir (sentinel one dir up is unreachable)", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    // Sentinel sits in the shared "runtime" parent dir, one directory above t1's own runtimeDir.
+    const runtimeParent = join(dir, "..");
+    writeFileSync(join(runtimeParent, "sentinel-runtime.txt"), "leak-me-not-either");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/..%2Fsentinel-runtime.txt`);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain("leak-me-not-either");
+  });
+
+  it("bounds an oversized file to exactly the cap + marker, and a truncated .json is served as text (never application/json)", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    const CAP = 1_000_000; // MAX_RUNTIME_FILE_READ_BYTES
+    const MARKER = "\n...[truncated]"; // TRUNCATION_MARKER
+    // A .json file so we also prove the truncated body is NOT labelled application/json
+    // (prefix + marker is no longer valid JSON).
+    writeFileSync(join(dir, "huge.json"), "a".repeat(CAP + 50_000));
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/huge.json`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(res.headers.get("x-truncated")).toBe("true");
+    const text = await res.text();
+    // Exactly the bounded prefix (all 'a') plus the marker -- no trailing NUL padding.
+    expect(text).toBe("a".repeat(CAP) + MARKER);
+  });
+
+  it("404s (does not follow) when the name resolves to a directory, not a regular file", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(join(dir, "subdir"), { recursive: true });
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/subdir`);
+    expect(res.status).toBe(404);
+  });
+
+  it("404s (does not follow) a symlink inside runtimeDir pointing outside it (no escape)", async () => {
+    const dir = repo.runtimeDir("t1");
+    mkdirSync(dir, { recursive: true });
+    const secret = join(root, "outside-secret.txt");
+    writeFileSync(secret, "leak-me-not-via-symlink");
+    // Symlink creation may require privilege on Windows; skip gracefully if unsupported.
+    try {
+      symlinkSync(secret, join(dir, "link.md"), "file");
+    } catch {
+      return; // environment can't create symlinks -- the lstat/isFile guard still holds
+    }
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/link.md`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("leak-me-not-via-symlink");
   });
 });

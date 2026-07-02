@@ -17,8 +17,8 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { open, stat, writeFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { open, stat, lstat, writeFile, mkdir, readdir, type FileHandle } from "node:fs/promises";
+import { existsSync, constants } from "node:fs";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
@@ -46,17 +46,48 @@ const MAX_DIGEST_READ_BYTES = 64 * 1024;
  */
 const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * Hard cap on how many bytes of a `GET /tasks/:id/runtime/:name` file are read into
+ * memory. Runtime files (worker reports, gate verdicts) are written by agents and can
+ * grow large; mirrors the digest-tail bounding philosophy above -- read only a bounded
+ * prefix via a positioned read rather than loading an unbounded file whole. A file over
+ * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500.
+ */
+const MAX_RUNTIME_FILE_READ_BYTES = 1_000_000;
+
+/** Appended to a runtime file's content when it exceeds `MAX_RUNTIME_FILE_READ_BYTES`. */
+const TRUNCATION_MARKER = "\n...[truncated]";
+
+/**
+ * Hard cap on a single `<stateDir>/runs/*.json` manifest read. A manifest is our own
+ * small index ({runId,intent,taskIds,at}); a file over this cap is corrupt/hostile and
+ * is SKIPPED (best-effort) rather than read whole -- bounding memory before `JSON.parse`
+ * so `GET /runs` can never be OOM'd by a poisoned oversized manifest.
+ */
+const MAX_RUN_MANIFEST_BYTES = 256 * 1024;
+
 /** Signals that a request body exceeded `MAX_BODY_BYTES` (mapped to HTTP 413). */
 class PayloadTooLargeError extends Error {}
 
 /**
- * Positive allowlist for an escalation id. Real ids are kebab/underscore task slugs
- * (e.g. `s7-t1-model-tiering`) or `drift-<ms>` -- all within this set. Stricter than a
- * traversal denylist: it also blocks `:` (Windows alternate-data-stream syntax),
- * control characters, and newlines (log forging), which a `/`+`\`+`..`+NUL denylist
- * would let through.
+ * Positive allowlist for a bare id segment -- an escalation id, a task id (`:id` in
+ * `/tasks/:id/runtime...`), or a run id (`:id` in `/runs/:id`). Real ids are
+ * kebab/underscore slugs (e.g. `s7-t1-model-tiering`, `run-1234-build-the-thing`) or
+ * `drift-<ms>` -- all within this set. Stricter than a traversal denylist: it also
+ * blocks `:` (Windows alternate-data-stream syntax), control characters, and newlines
+ * (log forging), which a `/`+`\`+`..`+NUL denylist would let through.
  */
-const VALID_ESCALATION_ID = /^[A-Za-z0-9_-]+$/;
+const VALID_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Positive allowlist for a runtime file NAME (`:name` in `/tasks/:id/runtime/:name`).
+ * Unlike a bare id, a runtime file name legitimately contains a `.` (`worker-report.md`,
+ * `gate-verdict.json`), so the charset is widened to include it -- but `/`, `\`, `:`,
+ * control chars, and newlines stay forbidden, and a name containing `..` anywhere
+ * (e.g. `worker..report`, not just the bare `..` segment) is explicitly rejected so a
+ * widened charset can't be abused for traversal.
+ */
+const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 
 export interface ApiServerDeps {
   repo: BlackboardRepository;
@@ -84,6 +115,75 @@ interface EscalationReply {
   /** Free-form operator context -- NEVER an executable instruction. See module header. */
   note: string;
   at: number;
+}
+
+/** Shape written by `createRecordRunCapability` (`src/orchestrator/capabilities.ts`) to
+ *  `<stateDir>/runs/<runId>.json`. */
+interface RunManifest {
+  runId: string;
+  intent: string;
+  taskIds: string[];
+  at: number;
+}
+
+/** Narrow, best-effort validation of a parsed run manifest -- a file that parses as
+ *  JSON but doesn't have this shape is treated the same as unparseable: skipped. */
+function isRunManifest(value: unknown): value is RunManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.runId === "string" &&
+    // A poisoned manifest with an unsafe runId (separators, `..`) must not be
+    // surfaced to the UI as an openable run -- hold it to the same allowlist the
+    // `/runs/:id` route enforces. (Defense in depth; the orchestrator writes safe
+    // ids, but a hand-edited/corrupt file must not leak an unusable id.)
+    safeIdSegment(v.runId) &&
+    typeof v.intent === "string" &&
+    Array.isArray(v.taskIds) &&
+    v.taskIds.every((t) => typeof t === "string") &&
+    typeof v.at === "number" &&
+    Number.isFinite(v.at)
+  );
+}
+
+/**
+ * Read-only open flags that do NOT follow a final-component symlink on POSIX
+ * (`O_NOFOLLOW` -> `ELOOP`). Windows has no reliable `O_NOFOLLOW`, so it opens
+ * normally there -- a STATIC symlink is still caught by the caller's `lstat`/
+ * `fstat` `isFile()` guard, and concurrent symlink creation on Windows is
+ * privilege-gated. Reading from this one fd (fstat + read on the same handle)
+ * also closes the `stat`->`read` TOCTOU where a file is swapped after the check.
+ */
+const READ_NO_FOLLOW_FLAGS =
+  process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+
+/**
+ * Best-effort bounded read of one run manifest, hardened against TOCTOU: opens a
+ * single no-follow fd, `fstat`s THAT handle (256 KiB size cap + regular-file
+ * check), and reads from the same handle -- so a concurrent size-swap or
+ * symlink-swap can neither bypass the cap nor escape `runs/`. Returns `null`
+ * (never throws) for a missing / oversized / non-file / malformed / poisoned
+ * manifest.
+ */
+async function readBoundedManifest(path: string): Promise<RunManifest | null> {
+  let fh: FileHandle;
+  try {
+    fh = await open(path, READ_NO_FOLLOW_FLAGS);
+  } catch {
+    return null;
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > MAX_RUN_MANIFEST_BYTES) return null;
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    const parsed: unknown = JSON.parse(buf.subarray(0, bytesRead).toString("utf8"));
+    return isRunManifest(parsed) ? parsed : null;
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Default (production) watcher: chokidar over the whole stateDir tree. */
@@ -135,13 +235,34 @@ async function readDigestTail(digestPath: string): Promise<string> {
 }
 
 /**
- * Guard against path traversal / separator injection in an escalation id --
- * mirrors `FileBlackboardRepository.safePathSegment`. Checked AFTER
- * percent-decoding so an encoded `..` or `/` cannot slip past the route's
- * single-segment match.
+ * Guard against path traversal / separator injection in a bare id segment (escalation
+ * id, task id, or run id) -- mirrors `FileBlackboardRepository.safePathSegment`.
+ * Checked AFTER percent-decoding so an encoded `..` or `/` cannot slip past the
+ * route's single-segment match.
  */
-function safeEscalationId(id: string): boolean {
-  return VALID_ESCALATION_ID.test(id);
+function safeIdSegment(id: string): boolean {
+  return VALID_ID_SEGMENT.test(id);
+}
+
+/** Kept as a named alias at the escalation-reply call site for readability. */
+const safeEscalationId = safeIdSegment;
+
+/**
+ * Guard against path traversal / separator injection in a runtime file name. Wider
+ * charset than `safeIdSegment` (permits `.`) but explicitly rejects any name
+ * containing `..` -- see `VALID_RUNTIME_FILE_NAME` doc comment.
+ */
+function safeRuntimeFileName(name: string): boolean {
+  return VALID_RUNTIME_FILE_NAME.test(name) && !name.includes("..");
+}
+
+/** Percent-decode a raw URL path segment; `null` on malformed encoding. */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -212,10 +333,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   async function handleReply(rawId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    let id: string;
-    try {
-      id = decodeURIComponent(rawId);
-    } catch {
+    const id = decodeSegment(rawId);
+    if (id === null) {
       sendJson(res, 400, { error: "invalid escalation id encoding" });
       return;
     }
@@ -260,11 +379,186 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, reply);
   }
 
+  /**
+   * Reads and best-effort parses every `*.json` manifest under `<stateDir>/runs/`.
+   * A malformed or unreadable manifest is logged at WARN and SKIPPED -- it never
+   * fails the whole listing (mirrors the `digest.md` best-effort philosophy above).
+   * Missing `runs/` (no orchestrator run recorded yet) yields `[]`, not an error.
+   * Sorted newest-first by `at`; ties keep filesystem-directory-listing order
+   * (Array#sort is a stable sort, so equal `at` values preserve their relative order
+   * from the pre-sorted file list).
+   */
+  async function listRunManifests(): Promise<RunManifest[]> {
+    const runsDir = join(deps.stateDir, "runs");
+    let files: string[];
+    try {
+      files = (await readdir(runsDir)).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      // Best-effort: a missing runs/ dir is the normal "no run yet" case (-> []).
+      // Any OTHER readdir failure (ENOTDIR if runs/ is a file, EACCES, ...) must
+      // also degrade to [] rather than 500 the dashboard's run list.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log("WARN", `api: cannot list run manifests: ${String(err)}`);
+      }
+      return [];
+    }
+    files.sort(); // deterministic base order before the stable sort-by-at below
+    const manifests: RunManifest[] = [];
+    for (const f of files) {
+      // readBoundedManifest is TOCTOU-hardened + best-effort: it returns null
+      // (never throws) for an oversized/malformed/poisoned/non-file manifest,
+      // which we simply skip so one bad file can't fail the whole listing.
+      const manifest = await readBoundedManifest(join(runsDir, f));
+      if (manifest) manifests.push(manifest);
+      else log("WARN", `api: skipping unreadable/invalid run manifest ${f}`);
+    }
+    manifests.sort((a, b) => b.at - a.at);
+    return manifests;
+  }
+
+  async function handleListRuns(res: ServerResponse): Promise<void> {
+    sendJson(res, 200, await listRunManifests());
+  }
+
+  async function handleGetRun(rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+    // Same TOCTOU-hardened bounded read as the list path. A missing / oversized /
+    // malformed / poisoned manifest is treated as absent (-> 404), never a 500 over
+    // an on-disk file the orchestrator (or an operator) may still be writing.
+    const manifest = await readBoundedManifest(join(deps.stateDir, "runs", `${id}.json`));
+    if (!manifest) {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+    sendJson(res, 200, manifest);
+  }
+
+  async function handleListRuntimeFiles(rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid task id" });
+      return;
+    }
+    const dir = deps.repo.runtimeDir(id);
+    try {
+      const names = await readdir(dir);
+      sendJson(res, 200, names);
+    } catch (err) {
+      // Best-effort (mirrors `/runs`): a missing runtime dir is the normal
+      // "task not started" case (-> []); any other readdir failure (ENOTDIR,
+      // EACCES, ...) also degrades to [] rather than a 500.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log("WARN", `api: cannot list runtime files for ${id}: ${String(err)}`);
+      }
+      sendJson(res, 200, []);
+    }
+  }
+
+  async function handleReadRuntimeFile(rawId: string, rawName: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid task id" });
+      return;
+    }
+    const name = decodeSegment(rawName);
+    if (name === null || !safeRuntimeFileName(name)) {
+      sendJson(res, 400, { error: "invalid runtime file name" });
+      return;
+    }
+
+    const filePath = join(deps.repo.runtimeDir(id), name);
+
+    // Cheap cross-platform pre-check: reject a STATIC symlink / dir / fifo up
+    // front (lstat describes the link itself). On Windows, where the no-follow
+    // open below has no O_NOFOLLOW, this is what catches a pre-existing symlink.
+    let lst;
+    try {
+      lst = await lstat(filePath);
+    } catch {
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+    if (!lst.isFile()) {
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+
+    // Open a single no-follow fd and do BOTH the size check (fstat on this
+    // handle) and the read from it -- closing the lstat->read TOCTOU (a swap to a
+    // symlink after the lstat fails the O_NOFOLLOW open with ELOOP on POSIX; a
+    // swap to a dir is caught by the fstat isFile() re-check).
+    let fh: FileHandle;
+    try {
+      fh = await open(filePath, READ_NO_FOLLOW_FLAGS);
+    } catch {
+      // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
+      sendJson(res, 404, { error: "runtime file not found" });
+      return;
+    }
+    let text: string;
+    let truncated = false;
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) {
+        sendJson(res, 404, { error: "runtime file not found" });
+        return;
+      }
+      // Never load more than the cap. `bytesRead` guards against a short read /
+      // concurrent shrink emitting trailing NUL padding from the alloc'd buffer.
+      const readLen = Math.min(st.size, MAX_RUNTIME_FILE_READ_BYTES);
+      const buf = Buffer.alloc(readLen);
+      const { bytesRead } = await fh.read(buf, 0, readLen, 0);
+      text = buf.subarray(0, bytesRead).toString("utf8");
+      if (st.size > MAX_RUNTIME_FILE_READ_BYTES) {
+        text += TRUNCATION_MARKER;
+        truncated = true;
+      }
+    } finally {
+      await fh.close();
+    }
+
+    // A truncated body is prefix + marker -- no longer valid JSON -- so it must
+    // never be labelled application/json. Serve truncated content as text with an
+    // explicit `x-truncated` header; only an untruncated `.json` file is JSON.
+    const headers: Record<string, string> = truncated
+      ? { "content-type": "text/plain; charset=utf-8", "x-truncated": "true" }
+      : { "content-type": name.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8" };
+    res.writeHead(200, headers);
+    res.end(text);
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (req.method === "GET" && url.pathname === "/state") {
       await handleState(res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/runs") {
+      await handleListRuns(res);
+      return;
+    }
+
+    const runMatch = /^\/runs\/([^/]+)\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runMatch) {
+      await handleGetRun(runMatch[1]!, res);
+      return;
+    }
+
+    const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runtimeFileMatch) {
+      await handleReadRuntimeFile(runtimeFileMatch[1]!, runtimeFileMatch[2]!, res);
+      return;
+    }
+
+    const runtimeListMatch = /^\/tasks\/([^/]+)\/runtime\/?$/.exec(url.pathname);
+    if (req.method === "GET" && runtimeListMatch) {
+      await handleListRuntimeFiles(runtimeListMatch[1]!, res);
       return;
     }
 
