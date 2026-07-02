@@ -1,6 +1,6 @@
 import { rm, symlink, unlink, rmdir, mkdir, lstat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, dirname, isAbsolute } from "node:path";
+import { join, dirname, posix, win32 } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
 import { runNative } from "../util/native.js";
 import type { Logger } from "../util/log.js";
@@ -73,9 +73,17 @@ export function createWorktreeManager(
   // A provision entry must be a relative path within the repo (no absolute, no
   // `..` segment). Config-load validates this too (fail-loud); this is the
   // defense-in-depth guard at the fs-op site — the manager is also constructed
-  // directly (in tests) without going through config.
+  // directly (in tests) without going through config. `isAbsolute` from
+  // `node:path` resolves to the HOST platform's semantics only (win32 on
+  // Windows, posix elsewhere); check both explicitly so a Windows-style
+  // absolute path (`C:\...`) or a UNC path (`\\host\share\...`) is rejected
+  // even when the harness runs on Linux/mac, and a POSIX-style absolute path
+  // (`/etc`) is rejected even when it runs on Windows (finding 3).
   const isSafeProvisionEntry = (p: string): boolean =>
-    p !== "" && !isAbsolute(p) && !p.split(/[\\/]/).includes("..");
+    p !== "" &&
+    !posix.isAbsolute(p) &&
+    !win32.isAbsolute(p) &&
+    !p.split(/[\\/]/).includes("..");
 
   // Link each configured dir from the main repo into a fresh worktree. Runs
   // AFTER `git worktree add`. Best-effort: never throws (a throw here would

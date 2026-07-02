@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isAbsolute } from "node:path";
+import { posix, win32 } from "node:path";
 
 // worker role (ladder-shaped — preserves parity §7: multi-tier ladder,
 // rate-limit step-down, contract-zone pin to ladder[0]). No `model` key: the
@@ -54,13 +54,24 @@ export const HarnessConfigSchema = z.object({
   // target under repoRoot and a link path under the worktree, and teardown
   // removes it, so an absolute path or a `..` segment is rejected (fail-loud
   // here; the worktree manager guards again at the fs-op site). Empty = off.
+  // `isAbsolute` from `node:path` resolves to the HOST platform's semantics
+  // only (win32 on Windows, posix elsewhere); check both explicitly so a
+  // Windows-style absolute path (`C:\...`) or a UNC path (`\\host\share\...`)
+  // is rejected even when the harness runs on Linux/mac, and a POSIX-style
+  // absolute path (`/etc`) is rejected even when it runs on Windows
+  // (finding 3).
   worktree: z
     .object({
       provision: z
         .array(z.string())
         .superRefine((arr, ctx) => {
           for (const p of arr) {
-            if (p === "" || isAbsolute(p) || p.split(/[\\/]/).includes("..")) {
+            if (
+              p === "" ||
+              posix.isAbsolute(p) ||
+              win32.isAbsolute(p) ||
+              p.split(/[\\/]/).includes("..")
+            ) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 message: `worktree.provision entry must be a relative path within the repo (no absolute, no "..") : ${JSON.stringify(p)}`,

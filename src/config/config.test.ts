@@ -96,4 +96,17 @@ describe("loadConfig", () => {
     writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['/etc']\n");
     await expect(loadConfig(dir)).rejects.toThrow(/provision/);
   });
+
+  it("rejects a Windows-style absolute worktree.provision entry regardless of the host platform (finding 3)", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    // YAML single-quoted scalars treat backslash as a literal character.
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['C:\\repo\\vendor']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects a UNC worktree.provision entry regardless of the host platform (finding 3)", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['\\\\host\\share\\vendor']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
 });
