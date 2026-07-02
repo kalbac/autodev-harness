@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 15.
+> Count: 16.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -21,6 +21,7 @@
 | `[conductor/worker-report]` | Per-task worktree (divergence #1): the worker writes `worker-report.md` into the worktree cwd → dirty-file fence flags it STRAY → every task ESCALATEs before the gate, and the conductor can't find the report in runtimeDir. Fix = `harvestWorkerReport` relocates it worktree→runtimeDir before status-read+fence; unlink stale dest first (retry/re-claim carry-over). | `gotchas/worker-report-harvest-worktree-fence.md` |
 | `[node/win-cmd-spawn]` | `node:child_process.spawn("codex")` → ENOENT on Windows for a PATH command that's a `.cmd` shim (npm-global), and node22 blocks `.cmd` without a shell (CVE-2024-27980). `claude.exe` works, `codex.cmd` doesn't. Fix = spawn via `cross-spawn` (PATH+PATHEXT + cmd.exe w/ verbatim args); POSIX passthrough. | `gotchas/runnative-windows-cmd-shim-spawn.md` |
 | `[conductor/real-repo-run]` | Running on a REAL repo surfaces 3 prereqs the fixture never did: (1) fresh worktree has NO gitignored deps (vendor/node_modules) → use a dependency-free gate (`php -l`) or provision deps; (2) main tree must be CLEAN or `mergeAfterGate` throws; (3) `.autodev/` must be git-excluded or its runtime churn dirties the tree → merge throws. Plus: branch must match `^autodev/`. | `gotchas/harness-on-real-repo-prerequisites.md` |
+| `[config/zod-strict]` | A `z.object` STRIPS unknown keys by default — after a hard-cut of a config block (rename/remove), an OLD file using the removed key loads clean and silently reverts every field to defaults (no error). Bit the R3 `worker:`/`critic:`→`roles:` cut (aurora's real config). Fix = `.strict()` on the root schema (fail loud) + migrate every on-disk file. | `gotchas/zod-strip-unknown-keys-silent-config-revert.md` |
 
 ## Anticipated tag namespaces
 
