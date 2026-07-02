@@ -30,7 +30,7 @@ import {
 } from "./orchestrator/capabilities.js";
 import { ClaudeOrchestratorAdapter } from "./orchestrator/claude-orchestrator-adapter.js";
 import type { OrchestratorAdapter } from "./orchestrator/adapter.js";
-import { createOrchestrator } from "./orchestrator/orchestrator.js";
+import { createOrchestrator, type OrchestratorResult } from "./orchestrator/orchestrator.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "./gate/gate.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "./gate/invariants.js";
 import {
@@ -163,28 +163,6 @@ async function main(): Promise<void> {
 
   // --- Core dependencies -----------------------------------------------
   const repo = new FileBlackboardRepository(repoRoot, cfg.stateDir);
-
-  // `serve` is a minimal, read-only verb: repo + stateDir + (optional) uiDir only.
-  // It deliberately branches BEFORE the worker/critic/gate/worktree wiring below --
-  // that wiring is conductor/orchestrator machinery `serve` never touches (POST
-  // /orchestrate is a separate later module), and skipping it means `serve` can
-  // start even when a worker/critic adapter isn't fully configured.
-  if (command.mode === "serve") {
-    const absStateDir = join(repoRoot, cfg.stateDir);
-    const uiDirCandidate = join(repoRoot, "dist", "ui");
-    const uiDir = existsSync(uiDirCandidate) ? uiDirCandidate : undefined;
-
-    const handle = createApiServer({ repo, stateDir: absStateDir, ...(uiDir !== undefined ? { uiDir } : {}), log });
-    const boundPort = await handle.listen(command.port, "127.0.0.1");
-    log(
-      "INFO",
-      `serve: listening at http://127.0.0.1:${boundPort}${
-        uiDir ? "" : ` (API only -- no UI bundle found at ${uiDirCandidate})`
-      }`,
-    );
-    return; // the listening server keeps the event loop alive; do not tear it down
-  }
-
   const scheduler = createScheduler(repo);
   const worktreesDir = join(repoRoot, cfg.stateDir, "worktrees");
   const worktree = createWorktreeManager(repoRoot, worktreesDir);
@@ -403,25 +381,69 @@ async function main(): Promise<void> {
 
   const conductor = createConductor(deps);
 
+  if (command.mode === "serve") {
+    const absStateDir = join(repoRoot, cfg.stateDir);
+    const uiDirCandidate = join(repoRoot, "dist", "ui");
+    const uiDir = existsSync(uiDirCandidate) ? uiDirCandidate : undefined;
+
+    // Reuse the same factory as the `orchestrate` CLI verb -- `serve` now needs
+    // the full worker/critic/gate wiring above (the previous minimal
+    // repo+stateDir+uiDir-only form predated `POST /orchestrate`), because
+    // `buildOrchestrator`'s `trigger` capability closes over the real
+    // `conductor.run`.
+    const orchestrator = buildOrchestrator({ cfg, repoRoot, repo, conductor, log });
+
+    const handle = createApiServer({
+      repo,
+      stateDir: absStateDir,
+      ...(uiDir !== undefined ? { uiDir } : {}),
+      log,
+      // Thin injected callback ONLY -- see ApiServerDeps.onOrchestrate (R1):
+      // this closure exposes exactly `handleIntent`, nothing else from the
+      // orchestrator/conductor/gate/worker/critic/worktree surface.
+      onOrchestrate: (intent: string) => orchestrator.handleIntent(intent),
+    });
+    const boundPort = await handle.listen(command.port, "127.0.0.1");
+    log(
+      "INFO",
+      `serve: listening at http://127.0.0.1:${boundPort} (orchestrate endpoint enabled)${
+        uiDir ? "" : ` (API only -- no UI bundle found at ${uiDirCandidate})`
+      }`,
+    );
+    return; // the listening server keeps the event loop alive; do not tear it down
+  }
+
   if (command.mode === "orchestrate") {
-    await runOrchestrate(command.intent, { cfg, repoRoot, repo, conductor, log });
+    const orchestrator = buildOrchestrator({ cfg, repoRoot, repo, conductor, log });
+    const result = await orchestrator.handleIntent(command.intent);
+    log("INFO", `orchestrate: ${result.enqueued.length} task(s) enqueued; triggered=${result.triggered}`);
+    for (const t of result.enqueued) log("INFO", `  - ${t.id} -> ${t.path}`);
     return;
   }
   await conductor.run(command.runOpts);
 }
 
 /**
- * Wire the orchestrator layer (adr/003 R1/R2) and run one intent. The
- * orchestrator receives EXACTLY the four capabilities and nothing else —
- * `trigger` is a closure over `conductor.run`, the ONLY enforcement handle it
- * sees, and it can only START the (bounded) loop, never sequence/skip/gate/
- * commit. There is no worker/critic/gate/worktree handle in its dependency
- * surface, so it physically cannot talk past the gate (adr/003 R1).
+ * Build the orchestrator layer (adr/003 R1/R2) over an already-wired
+ * conductor. Reused by BOTH the `orchestrate` CLI verb (decompose one intent,
+ * run once, exit) and the `serve` verb (`POST /orchestrate` calls
+ * `handleIntent` per request, via `ApiServerDeps.onOrchestrate`).
+ *
+ * The orchestrator receives EXACTLY the four capabilities (+recordRun) and
+ * nothing else — `trigger` is a closure over `conductor.run`, the ONLY
+ * enforcement handle it sees, and it can only START the (bounded) loop, never
+ * sequence/skip/gate/commit. There is no worker/critic/gate/worktree handle
+ * in its dependency surface, so it — and therefore anything built on top of
+ * it, including the HTTP layer's `onOrchestrate` closure — physically cannot
+ * talk past the gate (adr/003 R1).
  */
-async function runOrchestrate(
-  intent: string,
-  ctx: { cfg: HarnessConfig; repoRoot: string; repo: FileBlackboardRepository; conductor: Conductor; log: Logger },
-): Promise<void> {
+function buildOrchestrator(ctx: {
+  cfg: HarnessConfig;
+  repoRoot: string;
+  repo: FileBlackboardRepository;
+  conductor: Conductor;
+  log: Logger;
+}): { handleIntent(intent: string): Promise<OrchestratorResult> } {
   const { cfg, repoRoot, repo, conductor, log } = ctx;
 
   const existingIds = async (): Promise<string[]> => {
@@ -457,10 +479,7 @@ async function runOrchestrate(
     }
   })();
 
-  const orchestrator = createOrchestrator({ caps, adapter, log });
-  const result = await orchestrator.handleIntent(intent);
-  log("INFO", `orchestrate: ${result.enqueued.length} task(s) enqueued; triggered=${result.triggered}`);
-  for (const t of result.enqueued) log("INFO", `  - ${t.id} -> ${t.path}`);
+  return createOrchestrator({ caps, adapter, log });
 }
 
 main().catch((err) => {

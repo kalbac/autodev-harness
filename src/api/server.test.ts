@@ -776,6 +776,320 @@ describe("createApiServer / static UI serving (uiDir unset)", () => {
   });
 });
 
+/** Resolves after any pending microtasks/timers from a fire-and-forget background
+ *  call (e.g. `POST /orchestrate`'s `.then/.catch/.finally` chain) have settled. */
+function tick(ms = 20): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A controllable promise -- lets a test hold `onOrchestrate` unresolved to
+ *  exercise the single-flight guard, then resolve it on demand. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("createApiServer / POST /orchestrate", () => {
+  it("404s when onOrchestrate is not configured (read-only deployment)", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /orchestrate is not matched by the POST route (falls through to 404)", async () => {
+    const onOrchestrate = async (): Promise<void> => {};
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 202 {accepted:true,intent} and calls onOrchestrate exactly once with the intent, in the background", async () => {
+    const calls: string[] = [];
+    const onOrchestrate = async (intent: string): Promise<void> => {
+      calls.push(intent);
+    };
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ accepted: true, intent: "build X" });
+
+    await tick();
+    expect(calls).toEqual(["build X"]);
+  });
+
+  it("returns 202 promptly even when onOrchestrate never resolves (response does not wait on it)", async () => {
+    const onOrchestrate = (): Promise<void> => new Promise(() => {}); // never settles
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(202);
+  });
+
+  it("single-flight: second POST while first is unresolved -> 409; after first resolves, a third POST -> 202 again", async () => {
+    const d = deferred<void>();
+    let callCount = 0;
+    const onOrchestrate = async (): Promise<void> => {
+      callCount++;
+      await d.promise;
+    };
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const post = (intent: string): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}/orchestrate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent }),
+      });
+
+    const res1 = await post("first");
+    expect(res1.status).toBe(202);
+
+    const res2 = await post("second");
+    expect(res2.status).toBe(409);
+    expect(await res2.json()).toEqual({ error: "an orchestrate run is already in progress" });
+
+    d.resolve();
+    await tick();
+
+    const res3 = await post("third");
+    expect(res3.status).toBe(202);
+
+    expect(callCount).toBe(2); // "first" + "third" -- "second" was rejected before invoking onOrchestrate
+  });
+
+  it("a rejected onOrchestrate still leaves the 202 sent, clears the in-flight flag, and logs the failure", async () => {
+    const logs: string[] = [];
+    const onOrchestrate = async (): Promise<void> => {
+      throw new Error("boom");
+    };
+    handle = createApiServer({
+      repo,
+      stateDir,
+      onOrchestrate,
+      log: (level, message) => logs.push(`${level}:${message}`),
+    });
+    const port = await handle.listen(0);
+
+    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "x" }),
+    });
+    expect(res1.status).toBe(202);
+
+    await tick();
+    expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("boom"))).toBe(true);
+
+    // Flag reset in `finally` -- a subsequent POST must be accepted again.
+    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "y" }),
+    });
+    expect(res2.status).toBe(202);
+  });
+
+  it("an onOrchestrate that throws SYNCHRONOUSLY still returns 202, clears the flag, and logs (no unhandled rejection)", async () => {
+    const logs: string[] = [];
+    const onOrchestrate = (): Promise<void> => {
+      throw new Error("sync boom");
+    };
+    handle = createApiServer({
+      repo,
+      stateDir,
+      onOrchestrate,
+      log: (level, message) => logs.push(`${level}:${message}`),
+    });
+    const port = await handle.listen(0);
+
+    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "x" }),
+    });
+    expect(res1.status).toBe(202);
+
+    await tick();
+    expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("sync boom"))).toBe(true);
+
+    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "y" }),
+    });
+    expect(res2.status).toBe(202);
+  });
+
+  it("survives a background rejection whose error-stringify throws AND a throwing logger (no unhandled rejection; flag still clears)", async () => {
+    // Error whose `message` getter throws + a logger that throws: a raw `String(err)`
+    // and raw `log()` inside the chain's `.catch` would themselves throw and escape as
+    // an unhandled rejection AFTER the 202. safeErrorText + safeLog + terminal .catch
+    // must contain it, and `.finally` must still clear the in-flight flag.
+    const hostileErr = new Error("placeholder");
+    Object.defineProperty(hostileErr, "message", {
+      get(): string {
+        throw new Error("message getter boom");
+      },
+    });
+    const onOrchestrate = async (): Promise<void> => {
+      throw hostileErr;
+    };
+    const throwingLog = (): void => {
+      throw new Error("logger down");
+    };
+    handle = createApiServer({ repo, stateDir, onOrchestrate, log: throwingLog });
+    const port = await handle.listen(0);
+
+    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "x" }),
+    });
+    expect(res1.status).toBe(202);
+
+    await tick();
+    // Flag cleared despite BOTH the error-stringify and the logger throwing.
+    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "y" }),
+    });
+    expect(res2.status).toBe(202);
+  });
+
+  it("flattens control chars in the logged intent (no log forging); the 202 body still echoes the intent verbatim", async () => {
+    const logs: string[] = [];
+    const onOrchestrate = async (): Promise<void> => {}; // resolves -> emits the completion INFO log
+    handle = createApiServer({
+      repo,
+      stateDir,
+      onOrchestrate,
+      log: (level, message) => logs.push(`${level}:${message}`),
+    });
+    const port = await handle.listen(0);
+
+    const intent = "build X\nERROR: forged log line";
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent }),
+    });
+    expect(res.status).toBe(202);
+    // The JSON 202 body echoes the intent verbatim (JSON-encoded -> safe).
+    expect(await res.json()).toEqual({ accepted: true, intent });
+
+    await tick();
+    const completed = logs.find((l) => l.includes("orchestrate run completed"));
+    expect(completed).toBeDefined();
+    expect(completed).not.toContain("\n"); // newline flattened -> cannot forge a second log line
+    expect(completed).toContain("build X ERROR: forged log line");
+  });
+
+  it("400s on a missing intent field, and does not call onOrchestrate", async () => {
+    const onOrchestrate = async (): Promise<void> => {};
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on an empty or whitespace-only intent", async () => {
+    const onOrchestrate = async (): Promise<void> => {};
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const resEmpty = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "" }),
+    });
+    expect(resEmpty.status).toBe(400);
+
+    const resWhitespace = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "   \n\t  " }),
+    });
+    expect(resWhitespace.status).toBe(400);
+  });
+
+  it("400s on a non-string intent", async () => {
+    const onOrchestrate = async (): Promise<void> => {};
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: 123 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on malformed JSON", async () => {
+    const onOrchestrate = async (): Promise<void> => {};
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{ not valid json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("413s on an over-sized body and does not call onOrchestrate", async () => {
+    const calls: string[] = [];
+    const onOrchestrate = async (intent: string): Promise<void> => {
+      calls.push(intent);
+    };
+    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    const port = await handle.listen(0);
+
+    const huge = "x".repeat(1_000_001 + 64);
+    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: huge }),
+    });
+    expect(res.status).toBe(413);
+
+    await tick();
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("createApiServer / listen with an explicit bind host", () => {
   it("still binds and is reachable via 127.0.0.1 when host is passed explicitly", async () => {
     handle = createApiServer({ repo, stateDir });

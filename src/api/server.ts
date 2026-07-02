@@ -90,6 +90,16 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
  */
 const MAX_RUN_MANIFEST_BYTES = 256 * 1024;
 
+/**
+ * Soft cap on `POST /orchestrate`'s `intent` string, tighter than the 1MB
+ * `MAX_BODY_BYTES` body cap. The body cap alone already bounds memory, but an
+ * operator intent is meant to be a short instruction (a few sentences at
+ * most) -- a multi-hundred-KB "intent" is almost certainly a mistake or abuse,
+ * not a legitimate request, so it is rejected with a clear 400 rather than
+ * silently accepted and handed to the LLM decomposer.
+ */
+const MAX_INTENT_LENGTH = 4000;
+
 /** Signals that a request body exceeded `MAX_BODY_BYTES` (mapped to HTTP 413). */
 class PayloadTooLargeError extends Error {}
 
@@ -131,6 +141,15 @@ export interface ApiServerDeps {
   /** Injected clock for the reply timestamp (default () => Date.now()). Keeps tests deterministic. */
   now?: () => number;
   log?: (level: string, message: string) => void;
+  /**
+   * OPTIONAL launcher for `POST /orchestrate`. When unset, `POST /orchestrate`
+   * -> 404 (read-only deployment). The callback receives the operator intent
+   * and MUST only enqueue+trigger via the orchestrator (R1) -- the server
+   * never sees a gate/worker/critic/commit handle. It is invoked in the
+   * BACKGROUND (202-async); its promise rejection is logged, never surfaced
+   * to the already-sent response.
+   */
+  onOrchestrate?: (intent: string) => Promise<unknown>;
 }
 
 export interface ApiServerHandle {
@@ -351,6 +370,26 @@ function staticContentType(absPath: string): string {
   return STATIC_CONTENT_TYPES[extname(absPath).toLowerCase()] ?? "application/octet-stream";
 }
 
+/** Flatten a value for single-line logging: collapse CR/LF/control chars to spaces and
+ *  truncate, so an operator-supplied string (e.g. a POST /orchestrate `intent`) cannot
+ *  forge extra log lines or bloat the log. Mirrors the CR/LF flattening the orchestrator's
+ *  `report` capability does before writing the shared digest. */
+function flattenForLog(s: string, max = 200): string {
+  const flat = Array.from(s, (ch) => { const c = ch.codePointAt(0) ?? 0; return c < 0x20 || c === 0x7f ? " " : ch; }).join("").replace(/ {2,}/g, " ");
+  return flat.length > max ? `${flat.slice(0, max)}...` : flat;
+}
+
+/** Fail-closed error -> string: never throws, even on an `Error` whose `message` getter
+ *  or a value whose `toString` throws (gotcha [ts/fail-closed]). Used in best-effort
+ *  background chains where a throwing error-format must not become an unhandled rejection. */
+function safeErrorText(err: unknown): string {
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return "<unstringifiable error>";
+  }
+}
+
 /**
  * `"served"` -- response sent (200). `"missing"` -- nothing at this path (ENOENT);
  * eligible for SPA fallback. `"blocked"` -- something exists at this path but it is
@@ -477,6 +516,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const log = deps.log ?? ((): void => {});
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
 
+  // Single-flight guard for POST /orchestrate: an orchestrate run (LLM
+  // decompose + bounded conductor loop) takes minutes, and only one may run
+  // at a time. Set synchronously before the 202 response is sent so a
+  // concurrent request can never race past it; cleared in the background
+  // chain's `finally` once the (unawaited) run settles.
+  let orchestrateInFlight = false;
+
   async function handleState(res: ServerResponse): Promise<void> {
     const queues = {} as Record<QueueState, Awaited<ReturnType<BlackboardRepository["listTasks"]>>>;
     for (const state of QUEUE_STATES) {
@@ -542,6 +588,101 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     log("INFO", `api: recorded escalation reply ${id} -> ${choice}`);
 
     sendJson(res, 200, reply);
+  }
+
+  /**
+   * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
+   * body, then -- WITHOUT awaiting it -- kicks off `deps.onOrchestrate(intent)` in
+   * the background and returns `202 {accepted:true,intent}` immediately. The
+   * orchestration itself (LLM decompose + bounded conductor loop) can take
+   * minutes; this handler's job is only to validate and enqueue+trigger via the
+   * injected closure, never to hold the connection open.
+   *
+   * Single-flight: `orchestrateInFlight` is set synchronously before the 202 is
+   * sent, so a second POST received before the run finishes gets `409`. The flag
+   * is cleared in the background chain's `finally`, regardless of success,
+   * rejection, or a SYNCHRONOUS throw from `deps.onOrchestrate` -- the
+   * `Promise.resolve().then(...)` wrapper normalizes a sync throw into a
+   * rejection so it can never leak an unhandled exception or a second (500)
+   * response after the 202 has already been sent.
+   */
+  async function handleOrchestrate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.onOrchestrate) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { intent?: unknown } | null;
+    const rawIntent = parsed?.intent;
+    if (typeof rawIntent !== "string") {
+      sendJson(res, 400, { error: "intent must be a string" });
+      return;
+    }
+    const intent = rawIntent.trim();
+    if (intent === "") {
+      sendJson(res, 400, { error: "intent must not be empty" });
+      return;
+    }
+    if (intent.length > MAX_INTENT_LENGTH) {
+      sendJson(res, 400, { error: `intent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    if (orchestrateInFlight) {
+      sendJson(res, 409, { error: "an orchestrate run is already in progress" });
+      return;
+    }
+    orchestrateInFlight = true;
+
+    // Fire-and-forget: NOT awaited, so the 202 below is sent before the run
+    // (which can take minutes) does anything. `Promise.resolve().then(...)`
+    // wraps the call so a SYNCHRONOUS throw from `deps.onOrchestrate` becomes a
+    // rejection here rather than escaping this function's synchronous frame
+    // (which would otherwise crash out of the request handler after a 202 was
+    // already queued).
+    const onOrchestrate = deps.onOrchestrate;
+    // `safeIntent` is flattened (control chars -> spaces, truncated) so an operator
+    // intent can never forge extra log lines. `safeLog` + `safeErrorText` keep this
+    // best-effort background chain from EVER producing an unhandled rejection after the
+    // 202 has been sent -- a throwing logger or a hostile error whose stringify throws
+    // must not escape (gotcha [ts/fail-closed]); the terminal `.catch` is the backstop.
+    const safeIntent = flattenForLog(intent);
+    const safeLog = (level: string, message: string): void => {
+      try {
+        log(level, message);
+      } catch {
+        /* a broken logger must never crash the post-202 background path */
+      }
+    };
+    Promise.resolve()
+      .then(() => onOrchestrate(intent))
+      .then(() => safeLog("INFO", `api: orchestrate run completed for intent: ${safeIntent}`))
+      .catch((err: unknown) =>
+        safeLog("ERROR", `api: orchestrate run failed for intent "${safeIntent}": ${safeErrorText(err)}`),
+      )
+      .finally(() => {
+        orchestrateInFlight = false;
+      })
+      .catch(() => {
+        /* terminal backstop: nothing from this chain may surface as an unhandled rejection */
+      });
+
+    sendJson(res, 202, { accepted: true, intent });
   }
 
   /**
@@ -730,6 +871,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     const replyMatch = /^\/escalations\/([^/]+)\/reply\/?$/.exec(url.pathname);
     if (req.method === "POST" && replyMatch) {
       await handleReply(replyMatch[1]!, req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/orchestrate") {
+      await handleOrchestrate(req, res);
       return;
     }
 
