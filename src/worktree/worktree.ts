@@ -1,4 +1,4 @@
-import { rm, symlink, unlink, rmdir, mkdir, lstat, writeFile, readFile } from "node:fs/promises";
+import { rm, symlink, unlink, rmdir, mkdir, lstat, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, posix, win32 } from "node:path";
 import { createGit, type MergeResult } from "../util/git.js";
@@ -85,53 +85,6 @@ export function createWorktreeManager(
     !win32.isAbsolute(p) &&
     !p.split(/[\\/]/).includes("..");
 
-  // The current `provision` config is NOT an authoritative record of what a
-  // given worktree actually has linked into it: a worktree provisioned under
-  // an OLDER config, then left stale (crash / skipped teardown), can be
-  // re-queued after the config changed (e.g. an entry dropped). Deprovisioning
-  // driven solely by the CURRENT config would then miss the stale link
-  // entirely, letting a later recursive delete traverse it into real deps.
-  // Persist what was ACTUALLY provisioned, per task id, as a manifest file
-  // living OUTSIDE the worktree directory (a sibling under worktreesDir) so
-  // `git worktree remove` / recursive `rm` of the worktree dir never touches
-  // it. taskId is validated by `assertSafeTaskId` before this is ever called
-  // from `create`, so it is safe to use directly as a single path segment.
-  const manifestPath = (taskId: string): string => join(worktreesDir, `${taskId}.provision.json`);
-
-  // Best-effort: absent or corrupt manifest reads as "nothing recorded" ([]),
-  // never throws. Defensively accepts only an array of strings.
-  const readManifest = async (taskId: string): Promise<string[]> => {
-    try {
-      const raw = await readFile(manifestPath(taskId), "utf8");
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter((x): x is string => typeof x === "string");
-    } catch {
-      return [];
-    }
-  };
-
-  // Best-effort: writing the manifest must never break provisioning.
-  const writeManifest = async (taskId: string, entries: string[]): Promise<void> => {
-    try {
-      await writeFile(manifestPath(taskId), JSON.stringify(entries));
-    } catch (err) {
-      safeLog(
-        "WARN",
-        `provision: failed to write manifest for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  };
-
-  // Best-effort: absence (or removal failure) is not an error worth surfacing.
-  const removeManifest = async (taskId: string): Promise<void> => {
-    try {
-      await unlink(manifestPath(taskId));
-    } catch {
-      /* nothing to remove, or already gone — fine */
-    }
-  };
-
   // Link each configured dir from the main repo into a fresh worktree. Runs
   // AFTER `git worktree add`. Best-effort: never throws (a throw here would
   // abort the whole task loop) — logs loudly and continues. A missing target is
@@ -193,12 +146,13 @@ export function createWorktreeManager(
 
   // Remove ONLY the link entry — NEVER recurse into its target. Genuinely
   // link-only: `lstat` (no-follow) first identifies WHAT is at `link` before
-  // touching anything. A real (non-symlink) entry — e.g. a mistakenly
-  // provisioned `README.md` or `.git` (finding 2) — is left untouched and
-  // reported unsafe; only a confirmed symlink/junction is removed, and removal
-  // is verified by re-`lstat`-ing afterward. This is THE safety invariant: a
-  // leaked junction (or a misconfigured real entry) must never let a
-  // recursive delete reach the clone's real deps.
+  // touching anything. `stripLinks` only ever calls this once it has already
+  // confirmed `isSymbolicLink()`, so the non-symlink branch below is a
+  // defense-in-depth guard for any other caller, not a path exercised by the
+  // normal walk; only a confirmed symlink/junction is removed, and removal is
+  // verified by re-`lstat`-ing afterward. This is THE safety invariant: a
+  // leaked junction must never let a recursive delete reach the clone's real
+  // deps.
   //
   // Returns `true` when, after the call, `link` is confirmed ABSENT (safe to
   // proceed with a recursive removal of its parent); `false` when a real
@@ -236,24 +190,97 @@ export function createWorktreeManager(
     }
   };
 
-  // Unlink all provisioned links at a worktree path. MUST run before any
-  // recursive removal of that path (git worktree remove / rm -rf). Driven by
-  // the UNION of the per-worktree manifest (what was actually provisioned,
-  // possibly under an older config) and the current config — never by the
-  // current config alone, since that would miss stale links left by a config
-  // change (the exact stale-config data-loss blocker this manifest fixes).
-  // Attempts EVERY entry regardless of earlier failures (so a stuck link
-  // doesn't mask others), and returns `true` only if ALL entries were
-  // confirmed safe.
-  const deprovisionWorktree = async (wtPath: string, taskId: string): Promise<boolean> => {
-    const recorded = await readManifest(taskId);
-    const entries = Array.from(new Set([...recorded, ...provision])).filter(isSafeProvisionEntry);
-    let safe = true;
-    for (const p of entries) {
-      const ok = await removeLinkOnly(join(wtPath, p));
-      safe = safe && ok;
+  // Ground truth over bookkeeping: rather than trusting a record of what
+  // `provisionWorktree` intended to link (which can be absent, stale, or
+  // simply wrong relative to what config says *now*), walk the worktree on
+  // disk and remove every reparse point (symlink/junction) found, link-only.
+  // A manifest can lie — go crash between link creation and a manifest write,
+  // hand-edit a worktree, or run an older build that never wrote one — but
+  // `lstat().isSymbolicLink()` cannot. Never descends into a removed (or
+  // unremoved) link — only into REAL directories, so a leaked junction is
+  // never traversed. Best-effort: never throws; logs and treats an
+  // unreadable/absent dir as "nothing left to strip" (`true`).
+  //
+  // Skips `.git` — worktree internals live there and must not be disturbed.
+  //
+  // Bounded: the only directories provisioned are the configured entries
+  // (vendor / plugins-reference / node_modules, etc.), which ARE the
+  // junctions removed at the point they're found — so this only ever
+  // recurses through the project's own real source tree, not through
+  // provisioned dep trees.
+  const stripLinks = async (dir: string): Promise<boolean> => {
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return true; // dir absent (or unreadable) — nothing left to strip
     }
-    return safe;
+    let allOk = true;
+    for (const name of names) {
+      if (name === ".git") continue;
+      const p = join(dir, name);
+      let st;
+      try {
+        st = await lstat(p);
+      } catch {
+        continue; // vanished between readdir and lstat — nothing to do
+      }
+      if (st.isSymbolicLink()) {
+        // Confirmed reparse point: remove it, link-only. Never descend.
+        const ok = await removeLinkOnly(p);
+        if (!ok) allOk = false;
+      } else if (st.isDirectory()) {
+        // lstat already confirmed this is a REAL directory, not a junction
+        // (the platform pin guarantees a junction reports
+        // isSymbolicLink()===true here), so recursing is safe — it can never
+        // walk into a leaked reparse point.
+        const ok = await stripLinks(p);
+        if (!ok) allOk = false;
+      }
+      // A regular file (or anything else) is neither a reparse point nor a
+      // directory to recurse into — it is simply not our concern here.
+    }
+    return allOk;
+  };
+
+  // Self-gated: a worktree that was never provisioned (or was provisioned
+  // under a config that has since been emptied and genuinely has nothing
+  // left to strip) must be a complete no-op — identical to prior behavior —
+  // rather than paying for a full source-tree walk on every teardown.
+  //
+  //  - Current config still provisions something: always do the full
+  //    ground-truth scan (the current config's targets ARE junctions, and
+  //    any stale ones from an older config are equally reparse points that
+  //    get caught by the same walk).
+  //  - Current config is empty: cheaply check the TOP LEVEL only for any
+  //    reparse point. A worktree provisioned under an OLDER (now-emptied)
+  //    config still has its junction sitting at the top level, so this still
+  //    catches it and falls through to the full scan. A worktree that was
+  //    NEVER provisioned has no top-level reparse point, so this returns
+  //    `true` without ever touching the tree — no behavior change for the
+  //    common (no provisioning) case.
+  const deprovisionWorktree = async (wtPath: string): Promise<boolean> => {
+    if (provision.length > 0) {
+      return await stripLinks(wtPath);
+    }
+    let names: string[];
+    try {
+      names = await readdir(wtPath);
+    } catch {
+      return true; // worktree absent — nothing to clean
+    }
+    for (const name of names) {
+      if (name === ".git") continue;
+      try {
+        const st = await lstat(join(wtPath, name));
+        if (st.isSymbolicLink()) {
+          return await stripLinks(wtPath);
+        }
+      } catch {
+        continue;
+      }
+    }
+    return true; // no reparse point at the top level — untouched, as before
   };
 
   return {
@@ -272,16 +299,15 @@ export function createWorktreeManager(
       // branch is correct (parity with the PS loop re-running the worker
       // fresh). None of these steps may throw: there being nothing to clean
       // up is the common case, not an error.
-      // Unlink any provisioned links from a prior attempt BEFORE the recursive
+      // Strip any reparse points left from a prior attempt BEFORE the recursive
       // cleanup below (`worktree remove --force` and `rm -rf`), so a stale
       // junction can never let those deletes reach the clone's real deps. If a
-      // link could not be confirmed removed (or a real non-link entry was
-      // found where a link should be), REFUSE the recursive cleanup entirely
-      // — fail safe rather than risk deleting real deps near it.
-      const safe = await deprovisionWorktree(path, taskId);
+      // reparse point could not be confirmed removed, REFUSE the recursive
+      // cleanup entirely — fail safe rather than risk deleting real deps near it.
+      const safe = await deprovisionWorktree(path);
       if (!safe) {
         throw new Error(
-          `create: cannot clean stale worktree ${path}; a provisioned link could not be removed (refusing recursive delete near real deps)`,
+          `create: cannot clean stale worktree ${path}; a reparse point could not be removed (refusing recursive delete near real deps)`,
         );
       }
       await runNative("git", ["worktree", "prune"], { cwd: mainRepoRoot });
@@ -297,17 +323,6 @@ export function createWorktreeManager(
 
       await mainGit.worktreeAdd(path, branch, baseBranch);
       await provisionWorktree(path);
-      // Record what THIS create actually provisioned so a future deprovision
-      // (teardown, or a later re-queue's stale-cleanup) stays authoritative
-      // even if the config changes again before then. An empty config writes
-      // no manifest — and removes any leftover manifest from an OLDER config
-      // for this taskId, so a stale manifest never lingers once the current
-      // config genuinely provisions nothing.
-      if (provision.length > 0) {
-        await writeManifest(taskId, provision);
-      } else {
-        await removeManifest(taskId);
-      }
       return { path, branch, taskId };
     },
 
@@ -321,20 +336,19 @@ export function createWorktreeManager(
     },
 
     async teardown(wt: Worktree): Promise<void> {
-      // Unlink provisioned links FIRST: a leaked junction + `git worktree remove`
+      // Strip reparse points FIRST: a leaked junction + `git worktree remove`
       // (recursive) could otherwise traverse into the clone's real deps. If any
-      // link could not be confirmed removed, REFUSE the recursive worktree
-      // removal — fail safe rather than risk deleting real deps.
-      const safe = await deprovisionWorktree(wt.path, wt.taskId);
+      // reparse point could not be confirmed removed, REFUSE the recursive
+      // worktree removal — fail safe rather than risk deleting real deps.
+      const safe = await deprovisionWorktree(wt.path);
       if (!safe) {
         safeLog(
           "ERROR",
-          `teardown: provisioned link(s) remain under ${wt.path}; skipping recursive worktree removal to avoid deleting real deps`,
+          `teardown: reparse point(s) remain under ${wt.path}; skipping recursive worktree removal to avoid deleting real deps`,
         );
         return;
       }
       await mainGit.worktreeRemove(wt.path);
-      await removeManifest(wt.taskId);
     },
 
     async mergeAfterGate(wt: Worktree, intoBranch: string): Promise<MergeResult> {

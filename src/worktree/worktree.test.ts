@@ -235,10 +235,12 @@ describe("createWorktreeManager", () => {
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
   });
 
-  // --- re-review blocker: stale-config manifest (deprovision must be driven by
-  // what was ACTUALLY provisioned, not by the CURRENT config) ---
+  // --- re-review blocker: stale-config ground-truth scan (deprovision must be
+  // driven by what is ACTUALLY on disk, not by the CURRENT config — a
+  // manifest recording only the current config's entries would miss a stale
+  // junction left by an OLDER config) ---
 
-  it("stale-config regression: re-queue after the provision config changes (drops the entry) must not delete the real target — manifest-driven cleanup", async () => {
+  it("stale-config regression: re-queue after the provision config changes (drops the entry) must not delete the real target — ground-truth scan", async () => {
     mkdirSync(join(repoRoot, "deps"));
     writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
     const m1 = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
@@ -252,14 +254,15 @@ describe("createWorktreeManager", () => {
     const m2 = createWorktreeManager(repoRoot, worktreesDir, { provision: [] });
     await m2.create("t-cfg", "main");
 
-    // Without the manifest, m2's stale-cleanup deprovisions using ITS OWN
-    // (empty) provision list -> nothing removed -> the stale "deps" junction
-    // survives into the recursive rm() of the worktree path, which then
-    // traverses the junction and deletes the real target.
+    // m2's stale-cleanup self-gate checks the TOP LEVEL of the stale worktree
+    // for any reparse point regardless of its (now-empty) config, finds the
+    // leftover "deps" junction from m1, and falls through to a full scan —
+    // so the stale junction is stripped BEFORE the recursive rm() rather than
+    // being traversed by it.
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
   });
 
-  it("stale-config regression: teardown after a config change (drops the entry) is manifest-driven and does not delete the real target", async () => {
+  it("stale-config regression: teardown after a config change (drops the entry) uses the filesystem ground truth and does not delete the real target", async () => {
     mkdirSync(join(repoRoot, "deps"));
     writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
     const m1 = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
@@ -270,19 +273,6 @@ describe("createWorktreeManager", () => {
 
     expect(existsSync(wt.path)).toBe(false);
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
-  });
-
-  it("teardown removes the per-worktree provision manifest after a successful removal", async () => {
-    mkdirSync(join(repoRoot, "deps"));
-    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
-    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
-    const wt = await m.create("t-cfg-manifest", "main");
-
-    const manifestPath = join(worktreesDir, "t-cfg-manifest.provision.json");
-    expect(existsSync(manifestPath)).toBe(true);
-
-    await m.teardown(wt);
-    expect(existsSync(manifestPath)).toBe(false);
   });
 
   // --- code-review gate: findings 1 & 2 (removeLinkOnly verify-before-recursive-delete) ---
@@ -307,7 +297,7 @@ describe("createWorktreeManager", () => {
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
   });
 
-  it("finding 2 regression: teardown refuses to delete a real (non-link) file occupying a provisioned entry's path, and skips the recursive worktree removal", async () => {
+  it("finding 2 regression (ground-truth scan): a real (non-link) file occupying a provisioned entry's path is skipped, not treated as an unsafe reparse point — teardown proceeds normally", async () => {
     // keep.txt is a normal tracked file that happens to collide with a
     // provision entry — provisionWorktree finds it already checked out at the
     // link path (existsSync(link) true) and skips creating a symlink there,
@@ -322,14 +312,15 @@ describe("createWorktreeManager", () => {
     expect(existsSync(link)).toBe(true);
     expect((await lstat(link)).isSymbolicLink()).toBe(false);
 
+    // The ground-truth scan only ever removes confirmed reparse points
+    // (isSymbolicLink() === true). keep.txt is a plain file, not a link to
+    // anything external, so it is simply not a candidate for removeLinkOnly —
+    // it is neither unsafe nor blocking. It has no "real target" to protect
+    // (unlike a leaked junction), so it is fine for the normal, non-recursive-
+    // into-links worktree removal to take it along with the rest of the
+    // worktree's own content.
     await m.teardown(wt);
-
-    // removeLinkOnly must find a real (non-link) entry and refuse to touch it;
-    // teardown must then skip the recursive worktree removal entirely rather
-    // than risk deleting real content near the leaked non-link entry.
-    expect(existsSync(wt.path)).toBe(true);
-    // Tolerate git's core.autocrlf normalizing line endings on Windows.
-    expect(readFileSync(link, "utf8").replace(/\r\n/g, "\n")).toBe("real content\n");
+    expect(existsSync(wt.path)).toBe(false);
   });
 
   // --- code-review gate: finding 4 (dangling-link detection at provision time) ---
@@ -387,5 +378,62 @@ describe("createWorktreeManager", () => {
 
     await expect(m.create("t-notignored", "main")).resolves.toBeDefined();
     expect(messages.some((m2) => /not gitignored/i.test(m2))).toBe(true);
+  });
+
+  // --- ground-truth scan: stripLinks walks real dirs, removes reparse points ---
+
+  it("ground-truth scan: a link nested under a provisioned parent dir is stripped; the real target's sentinel survives", async () => {
+    mkdirSync(join(repoRoot, "a", "b"), { recursive: true });
+    writeFileSync(join(repoRoot, "a", "b", "sentinel.txt"), "nested-keep\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["a/b"] });
+    const wt = await m.create("t-nested", "main");
+
+    const link = join(wt.path, "a", "b");
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(link, "sentinel.txt"), "utf8")).toBe("nested-keep\n");
+
+    await m.teardown(wt);
+
+    // The worktree (and the "a/b" junction inside it) is gone, but the
+    // stripLinks walk had to descend through the worktree's REAL "a" dir to
+    // reach it — confirming recursion into real dirs works, without ever
+    // traversing the junction itself.
+    expect(existsSync(wt.path)).toBe(false);
+    expect(readFileSync(join(repoRoot, "a", "b", "sentinel.txt"), "utf8")).toBe("nested-keep\n");
+  });
+
+  it("ground-truth scan: a worktree with only real dirs and files (no links) tears down exactly as before — backward compat, no loop-brick", async () => {
+    const wt = await manager.create("t-realtree", "main"); // default manager: no provision
+    mkdirSync(join(wt.path, "src", "nested"), { recursive: true });
+    writeFileSync(join(wt.path, "src", "nested", "file.ts"), "export const x = 1;\n");
+    writeFileSync(join(wt.path, "top.txt"), "top\n");
+
+    await manager.teardown(wt);
+    expect(existsSync(wt.path)).toBe(false);
+  });
+
+  it("ground-truth scan: a real (non-symlink) dir sitting at a configured provision path is skipped — not a reparse point, so it neither gets deleted by the scan nor makes deprovision report unsafe", async () => {
+    // "deps" is a real, already-checked-out directory at the exact path the
+    // config would otherwise provision — provisionWorktree's occupancy check
+    // (existsSync/lstat) finds it present and skips linking, leaving the real
+    // dir + its content in place, same shape as the finding-2 file case but
+    // for a directory (which stripLinks recurses into rather than skipping
+    // outright).
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "real.txt"), "real dir content\n");
+    await runNative("git", ["add", "-A"], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "add real deps dir"], { cwd: repoRoot });
+
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+    const wt = await m.create("t-realdir", "main");
+    const link = join(wt.path, "deps");
+    expect((await lstat(link)).isSymbolicLink()).toBe(false);
+
+    await m.teardown(wt);
+
+    // No reparse point anywhere -> deprovision reports safe -> the normal
+    // (non-junction-traversing) recursive worktree removal proceeds, same as
+    // the no-provision case. No error, no refusal, no partial state left behind.
+    expect(existsSync(wt.path)).toBe(false);
   });
 });
