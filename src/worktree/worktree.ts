@@ -151,6 +151,10 @@ export function createWorktreeManager(
       // branch is correct (parity with the PS loop re-running the worker
       // fresh). None of these steps may throw: there being nothing to clean
       // up is the common case, not an error.
+      // Unlink any provisioned links from a prior attempt BEFORE the recursive
+      // cleanup below (`worktree remove --force` and `rm -rf`), so a stale
+      // junction can never let those deletes reach the clone's real deps.
+      await deprovisionWorktree(path);
       await runNative("git", ["worktree", "prune"], { cwd: mainRepoRoot });
       await runNative("git", ["worktree", "remove", "--force", "--", path], { cwd: mainRepoRoot });
       // `worktree remove` only clears a REGISTERED worktree; an interrupted

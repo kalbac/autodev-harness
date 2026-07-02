@@ -216,4 +216,21 @@ describe("createWorktreeManager", () => {
     expect(existsSync(join(repoRoot, "deps", "dep.txt"))).toBe(true);
     expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
   });
+
+  it("create re-queue: cleaning a stale worktree with a provisioned link does not delete the target", async () => {
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "keep\n");
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["deps"] });
+
+    const wt1 = await m.create("t-req", "main");
+    expect(existsSync(join(wt1.path, "deps", "dep.txt"))).toBe(true);
+
+    // Re-claim the SAME task id (rate-limit / retry / re-queue). The stale-cleanup
+    // in create() runs on the existing worktree that still holds the link.
+    const wt2 = await m.create("t-req", "main");
+    expect(existsSync(join(wt2.path, "deps", "dep.txt"))).toBe(true);
+
+    // The real target must be intact after the stale-cleanup's recursive delete.
+    expect(readFileSync(join(repoRoot, "deps", "dep.txt"), "utf8")).toBe("keep\n");
+  });
 });
