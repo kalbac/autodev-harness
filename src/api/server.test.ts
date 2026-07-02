@@ -566,3 +566,222 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     expect(await res.text()).not.toContain("leak-me-not-via-symlink");
   });
 });
+
+/** Seeds a minimal fixture UI bundle under `<root>/ui-dist`. Returns its absolute path. */
+function seedUiDir(): string {
+  const uiDir = join(root, "ui-dist");
+  mkdirSync(uiDir, { recursive: true });
+  mkdirSync(join(uiDir, "assets"), { recursive: true });
+  writeFileSync(join(uiDir, "index.html"), "<!doctype html><html><body>index</body></html>");
+  writeFileSync(join(uiDir, "assets", "app.js"), "console.log('app');");
+  writeFileSync(join(uiDir, "assets", "style.css"), "body{color:red}");
+  return uiDir;
+}
+
+describe("createApiServer / static UI serving (uiDir set)", () => {
+  it("GET / returns index.html with text/html content-type", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("index");
+  });
+
+  it("GET /index.html also returns index.html", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/index.html`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("index");
+  });
+
+  it("GET /assets/app.js returns its bytes with a javascript content-type", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/assets/app.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/javascript/);
+    expect(await res.text()).toBe("console.log('app');");
+  });
+
+  it("GET /assets/style.css returns text/css", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/assets/style.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/css");
+  });
+
+  it("SPA fallback: an extension-less unknown route serves index.html", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/some/client/route`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("index");
+  });
+
+  it("a missing asset WITH an extension 404s (no SPA fallback)", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/missing.js`);
+    expect(res.status).toBe(404);
+  });
+
+  it("API routes still win over static/SPA when uiDir is set", async () => {
+    seedTask("pending", "p1");
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const stateRes = await fetch(`http://127.0.0.1:${port}/state`);
+    expect(stateRes.status).toBe(200);
+    const stateBody = (await stateRes.json()) as { queues: Record<string, { id: string }[]> };
+    expect(stateBody.queues.pending?.map((t) => t.id)).toEqual(["p1"]);
+
+    const runsRes = await fetch(`http://127.0.0.1:${port}/runs`);
+    expect(runsRes.status).toBe(200);
+    expect(await runsRes.json()).toEqual([]);
+  });
+
+  it("a directory under uiDir requested as an asset path 404s (not served)", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/assets`);
+    expect(res.status).toBe(404);
+  });
+
+  it("404s (does not follow) a symlink under uiDir pointing outside it", async () => {
+    const uiDir = seedUiDir();
+    const secret = join(root, "outside-ui-secret.txt");
+    writeFileSync(secret, "leak-me-not-via-ui-symlink");
+    try {
+      symlinkSync(secret, join(uiDir, "link.js"), "file");
+    } catch {
+      handle = createApiServer({ repo, stateDir, uiDir });
+      await handle.listen(0);
+      return; // environment can't create symlinks -- the lstat/isFile guard still holds
+    }
+
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/link.js`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("leak-me-not-via-ui-symlink");
+  });
+
+  it("a traversal request can never read a file outside uiDir (sentinel one dir up is unreachable)", async () => {
+    const uiDir = seedUiDir();
+    // Sentinel sits directly under root, one directory above uiDir.
+    writeFileSync(join(root, "secret.txt"), "leak-me-not-via-traversal");
+
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/..%2f..%2fsecret.txt`);
+    expect([400, 404]).toContain(res.status);
+    const text = await res.text();
+    expect(text).not.toContain("leak-me-not-via-traversal");
+  });
+
+  it("a double-encoded traversal request never reads a file outside uiDir", async () => {
+    const uiDir = seedUiDir();
+    writeFileSync(join(root, "secret2.txt"), "leak-me-not-via-encoded-dots");
+
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/%2e%2e/secret2.txt`);
+    expect([400, 404]).toContain(res.status);
+    const text = await res.text();
+    expect(text).not.toContain("leak-me-not-via-encoded-dots");
+  });
+
+  it("an encoded-dot missing asset (/missing%2ejs -> missing.js) 404s, never SPA-fallbacks to index", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    // Decodes to `missing.js` -- an ASSET path with no file. The SPA-vs-asset
+    // heuristic must use the DECODED extension, so this 404s (not a route 200).
+    const res = await fetch(`http://127.0.0.1:${port}/missing%2ejs`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("index");
+  });
+
+  it("a path UNDER an existing file (/assets/app.js/foo -> ENOTDIR) 404s, never SPA-fallbacks", async () => {
+    const uiDir = seedUiDir();
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    // `assets/app.js` is a file, so lstat of `.../app.js/foo` fails with ENOTDIR
+    // (not ENOENT). `foo` has no extension, so a naive "missing -> SPA" would wrongly
+    // serve index.html; ENOTDIR must be "blocked", never fallback.
+    const res = await fetch(`http://127.0.0.1:${port}/assets/app.js/foo`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("index");
+  });
+
+  it("an INTERMEDIATE symlink directory under uiDir cannot escape (realpath containment)", async () => {
+    const uiDir = seedUiDir();
+    const outsideDir = join(root, "outside-ui-dir");
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(outsideDir, "secret.js"), "leak-me-not-via-symlink-dir");
+    try {
+      // A symlinked DIRECTORY inside uiDir -- lstat+O_NOFOLLOW only guard the FINAL
+      // component, so only realpath containment catches this class.
+      symlinkSync(outsideDir, join(uiDir, "extern"), "dir");
+    } catch {
+      handle = createApiServer({ repo, stateDir, uiDir });
+      await handle.listen(0);
+      return; // environment can't create dir symlinks -- realpath guard still holds
+    }
+
+    handle = createApiServer({ repo, stateDir, uiDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/extern/secret.js`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("leak-me-not-via-symlink-dir");
+  });
+});
+
+describe("createApiServer / static UI serving (uiDir unset)", () => {
+  it("GET / 404s (unchanged behavior) and API routes are unaffected", async () => {
+    seedTask("pending", "p1");
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const rootRes = await fetch(`http://127.0.0.1:${port}/`);
+    expect(rootRes.status).toBe(404);
+
+    const stateRes = await fetch(`http://127.0.0.1:${port}/state`);
+    expect(stateRes.status).toBe(200);
+  });
+});
+
+describe("createApiServer / listen with an explicit bind host", () => {
+  it("still binds and is reachable via 127.0.0.1 when host is passed explicitly", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0, "127.0.0.1");
+
+    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    expect(res.status).toBe(200);
+  });
+});

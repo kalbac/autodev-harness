@@ -48,6 +48,7 @@ import { harvestWorkerReport as harvestWorkerReportCore } from "./worker/report.
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "./conductor/conductor.js";
 import { createLogger, type Logger } from "./util/log.js";
 import type { HarnessConfig } from "./config/schema.js";
+import { createApiServer } from "./api/server.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -93,14 +94,42 @@ function parseArgs(argv: string[]): ConductorRunOptions {
 
 type CliCommand =
   | { mode: "run"; runOpts: ConductorRunOptions }
-  | { mode: "orchestrate"; intent: string };
+  | { mode: "orchestrate"; intent: string }
+  | { mode: "serve"; port: number };
+
+/** Default bind port for `serve` when `--port` is omitted. */
+const DEFAULT_SERVE_PORT = 4319;
+
+/** `--port <n>` / `--port=<n>` from the args after `serve`. Mirrors `--max-iterations` parsing style. */
+function parseServeArgs(argv: string[]): { port: number } {
+  let port = DEFAULT_SERVE_PORT;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+
+    if (arg === "--port") {
+      const val = argv[i + 1];
+      if (val === undefined) {
+        throw new Error("--port: missing value (expected a positive integer)");
+      }
+      port = parsePositiveInt(val, arg);
+      i++;
+    } else if (arg.startsWith("--port=")) {
+      port = parsePositiveInt(arg.slice("--port=".length), "--port");
+    }
+  }
+
+  return { port };
+}
 
 /**
  * Top-level CLI dispatch. `orchestrate <intent...>` runs the LLM orchestrator
- * over the operator's intent (decompose → enqueue → bounded trigger); anything
- * else is the default deterministic run mode, honoring `--once` /
- * `--max-iterations`. The remaining args after `orchestrate` are joined so
- * both `orchestrate "build X"` and `orchestrate build X` work.
+ * over the operator's intent (decompose → enqueue → bounded trigger); `serve
+ * [--port N]` boots the read-only dashboard API (+ static UI bundle when built)
+ * bound to loopback only; anything else is the default deterministic run mode,
+ * honoring `--once` / `--max-iterations`. The remaining args after `orchestrate`
+ * are joined so both `orchestrate "build X"` and `orchestrate build X` work.
  */
 function parseCli(argv: string[]): CliCommand {
   if (argv[0] === "orchestrate") {
@@ -109,6 +138,9 @@ function parseCli(argv: string[]): CliCommand {
       throw new Error('orchestrate: missing intent (usage: orchestrate "<what to build>")');
     }
     return { mode: "orchestrate", intent };
+  }
+  if (argv[0] === "serve") {
+    return { mode: "serve", ...parseServeArgs(argv.slice(1)) };
   }
   return { mode: "run", runOpts: parseArgs(argv) };
 }
@@ -131,6 +163,28 @@ async function main(): Promise<void> {
 
   // --- Core dependencies -----------------------------------------------
   const repo = new FileBlackboardRepository(repoRoot, cfg.stateDir);
+
+  // `serve` is a minimal, read-only verb: repo + stateDir + (optional) uiDir only.
+  // It deliberately branches BEFORE the worker/critic/gate/worktree wiring below --
+  // that wiring is conductor/orchestrator machinery `serve` never touches (POST
+  // /orchestrate is a separate later module), and skipping it means `serve` can
+  // start even when a worker/critic adapter isn't fully configured.
+  if (command.mode === "serve") {
+    const absStateDir = join(repoRoot, cfg.stateDir);
+    const uiDirCandidate = join(repoRoot, "dist", "ui");
+    const uiDir = existsSync(uiDirCandidate) ? uiDirCandidate : undefined;
+
+    const handle = createApiServer({ repo, stateDir: absStateDir, ...(uiDir !== undefined ? { uiDir } : {}), log });
+    const boundPort = await handle.listen(command.port, "127.0.0.1");
+    log(
+      "INFO",
+      `serve: listening at http://127.0.0.1:${boundPort}${
+        uiDir ? "" : ` (API only -- no UI bundle found at ${uiDirCandidate})`
+      }`,
+    );
+    return; // the listening server keeps the event loop alive; do not tear it down
+  }
+
   const scheduler = createScheduler(repo);
   const worktreesDir = join(repoRoot, cfg.stateDir, "worktrees");
   const worktree = createWorktreeManager(repoRoot, worktreesDir);

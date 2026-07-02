@@ -17,9 +17,9 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { open, stat, lstat, writeFile, mkdir, readdir, type FileHandle } from "node:fs/promises";
+import { open, stat, lstat, realpath, writeFile, mkdir, readdir, type FileHandle } from "node:fs/promises";
 import { existsSync, constants } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep, extname } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
@@ -59,6 +59,30 @@ const MAX_RUNTIME_FILE_READ_BYTES = 1_000_000;
 const TRUNCATION_MARKER = "\n...[truncated]";
 
 /**
+ * Hard cap on a single static UI-bundle asset read (production-convenience serving,
+ * `ApiServerDeps.uiDir`). Unlike the runtime-file endpoint, assets can be binary
+ * (png/woff2), so an oversized file is never served truncated (that would silently
+ * corrupt binary content) -- it is simply treated as unservable (404) and logged.
+ * A few MB comfortably covers a built dashboard's JS/CSS chunks and small images.
+ */
+const MAX_STATIC_ASSET_READ_BYTES = 8 * 1024 * 1024;
+
+/** Content-type by lowercased file extension for static UI-bundle assets. Unlisted
+ *  extensions fall back to `application/octet-stream`. */
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+  ".map": "application/json; charset=utf-8",
+};
+
+/**
  * Hard cap on a single `<stateDir>/runs/*.json` manifest read. A manifest is our own
  * small index ({runId,intent,taskIds,at}); a file over this cap is corrupt/hostile and
  * is SKIPPED (best-effort) rather than read whole -- bounding memory before `JSON.parse`
@@ -93,6 +117,14 @@ export interface ApiServerDeps {
   repo: BlackboardRepository;
   /** Absolute path to the stateDir (e.g. <repoRoot>/.autodev). digest.md + escalations/ live under here. */
   stateDir: string;
+  /**
+   * OPTIONAL absolute path to a built UI bundle dir (production convenience only --
+   * dev mode runs `vite` separately and proxies to this API). When unset, behavior is
+   * completely unchanged: API-only, unknown GET routes still 404. When set, static
+   * serving is added as the LAST fallback in `handleRequest`, AFTER every API route,
+   * so the API always wins. See module header / `resolveStaticPath` / `tryServeStaticFile`.
+   */
+  uiDir?: string;
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching `stateDir`. Must be swappable. */
   watchFactory?: (stateDir: string, onChange: (path: string) => void) => { close(): Promise<void> | void };
@@ -102,8 +134,10 @@ export interface ApiServerDeps {
 }
 
 export interface ApiServerHandle {
-  /** Starts listening; resolves with the actual bound port (0 => OS-assigned ephemeral port). */
-  listen(port?: number): Promise<number>;
+  /** Starts listening; resolves with the actual bound port (0 => OS-assigned ephemeral port).
+   *  `host` defaults to Node's normal `http.Server#listen` default (all interfaces) when
+   *  omitted -- pass `"127.0.0.1"` to bind loopback-only (used by the `serve` CLI verb). */
+  listen(port?: number, host?: string): Promise<number>;
   /** Closes the http server, the ws server (+ all connected clients), and the watcher. */
   close(): Promise<void>;
   readonly port: number;
@@ -262,6 +296,137 @@ function decodeSegment(raw: string): string | null {
     return decodeURIComponent(raw);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Resolve a request pathname (raw, percent-encoded, e.g. `url.pathname`) to an
+ * absolute path INSIDE `uiDir`, or `null` if the request is malformed or attempts
+ * to escape `uiDir`. This is the sole traversal guard for static serving -- mirrors
+ * the `decodeSegment` + positive-allowlist rigor used elsewhere in this file, but
+ * static paths are multi-segment so the guard works segment-by-segment instead of
+ * a single-segment regex allowlist.
+ *
+ * Decodes the WHOLE pathname first (so an encoded separator like `%2f` or an
+ * encoded dot like `%2e` is caught, not just a literal `..`), then walks the
+ * decoded path split on `/`: empty and `.` segments are dropped, a `..` segment
+ * is rejected outright (never resolved away), and any segment containing a NUL
+ * byte, backslash, or colon (Windows separator / drive / ADS syntax) is rejected.
+ * `path.resolve` + an explicit prefix check is kept as defense-in-depth even
+ * though the `..` rejection alone already prevents escaping `uiDir`.
+ */
+function resolveStaticPath(uiDir: string, rawPathname: string): string | null {
+  const decoded = decodeSegment(rawPathname);
+  if (decoded === null) return null;
+  if (decoded.includes("\u0000")) return null;
+
+  const segments: string[] = [];
+  for (const seg of decoded.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") return null;
+    if (seg.includes("\\") || seg.includes(":") || seg.includes("\u0000")) return null;
+    segments.push(seg);
+  }
+
+  const resolved = resolve(uiDir, ...segments);
+  if (resolved !== uiDir && !resolved.startsWith(uiDir + sep)) return null;
+  return resolved;
+}
+
+/** `realpath` that returns `null` instead of throwing (missing path, broken link,
+ *  permission error). Used to canonicalize both `uiDir` and a candidate asset so an
+ *  INTERMEDIATE symlink dir (e.g. `uiDir/assets -> /outside`) cannot escape `uiDir`
+ *  -- a lexical prefix check + a final-component no-follow open do NOT catch that. */
+async function realpathSafe(p: string): Promise<string | null> {
+  try {
+    return await realpath(p);
+  } catch {
+    return null;
+  }
+}
+
+/** Content-type for a static asset by extension; unknown extensions get the safe
+ *  binary default rather than being sniffed. */
+function staticContentType(absPath: string): string {
+  return STATIC_CONTENT_TYPES[extname(absPath).toLowerCase()] ?? "application/octet-stream";
+}
+
+/**
+ * `"served"` -- response sent (200). `"missing"` -- nothing at this path (ENOENT);
+ * eligible for SPA fallback. `"blocked"` -- something exists at this path but it is
+ * NOT servable (a directory, a symlink, an oversized file, ...); NEVER eligible for
+ * SPA fallback, because falling back to `index.html` for a real directory would
+ * silently mask it as a client-side route instead of 404ing.
+ */
+type StaticServeResult = "served" | "missing" | "blocked";
+
+/**
+ * Attempts to serve one static file at a lexically-checked absolute path. Two
+ * layers of containment: (1) `absPath` already passed `resolveStaticPath`'s lexical
+ * `..`/prefix check; (2) here we `realpath` the target and re-verify it is STILL
+ * inside `canonicalUiDir` -- this is what stops an INTERMEDIATE symlink directory
+ * (`uiDir/assets -> /outside`) from escaping, which `lstat`+`O_NOFOLLOW` (final
+ * component only) do NOT catch. Then the fd-open + fstat + isFile TOCTOU-hardened
+ * read pattern from `handleReadRuntimeFile` serves the canonical path.
+ *
+ * `lstat`/`realpath` failures are mapped precisely: only `ENOENT` (truly nothing
+ * there) is `"missing"` (SPA-fallback-eligible); every other error (`ENOTDIR` for a
+ * path under a file, `EACCES`, a symlink escape, oversize) is `"blocked"` so it can
+ * NEVER be masked as a client-side route by the SPA fallback.
+ */
+async function tryServeStaticFile(
+  absPath: string,
+  canonicalUiDir: string,
+  res: ServerResponse,
+  log: (level: string, message: string) => void,
+): Promise<StaticServeResult> {
+  let lst;
+  try {
+    lst = await lstat(absPath);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "blocked";
+  }
+  if (!lst.isFile()) return "blocked"; // directory / (final) symlink / fifo / etc.
+
+  // Canonicalize and re-check containment: catches an intermediate symlink dir that
+  // the lexical check and the final-component no-follow open both miss.
+  //
+  // ACCEPTED RESIDUAL (documented): a realpath->open gap remains for a concurrent
+  // adversary who swaps an intermediate dir INSIDE canonicalUiDir to a symlink
+  // between this realpath and the open below. Fully closing it needs per-component
+  // no-follow resolution (openat2 RESOLVE_BENEATH) which Node exposes on no platform
+  // portably; realpath containment is exactly what industry static servers
+  // (serve-static lineage) do and is accepted for this threat model -- a localhost,
+  // single-operator, no-auth daemon serving its OWN build output (`<repoRoot>/dist/ui`).
+  // Such an adversary already has same-user FS access and can read any file directly,
+  // so the gap grants no new capability.
+  const canonical = await realpathSafe(absPath);
+  if (canonical === null) return "blocked";
+  if (canonical !== canonicalUiDir && !canonical.startsWith(canonicalUiDir + sep)) return "blocked";
+
+  let fh: FileHandle;
+  try {
+    fh = await open(canonical, READ_NO_FOLLOW_FLAGS);
+  } catch {
+    // ELOOP / raced delete after the checks above -- blocked (never SPA fallback).
+    return "blocked";
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) return "blocked";
+    if (st.size > MAX_STATIC_ASSET_READ_BYTES) {
+      // Never serve a truncated binary asset (would silently corrupt it) -- log and
+      // treat as unservable instead.
+      log("WARN", `api: static asset over ${MAX_STATIC_ASSET_READ_BYTES} bytes, refusing to serve: ${canonical}`);
+      return "blocked";
+    }
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    res.writeHead(200, { "content-type": staticContentType(canonical) });
+    res.end(buf.subarray(0, bytesRead));
+    return "served";
+  } finally {
+    await fh.close();
   }
 }
 
@@ -568,6 +733,43 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
+    // Static UI-bundle serving -- LAST fallback, only when uiDir is configured, and
+    // only for GET (a non-GET that matched no API route above still falls through
+    // to the plain 404 below, unchanged). See ApiServerDeps.uiDir doc comment.
+    if (req.method === "GET" && deps.uiDir) {
+      // Canonicalize uiDir ONCE per request: every containment check below is against
+      // the real (symlink-resolved) uiDir, so an intermediate symlink dir can't escape.
+      const canonicalUiDir = await realpathSafe(deps.uiDir);
+      if (canonicalUiDir !== null) {
+        const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
+
+        const resolved = resolveStaticPath(canonicalUiDir, requestPath);
+        if (resolved === null) {
+          sendJson(res, 400, { error: "invalid path" });
+          return;
+        }
+
+        const result = await tryServeStaticFile(resolved, canonicalUiDir, res, log);
+        if (result === "served") return;
+
+        // SPA fallback: serve index.html only for a truly-missing path that looks
+        // like a client route -- i.e. NO segment of the resolved-relative path carries
+        // a file extension. Checking EVERY segment on the DECODED, resolved path (not
+        // errno, not just the last segment) is deliberately cross-platform: it treats
+        // `/missing.js`, `/missing%2ejs` (decoded), AND `/assets/app.js/foo` (a path
+        // under a file -- ENOTDIR on POSIX but ENOENT on Windows) all as assets -> 404,
+        // never a route. A "blocked" result (dir, symlink escape, oversize) is never
+        // eligible either.
+        const relSegments = resolved.slice(canonicalUiDir.length).split(sep);
+        if (result === "missing" && !relSegments.some((s) => s.includes("."))) {
+          const indexPath = resolveStaticPath(canonicalUiDir, "/index.html");
+          if (indexPath !== null && (await tryServeStaticFile(indexPath, canonicalUiDir, res, log)) === "served") {
+            return;
+          }
+        }
+      }
+    }
+
     sendJson(res, 404, { error: "not found" });
   }
 
@@ -602,14 +804,18 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return boundPort;
     },
 
-    listen(port = 0): Promise<number> {
-      return new Promise((resolve, reject) => {
+    listen(port = 0, host?: string): Promise<number> {
+      return new Promise((resolvePromise, reject) => {
         httpServer.once("error", reject);
-        httpServer.listen(port, () => {
+        const onListening = (): void => {
           const addr = httpServer.address() as AddressInfo;
           boundPort = addr.port;
-          resolve(boundPort);
-        });
+          resolvePromise(boundPort);
+        };
+        // Preserve exact prior behavior when host is omitted (tests rely on this):
+        // call the 1-arg overload rather than passing `undefined` as a second arg.
+        if (host !== undefined) httpServer.listen(port, host, onListening);
+        else httpServer.listen(port, onListening);
       });
     },
 
