@@ -4,6 +4,7 @@ import {
   adapterMeta,
   resolveWorkerExe,
   resolveCriticExe,
+  resolveOrchestratorExe,
   heterogeneityWarnings,
   assertKnownAdapters,
 } from "./roles.js";
@@ -46,6 +47,18 @@ describe("resolveCriticExe", () => {
   it("resolves to the configured exe override when present", () => {
     const cfg = HarnessConfigSchema.parse({ roles: { critic: { exe: "custom-codex-exe" } } });
     expect(resolveCriticExe(cfg)).toBe("custom-codex-exe");
+  });
+});
+
+describe("resolveOrchestratorExe", () => {
+  it("resolves to the adapter's default exe when no override is configured", () => {
+    const cfg = HarnessConfigSchema.parse({});
+    expect(resolveOrchestratorExe(cfg)).toBe("claude");
+  });
+
+  it("resolves to the configured exe override when present", () => {
+    const cfg = HarnessConfigSchema.parse({ roles: { orchestrator: { exe: "custom-orchestrator-exe" } } });
+    expect(resolveOrchestratorExe(cfg)).toBe("custom-orchestrator-exe");
   });
 });
 

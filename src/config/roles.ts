@@ -25,6 +25,10 @@ export function resolveCriticExe(cfg: HarnessConfig): string {
   return cfg.roles.critic.exe ?? adapterMeta(cfg.roles.critic.adapter).defaultExe;
 }
 
+export function resolveOrchestratorExe(cfg: HarnessConfig): string {
+  return cfg.roles.orchestrator.exe ?? adapterMeta(cfg.roles.orchestrator.adapter).defaultExe;
+}
+
 // policy.heterogeneity: return a one-element warning array when policy is "warn"
 // AND the worker and critic resolve to the SAME adapter family; else [].
 export function heterogeneityWarnings(cfg: HarnessConfig): string[] {
