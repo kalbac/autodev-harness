@@ -23,6 +23,7 @@ import { join, resolve, sep, extname } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
+import { parseEscalation } from "../escalate/escalate.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -89,6 +90,15 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
  * so `GET /runs` can never be OOM'd by a poisoned oversized manifest.
  */
 const MAX_RUN_MANIFEST_BYTES = 256 * 1024;
+
+/**
+ * Hard cap on `GET /escalations/:id` reads of `<stateDir>/escalations/<id>.md` and
+ * `<id>.reply.json`. Like `MAX_RUN_MANIFEST_BYTES`, both are our own small structured
+ * writes (`buildBody`'s markdown / the reply JSON `handleReply` writes) -- a file over
+ * this cap is corrupt/hostile and is treated as absent (-> 404), never truncated or
+ * parsed.
+ */
+const MAX_ESCALATION_READ_BYTES = 256 * 1024;
 
 /**
  * Soft cap on `POST /orchestrate`'s `intent` string, tighter than the 1MB
@@ -237,6 +247,60 @@ async function readBoundedManifest(path: string): Promise<RunManifest | null> {
   } finally {
     await fh.close();
   }
+}
+
+/**
+ * Best-effort bounded read of one file's full text content, TOCTOU-hardened exactly
+ * like `handleReadRuntimeFile`: a cheap `lstat` pre-check rejects a static symlink /
+ * dir up front, then a single no-follow fd is opened and BOTH the size check
+ * (`fstat` on that handle) and the read happen on it -- closing the lstat->read
+ * TOCTOU. Returns `null` (never throws) for a missing / non-file / oversized file or
+ * a raced symlink swap; callers (`handleGetEscalation`) treat `null` uniformly as
+ * "this file doesn't exist; try elsewhere / 404".
+ */
+async function readBoundedFileText(path: string, maxBytes: number): Promise<string | null> {
+  let lst;
+  try {
+    lst = await lstat(path);
+  } catch {
+    return null;
+  }
+  if (!lst.isFile()) return null;
+
+  let fh: FileHandle;
+  try {
+    fh = await open(path, READ_NO_FOLLOW_FLAGS);
+  } catch {
+    // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
+    return null;
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > maxBytes) return null;
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    return buf.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Narrow, best-effort validation of a parsed `<id>.reply.json` -- a file that
+ *  parses as JSON but doesn't have this shape (or a hand-edited/corrupt one) is
+ *  treated the same as unparseable: `GET /escalations/:id` degrades to `reply: null`
+ *  rather than failing the whole endpoint. */
+function isEscalationReply(value: unknown): value is EscalationReply {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" &&
+    (v.choice === "A" || v.choice === "B") &&
+    typeof v.note === "string" &&
+    typeof v.at === "number" &&
+    Number.isFinite(v.at)
+  );
 }
 
 /** Default (production) watcher: chokidar over the whole stateDir tree. */
@@ -591,6 +655,75 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   /**
+   * Read one escalation's body (+ reply status, if any) for the dashboard's A/B
+   * decision card. The escalation id == the task id (`buildEscalation` in
+   * `src/conductor/conductor.ts` sets `id: task.id`); the UI already knows which
+   * ids exist from the `escalated` queue in `GET /state`, so this is deliberately
+   * a single-item read, not a list endpoint.
+   *
+   * Mirrors `handleReadRuntimeFile`'s TOCTOU-hardened bounded-read discipline via
+   * `readBoundedFileText`. A missing / oversized / non-file / symlink-escaped /
+   * unparseable markdown file is ALWAYS a 404 -- never a 500 over a file the
+   * conductor may still be writing. The reply file is read the same way but is
+   * best-effort ON TOP of that: missing or malformed -> `reply: null`, never a
+   * failure of the whole request (parity with the `digest.md` / run-manifest
+   * best-effort philosophy used elsewhere in this file).
+   */
+  async function handleGetEscalation(rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid escalation id" });
+      return;
+    }
+
+    const escalationsDir = join(deps.stateDir, "escalations");
+    const markdownText = await readBoundedFileText(join(escalationsDir, `${id}.md`), MAX_ESCALATION_READ_BYTES);
+    if (markdownText === null) {
+      sendJson(res, 404, { error: "escalation not found" });
+      return;
+    }
+    // The filename and the internal `# ESCALATION <id> -- ...` header are expected
+    // to agree (both are always written together by `escalate()`); a stale or
+    // hand-edited file where they diverge is treated the same as "not found" --
+    // never surfaced as someone else's escalation under this id.
+    const parsed = parseEscalation(markdownText);
+    if (parsed === null || parsed.id !== id) {
+      sendJson(res, 404, { error: "escalation not found" });
+      return;
+    }
+
+    let reply: { choice: "A" | "B"; note: string; at: number } | null = null;
+    const replyText = await readBoundedFileText(join(escalationsDir, `${id}.reply.json`), MAX_ESCALATION_READ_BYTES);
+    if (replyText !== null) {
+      try {
+        const parsedReply: unknown = JSON.parse(replyText);
+        // Same filename/internal-id agreement as above, but best-effort: a mismatch
+        // here degrades only the reply to null, it never fails the whole request.
+        if (isEscalationReply(parsedReply) && parsedReply.id === id) {
+          reply = { choice: parsedReply.choice, note: parsedReply.note, at: parsedReply.at };
+        }
+      } catch {
+        // Malformed reply JSON -- degrade to null, never fail the endpoint.
+      }
+    }
+
+    sendJson(res, 200, {
+      id: parsed.id,
+      reason: parsed.reason,
+      type: parsed.type,
+      taskId: parsed.taskId,
+      title: parsed.title,
+      what: parsed.what,
+      decision: parsed.decision,
+      optionA: parsed.optionA,
+      optionB: parsed.optionB,
+      costOfWrong: parsed.costOfWrong,
+      evidence: parsed.evidence,
+      reply,
+    });
+  }
+
+  /**
    * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
    * body, then -- WITHOUT awaiting it -- kicks off `deps.onOrchestrate(intent)` in
    * the background and returns `202 {accepted:true,intent}` immediately. The
@@ -865,6 +998,15 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     const runtimeListMatch = /^\/tasks\/([^/]+)\/runtime\/?$/.exec(url.pathname);
     if (req.method === "GET" && runtimeListMatch) {
       await handleListRuntimeFiles(runtimeListMatch[1]!, res);
+      return;
+    }
+
+    // Single-segment match (`[^/]+` with no trailing path) -- distinct from, and
+    // checked independently of, the POST .../reply route below (different method
+    // AND an extra path segment), so neither can ever shadow the other.
+    const escGetMatch = /^\/escalations\/([^/]+)\/?$/.exec(url.pathname);
+    if (req.method === "GET" && escGetMatch) {
+      await handleGetEscalation(escGetMatch[1]!, res);
       return;
     }
 

@@ -4,6 +4,78 @@
 
 ---
 
+## s14 — 2026-07-02 — P2 Module 5 (dashboard UI) shipped + LIVE-PROVEN on aurora through the browser
+
+**Context:** s13 shipped the P2 backend; the ONE thing left was Module 5 — the React/Vite UI itself. Operator
+chose to **discuss layout FIRST**. Read all anchors; reconned the in-project donor frontends (AO + OD) BEFORE
+designing (reference-first). **open-warehouse dropped as a reference** — operator: refs live only in `references/`
+(the design spec + s13 promt wrongly cited it). Saved a feedback memory.
+
+**Layout, signed off:** operator steered to an **agent-desktop IA** (Claude Code / Codex / Devin desktop) — not a
+kanban-hero: sidebar runs-list + transcript-forward main + inspector rail, **critic verdict FIRST-CLASS** as a
+"verdict seal" (the thesis, made visible). Task detail = its own 2-pane route. Design direction (frontend-design
+skill): control-room dark ink, verdict tones the only saturated color, mono-forward type (Plex Mono/Sans + Space Grotesk).
+
+**One gated backend add — `GET /escalations/:id`** (the A/B card needs the escalation body; escalation id == task id,
+so no list endpoint). sonnet TDD (`parseEscalation` inverts `buildBody`; TOCTOU-hardened bounded read) → my spec-check
+→ **codex GPT-5.5 gate `broken`, 4 findings** → 3 fixed w/ regression tests (evidence containing a ``` fence
+round-trips via backward close-scan; field lookup restricted to pre-evidence; `parsed.id === :id`), **1 declined w/
+rationale** (final-component no-follow is consistent with sibling endpoints) → **re-critic `clean`**. 480 tests.
+
+**UI (reviewed, not gated):** own `ui/` workspace (heavy toolchain out of the daemon build), Vite → `dist/ui`;
+hand-rolled shadcn-idiom primitives (no headless dep → reliable build); `@fontsource` (offline). Screens: Home
+(hero + composer), Board (5 queues by attention tone, done collapsed), Run transcript, Task detail (2-pane:
+escalation A/B + spec + lifecycle | inspector Verdict/Diff/Report/Files). Live via existing WS → React-Query invalidate.
+
+**Verified for real (Playwright — Claude-in-Chrome was offline):** (1) demo — real api-server over a seeded stateDir:
+board/detail render, escalation A/B reply writes the file, diff colors, BROKEN seal, `POST /orchestrate` → 202 → WS →
+new run appears live. (2) **LIVE on aurora via `serve` (detached — sidesteps `[orchestrator/bg-spawn-killed]`),
+driven from the browser composer:** opus decompose (~20s) → claude worker → `php -l` gate → **codex critic `uncertain`
+→ escalated** → new endpoint → A/B card + UNCERTAIN seal (real critic notes: "unverified contract statement… no test")
+→ **reply B written to the live daemon**. The gate refused an unverified docblock contract claim — the thesis, live.
+
+**Git:** branch `autodev/s14-dashboard-ui` (3 code commits + folds the s13-session-save docs). PR pending (supersedes #27).
+**Gotchas:** `[ui/serve-uidir-reporoot]`, `[ui/verdict-not-persisted]`. Aurora reset to master, temp branch deleted.
+
+---
+
+## s13 — 2026-07-02 — P2 dashboard BACKEND shipped (design-gate → 4 gated modules → PR #26 merged)
+
+**Context:** s12 closed the orchestrate live-proof; s13 priority = P2 localhost dashboard. Ran a **design
+gate FIRST** (s11 pattern): Plan subagent authored `docs/superpowers/specs/2026-07-02-p2-dashboard-design.md`;
+🔴 forks surfaced to the operator. Operator steered two ways that reshaped the spec: (1) frontend on the
+**same stack as open-warehouse** (React 19 + Vite + TanStack + shadcn/Tailwind + zustand — shadcn/Tailwind
+is the point, NOT open-warehouse's axios→Laravel coupling); (2) pick transport + run-model **from our donor
+references, not invent** → dispatched parallel Explore agents over **AO** and **OD**. Findings: both donors
+use HTTP `/api` + React-Query + **SSE**; OD has a per-run `runs/<id>/events.jsonl`; **AO has no transcript
+UI** (confirms `[ao/ui]`). Resolved forks: keep our WS (not SSE — already gated), OD-style per-run **manifest**,
+read + escalation + **launch orchestrate** in scope, bind 127.0.0.1. New feedback memory: **check donor refs
+first on any architectural fork.**
+
+**Four backend modules — each sonnet TDD → controller spec-check → codex GPT-5.5 gate → re-critic (never
+self-certified):**
+1. **run manifest** (`recordRun` capability) — `<stateDir>/runs/<run-id>.json` after enqueue; best-effort,
+   R1-safe (report family). codex: 1 High + 2 residuals, all `[ts/fail-closed]` (throwing logger / message
+   getter / non-string toString) → fixed + regression tests → APPROVE.
+2. **read endpoints** — `GET /runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`. codex: 1 High (symlink
+   follow) + 4 Med → symlink+size **TOCTOU-hardened** (no-follow fd + fstat), best-effort never-500, bounded
+   reads → APPROVE.
+3. **serve verb + static** — `serve [--port N]` binds 127.0.0.1, serves `dist/ui` as LAST fallback. codex:
+   1 High (**intermediate symlink-dir escape** — lstat+O_NOFOLLOW only guard the FINAL component) → **realpath
+   containment**; SPA fallback via cross-platform lexical check (errno differs by OS). 1 TOCTOU residual
+   documented + codex-accepted (needs openat2, unavailable in Node; matches serve-static). → APPROVE.
+4. **POST /orchestrate** — 202-async + single-flight (409), R1 preserved (api gets only a thin `onOrchestrate`
+   callback; `buildOrchestrator` shared with the CLI verb). codex: 1 Med + 1 Low (`[ts/fail-closed]` again +
+   log-forging) → fail-closed background chain + `flattenForLog` → APPROVE.
+
+**Result:** 447 tests / 2 skip, typecheck clean, **CI green 4/4**, PR **#26 squash-merged → `main` `5a7963a`**.
+R1 trip-wire green; no new `BlackboardRepository` method; `src/api/**` imports nothing from gate/worker/
+critic/worktree/orchestrator. **Module 5 (the React/Vite UI itself) is NEXT** — paused for operator layout/UX
+input. Editing note: literal control-byte regex literals are unmaintainable via the Edit tool — write control
+classes via char-code checks (`codePointAt`) or `\r\n`-style escapes, never literal bytes.
+
+---
+
 ## s12 — 2026-07-02 — `orchestrate` LIVE-PROVEN end-to-end on aurora (green COMMIT)
 
 **Context:** s11 built the whole adr/003 layer; the ONE thing left was a live end-to-end proof of the

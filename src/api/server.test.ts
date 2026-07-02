@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from "node:fs";
+import { writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
+import { escalate } from "../escalate/escalate.js";
+import type { EscalationInput } from "../escalate/escalate.js";
 import { createApiServer, type ApiServerHandle } from "./server.js";
 
 let root: string;
@@ -221,6 +224,257 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     });
     expect(res.status).toBe(413);
     expect(existsSync(join(stateDir, "escalations", "esc-big.reply.json"))).toBe(false);
+  });
+});
+
+/** A representative `EscalationInput`, overridable per test. */
+function makeEscalationInput(overrides: Partial<EscalationInput> = {}): EscalationInput {
+  return {
+    id: "esc-1",
+    reason: "worker disagreed with critic twice",
+    type: "disagreement",
+    taskId: "T-42",
+    title: "Rename public API",
+    what: "Worker renamed a public export; critic rejected twice.",
+    decision: "Keep old name or accept the rename?",
+    optionA: "Keep old name",
+    optionB: "Accept rename",
+    costOfWrong: "Downstream consumers break silently",
+    evidence: "diff --git a/x b/x\n+export function newName() {}",
+    ...overrides,
+  };
+}
+
+/** Writes a REAL `<stateDir>/escalations/<id>.md` via the real `buildBody` (through
+ *  `escalate()`, whose `writeFile` is injected to hit real disk) -- exactly the
+ *  artifact the conductor would have written, not a hand-rolled fixture. */
+async function seedEscalation(input: EscalationInput): Promise<void> {
+  const escalationsDir = join(stateDir, "escalations");
+  mkdirSync(escalationsDir, { recursive: true });
+  await escalate(input, {
+    escalationsDir,
+    writeFile: async (path: string, content: string) => {
+      await writeFileAsync(path, content, "utf8");
+    },
+    appendFile: async () => {},
+    env: () => undefined,
+  });
+}
+
+describe("createApiServer / GET /escalations/:id", () => {
+  it("200s with every parsed field and reply: null when no reply file exists", async () => {
+    const input = makeEscalationInput();
+    await seedEscalation(input);
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      id: input.id,
+      reason: input.reason,
+      type: input.type,
+      taskId: input.taskId,
+      title: input.title,
+      what: input.what,
+      decision: input.decision,
+      optionA: input.optionA,
+      optionB: input.optionB,
+      costOfWrong: input.costOfWrong,
+      evidence: input.evidence,
+      reply: null,
+    });
+  });
+
+  it("includes the reply object when a reply file exists", async () => {
+    await seedEscalation(makeEscalationInput());
+    writeFileSync(
+      join(stateDir, "escalations", "esc-1.reply.json"),
+      JSON.stringify({ id: "esc-1", choice: "A", note: "operator context", at: 999 }),
+    );
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reply: unknown };
+    expect(body.reply).toEqual({ choice: "A", note: "operator context", at: 999 });
+  });
+
+  it("degrades to reply: null (never fails the endpoint) when the reply file is malformed JSON", async () => {
+    await seedEscalation(makeEscalationInput());
+    writeFileSync(join(stateDir, "escalations", "esc-1.reply.json"), "{ not valid json ");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reply: unknown };
+    expect(body.reply).toBeNull();
+  });
+
+  it("degrades to reply: null when the reply file has an invalid choice", async () => {
+    await seedEscalation(makeEscalationInput());
+    writeFileSync(
+      join(stateDir, "escalations", "esc-1.reply.json"),
+      JSON.stringify({ id: "esc-1", choice: "C", note: "", at: 1 }),
+    );
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reply: unknown };
+    expect(body.reply).toBeNull();
+  });
+
+  it("404s for a missing escalation id", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/does-not-exist`);
+    expect(res.status).toBe(404);
+  });
+
+  it("404s when the escalation markdown is unparseable", async () => {
+    const escalationsDir = join(stateDir, "escalations");
+    mkdirSync(escalationsDir, { recursive: true });
+    writeFileSync(join(escalationsDir, "esc-bad.md"), "not an escalation artifact at all");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-bad`);
+    expect(res.status).toBe(404);
+  });
+
+  it("404s for an oversized escalation file (bounded before parse)", async () => {
+    const escalationsDir = join(stateDir, "escalations");
+    mkdirSync(escalationsDir, { recursive: true });
+    // Larger than MAX_ESCALATION_READ_BYTES (256 KiB) -- even though it happens to
+    // start with a valid-looking header, it must never be parsed.
+    writeFileSync(join(escalationsDir, "esc-huge.md"), `# ESCALATION esc-huge -- ${"x".repeat(300 * 1024)}`);
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-huge`);
+    expect(res.status).toBe(404);
+  });
+
+  it("400s for an id containing '..'", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/foo..bar`);
+    expect(res.status).toBe(400);
+  });
+
+  it("400s for an id with an (encoded) slash (path-traversal guard is post-decode)", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%2Fb`);
+    expect(res.status).toBe(400);
+  });
+
+  it("400s for an id with a colon (Windows ADS syntax) via the positive allowlist", async () => {
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%3Ab`);
+    expect(res.status).toBe(400);
+  });
+
+  it("a traversal id can never read a file outside escalations/ (sentinel one dir up is unreachable)", async () => {
+    await seedEscalation(makeEscalationInput());
+    // Sentinel sits directly under stateDir, one directory above escalations/.
+    writeFileSync(join(stateDir, "sentinel.md"), "# ESCALATION sentinel -- leak-me-not\nsecret");
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/..%2Fsentinel`);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain("leak-me-not");
+  });
+
+  it("404s (does not follow) a symlink at the escalation markdown path pointing outside escalations/", async () => {
+    const escalationsDir = join(stateDir, "escalations");
+    mkdirSync(escalationsDir, { recursive: true });
+    const secret = join(root, "outside-secret.md");
+    writeFileSync(secret, "# ESCALATION secret -- leak-me-not-via-symlink\n\n**Task:** T -- t\n**Type:** drift\n**What happened:** x\n**Decision you need to make:** x\n**Option A:** x\n**Option B:** x\n**Cost of being wrong:** x\n\n**Evidence:**\n```\nx\n```\n");
+    try {
+      symlinkSync(secret, join(escalationsDir, "esc-link.md"), "file");
+    } catch {
+      return; // environment can't create symlinks -- the lstat/isFile guard still holds
+    }
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-link`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("leak-me-not-via-symlink");
+  });
+
+  it("POST /escalations/:id/reply still works alongside the new GET route (no shadowing regression)", async () => {
+    await seedEscalation(makeEscalationInput());
+
+    handle = createApiServer({ repo, stateDir, now: () => 555 });
+    const port = await handle.listen(0);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/escalations/esc-1/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B", note: "picking B" }),
+    });
+    expect(postRes.status).toBe(200);
+    const postBody = (await postRes.json()) as { choice: string };
+    expect(postBody.choice).toBe("B");
+
+    const getRes = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(getRes.status).toBe(200);
+    const getBody = (await getRes.json()) as { reply: { choice: string } | null };
+    expect(getBody.reply?.choice).toBe("B");
+  });
+
+  it("404s when the parsed escalation's internal id does not match the requested :id (stale/hand-edited file)", async () => {
+    const escalationsDir = join(stateDir, "escalations");
+    // Seed a well-formed artifact under a DIFFERENT id, then place its content
+    // (internal `# ESCALATION other-id -- ...` header) at the esc-1.md path -- the
+    // filename says esc-1 but the parsed body still says other-id.
+    await seedEscalation(makeEscalationInput({ id: "other-id" }));
+    const content = readFileSync(join(escalationsDir, "other-id.md"), "utf8");
+    writeFileSync(join(escalationsDir, "esc-1.md"), content);
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(404);
+  });
+
+  it("degrades to reply: null (still 200 with the escalation) when the reply file's id does not match the requested :id", async () => {
+    await seedEscalation(makeEscalationInput());
+    writeFileSync(
+      join(stateDir, "escalations", "esc-1.reply.json"),
+      JSON.stringify({ id: "other-id", choice: "A", note: "wrong file", at: 1 }),
+    );
+
+    handle = createApiServer({ repo, stateDir });
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reply: unknown };
+    expect(body.reply).toBeNull();
   });
 });
 
