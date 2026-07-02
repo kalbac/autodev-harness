@@ -183,6 +183,15 @@ describe("createWorktreeManager", () => {
     expect(existsSync(join(wt.path, "deps", "extra.txt"))).toBe(true);
   });
 
+  it("provision: a missing target is skipped — no dangling link, create() does not throw", async () => {
+    const m = createWorktreeManager(repoRoot, worktreesDir, { provision: ["nope", "deps"] });
+    mkdirSync(join(repoRoot, "deps"));
+    writeFileSync(join(repoRoot, "deps", "dep.txt"), "ok\n");
+    const wt = await m.create("t-missing", "main"); // must resolve, not reject
+    expect(existsSync(join(wt.path, "nope"))).toBe(false);          // missing target -> no link
+    expect(readFileSync(join(wt.path, "deps", "dep.txt"), "utf8")).toBe("ok\n"); // present target -> linked
+  });
+
   it("teardown removes the worktree dir but keeps the branch (non-destructive)", async () => {
     const wt = await manager.create("task5", "main");
     expect(existsSync(wt.path)).toBe(true);
