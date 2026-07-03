@@ -1393,6 +1393,59 @@ describe("createApiServer / POST /orchestrate", () => {
     await tick();
     expect(calls).toEqual([]);
   });
+
+  it("single-flight is PER PROJECT: project B can orchestrate while A is in flight", async () => {
+    const dA = deferred<void>();
+    const calls: string[] = [];
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [
+          { id: "a", name: "a", path: "/a", status: "ready" },
+          { id: "b", name: "b", path: "/b", status: "ready" },
+        ],
+        get: async (id) =>
+          id === "a"
+            ? {
+                view: {
+                  repo,
+                  stateDir,
+                  onOrchestrate: async (intent: string) => {
+                    calls.push(`a:${intent}`);
+                    await dA.promise;
+                  },
+                },
+              }
+            : id === "b"
+              ? {
+                  view: {
+                    repo,
+                    stateDir,
+                    onOrchestrate: async (intent: string) => {
+                      calls.push(`b:${intent}`);
+                    },
+                  },
+                }
+              : null,
+      },
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    const post = (pid: string): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}/projects/${pid}/orchestrate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent: "do the thing" }),
+      });
+
+    expect((await post("a")).status).toBe(202); // A starts and hangs
+    expect((await post("a")).status).toBe(409); // A again -> busy
+    expect((await post("b")).status).toBe(202); // B is NOT blocked by A
+
+    dA.resolve();
+    await tick();
+    expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+  });
 });
 
 describe("createApiServer / listen with an explicit bind host", () => {
