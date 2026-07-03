@@ -88,6 +88,32 @@ export interface ProjectSummary {
   error?: string;
 }
 
+/** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
+ *  absolute path for the next `?path=` request; for a symlink it is the resolved
+ *  real target. */
+export interface FsDirEntry {
+  name: string;
+  path: string;
+  isGitRepo: boolean;
+  isRegistered: boolean;
+  isSymlink?: boolean;
+}
+
+/** Mirrors `GET /fs/dirs` (M3). `path`/`parent` are null in the roots view. */
+export interface FsDirsResponse {
+  path: string | null;
+  parent: string | null;
+  entries: FsDirEntry[];
+}
+
+/** Body for `POST /projects` (M3 register). `config` maps to `ScaffoldFormSchema`. */
+export interface RegisterProjectInput {
+  path: string;
+  name?: string;
+  scaffold?: boolean;
+  config?: unknown;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -129,6 +155,22 @@ function projectPath(projectId: string, subPath: string): string {
 export const api = {
   /** Daemon-global — NOT project-scoped. Lists registered projects. */
   getProjects: () => req<{ projects: ProjectSummary[] }>("/projects"),
+
+  /** Daemon-global folder browser (M3). No `path` → drive roots / `/`. */
+  getFsDirs: (path?: string) =>
+    req<FsDirsResponse>(`/fs/dirs${path !== undefined ? `?path=${encodeURIComponent(path)}` : ""}`),
+
+  /** Register a project (+ optional `.autodev/` scaffold). 201 entry / 400 / 409 (`{error,code}`). */
+  postProject: (input: RegisterProjectInput) =>
+    req<ProjectSummary>("/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+
+  /** Unregister a project (registry entry only — never touches the folder). */
+  deleteProject: (id: string) =>
+    req<{ removed: string }>(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   getState: (projectId: string) => req<StateResponse>(projectPath(projectId, "/state")),
   getRuns: (projectId: string) => req<RunManifest[]>(projectPath(projectId, "/runs")),

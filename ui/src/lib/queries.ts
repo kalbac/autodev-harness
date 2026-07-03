@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, type RegisterProjectInput } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -32,3 +32,26 @@ export const useRuntimeFile = (p: string, taskId: string, name: string | null) =
   });
 export const useEscalation = (p: string, id: string, enabled = true) =>
   useQuery({ queryKey: qk.escalation(p, id), queryFn: () => api.getEscalation(p, id), enabled });
+
+/** Folder browser (M3). `path` undefined → roots view. Keyed by path so
+ *  navigating dirs caches each level. */
+export const useFsDirs = (path?: string) =>
+  useQuery({ queryKey: ["fs-dirs", path ?? "__roots__"], queryFn: () => api.getFsDirs(path) });
+
+/** Register a project; invalidates the project list on success so the sidebar updates. */
+export const useRegisterProject = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: RegisterProjectInput) => api.postProject(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
+  });
+};
+
+/** Unregister a project; invalidates the project list on success. */
+export const useDeleteProject = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteProject(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
+  });
+};
