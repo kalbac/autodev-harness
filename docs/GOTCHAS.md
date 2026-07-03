@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 27.
+> Count: 29.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -34,6 +34,8 @@
 | `[multiproject/id-keyed-caches]` | Project ids are RE-BINDABLE (registry edit/re-register) — three separate id-keyed caches went stale independently (hub roots → wrong-repo orchestration; watchers → stale broadcasts under a reused id; lastError → moved project inherits old error). Every id-keyed cache entry must carry its binding (path) and validate on hit; long-lived callbacks need a fire-time identity guard. | `gotchas/id-keyed-caches-rebindable-ids.md` |
 | `[ci/win-83-realpath]` | GitHub's `windows-latest` runner exposes `os.tmpdir()` as an 8.3 short path (`C:\Users\RUNNER~1\…`). `fs.promises.realpath`/`realpathSync.native` EXPAND it to the long form; plain `fs.realpathSync` (non-native) does NOT — so a test comparing a `realpathSync`-seeded path to a code-canonicalized (native) path is green locally, red on the runner. Also: a fn matching against a stored `realpath`'d path must canonicalize its INPUT identically (admin `isRegistered` bug: stored long, compared raw). Fix = `realpathSync.native` in tests; `isRegistered` realpaths its arg like `register` does. | `gotchas/win-83-shortpath-realpath-divergence.md` |
 | `[scaffold/symlink-escape]` | `scaffoldProject` writes `.autodev/` with `mkdir`/`writeFile`, which FOLLOW symlinks — a hostile checkout with `.autodev -> /outside` (or `.autodev/queue -> /outside`) lands the skeleton OUTSIDE the repo (`existsSync`/`stat` follow links, giving a false "safe"). Fix = `lstat` `.autodev` and refuse if it's not a real dir, THEN `readdir` and refuse any symlinked direct child, BEFORE any write. `wx`/`O_EXCL` guards only the final file component, not intermediate dirs a recursive mkdir walks. | `gotchas/scaffold-symlink-escape.md` |
+| `[registry/json-win-backslash]` | A hand-written `projects.json` with raw Windows `\` paths (`"D:\projects\x"`) is INVALID JSON (`\p`/`\a`/`\U` aren't legal escapes) → `JSON.parse` throws → `loadRegistry` fails soft to an EMPTY registry (+ 1 ERROR log), so the UI shows zero projects while the daemon is up. Use forward slashes (`D:/projects/x` — Node/Windows accept them); prefer `Write`/`POST /projects` over a shell heredoc (which can also collapse `\\`→`\`). Zero-projects-but-daemon-up ⇒ check stderr for `registry: corrupt` first. | `gotchas/registry-json-windows-backslash.md` |
+| `[ui/light-theme-tokens]` | Light theme is a `[data-theme="light"]` override that redefines the `@theme` `--color-*` vars — works ONLY because tokens use plain `@theme` (emits `var()` refs), NOT `@theme inline` (bakes hex; would break the cascade). Only the chrome is remapped; status/verdict hues stay shared. Shared hues are fine as DOTS/tints but marginal-to-failing as TEXT on the light bg (amber/jade low-contrast on white) — if a future light surface renders a verdict tone as text, add a light-tuned darker variant, don't reuse the dark hex. | `gotchas/light-theme-tokens-and-status-hue-contrast.md` |
 
 ## Anticipated tag namespaces
 

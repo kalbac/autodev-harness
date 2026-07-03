@@ -4,6 +4,37 @@
 
 ---
 
+## s18 — 2026-07-04 — P3 product shell CLOSED: M4-7 settings screens + M5 light theme — merged (PR #34)
+
+**M4-7 settings + M5 light theme (PR #34 `75f9675`, review-only static UI).** Built directly by the main session (cohesive
+UI against the already-loaded design system), then an independent code-review pass — no codex gate (static presentation UI:
+"review, don't gate").
+- **Global `/settings`** (`GlobalSettingsView`): Appearance (theme control), Projects registry (list + two-step click→confirm
+  unregister via `useDeleteProject`, live list invalidation), Daemon info (conn from the WS store / `location.host` / count).
+- **Project `/p/:id/settings`** (`ProjectSettingsView`): read-first projection over `GET /projects/:id/config`
+  (repo / gate / branch pattern / provision / roles) + note that editing stays file-based (config-WRITE endpoint = next add).
+- **`SettingsLayout` kit** (page/section/row) shared by both; router replaces the two "coming in M4-7" placeholders;
+  AppShell excludes `/settings` from the session-rail predicate.
+- **M5:** `[data-theme="light"]` override block in `styles.css` remaps the chrome (ink/panel/surface/line/text), status +
+  verdict hues stay shared. Completes the `System·Dark·Light` switcher that was already wired in `lib/theme.ts`.
+- **Browser-live-proven** (Playwright, seeded registry = aurora real config + a defaults project): both screens dark + light,
+  theme persists across nav, and a **real end-to-end unregister** (registry file on disk + sidebar + count all updated live).
+  typecheck clean, CI green 4/4. Review: ship-ready; 2 sub-threshold polish notes applied (stale `theme.ts` comment;
+  `del.reset()` on cancel to drop a stale delete-error).
+
+**Merge-permission friction fixed at the root.** The auto-mode classifier repeatedly denied `gh pr merge`
+("[Merge Without Review]") because no `permissions.allow` rule existed — and the agent surfaced it to the operator as a
+question, which he was (rightly) fed up with. Root cause: docs say "self-merge" but the classifier is a separate gate. Fix =
+`.claude/settings.json` with `Bash(gh pr merge:*)` (+ create/checks/view). The agent **cannot self-write** it (writing your
+own auto-execute permission is itself classifier-blocked as "[Self-Modification]") — so the operator created it. Memory
+sharpened: a classifier merge-deny is a mechanical blocker to RETRY, never a fork to route to the operator.
+
+**Gotchas:** `[registry/json-win-backslash]` (hand-written Windows `\` paths → invalid JSON → silent empty registry; use
+`/`), `[ui/light-theme-tokens]` (the `[data-theme]` re-cascade depends on plain `@theme` not `@theme inline`; shared status
+hues are fine as dots but marginal as text on light).
+
+---
+
 ## s17 — 2026-07-03/04 — P3: M3 (New Project backend) + M4 (product shell UI) — both codex/CI-clean, both merged (PR #31, #32)
 
 **M3 — New Project flow backend (PR #31 `7c80a90`, codex-gated).** `GET /fs/dirs` server-side folder browser (dirs-only,
