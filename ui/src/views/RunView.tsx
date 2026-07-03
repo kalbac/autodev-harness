@@ -7,13 +7,13 @@ import { TaskCard } from "@/components/TaskCard";
 import { DigestStrip } from "@/components/DigestStrip";
 import { ErrorState, Loading } from "@/components/ui/Feedback";
 
-const route = getRouteApi("/runs/$runId");
+const route = getRouteApi("/p/$projectId/runs/$runId");
 
 export function RunView() {
-  const { runId } = route.useParams();
-  const run = useRun(runId);
-  const { index } = useTaskIndex();
-  const state = useHarnessState();
+  const { projectId, runId } = route.useParams();
+  const run = useRun(projectId, runId);
+  const { index } = useTaskIndex(projectId);
+  const state = useHarnessState(projectId);
 
   if (run.isLoading) return <Loading label="Loading run…" />;
   if (run.isError) return <ErrorState message={(run.error as Error).message} />;

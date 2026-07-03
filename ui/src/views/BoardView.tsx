@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, LayoutGrid } from "lucide-react";
 import { useState as useHarnessState } from "@/lib/queries";
+import { useProjectId } from "@/lib/useProjectId";
 import { QUEUE_META } from "@/lib/status";
 import type { QueueState } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -11,7 +12,10 @@ import { EmptyState, ErrorState, Loading } from "@/components/ui/Feedback";
 const COLUMNS: QueueState[] = ["active", "escalated", "pending", "quarantine"];
 
 export function BoardView() {
-  const state = useHarnessState();
+  // Route guarantees projectId under `/p/:projectId/board`; `?? ""` only for the
+  // off-route type (useProjectId is `string | null`) and never actually fetched.
+  const projectId = useProjectId() ?? "";
+  const state = useHarnessState(projectId);
   const [doneOpen, setDoneOpen] = useState(false);
 
   if (state.isLoading) return <Loading label="Loading board…" />;

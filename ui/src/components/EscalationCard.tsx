@@ -13,16 +13,16 @@ import { Loading } from "./ui/Feedback";
  * options, evidence, cost of a wrong call) and records a structured A/B choice.
  * `note` is context-only and is NEVER executed as a worker instruction.
  */
-export function EscalationCard({ taskId }: { taskId: string }) {
-  const esc = useEscalation(taskId);
+export function EscalationCard({ projectId, taskId }: { projectId: string; taskId: string }) {
+  const esc = useEscalation(projectId, taskId);
   const [note, setNote] = useState("");
   const qc = useQueryClient();
 
   const reply = useMutation({
-    mutationFn: (choice: "A" | "B") => api.postReply(taskId, choice, note),
+    mutationFn: (choice: "A" | "B") => api.postReply(projectId, taskId, choice, note),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.escalation(taskId) });
-      void qc.invalidateQueries({ queryKey: qk.state });
+      void qc.invalidateQueries({ queryKey: qk.escalation(projectId, taskId) });
+      void qc.invalidateQueries({ queryKey: qk.state(projectId) });
     },
   });
 

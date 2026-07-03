@@ -9,8 +9,8 @@ export interface LocatedTask {
 
 /** Index every task from /state by id → {task, state}. The blackboard is the
  *  single source of truth; a task's queue IS its lifecycle status. */
-export function useTaskIndex() {
-  const state = useHarnessState();
+export function useTaskIndex(projectId: string) {
+  const state = useHarnessState(projectId);
   const index = useMemo(() => {
     const map = new Map<string, LocatedTask>();
     const queues = state.data?.queues;

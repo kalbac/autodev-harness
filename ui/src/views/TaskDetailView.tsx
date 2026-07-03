@@ -12,11 +12,11 @@ import { Inspector } from "@/components/Inspector";
 import { EmptyState, Loading } from "@/components/ui/Feedback";
 import { FileQuestion } from "lucide-react";
 
-const route = getRouteApi("/tasks/$taskId");
+const route = getRouteApi("/p/$projectId/tasks/$taskId");
 
 export function TaskDetailView() {
-  const { taskId } = route.useParams();
-  const { index, isLoading } = useTaskIndex();
+  const { projectId, taskId } = route.useParams();
+  const { index, isLoading } = useTaskIndex(projectId);
 
   if (isLoading) return <Loading label="Loading task…" />;
 
@@ -24,14 +24,14 @@ export function TaskDetailView() {
   if (!located) {
     return (
       <div className="flex h-full flex-col">
-        <Header taskId={taskId} title={taskId} />
+        <Header projectId={projectId} taskId={taskId} title={taskId} />
         <EmptyState
           icon={FileQuestion}
           title="Task not in any queue"
           description="It may have been cleaned up, or never materialized. Runtime artifacts (if any) are still readable below."
         />
         <div className="flex-1 border-t border-line overflow-hidden">
-          <Inspector taskId={taskId} state="done" />
+          <Inspector projectId={projectId} taskId={taskId} state="done" />
         </div>
       </div>
     );
@@ -42,7 +42,7 @@ export function TaskDetailView() {
 
   return (
     <div className="flex h-full flex-col">
-      <Header taskId={taskId} title={task.title}>
+      <Header projectId={projectId} taskId={taskId} title={task.title}>
         <StatusPill tone={meta.tone} label={meta.label} pulse={state === "active"} />
         {isGuarded(task) && (
           <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide text-uncertain">
@@ -55,8 +55,8 @@ export function TaskDetailView() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left — decision + spec + lifecycle */}
         <div className="flex-1 min-w-0 overflow-auto p-5 space-y-5">
-          {state === "escalated" && <EscalationCard taskId={taskId} />}
-          <Lifecycle taskId={taskId} state={state} />
+          {state === "escalated" && <EscalationCard projectId={projectId} taskId={taskId} />}
+          <Lifecycle projectId={projectId} taskId={taskId} state={state} />
           <TaskSpec
             type={task.type}
             model={task.model}
@@ -69,7 +69,7 @@ export function TaskDetailView() {
 
         {/* Right — inspector rail */}
         <div className="w-[420px] shrink-0 border-l border-line overflow-hidden bg-panel/30">
-          <Inspector taskId={taskId} state={state} />
+          <Inspector projectId={projectId} taskId={taskId} state={state} />
         </div>
       </div>
     </div>
@@ -77,10 +77,12 @@ export function TaskDetailView() {
 }
 
 function Header({
+  projectId,
   taskId,
   title,
   children,
 }: {
+  projectId: string;
   taskId: string;
   title: string;
   children?: ReactNode;
@@ -88,7 +90,8 @@ function Header({
   return (
     <header className="border-b border-line px-6 py-3 shrink-0">
       <Link
-        to="/board"
+        to="/p/$projectId/board"
+        params={{ projectId }}
         className="inline-flex items-center gap-1.5 font-mono text-[11px] text-subtle hover:text-muted mb-1.5"
       >
         <ArrowLeft className="size-3" />
@@ -109,8 +112,16 @@ const STAGES = ["Worker", "Diff", "Critic", "Gate"] as const;
 
 /** Compact at-a-glance lifecycle derived from runtime artifacts + queue state.
  *  Not authoritative — the blackboard is; this just reads what's on disk. */
-function Lifecycle({ taskId, state }: { taskId: string; state: QueueState }) {
-  const files = useRuntimeFiles(taskId);
+function Lifecycle({
+  projectId,
+  taskId,
+  state,
+}: {
+  projectId: string;
+  taskId: string;
+  state: QueueState;
+}) {
+  const files = useRuntimeFiles(projectId, taskId);
   const names = files.data ?? [];
 
   const done = {

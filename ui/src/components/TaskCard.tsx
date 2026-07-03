@@ -2,17 +2,20 @@ import { Link } from "@tanstack/react-router";
 import { ShieldAlert } from "lucide-react";
 import type { QueueState, Task } from "@/lib/api";
 import { QUEUE_META, isGuarded } from "@/lib/status";
+import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
 import { StatusPill } from "./ui/StatusPill";
 
 export function TaskCard({ task, state }: { task: Task; state: QueueState }) {
   const meta = QUEUE_META[state];
   const guarded = isGuarded(task);
+  // TaskCard only renders inside project routes (board/run), so projectId is set.
+  const projectId = useProjectId() ?? "";
 
   return (
     <Link
-      to="/tasks/$taskId"
-      params={{ taskId: task.id }}
+      to="/p/$projectId/tasks/$taskId"
+      params={{ projectId, taskId: task.id }}
       className={cn(
         "group block rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:border-line-strong",
       )}

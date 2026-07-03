@@ -15,7 +15,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { connectWs } from "./lib/ws";
-import { ProjectGate } from "./components/ProjectGate";
+import { applyTheme, getTheme } from "./lib/theme";
+
+// Apply the persisted theme before first paint so the correct data-theme is set.
+applyTheme(getTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,9 +39,7 @@ if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ProjectGate>
-        <RouterProvider router={router} />
-      </ProjectGate>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   </StrictMode>,
 );

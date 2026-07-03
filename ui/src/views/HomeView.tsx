@@ -1,55 +1,73 @@
 import { Link } from "@tanstack/react-router";
-import { GitBranch, Inbox } from "lucide-react";
-import { useRuns } from "@/lib/queries";
+import { Inbox } from "lucide-react";
+import { useProjects, useRuns, useState as useProjectState } from "@/lib/queries";
+import { useProjectId } from "@/lib/useProjectId";
+import { runSeal } from "@/lib/runSeal";
+import { toneVar, type Tone } from "@/lib/status";
 import { timeAgo } from "@/lib/utils";
+import type { RunManifest, StateResponse } from "@/lib/api";
 import { NewRunComposer } from "@/components/NewRunComposer";
+import { ProjectTopBar } from "@/components/ProjectTopBar";
 import { EmptyState } from "@/components/ui/Feedback";
 
+/** Seal tone → the short verdict label rendered on a recent-run card. */
+const SEAL_LABEL: Record<Tone, string> = {
+  working: "RUNNING",
+  clean: "CLEAN",
+  uncertain: "UNCERTAIN",
+  broken: "BROKEN",
+  idle: "IDLE",
+  accent: "—",
+};
+
+/** Seal tone → the one-line status gloss under a recent-run card title. */
+const SEAL_SUB: Record<Tone, string> = {
+  working: "worker in progress",
+  clean: "committed & merged",
+  uncertain: "escalated — needs decision",
+  broken: "quarantined",
+  idle: "queued",
+  accent: "",
+};
+
 export function HomeView() {
-  const runs = useRuns();
+  // Route guarantees projectId under `/p/:projectId/`; `?? ""` is only for the type.
+  const projectId = useProjectId() ?? "";
+  const runs = useRuns(projectId);
+  const state = useProjectState(projectId);
+  const projects = useProjects();
+
+  const projectName = projects.data?.projects.find((p) => p.id === projectId)?.name ?? projectId;
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-3xl px-6 py-16">
-        {/* Hero — the thesis in one line, then the one control that starts work. */}
-        <div className="mb-8">
-          <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-accent mb-3">
-            Autodev Harness
-          </p>
-          <h1 className="font-display text-3xl font-semibold leading-tight text-text">
-            Let agents code.
-            <br />
-            <span className="text-muted">Never let them merge bullshit.</span>
+    <div className="flex h-full flex-col overflow-hidden">
+      <ProjectTopBar projectId={projectId} />
+
+      <div className="flex-1 overflow-auto">
+        {/* Hero — composer-first: the one control that starts work. */}
+        <div className="mx-auto w-full max-w-3xl px-6 pb-8 pt-14">
+          <h1 className="mb-2 text-center font-display text-[26px] font-semibold leading-tight text-text">
+            What are we building in {projectName}?
           </h1>
-          <p className="mt-3 text-sm text-muted max-w-xl">
-            Describe a change. The orchestrator decomposes it into tasks, an independent critic
-            gate reviews every diff, and only clean work is committed.
+          <p className="mx-auto mb-6 max-w-xl text-center text-sm text-muted">
+            Describe an intent — the orchestrator decomposes it into gated tasks, an independent
+            critic reviews every diff, and only clean work is committed.
           </p>
+
+          <NewRunComposer autoFocus />
         </div>
 
-        <NewRunComposer autoFocus />
-
-        {/* Recent runs */}
-        <div className="mt-12">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-mono text-[11px] uppercase tracking-wider text-subtle">Recent runs</h2>
-          </div>
+        {/* Recent runs — cards with a verdict seal. */}
+        <div className="mx-auto w-full max-w-3xl px-6 pb-16">
+          <h2 className="mb-3 font-mono text-[11px] uppercase tracking-wider text-subtle">
+            Recent runs
+          </h2>
 
           {runs.data && runs.data.length > 0 ? (
             <ul className="flex flex-col gap-2">
               {runs.data.slice(0, 8).map((r) => (
                 <li key={r.runId}>
-                  <Link
-                    to="/runs/$runId"
-                    params={{ runId: r.runId }}
-                    className="flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 transition-colors hover:border-line-strong"
-                  >
-                    <GitBranch className="size-4 shrink-0 text-subtle" />
-                    <span className="min-w-0 flex-1 truncate text-sm text-text">{r.intent}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-subtle">
-                      {r.taskIds.length} task{r.taskIds.length === 1 ? "" : "s"} · {timeAgo(r.at)}
-                    </span>
-                  </Link>
+                  <RunCard run={r} projectId={projectId} state={state.data} />
                 </li>
               ))}
             </ul>
@@ -63,5 +81,45 @@ export function HomeView() {
         </div>
       </div>
     </div>
+  );
+}
+
+function RunCard({
+  run,
+  projectId,
+  state,
+}: {
+  run: RunManifest;
+  projectId: string;
+  state: StateResponse | undefined;
+}) {
+  const tone = runSeal(run, state);
+  const c = toneVar[tone];
+
+  return (
+    <Link
+      to="/p/$projectId/runs/$runId"
+      params={{ projectId, runId: run.runId }}
+      className="flex items-center gap-3 rounded-[10px] border border-line bg-surface px-3 py-2.5 transition-colors hover:border-line-strong"
+    >
+      <span
+        className="shrink-0 rounded-md border px-2 py-[3px] font-mono text-[10px] tracking-[0.08em]"
+        style={{
+          color: c,
+          borderColor: `color-mix(in srgb, ${c} 40%, transparent)`,
+          background: `color-mix(in srgb, ${c} 8%, transparent)`,
+        }}
+      >
+        {SEAL_LABEL[tone]}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-semibold text-text">{run.intent}</div>
+        <div className="truncate font-mono text-[11px] text-subtle">
+          {run.taskIds.length} task{run.taskIds.length === 1 ? "" : "s"}
+          {SEAL_SUB[tone] ? ` · ${SEAL_SUB[tone]}` : ""}
+        </div>
+      </div>
+      <span className="ml-auto shrink-0 font-mono text-[11px] text-subtle">{timeAgo(run.at)}</span>
+    </Link>
   );
 }

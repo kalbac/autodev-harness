@@ -15,15 +15,20 @@
 - Net: Russian is for the human conversation; English is for everything written to
   disk or dispatched to another agent.
 
-## Git ownership — the agent drives, the operator approves
+## Git ownership — the agent drives everything, no waiting
 
-- **The agent always performs merges, commits, and PRs itself** — never hand these
-  back to the operator as manual steps.
-- The operator's only role in git is **approval when a merge requires operator
-  confirmation** (e.g. the Claude Code permission classifier blocks `gh pr merge`).
-  In that case: surface the exact command, get approval, then the agent runs it.
-- Do not ask the operator to "merge in the UI" or "run this yourself" as the default
-  path — that is the fallback only when approval cannot be obtained in-session.
+- **The agent performs ALL git and GitHub operations itself** — commits, branches,
+  pushes, PRs, **and merges** (`gh pr merge`). This is a standing grant: do NOT wait
+  for operator confirmation on a merge. Gate a merge only on the machine bar
+  (codex-clean where required + green CI), then merge and move on.
+- **Never** hand a GH operation back to the operator as a manual step, and never
+  pause a completed, gated, green batch to ask "should I merge?" — just merge.
+- The operator is interrupted ONLY at genuine forks where his input is 100% required
+  (real UI/UX design decisions, scope changes, expensive unsupervised live runs) —
+  never for routine git/GH mechanics.
+- If the Claude Code permission classifier blocks a `gh` command in-session, that is
+  a tooling prompt to approve in the moment, not a reason to defer the work to a
+  future session or hand it to the operator.
 - Commit/PR conventions: Conventional Commits; co-author trailer on commits and the
   Claude Code footer on PR bodies as configured.
 - **Batch merges — do NOT open a PR + merge for every small change.** Small/incremental
