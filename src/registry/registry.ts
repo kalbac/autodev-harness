@@ -19,6 +19,11 @@ export interface Registry {
 
 type Log = (level: string, message: string) => void;
 
+/** Allowed id charset -- mirrors the API's `VALID_ID_SEGMENT` so an id from a
+ *  hand-edited file is always route-matchable (a weird id would otherwise become
+ *  unreachable/ambiguous once `safeIdSegment` filters it at the HTTP layer). */
+const VALID_ID = /^[A-Za-z0-9_-]+$/;
+
 function isEntry(v: unknown): v is RegistryEntry {
   if (typeof v !== "object" || v === null) return false;
   const e = v as Record<string, unknown>;
@@ -41,7 +46,25 @@ export async function loadRegistry(file: string, log?: Log): Promise<Registry> {
   try {
     const parsed = JSON.parse(text) as { projects?: unknown };
     const raw = Array.isArray(parsed.projects) ? parsed.projects : [];
-    return { projects: raw.filter(isEntry) };
+    // Harden against a hand-edited file: drop entries whose id is malformed
+    // (unroutable) or duplicated (would collide in hub/watcher/single-flight
+    // state). First entry wins; every drop is logged so the operator sees why.
+    const seen = new Set<string>();
+    const projects: RegistryEntry[] = [];
+    for (const entry of raw) {
+      if (!isEntry(entry)) continue;
+      if (!VALID_ID.test(entry.id)) {
+        log?.("WARN", `registry: dropping entry with invalid id ${JSON.stringify(entry.id)} (must match ${VALID_ID.source})`);
+        continue;
+      }
+      if (seen.has(entry.id)) {
+        log?.("WARN", `registry: dropping duplicate id ${JSON.stringify(entry.id)} (first entry wins)`);
+        continue;
+      }
+      seen.add(entry.id);
+      projects.push(entry);
+    }
+    return { projects };
   } catch (err) {
     log?.("ERROR", `registry: corrupt ${file} — starting with an empty registry (${String(err)})`);
     return { projects: [] };

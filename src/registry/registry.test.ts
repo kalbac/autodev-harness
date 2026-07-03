@@ -42,6 +42,37 @@ describe("loadRegistry", () => {
     const reg = await loadRegistry(file);
     expect(reg.projects).toEqual([{ id: "ok", name: "ok", path: "/p" }]);
   });
+
+  it("drops an entry whose id is malformed (unroutable) and logs a WARN", async () => {
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ projects: [{ id: "../x", name: "evil", path: "/p" }, { id: "ok", name: "ok", path: "/q" }] }),
+      "utf8",
+    );
+    const logs: string[] = [];
+    const reg = await loadRegistry(file, (lvl, msg) => logs.push(`${lvl}:${msg}`));
+    expect(reg.projects).toEqual([{ id: "ok", name: "ok", path: "/q" }]);
+    expect(logs.some((l) => l.startsWith("WARN:") && l.includes("invalid id"))).toBe(true);
+  });
+
+  it("drops a duplicate id (first entry wins) and logs a WARN", async () => {
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        projects: [
+          { id: "app", name: "first", path: "/first" },
+          { id: "app", name: "second", path: "/second" },
+        ],
+      }),
+      "utf8",
+    );
+    const logs: string[] = [];
+    const reg = await loadRegistry(file, (lvl, msg) => logs.push(`${lvl}:${msg}`));
+    expect(reg.projects).toEqual([{ id: "app", name: "first", path: "/first" }]);
+    expect(logs.some((l) => l.startsWith("WARN:") && l.includes("duplicate id"))).toBe(true);
+  });
 });
 
 describe("slugForName", () => {
