@@ -15,6 +15,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { connectWs } from "./lib/ws";
+import { applyTheme, getTheme } from "./lib/theme";
+
+// Apply the persisted theme before first paint so the correct data-theme is set.
+applyTheme(getTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {

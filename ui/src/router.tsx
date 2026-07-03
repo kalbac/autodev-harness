@@ -46,7 +46,26 @@ const projectRoute = createRoute({
   ),
 });
 
+// Daemon-global settings placeholder (real screen in M4-7). Root child like /new.
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: () => (
+    <AppShell>
+      <div className="grid h-full place-items-center text-muted">Global settings — coming in M4-7</div>
+    </AppShell>
+  ),
+});
+
 const projectHomeRoute = createRoute({ getParentRoute: () => projectRoute, path: "/", component: HomeView });
+// Per-project settings placeholder (real screen in M4-7).
+const projectSettingsRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/settings",
+  component: () => (
+    <div className="grid h-full place-items-center text-muted">Project settings — coming in M4-7</div>
+  ),
+});
 const runRoute = createRoute({ getParentRoute: () => projectRoute, path: "/runs/$runId", component: RunView });
 const taskRoute = createRoute({ getParentRoute: () => projectRoute, path: "/tasks/$taskId", component: TaskDetailView });
 const boardRoute = createRoute({ getParentRoute: () => projectRoute, path: "/board", component: BoardView });
@@ -54,7 +73,14 @@ const boardRoute = createRoute({ getParentRoute: () => projectRoute, path: "/boa
 const routeTree = rootRoute.addChildren([
   indexRoute,
   newProjectRoute,
-  projectRoute.addChildren([projectHomeRoute, runRoute, taskRoute, boardRoute]),
+  settingsRoute,
+  projectRoute.addChildren([
+    projectHomeRoute,
+    projectSettingsRoute,
+    runRoute,
+    taskRoute,
+    boardRoute,
+  ]),
 ]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent" });
