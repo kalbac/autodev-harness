@@ -1,0 +1,201 @@
+/**
+ * `.autodev/` scaffolding for the New Project flow (spec §5). Transactional-ish
+ * discipline (spec §6): the config YAML is built AND validated (round-trip
+ * through the real strict `HarnessConfigSchema`) BEFORE any fs write; stub
+ * files are written `wx` with EEXIST-skip so an existing blackboard file is
+ * NEVER clobbered; `config.yaml` is written LAST with `wx` (mirrors
+ * `enqueue.ts`/`recordRun` exclusivity).
+ *
+ * Layout mirrors the live-proven aurora `.autodev/` + the PS-oracle convention
+ * of contract files living INSIDE `.autodev/` (real woodev `.autodev/` holds
+ * GOAL.md/INVARIANTS.md/GUARDS.md). The scaffolded config points
+ * `contract.invariantsFile`/`guardsFile` at those stubs so they are live.
+ */
+import { mkdir, writeFile, readFile, appendFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { z } from "zod";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { HarnessConfigSchema } from "../config/schema.js";
+
+type Log = (level: string, message: string) => void;
+
+/** The registration-form surface (spec §5): roles, gate command, provision list,
+ *  branch pattern. `.strict()` so an unknown key from the UI is a loud 400, not
+ *  silently dropped (same philosophy as the root config schema). */
+export const ScaffoldFormSchema = z
+  .object({
+    gate: z.object({ checkCommand: z.string().min(1).optional() }).strict().optional(),
+    worktree: z.object({ provision: z.array(z.string()).optional() }).strict().optional(),
+    allowedBranchPattern: z.string().min(1).optional(),
+    roles: z
+      .object({
+        orchestrator: z
+          .object({ adapter: z.string().optional(), model: z.string().optional(), effort: z.string().optional() })
+          .strict()
+          .optional(),
+        worker: z
+          .object({ adapter: z.string().optional(), ladder: z.array(z.string()).optional() })
+          .strict()
+          .optional(),
+        critic: z
+          .object({ adapter: z.string().optional(), model: z.string().optional(), effort: z.string().optional() })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type ScaffoldForm = z.infer<typeof ScaffoldFormSchema>;
+
+/** Thrown when the form produces a config the harness schema rejects. Callers
+ *  (admin) map this to a 400 `invalid_config`, distinct from real fs failures. */
+export class ScaffoldConfigError extends Error {}
+
+const CONFIG_HEADER =
+  "# Autodev Harness — per-project config. Scaffolded by the New Project flow; edit freely.\n" +
+  "# Contract stubs live under .autodev/ (see contract.invariantsFile / guardsFile below).\n";
+
+const GOAL_STUB = [
+  "# GOAL",
+  "",
+  "> Scaffolded by the autodev harness New Project flow. Replace with 3-5 lines",
+  "> describing what this project is and why — the operator's immutable anchor.",
+  "",
+  "(describe the project goal here)",
+  "",
+].join("\n");
+
+const INVARIANTS_STUB = [
+  "# INVARIANTS",
+  "",
+  "> Contract zones for the machine gate. The harness reads the MACHINE-INVARIANTS",
+  "> block below; empty zones = nothing enforced yet. Keep the markers intact.",
+  "",
+  "<!-- BEGIN MACHINE-INVARIANTS -->",
+  "```json",
+  JSON.stringify({ version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } }, null, 2),
+  "```",
+  "<!-- END MACHINE-INVARIANTS -->",
+  "",
+].join("\n");
+
+const QUEUE_STATES = ["pending", "active", "done", "escalated", "quarantine"] as const;
+const STATE_DIRS = ["runtime", "escalations", "runs", "worktrees"] as const;
+
+function pruneUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+/**
+ * Build the config.yaml text from the form and PROVE it loads: the emitted text
+ * is parsed back and validated against the real strict `HarnessConfigSchema`,
+ * so a scaffolded project can never fail its first `loadConfig`
+ * (`[config/zod-strict]`: the strict root would otherwise fail loud at first use).
+ */
+export function buildConfigYaml(form: ScaffoldForm): string {
+  const roles: Record<string, unknown> = {};
+  if (form.roles?.orchestrator !== undefined) roles["orchestrator"] = pruneUndefined(form.roles.orchestrator);
+  if (form.roles?.worker !== undefined) roles["worker"] = pruneUndefined(form.roles.worker);
+  if (form.roles?.critic !== undefined) roles["critic"] = pruneUndefined(form.roles.critic);
+
+  const cfg: Record<string, unknown> = {
+    contract: { invariantsFile: ".autodev/INVARIANTS.md", guardsFile: ".autodev/GUARDS.md" },
+  };
+  if (form.allowedBranchPattern !== undefined) cfg["allowedBranchPattern"] = form.allowedBranchPattern;
+  if (form.gate?.checkCommand !== undefined) cfg["gate"] = { checkCommand: form.gate.checkCommand };
+  if (form.worktree?.provision !== undefined && form.worktree.provision.length > 0) {
+    cfg["worktree"] = { provision: form.worktree.provision };
+  }
+  if (Object.keys(roles).length > 0) cfg["roles"] = roles;
+
+  const text = CONFIG_HEADER + stringifyYaml(cfg);
+
+  const parsed = HarnessConfigSchema.safeParse(parseYaml(text));
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`)
+      .join("; ");
+    throw new ScaffoldConfigError(`scaffolded config.yaml would not load: ${issues}`);
+  }
+  return text;
+}
+
+/** `writeFile` with `wx`; EEXIST -> false (existing file NEVER clobbered — spec §6). */
+async function writeIfAbsent(path: string, content: string): Promise<boolean> {
+  try {
+    await writeFile(path, content, { flag: "wx" });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+}
+
+/** Append `.autodev/` to `.git/info/exclude` once. A `.git` FILE (worktree/
+ *  submodule) skips with a WARN — never fails registration over it. */
+async function ensureGitExclude(repoRoot: string, log?: Log): Promise<void> {
+  const gitDir = join(repoRoot, ".git");
+  let st;
+  try {
+    st = await stat(gitDir);
+  } catch {
+    return; // validated upstream (admin requires .git); stay lenient here
+  }
+  if (!st.isDirectory()) {
+    log?.(
+      "WARN",
+      `scaffold: ${gitDir} is not a directory (worktree/submodule?) — add .autodev/ to its exclude file manually`,
+    );
+    return;
+  }
+  const infoDir = join(gitDir, "info");
+  await mkdir(infoDir, { recursive: true });
+  const excludePath = join(infoDir, "exclude");
+  let existing = "";
+  try {
+    existing = await readFile(excludePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (existing.split(/\r?\n/).some((l) => l.trim() === ".autodev/")) return;
+  const prefix = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  await appendFile(excludePath, `${prefix}# autodev harness state (added by the New Project scaffold)\n.autodev/\n`, "utf8");
+}
+
+export interface ScaffoldResult {
+  /** True when `.autodev/config.yaml` already existed — nothing was touched. */
+  skipped: boolean;
+  /** Repo-relative paths of files this call actually wrote (dirs not tracked). */
+  written: string[];
+}
+
+/**
+ * Scaffold `.autodev/` into `repoRoot`. Skips entirely when
+ * `.autodev/config.yaml` exists (spec §5: registering a repo that already has
+ * one shows its values instead). Order: validate config text (no writes on a
+ * bad form) → mkdir skeleton → stubs (`wx`, EEXIST-skip) → git exclude →
+ * config.yaml LAST (`wx`).
+ */
+export async function scaffoldProject(repoRoot: string, form: ScaffoldForm, log?: Log): Promise<ScaffoldResult> {
+  const autodevDir = join(repoRoot, ".autodev");
+  const configPath = join(autodevDir, "config.yaml");
+  if (existsSync(configPath)) return { skipped: true, written: [] };
+
+  const yamlText = buildConfigYaml(form); // throws ScaffoldConfigError BEFORE any fs write
+
+  const written: string[] = [];
+  for (const state of QUEUE_STATES) await mkdir(join(autodevDir, "queue", state), { recursive: true });
+  for (const d of STATE_DIRS) await mkdir(join(autodevDir, d), { recursive: true });
+
+  if (await writeIfAbsent(join(autodevDir, "GOAL.md"), GOAL_STUB)) written.push(".autodev/GOAL.md");
+  if (await writeIfAbsent(join(autodevDir, "INVARIANTS.md"), INVARIANTS_STUB)) written.push(".autodev/INVARIANTS.md");
+
+  await ensureGitExclude(repoRoot, log);
+
+  await writeFile(configPath, yamlText, { flag: "wx" }); // LAST + exclusive (spec §6)
+  written.push(".autodev/config.yaml");
+  return { skipped: false, written };
+}
