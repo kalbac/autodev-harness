@@ -116,11 +116,21 @@ async function main(): Promise<void> {
     const uiDirCandidate = join(repoRoot, "dist", "ui");
     const uiDir = existsSync(uiDirCandidate) ? uiDirCandidate : undefined;
     const handle = createApiServer({
-      repo: root.repo,
-      stateDir: root.stateDirAbs,
+      projects: {
+        list: async () => [{ id: "local", name: "local", path: repoRoot, status: "ready" }],
+        get: async (id) =>
+          id === "local"
+            ? {
+                view: {
+                  repo: root.repo,
+                  stateDir: root.stateDirAbs,
+                  onOrchestrate: (i: string) => root.orchestrator.handleIntent(i),
+                },
+              }
+            : null,
+      },
       ...(uiDir !== undefined ? { uiDir } : {}),
       log: root.log,
-      onOrchestrate: (intent: string) => root.orchestrator.handleIntent(intent),
     });
     const boundPort = await handle.listen(command.port, "127.0.0.1");
     root.log(
