@@ -93,6 +93,33 @@ describe("createProjectHub", () => {
     expect(attempts).toBe(2);
   });
 
+  it("invalidates a cached root when the registry entry's path changes", async () => {
+    // A MUTABLE entries array simulates a hand-edited registry: the same id "a"
+    // is later pointed at a different path.
+    const mutable: RegistryEntry[] = [{ id: "a", name: "A", path: "/proj/a-old" }];
+    let builds = 0;
+    const hub = createProjectHub({
+      loadEntries: async () => mutable,
+      buildRoot: (async (e: RegistryEntry) => {
+        builds++;
+        return { marker: e.path };
+      }) as never,
+    });
+
+    expect(await hub.get("a")).toEqual({ root: { marker: "/proj/a-old" } });
+    expect(builds).toBe(1);
+    expect(await hub.list()).toEqual([{ id: "a", name: "A", path: "/proj/a-old", status: "ready" }]);
+
+    // Registry edited: id "a" now points at a different repo.
+    mutable[0] = { id: "a", name: "A", path: "/proj/a-new" };
+    // Before the rebuild, the moved project shows "unbuilt" -- NOT "ready" for the old root.
+    expect(await hub.list()).toEqual([{ id: "a", name: "A", path: "/proj/a-new", status: "unbuilt" }]);
+
+    // Next get() rebuilds for the NEW path (build count increments, marker reflects it).
+    expect(await hub.get("a")).toEqual({ root: { marker: "/proj/a-new" } });
+    expect(builds).toBe(2);
+  });
+
   it("list() returns entries + build status without forcing builds", async () => {
     let builds = 0;
     const hub = makeHub(async (e) => {
