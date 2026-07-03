@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRegistry, saveRegistry, addProject, removeProject, slugForName } from "./registry.js";
+import { loadRegistry, saveRegistry, addProject, removeProject, slugForName, isPathRegistered, type Registry } from "./registry.js";
 
 let dir: string;
 let file: string;
@@ -137,5 +137,26 @@ describe("addProject / removeProject (pure)", () => {
     const reg = { projects: [{ id: "a", name: "a", path: "/a" }] };
     expect(removeProject(reg, "a").projects).toEqual([]);
     expect(removeProject(reg, "zz").projects).toEqual(reg.projects);
+  });
+});
+
+describe("isPathRegistered", () => {
+  it("is true for an exact registered path and false for an unregistered one", () => {
+    const registry: Registry = { projects: [{ id: "a", name: "a", path: join(dir, "a") }] };
+    expect(isPathRegistered(registry, join(dir, "a"))).toBe(true);
+    expect(isPathRegistered(registry, join(dir, "b"))).toBe(false);
+  });
+
+  it("normalizes redundant path segments before comparing", () => {
+    const p = join(dir, "a");
+    const registry: Registry = { projects: [{ id: "a", name: "a", path: p }] };
+    expect(isPathRegistered(registry, join(dir, ".", "a"))).toBe(true);
+  });
+
+  it("case-folds on win32 only", () => {
+    const p = join(dir, "CaseDir");
+    const registry: Registry = { projects: [{ id: "a", name: "a", path: p }] };
+    const flipped = p.toLowerCase();
+    expect(isPathRegistered(registry, flipped)).toBe(process.platform === "win32");
   });
 });

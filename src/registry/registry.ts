@@ -108,10 +108,16 @@ const pathKey = (p: string): string => {
   return process.platform === "win32" ? r.toLowerCase() : r;
 };
 
+/** True when `path` already resolves to a registered project's path (same
+ *  canonical key as `addProject`'s duplicate check — win32 case-fold included). */
+export function isPathRegistered(registry: Registry, path: string): boolean {
+  const key = pathKey(path);
+  return registry.projects.some((p) => pathKey(p.path) === key);
+}
+
 /** Pure: append a new project (id derived from the folder name). Throws on a duplicate path. */
 export function addProject(registry: Registry, input: { path: string; name?: string }): { registry: Registry; entry: RegistryEntry } {
-  const inputKey = pathKey(input.path);
-  if (registry.projects.some((p) => pathKey(p.path) === inputKey)) {
+  if (isPathRegistered(registry, input.path)) {
     throw new Error(`registry: path already registered: ${input.path}`);
   }
   const name = input.name ?? basename(input.path);
