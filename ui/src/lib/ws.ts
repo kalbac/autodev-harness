@@ -2,10 +2,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useAppStore } from "./store";
 
 /**
- * Connects the daemon's root WebSocket (`{type:"change", path}`) to React Query:
- * every change event debounces (150ms) then invalidates ALL queries, so any
- * mounted view re-fetches. This mirrors AO's SSE→invalidate pattern; the WS
- * carries no payload into components — it is purely an invalidation signal.
+ * Connects the daemon's root WebSocket (`{type:"change", projectId, path}`) to
+ * React Query: every change event FOR THE SELECTED PROJECT debounces (150ms)
+ * then invalidates ALL queries, so any mounted view re-fetches. A change event
+ * for a DIFFERENT project is ignored — the WS stream is shared across every
+ * registered project, but this dashboard only ever renders one (the
+ * default-project shim, see `lib/api.ts` module header / `components/ProjectGate.tsx`).
+ * This mirrors AO's SSE→invalidate pattern; the WS carries no payload into
+ * components — it is purely an invalidation signal.
  *
  * The page is same-origin with the daemon in production (the daemon serves this
  * bundle), so `location.host` is the daemon. In dev, Vite serves the page on a
@@ -40,8 +44,15 @@ export function connectWs(queryClient: QueryClient): () => void {
     ws.onopen = () => setConn("live");
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(String(ev.data)) as { type?: string };
-        if (msg?.type === "change") invalidateSoon();
+        const msg = JSON.parse(String(ev.data)) as { type?: string; projectId?: string };
+        if (msg?.type !== "change") return;
+        // Ignore a change event for a project other than the one this dashboard
+        // is showing. `projectId` should always be present now; a message
+        // missing it (unexpected/legacy) is treated as "not ours" and dropped
+        // rather than over-invalidating.
+        const selected = useAppStore.getState().projectId;
+        if (!selected || msg.projectId !== selected) return;
+        invalidateSoon();
       } catch {
         /* ignore non-JSON frames */
       }

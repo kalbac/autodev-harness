@@ -9,6 +9,10 @@ import tailwindcss from "@tailwindcss/vite";
 // (mounted at the daemon's server root) is NOT proxied here -- the client dials
 // the daemon origin directly in dev (see src/lib/ws.ts) to avoid a root-path
 // proxy swallowing every request.
+//
+// Every API route now lives under `/projects` (`GET /projects` itself, plus
+// every project-scoped `/projects/:id/...` route) -- see `src/lib/api.ts`
+// module header. A single proxy entry covers all of it.
 const DAEMON = "http://127.0.0.1:4319";
 const apiProxy = { target: DAEMON, changeOrigin: true };
 
@@ -26,11 +30,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/state": apiProxy,
-      "/runs": apiProxy,
-      "/tasks": apiProxy,
-      "/escalations": apiProxy,
-      "/orchestrate": apiProxy,
+      "/projects": apiProxy,
     },
   },
 });
