@@ -72,4 +72,54 @@ describe("loadConfig", () => {
     mkdirSync(nested, { recursive: true });
     expect(detectRepoRoot(nested, [".git"])).toBe(dir);
   });
+
+  it("defaults worktree.provision to an empty list", async () => {
+    const cfg = await loadConfig(dir);
+    expect(cfg.worktree.provision).toEqual([]);
+  });
+
+  it("accepts a worktree.provision list", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: [vendor, plugins-reference]\n");
+    const cfg = await loadConfig(dir);
+    expect(cfg.worktree.provision).toEqual(["vendor", "plugins-reference"]);
+  });
+
+  it("rejects a worktree.provision entry with a .. segment", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['../escape']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects an absolute worktree.provision entry", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['/etc']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects a Windows-style absolute worktree.provision entry regardless of the host platform (finding 3)", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    // YAML single-quoted scalars treat backslash as a literal character.
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['C:\\repo\\vendor']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects a UNC worktree.provision entry regardless of the host platform (finding 3)", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['\\\\host\\share\\vendor']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects a nested (multi-segment, forward-slash) worktree.provision entry — deps dirs are always top-level", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['a/b']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+
+  it("rejects a nested (multi-segment, backslash) worktree.provision entry regardless of host platform", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    // YAML single-quoted scalars treat backslash as a literal character.
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['a\\b']\n");
+    await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
 });

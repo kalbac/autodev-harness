@@ -165,7 +165,10 @@ async function main(): Promise<void> {
   const repo = new FileBlackboardRepository(repoRoot, cfg.stateDir);
   const scheduler = createScheduler(repo);
   const worktreesDir = join(repoRoot, cfg.stateDir, "worktrees");
-  const worktree = createWorktreeManager(repoRoot, worktreesDir);
+  const worktree = createWorktreeManager(repoRoot, worktreesDir, {
+    provision: cfg.worktree.provision,
+    log,
+  });
   const router = createRouter(cfg);
   const git = createGit(repoRoot);
   const worktreeGit = (wt: Worktree) => createGit(wt.path);

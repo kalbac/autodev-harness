@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { posix, win32 } from "node:path";
 
 // worker role (ladder-shaped — preserves parity §7: multi-tier ladder,
 // rate-limit step-down, contract-zone pin to ladder[0]). No `model` key: the
@@ -46,6 +47,46 @@ export const HarnessConfigSchema = z.object({
   repoRoot: z
     .object({ markers: z.array(z.string()).default([".git"]) })
     .default({ markers: [".git"] }),
+
+  // Gitignored dependency dirs (e.g. vendor, plugins-reference, node_modules)
+  // to link into each per-task worktree so a real gate (composer check /
+  // phpunit) can run. Deps dirs are always TOP-LEVEL — nesting is unused
+  // (YAGNI) and was the root of a nested-stale-link blocker (a nested `a/b`
+  // junction under a real `a/` survives a top-level-only stale scan, so
+  // recursive cleanup could traverse it). Each entry must therefore be a
+  // SINGLE relative path segment: no absolute path, no `..`, and no path
+  // separator at all (fail-loud here; the worktree manager guards again at
+  // the fs-op site). Empty = off. `isAbsolute` from `node:path` resolves to
+  // the HOST platform's semantics only (win32 on Windows, posix elsewhere);
+  // check both explicitly so a Windows-style absolute path (`C:\...`) or a
+  // UNC path (`\\host\share\...`) is rejected even when the harness runs on
+  // Linux/mac, and a POSIX-style absolute path (`/etc`) is rejected even when
+  // it runs on Windows (finding 3).
+  worktree: z
+    .object({
+      provision: z
+        .array(z.string())
+        .superRefine((arr, ctx) => {
+          for (const p of arr) {
+            if (
+              p === "" ||
+              p === "." ||
+              p === ".." ||
+              p.includes("/") ||
+              p.includes("\\") ||
+              posix.isAbsolute(p) ||
+              win32.isAbsolute(p)
+            ) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `worktree.provision entry must be a single top-level path segment within the repo (no absolute, no "..", no separator) : ${JSON.stringify(p)}`,
+              });
+            }
+          }
+        })
+        .default([]),
+    })
+    .default({ provision: [] }),
 
   gate: z
     .object({
