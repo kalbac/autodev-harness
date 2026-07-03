@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ArrowUp, CircleAlert } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
-import { qk } from "@/lib/queries";
+import { qk, useConfig, useProjects } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
 import { Spinner } from "./ui/Feedback";
+
+const CHIP =
+  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted";
 
 /**
  * The "new run" intent box — the one write surface that launches work. It only
@@ -17,6 +21,13 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
   const projectId = useProjectId() ?? "";
   const [intent, setIntent] = useState("");
   const qc = useQueryClient();
+  const projects = useProjects();
+  const config = useConfig(projectId);
+
+  const projectName = projects.data?.projects.find((p) => p.id === projectId)?.name ?? projectId;
+  const cfg = config.data;
+  const workerModel = cfg?.roles.worker.ladder[0] ?? "—";
+  const criticModel = cfg ? `${cfg.roles.critic.model} · ${cfg.roles.critic.effort}` : "—";
 
   const launch = useMutation({
     mutationFn: (text: string) => api.postOrchestrate(projectId, text),
@@ -55,8 +66,27 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           rows={3}
           className="w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-text placeholder:text-subtle outline-none"
         />
-        <div className="flex items-center justify-between px-3 pb-3">
-          <span className="font-mono text-[11px] text-subtle">⌘⏎ to launch</span>
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
+          {/* Project switcher lives here in the mockup — static chip for now. */}
+          <span className={CHIP}>
+            project <b className="font-medium text-text">{projectName}</b>
+          </span>
+          {/* Roles are read-only; clicking opens project settings. */}
+          <Link
+            to="/p/$projectId/settings"
+            params={{ projectId }}
+            className={CHIP + " transition-colors hover:border-line-strong hover:text-text"}
+          >
+            worker <b className="font-medium text-text">{workerModel}</b>
+          </Link>
+          <Link
+            to="/p/$projectId/settings"
+            params={{ projectId }}
+            className={CHIP + " transition-colors hover:border-line-strong hover:text-text"}
+          >
+            critic <b className="font-medium text-text">{criticModel}</b>
+          </Link>
+          <span className="ml-auto font-mono text-[11px] text-subtle">⌘⏎ to launch</span>
           <button
             onClick={submit}
             disabled={!canSubmit}
