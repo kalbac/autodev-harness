@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 /** One registered project. Identity ONLY — all project truth (roles, gate,
  *  provision, …) stays in the project's own `.autodev/config.yaml`
@@ -93,9 +93,19 @@ export function slugForName(name: string, taken: readonly string[]): string {
   }
 }
 
+/** Canonical key for duplicate-path DETECTION only (the stored path stays as given).
+ *  `resolve` collapses `.`/redundant separators; on win32 the fs is case-insensitive,
+ *  so `D:\Projects\App` and `d:\projects\app` are the SAME repo and must not register
+ *  twice (two ids over one repo would bypass per-project single-flight). */
+const pathKey = (p: string): string => {
+  const r = resolve(p);
+  return process.platform === "win32" ? r.toLowerCase() : r;
+};
+
 /** Pure: append a new project (id derived from the folder name). Throws on a duplicate path. */
 export function addProject(registry: Registry, input: { path: string; name?: string }): { registry: Registry; entry: RegistryEntry } {
-  if (registry.projects.some((p) => p.path === input.path)) {
+  const inputKey = pathKey(input.path);
+  if (registry.projects.some((p) => pathKey(p.path) === inputKey)) {
     throw new Error(`registry: path already registered: ${input.path}`);
   }
   const name = input.name ?? basename(input.path);

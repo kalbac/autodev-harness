@@ -102,6 +102,21 @@ describe("addProject / removeProject (pure)", () => {
     expect(() => addProject(reg, { path: "D:/Projects/a" })).toThrow(/already registered/);
   });
 
+  // Duplicate-path detection canonicalizes the path (resolve + win32 case-fold),
+  // so different spellings of the SAME repo can't register twice.
+  const caseFoldIt = process.platform === "win32" ? it : it.skip;
+  caseFoldIt("win32: rejects a case-differing spelling of an already-registered path", () => {
+    const reg = { projects: [{ id: "a", name: "a", path: "D:\\Projects\\App" }] };
+    expect(() => addProject(reg, { path: "d:\\projects\\app" })).toThrow(/already registered/);
+  });
+
+  it("rejects a resolve-differing spelling of the same path on all platforms (redundant './' segment)", () => {
+    const base = process.platform === "win32" ? "C:\\Projects\\App" : "/proj/app";
+    const dupWithDot = process.platform === "win32" ? "C:\\Projects\\.\\App" : "/proj/./app";
+    const reg = { projects: [{ id: "a", name: "a", path: base }] };
+    expect(() => addProject(reg, { path: dupWithDot })).toThrow(/already registered/);
+  });
+
   it("removeProject removes by id and is a no-op for unknown ids", () => {
     const reg = { projects: [{ id: "a", name: "a", path: "/a" }] };
     expect(removeProject(reg, "a").projects).toEqual([]);
