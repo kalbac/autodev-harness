@@ -601,11 +601,26 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
-  // projectId of the project whose stateDir changed.
-  const watchers = new Map<string, { close(): Promise<void> | void }>();
+  // projectId of the project whose stateDir changed. The stateDir is stored with
+  // the handle so a project re-registered to a NEW path gets its watcher re-attached
+  // to the new stateDir (the old one is closed) -- otherwise the old stateDir would
+  // keep broadcasting under this projectId and the new one would never be watched.
+  //
+  // ACCEPTED (documented): a watcher for a project that is UNREGISTERED but never
+  // re-resolved lingers until daemon shutdown; it broadcasts events for a stateDir
+  // the UI no longer lists, which the UI simply ignores. Reconciling removals would
+  // need the server to observe registry deletions, which it deliberately does not.
+  const watchers = new Map<string, { stateDir: string; handle: { close(): Promise<void> | void } }>();
   function ensureWatcher(projectId: string, projectStateDir: string): void {
-    if (watchers.has(projectId)) return;
-    watchers.set(projectId, watchFactory(projectStateDir, (changedPath) => broadcastChange(projectId, changedPath)));
+    const existing = watchers.get(projectId);
+    if (existing) {
+      if (existing.stateDir === projectStateDir) return; // same project, same path -- keep it
+      // Re-registered to a different path: close the stale watcher best-effort
+      // (ensureWatcher is sync; the close may be async), then attach the new one.
+      void Promise.resolve(existing.handle.close()).catch(() => {});
+    }
+    const handle = watchFactory(projectStateDir, (changedPath) => broadcastChange(projectId, changedPath));
+    watchers.set(projectId, { stateDir: projectStateDir, handle });
   }
 
   async function handleState(p: ProjectView, res: ServerResponse): Promise<void> {
@@ -1154,7 +1169,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
-      for (const w of watchers.values()) await w.close();
+      for (const w of watchers.values()) await w.handle.close();
       watchers.clear();
     },
   };

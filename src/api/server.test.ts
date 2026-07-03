@@ -183,6 +183,59 @@ describe("createApiServer / WS change stream", () => {
   });
 });
 
+describe("createApiServer / watcher re-attach on stateDir change", () => {
+  it("closes the stale watcher and attaches a new one when a project id is re-registered to a new path", async () => {
+    const dirA = join(root, "stateA");
+    const dirB = join(root, "stateB");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirB, { recursive: true });
+
+    // A mutable stateDir simulates re-registering the SAME id "p1" to a new path.
+    let currentStateDir = dirA;
+
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const closedDirs: string[] = [];
+    const watchFactory = (sd: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(sd, onChange);
+      return { close: () => void closedDirs.push(sd) };
+    };
+
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
+        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+      },
+      watchFactory,
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    // First resolution -> watcher attached on dirA, nothing closed yet.
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(dirA)).toBe(true);
+    expect(closedDirs).toEqual([]);
+
+    // Re-register p1 to dirB, resolve again -> stale dirA watcher closed, new one on dirB.
+    currentStateDir = dirB;
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(closedDirs).toEqual([dirA]);
+    expect(onChangeByDir.has(dirB)).toBe(true);
+
+    // A change fired via dirB's captured callback now broadcasts under projectId "p1".
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(dirB)!("queue/pending/new.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/new.md" });
+    ws.close();
+  });
+});
+
 describe("createApiServer / POST /escalations/:id/reply", () => {
   it("accepts choice A, records a structured reply file with the injected clock, and returns it", async () => {
     handle = createApiServer(projectDeps({ repo, stateDir }, { now: () => 424242 }));
