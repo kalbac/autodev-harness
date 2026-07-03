@@ -71,6 +71,10 @@ export interface ProjectRoot {
   cfg: HarnessConfig;
   repo: FileBlackboardRepository;
   conductor: Conductor;
+  /** Built on FIRST use (first `handleIntent`), not eagerly: the `run` verb never
+   *  orchestrates, so a config with an unregistered orchestrator adapter (which
+   *  `buildOrchestrator` rejects) must still let `run` work -- the pre-extraction
+   *  behavior, when only serve/orchestrate constructed the orchestrator. */
   orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> };
   log: Logger;
   /** Absolute `<repoRoot>/<stateDir>` — what the API server needs. */
@@ -304,9 +308,26 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
   };
 
   const conductor = createConductor(deps);
-  const orchestrator = buildOrchestrator({ cfg, repoRoot, repo, conductor, log });
 
-  return { repoRoot, cfg, repo, conductor, orchestrator, log, stateDirAbs: join(repoRoot, cfg.stateDir) };
+  // Orchestrator is built LAZILY (on first handleIntent) rather than eagerly:
+  // buildOrchestrator throws for an unregistered orchestrator adapter, but the
+  // `run` CLI verb never orchestrates. Building it eagerly here would make
+  // `autodev run` fail on a config that has a valid worker/critic but an
+  // unsupported orchestrator adapter -- a config that worked pre-extraction
+  // (when only serve/orchestrate called buildOrchestrator). The laziness keeps
+  // the ProjectRoot interface unchanged; only `run` benefits.
+  let orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> } | undefined;
+  const getOrchestrator = () => (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, conductor, log }));
+
+  return {
+    repoRoot,
+    cfg,
+    repo,
+    conductor,
+    orchestrator: { handleIntent: (intent) => getOrchestrator().handleIntent(intent) },
+    log,
+    stateDirAbs: join(repoRoot, cfg.stateDir),
+  };
 }
 
 /**
