@@ -88,6 +88,20 @@ export interface ProjectSummary {
   error?: string;
 }
 
+/** Mirrors `GET /projects/:id/config` — the curated read-only config projection
+ *  the shell renders (top bar + inspector rail). */
+export interface ProjectConfigView {
+  stateDir: string;
+  allowedBranchPattern: string;
+  gate: { checkCommand: string | null };
+  worktree: { provision: string[] };
+  roles: {
+    orchestrator: { adapter: string; model: string; effort?: string };
+    worker: { adapter: string; ladder: string[] };
+    critic: { adapter: string; model: string; effort: string };
+  };
+}
+
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
  *  absolute path for the next `?path=` request; for a symlink it is the resolved
  *  real target. */
@@ -180,6 +194,7 @@ export const api = {
     req<string[]>(projectPath(projectId, `/tasks/${encodeURIComponent(taskId)}/runtime`)),
   getEscalation: (projectId: string, id: string) =>
     req<Escalation>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}`)),
+  getConfig: (projectId: string) => req<ProjectConfigView>(projectPath(projectId, "/config")),
 
   /** Runtime files are raw text/json, not a JSON envelope — fetched as text. */
   async getRuntimeFile(

@@ -13,6 +13,7 @@ export const qk = {
   runtimeFiles: (p: string, taskId: string) => ["runtime-files", p, taskId] as const,
   runtimeFile: (p: string, taskId: string, name: string) => ["runtime-file", p, taskId, name] as const,
   escalation: (p: string, id: string) => ["escalation", p, id] as const,
+  config: (p: string) => ["config", p] as const,
 };
 
 /** Daemon-global project registry. */
@@ -32,6 +33,11 @@ export const useRuntimeFile = (p: string, taskId: string, name: string | null) =
   });
 export const useEscalation = (p: string, id: string, enabled = true) =>
   useQuery({ queryKey: qk.escalation(p, id), queryFn: () => api.getEscalation(p, id), enabled });
+
+/** Curated project config (top bar + inspector rail). Static-ish — invalidated
+ *  by WS like everything else. `enabled` guards the daemon-global routes. */
+export const useConfig = (p: string) =>
+  useQuery({ queryKey: qk.config(p), queryFn: () => api.getConfig(p), enabled: p !== "" });
 
 /** Folder browser (M3). `path` undefined → roots view. Keyed by path so
  *  navigating dirs caches each level. */
