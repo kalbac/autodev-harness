@@ -1,15 +1,15 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { useAppStore } from "./store";
+import { router } from "../router";
 
 /**
  * Connects the daemon's root WebSocket (`{type:"change", projectId, path}`) to
- * React Query: every change event FOR THE SELECTED PROJECT debounces (150ms)
+ * React Query: every change event FOR THE ACTIVE-ROUTE PROJECT debounces (150ms)
  * then invalidates ALL queries, so any mounted view re-fetches. A change event
  * for a DIFFERENT project is ignored — the WS stream is shared across every
- * registered project, but this dashboard only ever renders one (the
- * default-project shim, see `lib/api.ts` module header / `components/ProjectGate.tsx`).
- * This mirrors AO's SSE→invalidate pattern; the WS carries no payload into
- * components — it is purely an invalidation signal.
+ * registered project, but the dashboard only renders the one in the router path
+ * (`/p/:projectId/...`). This mirrors AO's SSE→invalidate pattern; the WS
+ * carries no payload into components — it is purely an invalidation signal.
  *
  * The page is same-origin with the daemon in production (the daemon serves this
  * bundle), so `location.host` is the daemon. In dev, Vite serves the page on a
@@ -46,11 +46,13 @@ export function connectWs(queryClient: QueryClient): () => void {
       try {
         const msg = JSON.parse(String(ev.data)) as { type?: string; projectId?: string };
         if (msg?.type !== "change") return;
-        // Ignore a change event for a project other than the one this dashboard
-        // is showing. `projectId` should always be present now; a message
-        // missing it (unexpected/legacy) is treated as "not ours" and dropped
-        // rather than over-invalidating.
-        const selected = useAppStore.getState().projectId;
+        // Ignore a change event for a project other than the one in the active
+        // route path (`/p/:projectId/...`). Off a project route (e.g. `/new`)
+        // there is no active project, so every change is dropped. `projectId`
+        // should always be present now; a message missing it (unexpected/legacy)
+        // is treated as "not ours" and dropped rather than over-invalidating.
+        const m = router.state.location.pathname.match(/^\/p\/([^/]+)/);
+        const selected = m ? decodeURIComponent(m[1]!) : null;
         if (!selected || msg.projectId !== selected) return;
         invalidateSoon();
       } catch {

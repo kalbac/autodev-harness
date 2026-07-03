@@ -1,12 +1,15 @@
 import { Link } from "@tanstack/react-router";
 import { GitBranch, Inbox } from "lucide-react";
 import { useRuns } from "@/lib/queries";
+import { useProjectId } from "@/lib/useProjectId";
 import { timeAgo } from "@/lib/utils";
 import { NewRunComposer } from "@/components/NewRunComposer";
 import { EmptyState } from "@/components/ui/Feedback";
 
 export function HomeView() {
-  const runs = useRuns();
+  // Route guarantees projectId under `/p/:projectId/`; `?? ""` is only for the type.
+  const projectId = useProjectId() ?? "";
+  const runs = useRuns(projectId);
 
   return (
     <div className="h-full overflow-auto">
@@ -40,8 +43,8 @@ export function HomeView() {
               {runs.data.slice(0, 8).map((r) => (
                 <li key={r.runId}>
                   <Link
-                    to="/runs/$runId"
-                    params={{ runId: r.runId }}
+                    to="/p/$projectId/runs/$runId"
+                    params={{ projectId, runId: r.runId }}
                     className="flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 transition-colors hover:border-line-strong"
                   >
                     <GitBranch className="size-4 shrink-0 text-subtle" />

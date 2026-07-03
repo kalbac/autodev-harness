@@ -4,6 +4,7 @@ import { LayoutGrid, Plus, Radio, ShieldAlert, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/utils";
 import { useRuns, useState as useHarnessState } from "@/lib/queries";
+import { useProjectId } from "@/lib/useProjectId";
 import { useAppStore, type ConnState } from "@/lib/store";
 import { Dot } from "./ui/Dot";
 
@@ -15,10 +16,15 @@ const CONN_LABEL: Record<ConnState, string> = {
 const CONN_TONE = { connecting: "uncertain", live: "clean", offline: "broken" } as const;
 
 export function Sidebar() {
-  const runs = useRuns();
-  const state = useHarnessState();
+  // The active project comes from the route path; null on `/new` (no project yet).
+  // Project-scoped queries/links fall back to "" off-route — later modules give
+  // the sidebar a proper project-switcher.
+  const projectId = useProjectId() ?? "";
+  const runs = useRuns(projectId);
+  const state = useHarnessState(projectId);
   const conn = useAppStore((s) => s.conn);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const base = `/p/${projectId}`;
 
   const escalatedCount = state.data?.queues.escalated.length ?? 0;
   const activeCount = state.data?.queues.active.length ?? 0;
@@ -41,10 +47,11 @@ export function Sidebar() {
       {/* New run */}
       <div className="p-3">
         <Link
-          to="/"
+          to="/p/$projectId"
+          params={{ projectId }}
           className={cn(
             "flex items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm font-medium text-text transition-colors hover:border-line-strong",
-            pathname === "/" && "border-line-strong bg-surface-2",
+            pathname === base && "border-line-strong bg-surface-2",
           )}
         >
           <Plus className="size-4 text-accent" />
@@ -54,7 +61,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="px-3 pb-2 flex flex-col gap-0.5">
-        <NavItem to="/board" icon={LayoutGrid} label="Board" active={pathname === "/board"}>
+        <NavItem to={`${base}/board`} icon={LayoutGrid} label="Board" active={pathname === `${base}/board`}>
           {activeCount > 0 && (
             <span className="ml-auto flex items-center gap-1 font-mono text-[10px] text-working">
               <Dot tone="working" pulse />
@@ -62,7 +69,7 @@ export function Sidebar() {
             </span>
           )}
         </NavItem>
-        <NavItem to="/board" icon={ShieldAlert} label="Escalations" active={false}>
+        <NavItem to={`${base}/board`} icon={ShieldAlert} label="Escalations" active={false}>
           {escalatedCount > 0 && (
             <span
               className="ml-auto rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold text-uncertain"
@@ -83,12 +90,12 @@ export function Sidebar() {
         {runs.data && runs.data.length > 0 ? (
           <ul className="flex flex-col gap-0.5">
             {runs.data.map((r) => {
-              const active = pathname === `/runs/${r.runId}`;
+              const active = pathname === `${base}/runs/${r.runId}`;
               return (
                 <li key={r.runId}>
                   <Link
-                    to="/runs/$runId"
-                    params={{ runId: r.runId }}
+                    to="/p/$projectId/runs/$runId"
+                    params={{ projectId, runId: r.runId }}
                     className={cn(
                       "block rounded-md px-2.5 py-1.5 transition-colors hover:bg-surface",
                       active && "bg-surface",

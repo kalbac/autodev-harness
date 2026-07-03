@@ -4,8 +4,16 @@ import { Loading } from "./ui/Feedback";
 
 /** Fetches one runtime file and renders it: diff coloring for `.patch`, plain
  *  mono for everything else. A truncated body (server `x-truncated`) is flagged. */
-export function RuntimeFileView({ taskId, name }: { taskId: string; name: string | null }) {
-  const file = useRuntimeFile(taskId, name);
+export function RuntimeFileView({
+  projectId,
+  taskId,
+  name,
+}: {
+  projectId: string;
+  taskId: string;
+  name: string | null;
+}) {
+  const file = useRuntimeFile(projectId, taskId, name);
 
   if (name === null) {
     return <p className="px-3 py-6 text-center text-xs text-subtle">Select a file.</p>;

@@ -4,15 +4,13 @@
  * same paths to the daemon in dev. The dashboard holds NO authoritative state —
  * every shape here mirrors a server response and is re-fetched on WS change.
  *
- * INTERIM MULTI-PROJECT SHIM: every project-scoped route now lives under
- * `/projects/:id/...` on the daemon (`GET /projects` lists registered
- * projects). Until a real multi-project shell exists, this dashboard just
- * picks the FIRST registered project at boot (`components/ProjectGate.tsx`)
- * and every project-scoped call below is prefixed with it via `projectPath`
- * — the ONE change-point for the new routing. `getProjects` itself is the
- * sole daemon-global (unprefixed) call.
+ * MULTI-PROJECT: every project-scoped route lives under `/projects/:id/...` on
+ * the daemon (`GET /projects` lists registered projects). The active project is
+ * carried in the router path (`/p/:projectId/...`), so every project-scoped
+ * method below takes `projectId` as its FIRST argument and prefixes the route
+ * via `projectPath`. `getProjects` itself is the sole daemon-global
+ * (unprefixed) call.
  */
-import { useAppStore } from "./store";
 
 export type QueueState = "pending" | "active" | "done" | "escalated" | "quarantine";
 
@@ -119,51 +117,55 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * Prefixes a project-scoped sub-path with `/projects/:id` for the currently
- * selected project. Reads the zustand store directly (outside React, same
- * pattern `lib/ws.ts` uses for `setConn`) since `api` call sites are plain
- * functions, not hooks. Throws if called before `ProjectGate` has resolved a
- * project — every project-scoped query is gated behind that resolution, so
- * this should be unreachable in practice.
+ * Prefixes a project-scoped sub-path with `/projects/:id`. `projectId` is
+ * supplied by the caller (threaded down from the router path via
+ * `useProjectId()` / a route param) — the URL is the single source of truth for
+ * which project is selected.
  */
-function projectPath(subPath: string): string {
-  const id = useAppStore.getState().projectId;
-  if (!id) throw new Error("no project selected yet");
-  return `/projects/${encodeURIComponent(id)}${subPath}`;
+function projectPath(projectId: string, subPath: string): string {
+  return `/projects/${encodeURIComponent(projectId)}${subPath}`;
 }
 
 export const api = {
-  /** Daemon-global — NOT project-scoped. Lists registered projects for the shim to pick from. */
+  /** Daemon-global — NOT project-scoped. Lists registered projects. */
   getProjects: () => req<{ projects: ProjectSummary[] }>("/projects"),
 
-  getState: () => req<StateResponse>(projectPath("/state")),
-  getRuns: () => req<RunManifest[]>(projectPath("/runs")),
-  getRun: (id: string) => req<RunManifest>(projectPath(`/runs/${encodeURIComponent(id)}`)),
-  getRuntimeFiles: (taskId: string) =>
-    req<string[]>(projectPath(`/tasks/${encodeURIComponent(taskId)}/runtime`)),
-  getEscalation: (id: string) =>
-    req<Escalation>(projectPath(`/escalations/${encodeURIComponent(id)}`)),
+  getState: (projectId: string) => req<StateResponse>(projectPath(projectId, "/state")),
+  getRuns: (projectId: string) => req<RunManifest[]>(projectPath(projectId, "/runs")),
+  getRun: (projectId: string, id: string) =>
+    req<RunManifest>(projectPath(projectId, `/runs/${encodeURIComponent(id)}`)),
+  getRuntimeFiles: (projectId: string, taskId: string) =>
+    req<string[]>(projectPath(projectId, `/tasks/${encodeURIComponent(taskId)}/runtime`)),
+  getEscalation: (projectId: string, id: string) =>
+    req<Escalation>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}`)),
 
   /** Runtime files are raw text/json, not a JSON envelope — fetched as text. */
-  async getRuntimeFile(taskId: string, name: string): Promise<{ text: string; truncated: boolean }> {
+  async getRuntimeFile(
+    projectId: string,
+    taskId: string,
+    name: string,
+  ): Promise<{ text: string; truncated: boolean }> {
     const res = await fetch(
-      projectPath(`/tasks/${encodeURIComponent(taskId)}/runtime/${encodeURIComponent(name)}`),
+      projectPath(projectId, `/tasks/${encodeURIComponent(taskId)}/runtime/${encodeURIComponent(name)}`),
     );
     if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
     return { text: await res.text(), truncated: res.headers.get("x-truncated") === "true" };
   },
 
   /** Structured A/B reply. `note` is context-only and NEVER executed (server-enforced). */
-  postReply: (id: string, choice: "A" | "B", note: string) =>
-    req<EscalationReply>(projectPath(`/escalations/${encodeURIComponent(id)}/reply`), {
+  postReply: (projectId: string, id: string, choice: "A" | "B", note: string) =>
+    req<EscalationReply>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}/reply`), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice, note }),
     }),
 
   /** Launch a run: enqueue+trigger only (R1-safe, server-side). 202 accepted / 409 in-flight. */
-  async postOrchestrate(intent: string): Promise<{ accepted: boolean; intent: string }> {
-    const res = await fetch(projectPath("/orchestrate"), {
+  async postOrchestrate(
+    projectId: string,
+    intent: string,
+  ): Promise<{ accepted: boolean; intent: string }> {
+    const res = await fetch(projectPath(projectId, "/orchestrate"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent }),

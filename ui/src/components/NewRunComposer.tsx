@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp, CircleAlert } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { qk } from "@/lib/queries";
+import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
 import { Spinner } from "./ui/Feedback";
 
@@ -12,15 +13,17 @@ import { Spinner } from "./ui/Feedback";
  * (R1-safe server-side); it cannot run/skip/reorder any gate step.
  */
 export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
+  // Rendered on the project home; the route guarantees projectId (`?? ""` for the type).
+  const projectId = useProjectId() ?? "";
   const [intent, setIntent] = useState("");
   const qc = useQueryClient();
 
   const launch = useMutation({
-    mutationFn: (text: string) => api.postOrchestrate(text),
+    mutationFn: (text: string) => api.postOrchestrate(projectId, text),
     onSuccess: () => {
       setIntent("");
-      void qc.invalidateQueries({ queryKey: qk.runs });
-      void qc.invalidateQueries({ queryKey: qk.state });
+      void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
+      void qc.invalidateQueries({ queryKey: qk.state(projectId) });
     },
   });
 

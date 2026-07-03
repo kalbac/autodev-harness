@@ -19,9 +19,17 @@ const TABS: TabDef[] = [
 
 /** The per-task inspector rail. Verdict leads — the critic's judgment is the
  *  first thing the operator sees on any task. */
-export function Inspector({ taskId, state }: { taskId: string; state: QueueState }) {
+export function Inspector({
+  projectId,
+  taskId,
+  state,
+}: {
+  projectId: string;
+  taskId: string;
+  state: QueueState;
+}) {
   const [tab, setTab] = useState("verdict");
-  const files = useRuntimeFiles(taskId);
+  const files = useRuntimeFiles(projectId, taskId);
   const names = files.data ?? [];
 
   const verdictAccent =
@@ -41,38 +49,40 @@ export function Inspector({ taskId, state }: { taskId: string; state: QueueState
     <div className="flex h-full flex-col">
       <TabBar tabs={tabs} value={tab} onChange={setTab} className="px-2 shrink-0" />
       <div className="flex-1 overflow-auto p-4">
-        {tab === "verdict" && <VerdictTab taskId={taskId} state={state} names={names} />}
+        {tab === "verdict" && <VerdictTab projectId={projectId} taskId={taskId} state={state} names={names} />}
         {tab === "diff" &&
           (names.includes("diff.patch") ? (
-            <RuntimeFileView taskId={taskId} name="diff.patch" />
+            <RuntimeFileView projectId={projectId} taskId={taskId} name="diff.patch" />
           ) : (
             <EmptyState icon={FileText} title="No diff yet" description="The worker hasn't produced a diff for this task." />
           ))}
         {tab === "report" &&
           (names.includes("worker-report.md") ? (
-            <RuntimeFileView taskId={taskId} name="worker-report.md" />
+            <RuntimeFileView projectId={projectId} taskId={taskId} name="worker-report.md" />
           ) : (
             <EmptyState icon={FileText} title="No worker report" />
           ))}
-        {tab === "files" && <FilesTab taskId={taskId} names={names} loading={files.isLoading} />}
+        {tab === "files" && <FilesTab projectId={projectId} taskId={taskId} names={names} loading={files.isLoading} />}
       </div>
     </div>
   );
 }
 
 function VerdictTab({
+  projectId,
   taskId,
   state,
   names,
 }: {
+  projectId: string;
   taskId: string;
   state: QueueState;
   names: string[];
 }) {
   const escalated = state === "escalated";
-  const esc = useEscalation(taskId, escalated);
+  const esc = useEscalation(projectId, taskId, escalated);
   const hasFeedback = names.includes("critic-feedback.md");
-  const feedback = useRuntimeFile(taskId, hasFeedback ? "critic-feedback.md" : null);
+  const feedback = useRuntimeFile(projectId, taskId, hasFeedback ? "critic-feedback.md" : null);
 
   const verdict: Verdict =
     state === "done"
@@ -115,10 +125,12 @@ function VerdictTab({
 }
 
 function FilesTab({
+  projectId,
   taskId,
   names,
   loading,
 }: {
+  projectId: string;
   taskId: string;
   names: string[];
   loading: boolean;
@@ -148,7 +160,7 @@ function FilesTab({
           </button>
         ))}
       </div>
-      <RuntimeFileView taskId={taskId} name={selected} />
+      <RuntimeFileView projectId={projectId} taskId={taskId} name={selected} />
     </div>
   );
 }
