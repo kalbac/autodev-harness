@@ -5,11 +5,16 @@
 // deliberately NOT unit-tested; every module it wires already has its own
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 import { detectRepoRoot } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
-import { buildProjectRoot } from "./composition/root.js";
+import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
+import { loadRegistry } from "./registry/registry.js";
+import { createProjectHub } from "./hub/hub.js";
+import { createLogger } from "./util/log.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
@@ -109,34 +114,46 @@ async function main(): Promise<void> {
   const command = parseCli(process.argv.slice(2));
 
   if (command.mode === "serve") {
-    // Multi-project serve is wired in a LATER task (hub + registry). For THIS
-    // task keep serve single-project so the extraction lands green:
-    const repoRoot = detectRepoRoot(process.cwd());
-    const root = await buildProjectRoot(repoRoot);
-    const uiDirCandidate = join(repoRoot, "dist", "ui");
+    // serve is DAEMON-GLOBAL: no cwd binding, no detectRepoRoot (spec §3b).
+    const log = createLogger(join(homedir(), ".autodev", "daemon.log"));
+    const registryFile = process.env["AUTODEV_REGISTRY"] ?? join(homedir(), ".autodev", "projects.json");
+
+    const hub = createProjectHub<ProjectRoot>({
+      loadEntries: async () => (await loadRegistry(registryFile, log)).projects,
+      buildRoot: (entry) => buildProjectRoot(entry.path),
+      log,
+    });
+
+    // UI bundle lives with the INSTALL, not any project (closes [ui/serve-uidir-reporoot]):
+    // compiled layout is dist/index.js + dist/ui. AUTODEV_UI_DIR overrides (dev runs vite anyway).
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const uiDirCandidate = process.env["AUTODEV_UI_DIR"] ?? join(moduleDir, "ui");
     const uiDir = existsSync(uiDirCandidate) ? uiDirCandidate : undefined;
+
     const handle = createApiServer({
       projects: {
-        list: async () => [{ id: "local", name: "local", path: repoRoot, status: "ready" }],
-        get: async (id) =>
-          id === "local"
-            ? {
-                view: {
-                  repo: root.repo,
-                  stateDir: root.stateDirAbs,
-                  onOrchestrate: (i: string) => root.orchestrator.handleIntent(i),
-                },
-              }
-            : null,
+        list: () => hub.list(),
+        get: async (id) => {
+          const r = await hub.get(id);
+          if (r === null || "error" in r) return r;
+          const root = r.root;
+          return {
+            view: {
+              repo: root.repo,
+              stateDir: root.stateDirAbs,
+              onOrchestrate: (intent: string) => root.orchestrator.handleIntent(intent),
+            },
+          };
+        },
       },
       ...(uiDir !== undefined ? { uiDir } : {}),
-      log: root.log,
+      log,
     });
     const boundPort = await handle.listen(command.port, "127.0.0.1");
-    root.log(
+    log(
       "INFO",
-      `serve: listening at http://127.0.0.1:${boundPort} (orchestrate endpoint enabled)${
-        uiDir ? "" : ` (API only -- no UI bundle found at ${uiDirCandidate})`
+      `serve: listening at http://127.0.0.1:${boundPort} — registry ${registryFile}${
+        uiDir ? "" : ` (API only -- no UI bundle at ${uiDirCandidate})`
       }`,
     );
     return; // the listening server keeps the event loop alive; do not tear it down
