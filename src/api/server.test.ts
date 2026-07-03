@@ -8,7 +8,7 @@ import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
-import { createApiServer, type ApiServerHandle, type ApiServerDeps } from "./server.js";
+import { createApiServer, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
 import type { RegisterResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
@@ -16,7 +16,12 @@ import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
  *  except for the URL prefix. */
 function projectDeps(
-  one: { repo: BlackboardRepository; stateDir: string; onOrchestrate?: (intent: string) => Promise<unknown> },
+  one: {
+    repo: BlackboardRepository;
+    stateDir: string;
+    onOrchestrate?: (intent: string) => Promise<unknown>;
+    config?: ProjectConfigView;
+  },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
   return {
@@ -29,6 +34,7 @@ function projectDeps(
                 repo: one.repo,
                 stateDir: one.stateDir,
                 ...(one.onOrchestrate !== undefined ? { onOrchestrate: one.onOrchestrate } : {}),
+                ...(one.config !== undefined ? { config: one.config } : {}),
               },
             }
           : null,
@@ -1871,5 +1877,62 @@ describe("DELETE /projects/:id", () => {
 
     await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
     expect(closed).toBe(1);
+  });
+});
+
+describe("GET /projects/:id/config", () => {
+  const sampleConfig: ProjectConfigView = {
+    stateDir: ".autodev",
+    allowedBranchPattern: "^autodev/",
+    gate: { checkCommand: "npm test" },
+    worktree: { provision: ["vendor", "node_modules"] },
+    roles: {
+      orchestrator: { adapter: "claude", model: "opus", effort: "high" },
+      worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
+      critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
+    },
+  };
+
+  it("404s when the view has no config (default projectDeps helper doesn't set it)", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the exact curated config object when the view has config", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectConfigView;
+    expect(body).toEqual(sampleConfig);
+  });
+
+  it("omits an absent optional orchestrator effort rather than sending it as undefined/null", async () => {
+    const configNoEffort: ProjectConfigView = {
+      ...sampleConfig,
+      roles: { ...sampleConfig.roles, orchestrator: { adapter: "claude", model: "opus" } },
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir, config: configNoEffort }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectConfigView;
+    expect(body).toEqual(configNoEffort);
+    expect(Object.prototype.hasOwnProperty.call((body.roles as { orchestrator: object }).orchestrator, "effort")).toBe(
+      false,
+    );
+  });
+
+  it("400s on an invalid project id", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects/@bad/config`);
+    expect(res.status).toBe(400);
   });
 });

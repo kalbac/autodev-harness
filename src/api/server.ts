@@ -135,6 +135,21 @@ const VALID_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
  */
 const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 
+/** Curated, read-only projection of a project's HarnessConfig for the UI shell
+ *  (top bar + inspector rail). A safe subset — no secrets live in config, but we
+ *  still expose only what the shell renders rather than the whole object. */
+export interface ProjectConfigView {
+  stateDir: string;
+  allowedBranchPattern: string;
+  gate: { checkCommand: string | null };
+  worktree: { provision: string[] };
+  roles: {
+    orchestrator: { adapter: string; model: string; effort?: string };
+    worker: { adapter: string; ladder: string[] };
+    critic: { adapter: string; model: string; effort: string };
+  };
+}
+
 /** Per-project view the server needs — a narrow slice of the hub's ProjectRoot. */
 export interface ProjectView {
   repo: BlackboardRepository;
@@ -149,6 +164,8 @@ export interface ProjectView {
    * already-sent response. R1-thin callback, unchanged semantics.
    */
   onOrchestrate?: (intent: string) => Promise<unknown>;
+  /** OPTIONAL curated config for `GET /projects/:id/config`. Absent → that route 404s. */
+  config?: ProjectConfigView;
 }
 
 export interface ApiServerDeps {
@@ -1183,6 +1200,14 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       ensureWatcher(rawPid, p.stateDir);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
+      if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
+        if (!p.config) {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        sendJson(res, 200, p.config);
+        return;
+      }
       if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, res));
       const runMatch = /^\/runs\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runMatch) return void (await handleGetRun(p, runMatch[1]!, res));
