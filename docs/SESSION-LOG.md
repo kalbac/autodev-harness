@@ -4,6 +4,36 @@
 
 ---
 
+## s16 — 2026-07-03 — P3 slice 2: UI/UX design gate + multi-project daemon M1–M2 — codex-gated clean, merged (PR #30)
+
+**Design gate (the operator's reserved topic, resolved WITH him):** operator brought 11 reference screenshots
+(Codex/Claude desktop → `screenshots/`, git-ignored) + his wishlist (New Project, projects+sessions sidebar, settings
+popover, stats rail). Three forks decided: **full multi-project daemon** (not single-active rebind), **browser now /
+desktop wrap later** (loopback HTTP/WS makes the wrap additive), **server-side folder browser**. Visual mockup built in
+our design tokens → `docs/superpowers/specs/2026-07-03-s16-shell-mockup.html`; kanban stays a secondary lens. Spec
+(`2026-07-03-p3-multiproject-shell-design.md`, modules M1–M5) approved on trust; M1–M2 plan written and executed.
+
+**Built (M1–M2):** identity-only registry `~/.autodev/projects.json` (project truth stays in `.autodev/config.yaml`);
+`buildProjectRoot` extracted from `index.ts` into `src/composition/root.ts`; **ProjectHub** (lazy per-project roots,
+error isolation, path-aware caches); API re-rooted under `/projects/:id/...` (old top-level routes removed, `GET
+/projects`, per-project orchestrate single-flight, per-project watchers, WS events carry `projectId`); `serve` is
+daemon-global with the UI bundle resolved install-relative (**closes `[ui/serve-uidir-reporoot]`**); interim UI shim
+auto-selects the first project. CLI verbs stay cwd-bound.
+
+**Gate:** codex GPT-5.5 R1 `broken` 0.87 — 7 findings, incl. three genuine classes: shared in-flight promise rejection
+escaping the hub's cached branch (500 instead of 503); id-keyed caches surviving a registry re-bind (orchestrating the
+WRONG repo); the "mechanical" extraction making the orchestrator eager (broke `run` for orchestrator-less configs).
+All fixed w/ regression tests → R2 `broken` 0.82 (2 residual: stale-watcher broadcast, path-less `lastError`) → fixed →
+**R3 `clean`**. 537 tests (was 512), typecheck clean, CI green 4/4, squash-merged → `main` `6337215` (PR #30).
+Subagent-driven: 5 sonnet + 2 opus workers, 3 codex rounds. New gotchas: `[ts/shared-promise-reject]`,
+`[refactor/extraction-eagerness]`, `[multiproject/id-keyed-caches]`.
+
+**Next:** M3 (fs-browser + register + scaffold), M4 (shell UI per mockup), M5 (themes); ops live-proof of
+deps-provisioning on a woodev clone still deferred (operator-observed). Roles confirmed: Fable 5 = brain, Sonnet 5 /
+Opus 4.8 = workers by complexity, codex GPT-5.5 = critic.
+
+---
+
 ## s15 — 2026-07-03 — P3 slice 1: deps-provisioning (real test gate in worktrees) — codex-gated clean, merged (PR #29)
 
 **Context:** P2 done. Design-gated P3 with the operator (reference-first: reconned AO + OD Electron shells). Operator

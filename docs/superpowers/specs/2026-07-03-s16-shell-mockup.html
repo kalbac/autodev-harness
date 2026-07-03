@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>autodev — s16 multi-project shell mockup</title>
+<style>
+  :root{
+    --ink:#0d1017; --panel:#12161f; --surface:#161c27; --surface2:#1c2432;
+    --line:#262e3b; --line-strong:#333d4d;
+    --text:#e7ebf2; --muted:#97a1b2; --subtle:#6b7484;
+    --working:#e8833a; --uncertain:#e0a324; --broken:#e5484d; --clean:#3fb68b; --accent:#5b6cff;
+    --sans:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+    --display:"Space Grotesk",var(--sans);
+  }
+  *{box-sizing:border-box;border-color:var(--line)}
+  body{margin:0;background:#07090d;color:var(--text);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased}
+  .caption{max-width:1280px;margin:28px auto 10px;padding:0 8px;color:var(--muted);font-family:var(--mono);font-size:12px}
+  .caption b{color:var(--text)}
+  .frame{max-width:1280px;margin:0 auto 8px;border:1px solid var(--line-strong);border-radius:10px;overflow:hidden;background:var(--ink);display:flex;height:760px}
+  .note{display:inline-block;background:var(--accent);color:#fff;border-radius:99px;font-size:10px;font-family:var(--mono);padding:0 6px;line-height:16px;vertical-align:2px;margin-left:6px}
+  /* ---------- sidebar ---------- */
+  .side{width:264px;flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .side .brand{display:flex;align-items:center;gap:8px;padding:14px 14px 10px;font-family:var(--display);letter-spacing:.06em;font-weight:600}
+  .brand .dot{width:8px;height:8px;border-radius:99px;background:var(--clean)}
+  .newproj{margin:4px 12px 10px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;color:var(--text);background:var(--surface);font-family:var(--mono);font-size:12px;cursor:pointer}
+  .newproj span{color:var(--accent);margin-right:6px}
+  .sect{padding:10px 14px 4px;color:var(--subtle);font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+  .proj{margin:0 8px;border-radius:8px}
+  .proj>.head{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;font-weight:600}
+  .proj.active>.head{background:var(--surface2)}
+  .proj .chev{color:var(--subtle);font-size:10px;width:10px}
+  .proj .st{margin-left:auto;width:7px;height:7px;border-radius:99px}
+  .st.run{background:var(--working);box-shadow:0 0 6px var(--working)}
+  .st.idle{background:var(--line-strong)}
+  .runs{padding:0 4px 6px 26px}
+  .run{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:6px;color:var(--muted);cursor:pointer}
+  .run:hover{background:var(--surface)}
+  .run.sel{background:var(--surface);color:var(--text)}
+  .run .seal{width:6px;height:6px;border-radius:2px;flex:none}
+  .seal.clean{background:var(--clean)} .seal.unc{background:var(--uncertain)} .seal.work{background:var(--working)} .seal.brk{background:var(--broken)}
+  .run .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+  .run .ago{margin-left:auto;color:var(--subtle);font-family:var(--mono);font-size:10px}
+  .more{padding:2px 8px;color:var(--subtle);font-size:11px;cursor:pointer}
+  .side .foot{margin-top:auto;border-top:1px solid var(--line);padding:10px 12px;display:flex;align-items:center;gap:8px;position:relative}
+  .foot .d{width:7px;height:7px;border-radius:99px;background:var(--clean)}
+  .foot .lbl{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .foot .gear{margin-left:auto;color:var(--muted);cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  /* settings popover (open state) */
+  .pop{position:absolute;bottom:44px;right:8px;width:220px;background:var(--surface2);border:1px solid var(--line-strong);border-radius:10px;padding:6px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  .pop .it{padding:7px 9px;border-radius:6px;cursor:pointer;display:flex;gap:8px;align-items:center}
+  .pop .it:hover{background:var(--surface)}
+  .pop .it .k{color:var(--subtle);margin-left:auto;font-family:var(--mono);font-size:10px}
+  .pop .sep{height:1px;background:var(--line);margin:5px 4px}
+  .theme{display:flex;gap:4px;padding:6px 8px}
+  .theme span{flex:1;text-align:center;border:1px solid var(--line);border-radius:6px;padding:4px 0;font-size:11px;color:var(--muted);cursor:pointer}
+  .theme span.on{border-color:var(--accent);color:var(--text);background:var(--surface)}
+  /* ---------- main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .top{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--line)}
+  .top .name{font-family:var(--display);font-weight:600;font-size:15px}
+  .top .path{color:var(--subtle);font-family:var(--mono);font-size:11px}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:99px;padding:3px 10px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .chip b{color:var(--text);font-weight:500}
+  .top .right{margin-left:auto;display:flex;gap:8px}
+  .hero{padding:56px 18px 22px;max-width:760px;margin:0 auto;width:100%}
+  .hero h1{font-family:var(--display);font-weight:600;font-size:26px;margin:0 0 18px;text-align:center}
+  .composer{background:var(--surface);border:1px solid var(--line-strong);border-radius:14px;padding:14px}
+  .composer .in{color:var(--subtle);font-size:14px;padding:4px 2px 30px}
+  .composer .row{display:flex;gap:8px;align-items:center}
+  .composer .send{margin-left:auto;width:30px;height:30px;border-radius:99px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff}
+  .recent{max-width:760px;margin:8px auto 0;width:100%;padding:0 18px}
+  .recent .sect{padding-left:2px}
+  .card{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+  .card:hover{border-color:var(--line-strong)}
+  .vseal{font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:3px 8px;border-radius:6px;flex:none}
+  .vseal.clean{color:var(--clean);border:1px solid color-mix(in srgb,var(--clean) 40%,transparent);background:color-mix(in srgb,var(--clean) 8%,transparent)}
+  .vseal.unc{color:var(--uncertain);border:1px solid color-mix(in srgb,var(--uncertain) 40%,transparent);background:color-mix(in srgb,var(--uncertain) 8%,transparent)}
+  .vseal.work{color:var(--working);border:1px solid color-mix(in srgb,var(--working) 40%,transparent);background:color-mix(in srgb,var(--working) 8%,transparent)}
+  .card .ttl{font-weight:600}
+  .card .sub{color:var(--subtle);font-family:var(--mono);font-size:11px}
+  .card .ago{margin-left:auto;color:var(--subtle);font-family:var(--mono);font-size:11px}
+  /* ---------- right rail ---------- */
+  .rail{width:300px;flex:none;border-left:1px solid var(--line);background:var(--panel);padding:14px;overflow:auto}
+  .rail h3{margin:0 0 10px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--subtle)}
+  .blk{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+  .blk .h{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--subtle);margin-bottom:8px;display:flex;align-items:center}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12px}
+  .kv .k{color:var(--muted)} .kv .v{font-family:var(--mono);font-size:11px;text-align:right}
+  .pipe{display:flex;flex-direction:column;gap:6px}
+  .step{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--subtle)}
+  .step .b{width:8px;height:8px;border-radius:99px;background:var(--line-strong);flex:none}
+  .step.done{color:var(--muted)} .step.done .b{background:var(--clean)}
+  .step.now{color:var(--text)} .step.now .b{background:var(--working);box-shadow:0 0 8px var(--working)}
+  .qrow{display:flex;gap:6px}
+  .q{flex:1;text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 0}
+  .q .n{font-family:var(--display);font-size:16px;font-weight:600}
+  .q .l{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle)}
+  .q.att{border-color:color-mix(in srgb,var(--uncertain) 45%,transparent)} .q.att .n{color:var(--uncertain)}
+  .soon{font-family:var(--mono);font-size:9px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-radius:5px;padding:1px 5px;margin-left:auto}
+  /* ---------- frame 2: new project ---------- */
+  .np{flex:1;display:flex;min-width:0}
+  .browser{flex:1;border-right:1px solid var(--line);padding:16px 18px;min-width:0}
+  .browser .crumb{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:10px}
+  .browser .crumb b{color:var(--text)}
+  .drow{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;cursor:pointer}
+  .drow:hover{background:var(--surface)}
+  .drow.sel{background:var(--surface2);border:1px solid var(--line-strong)}
+  .drow .ic{color:var(--subtle)}
+  .badge{font-family:var(--mono);font-size:9px;letter-spacing:.06em;padding:2px 6px;border-radius:5px;color:var(--clean);border:1px solid color-mix(in srgb,var(--clean) 40%,transparent)}
+  .badge.reg{color:var(--subtle);border-color:var(--line)}
+  .drow .pick{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-radius:6px;padding:2px 8px}
+  .form{width:400px;flex:none;padding:16px 18px;overflow:auto}
+  .form h2{font-family:var(--display);font-size:16px;margin:0 0 4px}
+  .form .sub{color:var(--subtle);font-family:var(--mono);font-size:11px;margin-bottom:14px}
+  .f{margin-bottom:12px}
+  .f label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--subtle);margin-bottom:5px}
+  .f .inp{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .f .hint{color:var(--subtle);font-size:11px;margin-top:4px}
+  .rolegrid{display:grid;grid-template-columns:86px 1fr;gap:6px;align-items:center}
+  .rolegrid .rl{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .check{display:flex;gap:8px;align-items:flex-start;margin:14px 0}
+  .check .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 25%,transparent);flex:none;margin-top:1px}
+  .cta{width:100%;padding:9px 0;border-radius:8px;background:var(--accent);color:#fff;text-align:center;font-weight:600;cursor:pointer}
+  .legend{max-width:1280px;margin:6px auto 40px;padding:0 8px;color:var(--subtle);font-size:12px;line-height:1.7}
+  .legend .note{vertical-align:1px}
+</style>
+</head>
+<body>
+
+<div class="caption"><b>Frame 1 — App shell, project home.</b> Left: multi-project sidebar (settings popover shown open). Right: session inspector rail.</div>
+<div class="frame">
+  <div class="side">
+    <div class="brand"><span class="dot"></span> autodev <span style="color:var(--subtle);font-size:10px;font-family:var(--mono)">harness</span></div>
+    <div class="newproj"><span>+</span> New Project <span class="note">1</span></div>
+    <div class="sect">Projects</div>
+    <div class="proj active">
+      <div class="head"><span class="chev">▾</span> woodev_framework <span class="st run"></span></div>
+      <div class="runs">
+        <div class="run sel"><span class="seal work"></span><span class="t">fix checkout totals rounding</span><span class="ago">now</span></div>
+        <div class="run"><span class="seal clean"></span><span class="t">docs audit s131</span><span class="ago">2h</span></div>
+        <div class="run"><span class="seal unc"></span><span class="t">rest-warehouses redesign</span><span class="ago">1d</span></div>
+        <div class="run"><span class="seal clean"></span><span class="t">email template guide</span><span class="ago">3d</span></div>
+        <div class="run"><span class="seal clean"></span><span class="t">license-monitor cron</span><span class="ago">4d</span></div>
+        <div class="more">show more…</div>
+      </div>
+    </div>
+    <div class="proj">
+      <div class="head"><span class="chev">▸</span> aurora <span class="st idle"></span></div>
+    </div>
+    <div class="proj">
+      <div class="head"><span class="chev">▸</span> woodev_theme <span class="st idle"></span></div>
+    </div>
+    <div class="more" style="padding-left:22px">show all projects…</div>
+    <div class="foot">
+      <span class="d"></span><span class="lbl">daemon :4177</span>
+      <span class="gear">⚙ <span class="note">2</span></span>
+      <div class="pop">
+        <div class="it">Global settings</div>
+        <div class="it">Project settings <span class="k">woodev_framework</span></div>
+        <div class="sep"></div>
+        <div class="theme"><span>System</span><span class="on">Dark</span><span>Light</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="top">
+      <span class="name">woodev_framework</span>
+      <span class="path">D:\Projects\woodev-harness-clone</span>
+      <span class="chip">⎇ <b>autodev/s16-checkout</b></span>
+      <div class="right"><span class="chip">gate <b>composer check</b></span><span class="chip">Board</span></div>
+    </div>
+    <div class="hero">
+      <h1>What are we building in woodev_framework?</h1>
+      <div class="composer">
+        <div class="in">Describe an intent — the orchestrator decomposes it into gated tasks…</div>
+        <div class="row">
+          <span class="chip">project <b>woodev_framework</b> <span class="note">3</span></span>
+          <span class="chip">worker <b>sonnet-5</b></span>
+          <span class="chip">critic <b>gpt-5.5 · high</b></span>
+          <span class="send">➤</span>
+        </div>
+      </div>
+    </div>
+    <div class="recent">
+      <div class="sect">Recent runs</div>
+      <div class="card"><span class="vseal work">RUNNING</span><div><div class="ttl">fix checkout totals rounding</div><div class="sub">2 tasks · worker on T-42</div></div><span class="ago">now</span></div>
+      <div class="card"><span class="vseal clean">CLEAN 0.88</span><div><div class="ttl">docs audit s131</div><div class="sub">1 task · committed 8f1c04b</div></div><span class="ago">2h</span></div>
+      <div class="card"><span class="vseal unc">UNCERTAIN</span><div><div class="ttl">rest-warehouses redesign</div><div class="sub">escalated — needs A/B decision</div></div><span class="ago">1d</span></div>
+    </div>
+  </div>
+
+  <div class="rail">
+    <h3>Session inspector <span class="note">4</span></h3>
+    <div class="blk">
+      <div class="h">Now</div>
+      <div class="pipe">
+        <div class="step done"><span class="b"></span> decompose — 2 tasks</div>
+        <div class="step done"><span class="b"></span> T-41 gate · critic · commit</div>
+        <div class="step now"><span class="b"></span> T-42 worker (sonnet-5) 03:12</div>
+        <div class="step"><span class="b"></span> T-42 gate → critic → commit</div>
+      </div>
+    </div>
+    <div class="blk">
+      <div class="h">Queue</div>
+      <div class="qrow">
+        <div class="q"><div class="n">1</div><div class="l">pending</div></div>
+        <div class="q"><div class="n">1</div><div class="l">active</div></div>
+        <div class="q att"><div class="n">1</div><div class="l">escalated</div></div>
+        <div class="q"><div class="n">37</div><div class="l">done</div></div>
+      </div>
+    </div>
+    <div class="blk">
+      <div class="h">Session</div>
+      <div class="kv"><span class="k">branch</span><span class="v">autodev/s16-checkout</span></div>
+      <div class="kv"><span class="k">gate</span><span class="v">composer check</span></div>
+      <div class="kv"><span class="k">worktree</span><span class="v">…worktrees/T-42</span></div>
+      <div class="kv"><span class="k">provision</span><span class="v">vendor, plugins-ref…</span></div>
+    </div>
+    <div class="blk">
+      <div class="h">Roles</div>
+      <div class="kv"><span class="k">orchestrator</span><span class="v">claude · opus</span></div>
+      <div class="kv"><span class="k">worker</span><span class="v">claude · sonnet-5</span></div>
+      <div class="kv"><span class="k">critic</span><span class="v">codex · gpt-5.5 hi</span></div>
+    </div>
+    <div class="blk">
+      <div class="h">Tokens <span class="soon">phase 2</span> <span class="note">5</span></div>
+      <div class="kv"><span class="k">this run</span><span class="v">—</span></div>
+      <div class="kv"><span class="k">today</span><span class="v">—</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><b>Frame 2 — “New Project” screen.</b> Server-side folder browser (left) + project setup form (right).</div>
+<div class="frame" style="height:640px">
+  <div class="side" style="opacity:.35;pointer-events:none">
+    <div class="brand"><span class="dot"></span> autodev</div>
+    <div class="newproj"><span>+</span> New Project</div>
+    <div class="sect">Projects</div>
+    <div class="proj"><div class="head"><span class="chev">▸</span> woodev_framework <span class="st idle"></span></div></div>
+    <div class="proj"><div class="head"><span class="chev">▸</span> aurora <span class="st idle"></span></div></div>
+    <div class="foot"><span class="d"></span><span class="lbl">daemon :4177</span><span class="gear">⚙</span></div>
+  </div>
+  <div class="np">
+    <div class="browser">
+      <div class="crumb">📁 <b>D:\</b> › <b>Projects</b> <span class="note">6</span></div>
+      <div class="drow"><span class="ic">📁</span> Games</div>
+      <div class="drow sel"><span class="ic">📁</span> aurora <span class="badge">git</span> <span class="pick">select</span></div>
+      <div class="drow"><span class="ic">📁</span> autodev-harness <span class="badge">git</span> <span class="badge reg">registered</span></div>
+      <div class="drow"><span class="ic">📁</span> node_modules</div>
+      <div class="drow"><span class="ic">📁</span> settlement-api <span class="badge">git</span> <span class="pick">select</span></div>
+      <div class="drow"><span class="ic">📁</span> woodev-harness-clone <span class="badge">git</span> <span class="badge reg">registered</span></div>
+      <div class="drow"><span class="ic">📁</span> woodev_theme <span class="badge">git</span> <span class="pick">select</span></div>
+      <div class="drow" style="color:var(--subtle)">⬆ up one level</div>
+    </div>
+    <div class="form">
+      <h2>Register project <span class="note">7</span></h2>
+      <div class="sub">D:\Projects\aurora · git repo · branch master</div>
+      <div class="f"><label>Display name</label><div class="inp">aurora</div></div>
+      <div class="f"><label>Roles</label>
+        <div class="rolegrid">
+          <span class="rl">orchestrator</span><div class="inp">claude · opus ▾</div>
+          <span class="rl">worker</span><div class="inp">claude · sonnet-5 ▾</div>
+          <span class="rl">critic</span><div class="inp">codex · gpt-5.5 · high ▾</div>
+        </div>
+      </div>
+      <div class="f"><label>Gate check command</label><div class="inp">php -l {file}</div>
+        <div class="hint">the un-bypassable machine gate, runs in the task worktree</div></div>
+      <div class="f"><label>Worktree provision</label><div class="inp">vendor, node_modules</div>
+        <div class="hint">gitignored dep dirs linked into each worktree</div></div>
+      <div class="f"><label>Branch pattern</label><div class="inp">^autodev/</div></div>
+      <div class="check"><span class="box"></span><div>Scaffold <b>.autodev/</b> (config.yaml, GOAL.md, INVARIANTS.md, queue/) and add it to <span style="font-family:var(--mono)">.git/info/exclude</span> <span class="note">8</span></div></div>
+      <div class="cta">Register project</div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span class="note">1</span> “New Project” opens Frame 2. &nbsp;
+  <span class="note">2</span> Settings popover: global / per-project / theme (system·dark·light). &nbsp;
+  <span class="note">3</span> Composer chips: project is switchable right here (codex-style), roles shown read-only → click opens project settings. &nbsp;
+  <span class="note">4</span> Right rail = per-run inspector: live pipeline, queue counters, session facts, roles. &nbsp;
+  <span class="note">5</span> Token stats need new adapter instrumentation → shipped as phase 2, the block shows “—” until then. &nbsp;
+  <span class="note">6</span> Server-side FS browser: directories only, git repos badged, already-registered ones marked. &nbsp;
+  <span class="note">7</span> Form writes <b>.autodev/config.yaml</b> in the project (file = truth); the global registry only stores path + name. &nbsp;
+  <span class="note">8</span> Scaffold covers the real-repo prerequisites we learned on aurora/woodev.
+</div>
+
+</body>
+</html>
