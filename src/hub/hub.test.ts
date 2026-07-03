@@ -120,6 +120,34 @@ describe("createProjectHub", () => {
     expect(builds).toBe(2);
   });
 
+  it("a moved project does not inherit the old path's error -- lastError is keyed by path, not just id", async () => {
+    // A MUTABLE entries array simulates a hand-edited registry: id "a" fails to
+    // build at its original path, then the registry re-points it elsewhere.
+    const mutable: RegistryEntry[] = [{ id: "a", name: "A", path: "/proj/a" }];
+    const hub = createProjectHub({
+      loadEntries: async () => mutable,
+      buildRoot: (async (e: RegistryEntry) => {
+        if (e.path === "/proj/a") throw new Error("bad config at /proj/a");
+        return { marker: e.path };
+      }) as never,
+    });
+
+    // Build fails at /proj/a -> lastError set for "a", tagged with that path.
+    const fail = await hub.get("a");
+    expect(fail).toEqual({ error: expect.stringContaining("bad config at /proj/a") as string });
+    expect(await hub.list()).toEqual([{ id: "a", name: "A", path: "/proj/a", status: "error", error: "bad config at /proj/a" }]);
+
+    // Registry edited: id "a" now points at a different (working) path -- BEFORE
+    // any rebuild is attempted. list() must show "unbuilt", NOT "error" carrying
+    // the old path's message under the new path.
+    mutable[0] = { id: "a", name: "A", path: "/proj/a-new" };
+    expect(await hub.list()).toEqual([{ id: "a", name: "A", path: "/proj/a-new", status: "unbuilt" }]);
+
+    // A successful get() at the new path yields the root and list() reports "ready".
+    expect(await hub.get("a")).toEqual({ root: { marker: "/proj/a-new" } });
+    expect(await hub.list()).toEqual([{ id: "a", name: "A", path: "/proj/a-new", status: "ready" }]);
+  });
+
   it("list() returns entries + build status without forcing builds", async () => {
     let builds = 0;
     const hub = makeHub(async (e) => {

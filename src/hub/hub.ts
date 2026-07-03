@@ -36,7 +36,12 @@ export function createProjectHub<R>(deps: {
   // cached under the old path must NOT be served for the new one (it would
   // serve/orchestrate the wrong repo), so every hit checks path equality.
   const roots = new Map<string, { path: string; promise: Promise<R> }>();
-  const lastError = new Map<string, string>();
+  // Keyed by id, but (like `roots`) the record carries the PATH the error was for.
+  // A moved project (id re-pointed at a new path) must NOT inherit the old path's
+  // error -- list() only reports "error" when the cached error's path still
+  // matches the entry's CURRENT path; otherwise it reports "unbuilt" until the
+  // new path is (re)built.
+  const lastError = new Map<string, { path: string; message: string }>();
 
   return {
     async list(): Promise<ProjectSummary[]> {
@@ -46,7 +51,9 @@ export function createProjectHub<R>(deps: {
         // "ready" only when a root is cached FOR THIS PATH -- a moved project
         // whose cached root is for the old path shows "unbuilt" until rebuilt.
         if (roots.get(e.id)?.path === e.path) return { id: e.id, name: e.name, path: e.path, status: "ready" };
-        if (err !== undefined) return { id: e.id, name: e.name, path: e.path, status: "error", error: err };
+        if (err !== undefined && err.path === e.path) {
+          return { id: e.id, name: e.name, path: e.path, status: "error", error: err.message };
+        }
         return { id: e.id, name: e.name, path: e.path, status: "unbuilt" };
       });
     },
@@ -63,6 +70,13 @@ export function createProjectHub<R>(deps: {
         roots.delete(id);
         lastError.delete(id);
       }
+      // A stale error recorded for a since-moved path must also be dropped even
+      // when there was no cached root (e.g. the previous build attempt FAILED,
+      // so `roots` never held a record for the old path in the first place).
+      const existingError = lastError.get(id);
+      if (existingError && existingError.path !== entry.path) {
+        lastError.delete(id);
+      }
 
       const cached = roots.get(id);
       if (cached) {
@@ -75,7 +89,7 @@ export function createProjectHub<R>(deps: {
           // already have replaced the record, so only evict the one we awaited.
           if (roots.get(id) === cached) roots.delete(id);
           const message = err instanceof Error ? err.message : String(err);
-          lastError.set(id, message);
+          lastError.set(id, { path: entry.path, message });
           return { error: message };
         }
       }
@@ -91,7 +105,7 @@ export function createProjectHub<R>(deps: {
         // Only evict our own record: a concurrent path-change retry may have replaced it.
         if (roots.get(id) === record) roots.delete(id);
         const message = err instanceof Error ? err.message : String(err);
-        lastError.set(id, message);
+        lastError.set(id, { path: entry.path, message });
         deps.log?.("ERROR", `hub: failed to build project '${id}' (${entry.path}): ${message}`);
         return { error: message };
       }
