@@ -134,7 +134,18 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
 
     async isRegistered(absPath) {
       const registry = await loadRegistry(deps.registryFile, deps.log);
-      return isPathRegistered(registry, absPath);
+      // Canonicalize the same way `register` does before storing (realpath), so a
+      // membership check by an 8.3-aliased / symlinked / un-normalized path still
+      // matches the stored canonical path. realpath fails for a non-existent path
+      // (e.g. a folder-browser entry deleted since listing) -> fall back to the raw
+      // path (isPathRegistered still `resolve`s + case-folds it).
+      let canonical = absPath;
+      try {
+        canonical = await realpath(absPath);
+      } catch {
+        /* non-existent / inaccessible: compare the raw path */
+      }
+      return isPathRegistered(registry, canonical);
     },
   };
 }

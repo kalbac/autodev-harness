@@ -12,9 +12,12 @@ const deps = (registered: string[] = []): FsBrowseDeps => ({
 });
 
 beforeEach(() => {
-  // realpathSync: on macOS/Windows tmpdir itself may be a symlink/8.3 alias --
-  // canonicalize the base so assertions compare canonical paths to canonical paths.
-  base = realpathSync(mkdtempSync(join(tmpdir(), "adh-fsb-")));
+  // realpathSync.native: on macOS/Windows tmpdir itself may be a symlink/8.3 alias.
+  // The NATIVE variant is required on Windows CI — the GitHub runner's tmpdir is an
+  // 8.3 short path (C:\Users\RUNNER~1\...), and only realpathSync.native expands it to
+  // the long form that listDirs' `fs.promises.realpath` (also native) returns; the
+  // non-native realpathSync leaves the 8.3 alias in place, so the two would diverge.
+  base = realpathSync.native(mkdtempSync(join(tmpdir(), "adh-fsb-")));
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
