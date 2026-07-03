@@ -52,7 +52,18 @@ export function createProjectHub<R>(deps: {
 
       const cached = roots.get(id);
       if (cached) {
-        return { root: await cached };
+        try {
+          return { root: await cached };
+        } catch (err) {
+          // A concurrent caller that piggy-backed on the in-flight build must also
+          // get {error} -- not an escaped rejection (which would surface as a 500
+          // instead of the 503 the {error} branch produces). A concurrent retry may
+          // already have replaced the record, so only evict the one we awaited.
+          if (roots.get(id) === cached) roots.delete(id);
+          const message = err instanceof Error ? err.message : String(err);
+          lastError.set(id, message);
+          return { error: message };
+        }
       }
 
       const building = deps.buildRoot(entry);

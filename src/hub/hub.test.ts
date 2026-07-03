@@ -69,6 +69,30 @@ describe("createProjectHub", () => {
     expect(builds).toBe(1);
   });
 
+  it("concurrent callers of a failing build all receive {error}, never an escaped rejection", async () => {
+    let attempts = 0;
+    const hub = makeHub(async (e) => {
+      if (e.id === "a") {
+        attempts++;
+        await new Promise((r) => setTimeout(r, 10)); // both callers are in-flight together
+        throw new Error("build blew up");
+      }
+      return { marker: e.id };
+    });
+    // Two concurrent get()s: the first starts the build, the second piggy-backs on
+    // the in-flight promise via the cached branch. BOTH must resolve to {error} --
+    // the second's await must NOT reject out of get() (that would 500 instead of 503).
+    const [r1, r2] = await Promise.all([hub.get("a"), hub.get("a")]);
+    expect(r1).toEqual({ error: expect.stringContaining("build blew up") as string });
+    expect(r2).toEqual({ error: expect.stringContaining("build blew up") as string });
+    expect(attempts).toBe(1); // the two concurrent callers shared ONE build
+
+    // The failed build is not cached -> a later get() retries (build attempted again).
+    const r3 = await hub.get("a");
+    expect(r3).toEqual({ error: expect.stringContaining("build blew up") as string });
+    expect(attempts).toBe(2);
+  });
+
   it("list() returns entries + build status without forcing builds", async () => {
     let builds = 0;
     const hub = makeHub(async (e) => {
