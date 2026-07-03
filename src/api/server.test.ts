@@ -155,6 +155,32 @@ describe("createApiServer / WS change stream", () => {
     expect(msg.type).toBe("change");
     expect(msg.path).toContain("x.md");
   });
+
+  it("change events carry the projectId of the project whose stateDir changed", async () => {
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const factory = (dir: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(dir, onChange);
+      return { close: () => {} };
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir }, { watchFactory: factory }));
+    const port = await handle.listen(0);
+
+    // A project's watcher is attached on first resolution -- touch the project once:
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(stateDir)).toBe(true);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(stateDir)!("queue/pending/t1.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/t1.md" });
+    ws.close();
+  });
 });
 
 describe("createApiServer / POST /escalations/:id/reply", () => {

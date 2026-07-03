@@ -600,12 +600,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const orchestrateInFlight = new Set<string>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
-  // A following task adds the projectId to the WS change events + its own tests;
-  // for now every project's changes broadcast on the single WS stream.
+  // Every project's changes broadcast on the single WS stream, tagged with the
+  // projectId of the project whose stateDir changed.
   const watchers = new Map<string, { close(): Promise<void> | void }>();
   function ensureWatcher(projectId: string, projectStateDir: string): void {
     if (watchers.has(projectId)) return;
-    watchers.set(projectId, watchFactory(projectStateDir, (changedPath) => broadcastChange(changedPath)));
+    watchers.set(projectId, watchFactory(projectStateDir, (changedPath) => broadcastChange(projectId, changedPath)));
   }
 
   async function handleState(p: ProjectView, res: ServerResponse): Promise<void> {
@@ -1113,8 +1113,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     ws.on("close", () => clients.delete(ws));
   });
 
-  function broadcastChange(changedPath: string): void {
-    const message = JSON.stringify({ type: "change", path: changedPath });
+  function broadcastChange(projectId: string, changedPath: string): void {
+    const message = JSON.stringify({ type: "change", projectId, path: changedPath });
     for (const client of clients) {
       if (client.readyState === client.OPEN) client.send(message);
     }
