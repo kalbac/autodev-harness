@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldProject, buildConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
@@ -144,5 +144,19 @@ describe("scaffoldProject", () => {
     expect(res.skipped).toBe(false);
     expect(existsSync(join(repo, ".autodev", "config.yaml"))).toBe(true);
     expect(logs.some((l) => l.startsWith("WARN:"))).toBe(true);
+  });
+
+  it("refuses to scaffold through a symlinked .autodev — nothing is written outside the repo (codex M3 finding 1)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "adh-scaf-out-"));
+    // 'junction' works without admin rights on Windows; plain dir symlink on POSIX.
+    symlinkSync(outside, join(repo, ".autodev"), "junction");
+
+    await expect(scaffoldProject(repo, ScaffoldFormSchema.parse({}))).rejects.toThrow(ScaffoldConfigError);
+
+    // The symlink target must be untouched — no skeleton escaped into it.
+    expect(existsSync(join(outside, "config.yaml"))).toBe(false);
+    expect(existsSync(join(outside, "queue"))).toBe(false);
+    expect(existsSync(join(outside, "GOAL.md"))).toBe(false);
+    rmSync(outside, { recursive: true, force: true });
   });
 });

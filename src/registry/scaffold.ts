@@ -11,7 +11,7 @@
  * GOAL.md/INVARIANTS.md/GUARDS.md). The scaffolded config points
  * `contract.invariantsFile`/`guardsFile` at those stubs so they are live.
  */
-import { mkdir, writeFile, readFile, appendFile, stat } from "node:fs/promises";
+import { mkdir, writeFile, readFile, appendFile, stat, lstat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -178,10 +178,31 @@ export interface ScaffoldResult {
  * one shows its values instead). Order: validate config text (no writes on a
  * bad form) → mkdir skeleton → stubs (`wx`, EEXIST-skip) → git exclude →
  * config.yaml LAST (`wx`).
+ *
+ * SYMLINK GUARD: refuse to scaffold when `.autodev` is a symlink/junction (or
+ * any non-directory). `mkdir`/`writeFile` follow a symlink, so a repo carrying a
+ * hostile `.autodev -> /outside` link would otherwise have the entire skeleton
+ * (queue dirs, stubs, config.yaml) written OUTSIDE the target repo. The check
+ * runs BEFORE the config.yaml skip too, so a symlinked `.autodev` is never
+ * silently followed for either read or write. A real directory (a partial
+ * scaffold) passes.
  */
 export async function scaffoldProject(repoRoot: string, form: ScaffoldForm, log?: Log): Promise<ScaffoldResult> {
   const autodevDir = join(repoRoot, ".autodev");
   const configPath = join(autodevDir, "config.yaml");
+
+  let autodevLst;
+  try {
+    autodevLst = await lstat(autodevDir); // lstat: describes the link itself, never its target
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (autodevLst !== undefined && !autodevLst.isDirectory()) {
+    throw new ScaffoldConfigError(
+      `refusing to scaffold: ${autodevDir} exists but is not a real directory (symlink or file) — resolve it manually`,
+    );
+  }
+
   if (existsSync(configPath)) return { skipped: true, written: [] };
 
   const yamlText = buildConfigYaml(form); // throws ScaffoldConfigError BEFORE any fs write
