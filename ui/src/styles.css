@@ -37,6 +37,28 @@
   --radius: 0.5rem;
 }
 
+/*
+ * Light theme — the switcher (`lib/theme.ts`) sets `data-theme="light"` on
+ * <html> (and drops the `.dark` class). Only the CHROME is remapped here
+ * (ink/panel/surface/line/text); the status + verdict hues are deliberately NOT
+ * overridden, so the "color is rare and meaningful" vocabulary reads identically
+ * in both themes. Elevation is inverted correctly: the main area is a calm light
+ * slate, cards are white (brightest = raised), the sidebar sits just above the
+ * base, and hover tints DARKEN (surface → surface-2) the mirror of dark mode.
+ */
+[data-theme="light"] {
+  --color-ink: #eef1f5; /* app background — light cool slate */
+  --color-panel: #f6f8fa; /* sidebar / rails — just above the base */
+  --color-surface: #ffffff; /* cards — brightest, reads as raised */
+  --color-surface-2: #e7ecf2; /* raised / hover — darker tint on white */
+  --color-line: #dde3ea; /* hairline borders */
+  --color-line-strong: #c4ccd8; /* hover / focused borders */
+
+  --color-text: #171b23; /* primary text — near-black slate, not pure black */
+  --color-muted: #566072; /* secondary text */
+  --color-subtle: #838d9d; /* tertiary / captions */
+}
+
 @layer base {
   * {
     border-color: var(--color-line);

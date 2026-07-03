@@ -1,10 +1,10 @@
 import { useState } from "react";
 
 /**
- * Theme plumbing. NOTE: `dark` is the ONLY token set defined today — M5 adds the
- * light tokens. This wires persistence + applies a `data-theme` attribute (and a
- * `dark` class) on <html> now, so the light theme drops in later with no
- * rewiring. `system` resolves via `matchMedia`.
+ * Theme plumbing. Both token sets exist: `dark` is the `@theme` default and
+ * `light` is the `[data-theme="light"]` override block (both in `styles.css`,
+ * added in M5). This wires persistence + applies a `data-theme` attribute (and a
+ * `dark` class) on <html>. `system` resolves via `matchMedia`.
  */
 export type Theme = "system" | "dark" | "light";
 
