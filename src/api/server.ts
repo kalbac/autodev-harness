@@ -133,33 +133,44 @@ const VALID_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
  */
 const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 
-export interface ApiServerDeps {
+/** Per-project view the server needs — a narrow slice of the hub's ProjectRoot. */
+export interface ProjectView {
   repo: BlackboardRepository;
-  /** Absolute path to the stateDir (e.g. <repoRoot>/.autodev). digest.md + escalations/ live under here. */
+  /** Absolute `<repoRoot>/<stateDir>` for this project. digest.md + escalations/ live under here. */
   stateDir: string;
+  /**
+   * OPTIONAL launcher for `POST /projects/:id/orchestrate` for THIS project.
+   * When unset, that route -> 404 (read-only deployment). The callback receives
+   * the operator intent and MUST only enqueue+trigger via the orchestrator (R1) --
+   * the server never sees a gate/worker/critic/commit handle. It is invoked in the
+   * BACKGROUND (202-async); its promise rejection is logged, never surfaced to the
+   * already-sent response. R1-thin callback, unchanged semantics.
+   */
+  onOrchestrate?: (intent: string) => Promise<unknown>;
+}
+
+export interface ApiServerDeps {
+  projects: {
+    /** Sidebar list: registry + build status. Must never throw (an empty daemon lists []). */
+    list(): Promise<Array<{ id: string; name: string; path: string; status: string; error?: string }>>;
+    /** Resolve one project. null = unknown id; {error} = registered but failed to build. */
+    get(id: string): Promise<{ view: ProjectView } | { error: string } | null>;
+  };
   /**
    * OPTIONAL absolute path to a built UI bundle dir (production convenience only --
    * dev mode runs `vite` separately and proxies to this API). When unset, behavior is
    * completely unchanged: API-only, unknown GET routes still 404. When set, static
    * serving is added as the LAST fallback in `handleRequest`, AFTER every API route,
-   * so the API always wins. See module header / `resolveStaticPath` / `tryServeStaticFile`.
+   * so the API always wins. This is daemon-global (not per-project). See module header /
+   * `resolveStaticPath` / `tryServeStaticFile`.
    */
   uiDir?: string;
   /** Injected watcher factory so tests can drive change events without a real fs watch.
-   *  Default (production) uses chokidar watching `stateDir`. Must be swappable. */
+   *  Default (production) uses chokidar watching a project's `stateDir`. Must be swappable. */
   watchFactory?: (stateDir: string, onChange: (path: string) => void) => { close(): Promise<void> | void };
   /** Injected clock for the reply timestamp (default () => Date.now()). Keeps tests deterministic. */
   now?: () => number;
   log?: (level: string, message: string) => void;
-  /**
-   * OPTIONAL launcher for `POST /orchestrate`. When unset, `POST /orchestrate`
-   * -> 404 (read-only deployment). The callback receives the operator intent
-   * and MUST only enqueue+trigger via the orchestrator (R1) -- the server
-   * never sees a gate/worker/critic/commit handle. It is invoked in the
-   * BACKGROUND (202-async); its promise rejection is logged, never surfaced
-   * to the already-sent response.
-   */
-  onOrchestrate?: (intent: string) => Promise<unknown>;
 }
 
 export interface ApiServerHandle {
@@ -580,20 +591,59 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const log = deps.log ?? ((): void => {});
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
 
-  // Single-flight guard for POST /orchestrate: an orchestrate run (LLM
-  // decompose + bounded conductor loop) takes minutes, and only one may run
-  // at a time. Set synchronously before the 202 response is sent so a
-  // concurrent request can never race past it; cleared in the background
-  // chain's `finally` once the (unawaited) run settles.
-  let orchestrateInFlight = false;
+  // Single-flight guard for POST /projects/:id/orchestrate: an orchestrate run
+  // (LLM decompose + bounded conductor loop) takes minutes, and only one may run
+  // per project at a time. The project id is `.add`ed synchronously before the 202
+  // response is sent so a concurrent request for the SAME project can never race
+  // past it; cleared in the background chain's `finally` once the (unawaited) run
+  // settles. Different projects run independently.
+  const orchestrateInFlight = new Set<string>();
 
-  async function handleState(res: ServerResponse): Promise<void> {
+  // One fs-watcher per BUILT project, attached the first time the project resolves.
+  // Every project's changes broadcast on the single WS stream, tagged with the
+  // projectId of the project whose stateDir changed. The stateDir is stored with
+  // the handle so a project re-registered to a NEW path gets its watcher re-attached
+  // to the new stateDir (the old one is closed) -- otherwise the old stateDir would
+  // keep broadcasting under this projectId and the new one would never be watched.
+  //
+  // ACCEPTED (documented): a watcher for a project that is UNREGISTERED but never
+  // re-resolved lingers until daemon shutdown; it broadcasts events for a stateDir
+  // the UI no longer lists, which the UI simply ignores. Reconciling removals would
+  // need the server to observe registry deletions, which it deliberately does not.
+  const watchers = new Map<string, { stateDir: string; handle: { close(): Promise<void> | void } }>();
+  function ensureWatcher(projectId: string, projectStateDir: string): void {
+    const existing = watchers.get(projectId);
+    if (existing) {
+      if (existing.stateDir === projectStateDir) return; // same project, same path -- keep it
+      // Re-registered to a different path: close the stale watcher best-effort
+      // (ensureWatcher is sync; the close may be async), then attach the new one.
+      // The close is fire-and-forget -- until it settles (or if it never does) the
+      // OLD stateDir's callback could still fire. The identity guard below (closing
+      // over `record`) silences it even so: it only broadcasts while it is STILL the
+      // current map entry for this id, which stops being true the moment we `delete`
+      // it here and `set` the replacement below.
+      void Promise.resolve(existing.handle.close()).catch(() => {});
+      watchers.delete(projectId);
+    }
+    const record: { stateDir: string; handle: { close(): Promise<void> | void } } = {
+      stateDir: projectStateDir,
+      handle: { close: () => {} }, // placeholder, replaced below before any event can fire
+    };
+    record.handle = watchFactory(projectStateDir, (changedPath) => {
+      // Identity guard: a retired watcher (re-register race / failed close) must
+      // never broadcast under the reused project id.
+      if (watchers.get(projectId) === record) broadcastChange(projectId, changedPath);
+    });
+    watchers.set(projectId, record);
+  }
+
+  async function handleState(p: ProjectView, res: ServerResponse): Promise<void> {
     const queues = {} as Record<QueueState, Awaited<ReturnType<BlackboardRepository["listTasks"]>>>;
     for (const state of QUEUE_STATES) {
-      queues[state] = await deps.repo.listTasks(state);
+      queues[state] = await p.repo.listTasks(state);
     }
 
-    const digestPath = join(deps.stateDir, "digest.md");
+    const digestPath = join(p.stateDir, "digest.md");
     let digestTail = "";
     if (existsSync(digestPath)) {
       try {
@@ -607,7 +657,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, { queues, digestTail });
   }
 
-  async function handleReply(rawId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleReply(p: ProjectView, rawId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null) {
       sendJson(res, 400, { error: "invalid escalation id encoding" });
@@ -646,7 +696,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     const note = typeof parsed?.note === "string" ? parsed.note : "";
 
     const reply: EscalationReply = { id, choice, note, at: now() };
-    const escalationsDir = join(deps.stateDir, "escalations");
+    const escalationsDir = join(p.stateDir, "escalations");
     await mkdir(escalationsDir, { recursive: true });
     await writeFile(join(escalationsDir, `${id}.reply.json`), JSON.stringify(reply, null, 2), "utf8");
     log("INFO", `api: recorded escalation reply ${id} -> ${choice}`);
@@ -669,14 +719,14 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * failure of the whole request (parity with the `digest.md` / run-manifest
    * best-effort philosophy used elsewhere in this file).
    */
-  async function handleGetEscalation(rawId: string, res: ServerResponse): Promise<void> {
+  async function handleGetEscalation(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
       sendJson(res, 400, { error: "invalid escalation id" });
       return;
     }
 
-    const escalationsDir = join(deps.stateDir, "escalations");
+    const escalationsDir = join(p.stateDir, "escalations");
     const markdownText = await readBoundedFileText(join(escalationsDir, `${id}.md`), MAX_ESCALATION_READ_BYTES);
     if (markdownText === null) {
       sendJson(res, 404, { error: "escalation not found" });
@@ -725,22 +775,28 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
   /**
    * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
-   * body, then -- WITHOUT awaiting it -- kicks off `deps.onOrchestrate(intent)` in
+   * body, then -- WITHOUT awaiting it -- kicks off `p.onOrchestrate(intent)` in
    * the background and returns `202 {accepted:true,intent}` immediately. The
    * orchestration itself (LLM decompose + bounded conductor loop) can take
    * minutes; this handler's job is only to validate and enqueue+trigger via the
    * injected closure, never to hold the connection open.
    *
-   * Single-flight: `orchestrateInFlight` is set synchronously before the 202 is
-   * sent, so a second POST received before the run finishes gets `409`. The flag
-   * is cleared in the background chain's `finally`, regardless of success,
-   * rejection, or a SYNCHRONOUS throw from `deps.onOrchestrate` -- the
-   * `Promise.resolve().then(...)` wrapper normalizes a sync throw into a
-   * rejection so it can never leak an unhandled exception or a second (500)
-   * response after the 202 has already been sent.
+   * Single-flight (per project): the project id is added to `orchestrateInFlight`
+   * synchronously before the 202 is sent, so a second POST for the SAME project
+   * received before the run finishes gets `409`. The id is removed in the
+   * background chain's `finally`, regardless of success, rejection, or a
+   * SYNCHRONOUS throw from `p.onOrchestrate` -- the `Promise.resolve().then(...)`
+   * wrapper normalizes a sync throw into a rejection so it can never leak an
+   * unhandled exception or a second (500) response after the 202 has already been
+   * sent.
    */
-  async function handleOrchestrate(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!deps.onOrchestrate) {
+  async function handleOrchestrate(
+    pid: string,
+    p: ProjectView,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!p.onOrchestrate) {
       sendJson(res, 404, { error: "not found" });
       return;
     }
@@ -776,19 +832,19 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
-    if (orchestrateInFlight) {
+    if (orchestrateInFlight.has(pid)) {
       sendJson(res, 409, { error: "an orchestrate run is already in progress" });
       return;
     }
-    orchestrateInFlight = true;
+    orchestrateInFlight.add(pid);
 
     // Fire-and-forget: NOT awaited, so the 202 below is sent before the run
     // (which can take minutes) does anything. `Promise.resolve().then(...)`
-    // wraps the call so a SYNCHRONOUS throw from `deps.onOrchestrate` becomes a
+    // wraps the call so a SYNCHRONOUS throw from `p.onOrchestrate` becomes a
     // rejection here rather than escaping this function's synchronous frame
     // (which would otherwise crash out of the request handler after a 202 was
     // already queued).
-    const onOrchestrate = deps.onOrchestrate;
+    const onOrchestrate = p.onOrchestrate;
     // `safeIntent` is flattened (control chars -> spaces, truncated) so an operator
     // intent can never forge extra log lines. `safeLog` + `safeErrorText` keep this
     // best-effort background chain from EVER producing an unhandled rejection after the
@@ -809,7 +865,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         safeLog("ERROR", `api: orchestrate run failed for intent "${safeIntent}": ${safeErrorText(err)}`),
       )
       .finally(() => {
-        orchestrateInFlight = false;
+        orchestrateInFlight.delete(pid);
       })
       .catch(() => {
         /* terminal backstop: nothing from this chain may surface as an unhandled rejection */
@@ -827,8 +883,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * (Array#sort is a stable sort, so equal `at` values preserve their relative order
    * from the pre-sorted file list).
    */
-  async function listRunManifests(): Promise<RunManifest[]> {
-    const runsDir = join(deps.stateDir, "runs");
+  async function listRunManifests(stateDir: string): Promise<RunManifest[]> {
+    const runsDir = join(stateDir, "runs");
     let files: string[];
     try {
       files = (await readdir(runsDir)).filter((f) => f.endsWith(".json"));
@@ -855,11 +911,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     return manifests;
   }
 
-  async function handleListRuns(res: ServerResponse): Promise<void> {
-    sendJson(res, 200, await listRunManifests());
+  async function handleListRuns(p: ProjectView, res: ServerResponse): Promise<void> {
+    sendJson(res, 200, await listRunManifests(p.stateDir));
   }
 
-  async function handleGetRun(rawId: string, res: ServerResponse): Promise<void> {
+  async function handleGetRun(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
       sendJson(res, 400, { error: "invalid run id" });
@@ -868,7 +924,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     // Same TOCTOU-hardened bounded read as the list path. A missing / oversized /
     // malformed / poisoned manifest is treated as absent (-> 404), never a 500 over
     // an on-disk file the orchestrator (or an operator) may still be writing.
-    const manifest = await readBoundedManifest(join(deps.stateDir, "runs", `${id}.json`));
+    const manifest = await readBoundedManifest(join(p.stateDir, "runs", `${id}.json`));
     if (!manifest) {
       sendJson(res, 404, { error: "run not found" });
       return;
@@ -876,13 +932,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, manifest);
   }
 
-  async function handleListRuntimeFiles(rawId: string, res: ServerResponse): Promise<void> {
+  async function handleListRuntimeFiles(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
       sendJson(res, 400, { error: "invalid task id" });
       return;
     }
-    const dir = deps.repo.runtimeDir(id);
+    const dir = p.repo.runtimeDir(id);
     try {
       const names = await readdir(dir);
       sendJson(res, 200, names);
@@ -897,7 +953,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
   }
 
-  async function handleReadRuntimeFile(rawId: string, rawName: string, res: ServerResponse): Promise<void> {
+  async function handleReadRuntimeFile(
+    p: ProjectView,
+    rawId: string,
+    rawName: string,
+    res: ServerResponse,
+  ): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
       sendJson(res, 400, { error: "invalid task id" });
@@ -909,7 +970,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
-    const filePath = join(deps.repo.runtimeDir(id), name);
+    const filePath = join(p.repo.runtimeDir(id), name);
 
     // Cheap cross-platform pre-check: reject a STATIC symlink / dir / fifo up
     // front (lstat describes the link itself). On Windows, where the no-follow
@@ -973,51 +1034,56 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
-    if (req.method === "GET" && url.pathname === "/state") {
-      await handleState(res);
+    // Daemon-global: the sidebar project list. Never per-project.
+    if (req.method === "GET" && (url.pathname === "/projects" || url.pathname === "/projects/")) {
+      sendJson(res, 200, { projects: await deps.projects.list() });
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/runs") {
-      await handleListRuns(res);
-      return;
-    }
+    // Every project-scoped route lives under `/projects/:id/...`. Resolve the
+    // project ONCE here, then dispatch the sub-path against the resolved
+    // ProjectView -- each handler operates purely on that view (its own repo +
+    // stateDir), so two projects never cross-bleed.
+    const projMatch = /^\/projects\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if (projMatch) {
+      const rawPid = decodeSegment(projMatch[1]!);
+      if (rawPid === null || !safeIdSegment(rawPid)) {
+        sendJson(res, 400, { error: "invalid project id" });
+        return;
+      }
+      const resolved = await deps.projects.get(rawPid);
+      if (resolved === null) {
+        sendJson(res, 404, { error: "project not found" });
+        return;
+      }
+      if ("error" in resolved) {
+        sendJson(res, 503, { error: `project failed to load: ${resolved.error}` });
+        return;
+      }
+      const p = resolved.view;
+      ensureWatcher(rawPid, p.stateDir);
+      const sub = projMatch[2] ?? "/";
 
-    const runMatch = /^\/runs\/([^/]+)\/?$/.exec(url.pathname);
-    if (req.method === "GET" && runMatch) {
-      await handleGetRun(runMatch[1]!, res);
-      return;
-    }
+      if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
+      if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, res));
+      const runMatch = /^\/runs\/([^/]+)\/?$/.exec(sub);
+      if (req.method === "GET" && runMatch) return void (await handleGetRun(p, runMatch[1]!, res));
+      const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
+      if (req.method === "GET" && runtimeFileMatch)
+        return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));
+      const runtimeListMatch = /^\/tasks\/([^/]+)\/runtime\/?$/.exec(sub);
+      if (req.method === "GET" && runtimeListMatch) return void (await handleListRuntimeFiles(p, runtimeListMatch[1]!, res));
+      // Single-segment match (`[^/]+` with no trailing path) -- distinct from, and
+      // checked independently of, the POST .../reply route below (different method
+      // AND an extra path segment), so neither can ever shadow the other.
+      const escGetMatch = /^\/escalations\/([^/]+)\/?$/.exec(sub);
+      if (req.method === "GET" && escGetMatch) return void (await handleGetEscalation(p, escGetMatch[1]!, res));
+      const replyMatch = /^\/escalations\/([^/]+)\/reply\/?$/.exec(sub);
+      if (req.method === "POST" && replyMatch) return void (await handleReply(p, replyMatch[1]!, req, res));
+      if (req.method === "POST" && (sub === "/orchestrate" || sub === "/orchestrate/"))
+        return void (await handleOrchestrate(rawPid, p, req, res));
 
-    const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(url.pathname);
-    if (req.method === "GET" && runtimeFileMatch) {
-      await handleReadRuntimeFile(runtimeFileMatch[1]!, runtimeFileMatch[2]!, res);
-      return;
-    }
-
-    const runtimeListMatch = /^\/tasks\/([^/]+)\/runtime\/?$/.exec(url.pathname);
-    if (req.method === "GET" && runtimeListMatch) {
-      await handleListRuntimeFiles(runtimeListMatch[1]!, res);
-      return;
-    }
-
-    // Single-segment match (`[^/]+` with no trailing path) -- distinct from, and
-    // checked independently of, the POST .../reply route below (different method
-    // AND an extra path segment), so neither can ever shadow the other.
-    const escGetMatch = /^\/escalations\/([^/]+)\/?$/.exec(url.pathname);
-    if (req.method === "GET" && escGetMatch) {
-      await handleGetEscalation(escGetMatch[1]!, res);
-      return;
-    }
-
-    const replyMatch = /^\/escalations\/([^/]+)\/reply\/?$/.exec(url.pathname);
-    if (req.method === "POST" && replyMatch) {
-      await handleReply(replyMatch[1]!, req, res);
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/orchestrate") {
-      await handleOrchestrate(req, res);
+      sendJson(res, 404, { error: "not found" });
       return;
     }
 
@@ -1076,14 +1142,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     ws.on("close", () => clients.delete(ws));
   });
 
-  function broadcastChange(changedPath: string): void {
-    const message = JSON.stringify({ type: "change", path: changedPath });
+  function broadcastChange(projectId: string, changedPath: string): void {
+    const message = JSON.stringify({ type: "change", projectId, path: changedPath });
     for (const client of clients) {
       if (client.readyState === client.OPEN) client.send(message);
     }
   }
-
-  const watcher = watchFactory(deps.stateDir, broadcastChange);
 
   let boundPort = 0;
 
@@ -1119,7 +1183,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
-      await watcher.close();
+      for (const w of watchers.values()) await w.handle.close();
+      watchers.clear();
     },
   };
 }

@@ -5,9 +5,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
+import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
-import { createApiServer, type ApiServerHandle } from "./server.js";
+import { createApiServer, type ApiServerHandle, type ApiServerDeps } from "./server.js";
+
+/** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
+ *  (project id "p1") -- keeps the existing single-project test bodies unchanged
+ *  except for the URL prefix. */
+function projectDeps(
+  one: { repo: BlackboardRepository; stateDir: string; onOrchestrate?: (intent: string) => Promise<unknown> },
+  extra: Partial<ApiServerDeps> = {},
+): ApiServerDeps {
+  return {
+    projects: {
+      list: async () => [{ id: "p1", name: "p1", path: one.stateDir, status: "ready" }],
+      get: async (id) =>
+        id === "p1"
+          ? {
+              view: {
+                repo: one.repo,
+                stateDir: one.stateDir,
+                ...(one.onOrchestrate !== undefined ? { onOrchestrate: one.onOrchestrate } : {}),
+              },
+            }
+          : null,
+    },
+    ...extra,
+  };
+}
+
+/** Prefix an API path with the default test project. */
+const p1 = (path: string): string => `/projects/p1${path}`;
 
 let root: string;
 let stateDir: string;
@@ -51,10 +80,10 @@ describe("createApiServer / GET /state", () => {
     seedTask("active", "a1");
     seedTask("done", "d1");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       queues: Record<string, { id: string }[]>;
@@ -72,19 +101,19 @@ describe("createApiServer / GET /state", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "digest.md"), "[ts] first line\n[ts] second line\n[ts] LAST LINE\n");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     const body = (await res.json()) as { digestTail: string };
     expect(body.digestTail).toContain("LAST LINE");
   });
 
   it("never throws when digest.md is absent -- digestTail is an empty string", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { digestTail: string };
     expect(body.digestTail).toBe("");
@@ -99,8 +128,13 @@ describe("createApiServer / WS change stream", () => {
       return { close: () => {} };
     };
 
-    handle = createApiServer({ repo, stateDir, watchFactory: fakeWatchFactory });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { watchFactory: fakeWatchFactory }));
     const port = await handle.listen(0);
+
+    // Watchers now attach lazily, the first time a project resolves. Hit a
+    // project-scoped route once so `ensureWatcher` wires the injected factory
+    // (a later task moves this to eager per-registered-project attachment).
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     wsClients.push(ws);
@@ -121,14 +155,158 @@ describe("createApiServer / WS change stream", () => {
     expect(msg.type).toBe("change");
     expect(msg.path).toContain("x.md");
   });
+
+  it("change events carry the projectId of the project whose stateDir changed", async () => {
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const factory = (dir: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(dir, onChange);
+      return { close: () => {} };
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir }, { watchFactory: factory }));
+    const port = await handle.listen(0);
+
+    // A project's watcher is attached on first resolution -- touch the project once:
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(stateDir)).toBe(true);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(stateDir)!("queue/pending/t1.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/t1.md" });
+    ws.close();
+  });
+});
+
+describe("createApiServer / watcher re-attach on stateDir change", () => {
+  it("closes the stale watcher and attaches a new one when a project id is re-registered to a new path", async () => {
+    const dirA = join(root, "stateA");
+    const dirB = join(root, "stateB");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirB, { recursive: true });
+
+    // A mutable stateDir simulates re-registering the SAME id "p1" to a new path.
+    let currentStateDir = dirA;
+
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const closedDirs: string[] = [];
+    const watchFactory = (sd: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(sd, onChange);
+      return { close: () => void closedDirs.push(sd) };
+    };
+
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
+        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+      },
+      watchFactory,
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    // First resolution -> watcher attached on dirA, nothing closed yet.
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(dirA)).toBe(true);
+    expect(closedDirs).toEqual([]);
+
+    // Re-register p1 to dirB, resolve again -> stale dirA watcher closed, new one on dirB.
+    currentStateDir = dirB;
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(closedDirs).toEqual([dirA]);
+    expect(onChangeByDir.has(dirB)).toBe(true);
+
+    // A change fired via dirB's captured callback now broadcasts under projectId "p1".
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(dirB)!("queue/pending/new.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/new.md" });
+    ws.close();
+  });
+
+  it("silences a retired watcher's callback -- the OLD stateDir's onChange must not broadcast after re-registration", async () => {
+    const dirA = join(root, "stateA2");
+    const dirB = join(root, "stateB2");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirB, { recursive: true });
+
+    let currentStateDir = dirA;
+
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const watchFactory = (sd: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(sd, onChange);
+      // dirA's close handle never resolves -- simulates the fire-and-forget close
+      // hanging (or forever pending), which is exactly the case the identity
+      // guard must cover: the old callback must stay silent regardless. dirB's
+      // close resolves normally so the test's own teardown (`handle.close()`,
+      // which awaits every live watcher) does not hang.
+      return { close: () => (sd === dirA ? new Promise<void>(() => {}) : Promise.resolve()) };
+    };
+
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
+        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+      },
+      watchFactory,
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    // First resolution -> watcher attached on dirA, captures its onChange.
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    const oldOnChange = onChangeByDir.get(dirA)!;
+
+    // Re-register p1 to dirB, resolve again -> dirA's watcher is retired (close
+    // never settles), dirB's watcher attaches.
+    currentStateDir = dirB;
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(dirB)).toBe(true);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+
+    const received: unknown[] = [];
+    ws.on("message", (d) => received.push(JSON.parse(String(d))));
+
+    // Fire the OLD dir's captured callback -- must NOT broadcast anything.
+    oldOnChange("queue/pending/stale.md");
+
+    // Fire the NEW dir's callback -- must broadcast normally, proving the
+    // socket/plumbing is alive and the silence above wasn't incidental.
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(dirB)!("queue/pending/new.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/new.md" });
+
+    // Exactly one message arrived in total -- the stale dirA event was dropped.
+    expect(received).toEqual([{ type: "change", projectId: "p1", path: "queue/pending/new.md" }]);
+
+    ws.close();
+  });
 });
 
 describe("createApiServer / POST /escalations/:id/reply", () => {
   it("accepts choice A, records a structured reply file with the injected clock, and returns it", async () => {
-    handle = createApiServer({ repo, stateDir, now: () => 424242 });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { now: () => 424242 }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "A", note: "operator context only" }),
@@ -144,10 +322,10 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("defaults note to an empty string when omitted", async () => {
-    handle = createApiServer({ repo, stateDir, now: () => 1 });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { now: () => 1 }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-2/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-2/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "B" }),
@@ -157,10 +335,10 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("rejects a choice other than A/B with 400 and writes no reply file", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-3/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-3/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "C" }),
@@ -170,10 +348,10 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("rejects an id containing '..' with 400 and writes no file", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/foo..bar/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/foo..bar/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "A" }),
@@ -183,12 +361,12 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("rejects an id containing an (encoded) slash with 400 and writes no file outside escalations/", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
     // %2F decodes to "/" -- must be rejected even though it matches the route
     // as a single raw path segment (path-traversal guard is post-decode).
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%2Fb/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/a%2Fb/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "A" }),
@@ -199,10 +377,10 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("rejects an id with a colon (Windows ADS syntax) via the positive allowlist", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%3Ab/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/a%3Ab/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "A" }),
@@ -212,12 +390,12 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
   });
 
   it("rejects an over-sized body with 413 and writes no reply file", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
     // note is free text -- an unbounded body is a memory-DoS / close()-hang risk.
     const huge = "x".repeat(1_000_001 + 64);
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-big/reply`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-big/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "A", note: huge }),
@@ -266,10 +444,10 @@ describe("createApiServer / GET /escalations/:id", () => {
     const input = makeEscalationInput();
     await seedEscalation(input);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({
@@ -295,10 +473,10 @@ describe("createApiServer / GET /escalations/:id", () => {
       JSON.stringify({ id: "esc-1", choice: "A", note: "operator context", at: 999 }),
     );
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reply: unknown };
     expect(body.reply).toEqual({ choice: "A", note: "operator context", at: 999 });
@@ -308,10 +486,10 @@ describe("createApiServer / GET /escalations/:id", () => {
     await seedEscalation(makeEscalationInput());
     writeFileSync(join(stateDir, "escalations", "esc-1.reply.json"), "{ not valid json ");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reply: unknown };
     expect(body.reply).toBeNull();
@@ -324,20 +502,20 @@ describe("createApiServer / GET /escalations/:id", () => {
       JSON.stringify({ id: "esc-1", choice: "C", note: "", at: 1 }),
     );
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reply: unknown };
     expect(body.reply).toBeNull();
   });
 
   it("404s for a missing escalation id", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/does-not-exist`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/does-not-exist`);
     expect(res.status).toBe(404);
   });
 
@@ -346,10 +524,10 @@ describe("createApiServer / GET /escalations/:id", () => {
     mkdirSync(escalationsDir, { recursive: true });
     writeFileSync(join(escalationsDir, "esc-bad.md"), "not an escalation artifact at all");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-bad`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-bad`);
     expect(res.status).toBe(404);
   });
 
@@ -360,34 +538,34 @@ describe("createApiServer / GET /escalations/:id", () => {
     // start with a valid-looking header, it must never be parsed.
     writeFileSync(join(escalationsDir, "esc-huge.md"), `# ESCALATION esc-huge -- ${"x".repeat(300 * 1024)}`);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-huge`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-huge`);
     expect(res.status).toBe(404);
   });
 
   it("400s for an id containing '..'", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/foo..bar`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/foo..bar`);
     expect(res.status).toBe(400);
   });
 
   it("400s for an id with an (encoded) slash (path-traversal guard is post-decode)", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%2Fb`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/a%2Fb`);
     expect(res.status).toBe(400);
   });
 
   it("400s for an id with a colon (Windows ADS syntax) via the positive allowlist", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/a%3Ab`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/a%3Ab`);
     expect(res.status).toBe(400);
   });
 
@@ -396,10 +574,10 @@ describe("createApiServer / GET /escalations/:id", () => {
     // Sentinel sits directly under stateDir, one directory above escalations/.
     writeFileSync(join(stateDir, "sentinel.md"), "# ESCALATION sentinel -- leak-me-not\nsecret");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/..%2Fsentinel`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/..%2Fsentinel`);
     expect(res.status).toBe(400);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not");
@@ -416,10 +594,10 @@ describe("createApiServer / GET /escalations/:id", () => {
       return; // environment can't create symlinks -- the lstat/isFile guard still holds
     }
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-link`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-link`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain("leak-me-not-via-symlink");
   });
@@ -427,10 +605,10 @@ describe("createApiServer / GET /escalations/:id", () => {
   it("POST /escalations/:id/reply still works alongside the new GET route (no shadowing regression)", async () => {
     await seedEscalation(makeEscalationInput());
 
-    handle = createApiServer({ repo, stateDir, now: () => 555 });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { now: () => 555 }));
     const port = await handle.listen(0);
 
-    const postRes = await fetch(`http://127.0.0.1:${port}/escalations/esc-1/reply`, {
+    const postRes = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ choice: "B", note: "picking B" }),
@@ -439,7 +617,7 @@ describe("createApiServer / GET /escalations/:id", () => {
     const postBody = (await postRes.json()) as { choice: string };
     expect(postBody.choice).toBe("B");
 
-    const getRes = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const getRes = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(getRes.status).toBe(200);
     const getBody = (await getRes.json()) as { reply: { choice: string } | null };
     expect(getBody.reply?.choice).toBe("B");
@@ -454,10 +632,10 @@ describe("createApiServer / GET /escalations/:id", () => {
     const content = readFileSync(join(escalationsDir, "other-id.md"), "utf8");
     writeFileSync(join(escalationsDir, "esc-1.md"), content);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(404);
   });
 
@@ -468,10 +646,10 @@ describe("createApiServer / GET /escalations/:id", () => {
       JSON.stringify({ id: "other-id", choice: "A", note: "wrong file", at: 1 }),
     );
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/escalations/esc-1`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-1`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reply: unknown };
     expect(body.reply).toBeNull();
@@ -486,10 +664,10 @@ describe("createApiServer / GET /state digest tail is bounded", () => {
     const filler = Array.from({ length: 5000 }, (_v, i) => `[ts] filler line ${i}`).join("\n");
     writeFileSync(join(stateDir, "digest.md"), `${filler}\n[ts] THE ACTUAL LAST LINE\n`);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     const body = (await res.json()) as { digestTail: string };
     expect(body.digestTail).toContain("THE ACTUAL LAST LINE");
     // The tail is capped at DIGEST_TAIL_LINES (50), not the whole 5000-line file.
@@ -507,10 +685,10 @@ describe("createApiServer / GET /state digest tail is bounded", () => {
     const lines = Array.from({ length: lineCount }, (_v, i) => `[ts] digest line ${i}`.padEnd(2047));
     writeFileSync(join(stateDir, "digest.md"), `${lines.join("\n")}\n`);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     const body = (await res.json()) as { digestTail: string };
     const tail = body.digestTail.split("\n");
     // 32 whole lines in the window; the boundary line (8) must be kept -> 32, not 31.
@@ -530,10 +708,10 @@ function seedRun(runId: string, at: number, intent = "an intent", taskIds: strin
 
 describe("createApiServer / GET /runs", () => {
   it("returns [] when runs/ does not exist", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([]);
   });
@@ -543,10 +721,10 @@ describe("createApiServer / GET /runs", () => {
     seedRun("run-2", 300);
     seedRun("run-3", 200);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { runId: string; at: number }[];
     expect(body.map((r) => r.runId)).toEqual(["run-2", "run-3", "run-1"]);
@@ -559,10 +737,10 @@ describe("createApiServer / GET /runs", () => {
     mkdirSync(runsDir, { recursive: true });
     writeFileSync(join(runsDir, "run-bad.json"), "{ not valid json ");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { runId: string }[];
     expect(body.map((r) => r.runId).sort()).toEqual(["run-good-1", "run-good-2"]);
@@ -581,10 +759,10 @@ describe("createApiServer / GET /runs", () => {
     // never gets an unopenable id.
     writeFileSync(join(runsDir, "run-poison.json"), JSON.stringify({ runId: "../evil", intent: "i", taskIds: [], at: 1 }));
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { runId: string }[];
     expect(body.map((r) => r.runId)).toEqual(["run-good"]);
@@ -595,10 +773,10 @@ describe("createApiServer / GET /runs", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "runs"), "not a directory");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([]);
   });
@@ -608,36 +786,36 @@ describe("createApiServer / GET /runs/:id", () => {
   it("returns the manifest for a known run id", async () => {
     seedRun("run-abc", 42, "build the thing", ["t1", "t2"]);
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs/run-abc`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-abc`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { runId: string; intent: string; taskIds: string[]; at: number };
     expect(body).toEqual({ runId: "run-abc", intent: "build the thing", taskIds: ["t1", "t2"], at: 42 });
   });
 
   it("404s for a missing run id", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs/does-not-exist`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/does-not-exist`);
     expect(res.status).toBe(404);
   });
 
   it("400s for an id containing '..'", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs/foo..bar`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/foo..bar`);
     expect(res.status).toBe(400);
   });
 
   it("400s for an id with an encoded slash (path-traversal guard is post-decode)", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs/a%2Fb`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/a%2Fb`);
     expect(res.status).toBe(400);
   });
 
@@ -646,10 +824,10 @@ describe("createApiServer / GET /runs/:id", () => {
     // Sentinel sits directly under stateDir, one directory above runs/.
     writeFileSync(join(stateDir, "sentinel.json"), JSON.stringify({ secret: "leak-me-not" }));
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/runs/..%2Fsentinel`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/..%2Fsentinel`);
     expect(res.status).toBe(400);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not");
@@ -663,29 +841,29 @@ describe("createApiServer / GET /tasks/:id/runtime", () => {
     writeFileSync(join(dir, "worker-report.md"), "# report");
     writeFileSync(join(dir, "gate-verdict.json"), JSON.stringify({ verdict: "pass" }));
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as string[];
     expect(body.sort()).toEqual(["gate-verdict.json", "worker-report.md"]);
   });
 
   it("returns [] when the task's runtime dir does not exist", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/no-such-task/runtime`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/no-such-task/runtime`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([]);
   });
 
   it("400s for a bad task id", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/a%2Fb/runtime`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/a%2Fb/runtime`);
     expect(res.status).toBe(400);
   });
 });
@@ -696,10 +874,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "worker-report.md"), "# hello world");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/worker-report.md`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/worker-report.md`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
     expect(await res.text()).toBe("# hello world");
@@ -710,10 +888,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "gate-verdict.json"), JSON.stringify({ verdict: "pass" }));
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/gate-verdict.json`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/gate-verdict.json`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     const body = (await res.json()) as { verdict: string };
@@ -721,34 +899,34 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
   });
 
   it("404s when the runtime file does not exist", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/missing.md`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/missing.md`);
     expect(res.status).toBe(404);
   });
 
   it("400s for a bad task id", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/a%2Fb/runtime/report.md`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/a%2Fb/runtime/report.md`);
     expect(res.status).toBe(400);
   });
 
   it("400s for a name containing '..' (even embedded, e.g. worker..report)", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/worker..report`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/worker..report`);
     expect(res.status).toBe(400);
   });
 
   it("400s for a name with an encoded slash (path-traversal guard is post-decode)", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/a%2Fb`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/a%2Fb`);
     expect(res.status).toBe(400);
   });
 
@@ -759,10 +937,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     const runtimeParent = join(dir, "..");
     writeFileSync(join(runtimeParent, "sentinel-runtime.txt"), "leak-me-not-either");
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/..%2Fsentinel-runtime.txt`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/..%2Fsentinel-runtime.txt`);
     expect(res.status).toBe(400);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not-either");
@@ -777,10 +955,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     // (prefix + marker is no longer valid JSON).
     writeFileSync(join(dir, "huge.json"), "a".repeat(CAP + 50_000));
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/huge.json`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/huge.json`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
     expect(res.headers.get("x-truncated")).toBe("true");
@@ -793,10 +971,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
     const dir = repo.runtimeDir("t1");
     mkdirSync(join(dir, "subdir"), { recursive: true });
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/subdir`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/subdir`);
     expect(res.status).toBe(404);
   });
 
@@ -812,10 +990,10 @@ describe("createApiServer / GET /tasks/:id/runtime/:name", () => {
       return; // environment can't create symlinks -- the lstat/isFile guard still holds
     }
 
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/t1/runtime/link.md`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/tasks")}/t1/runtime/link.md`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain("leak-me-not-via-symlink");
   });
@@ -835,7 +1013,7 @@ function seedUiDir(): string {
 describe("createApiServer / static UI serving (uiDir set)", () => {
   it("GET / returns index.html with text/html content-type", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/`);
@@ -846,7 +1024,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("GET /index.html also returns index.html", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/index.html`);
@@ -856,7 +1034,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("GET /assets/app.js returns its bytes with a javascript content-type", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/assets/app.js`);
@@ -867,7 +1045,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("GET /assets/style.css returns text/css", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/assets/style.css`);
@@ -877,7 +1055,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("SPA fallback: an extension-less unknown route serves index.html", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/some/client/route`);
@@ -888,7 +1066,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("a missing asset WITH an extension 404s (no SPA fallback)", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/missing.js`);
@@ -898,22 +1076,22 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
   it("API routes still win over static/SPA when uiDir is set", async () => {
     seedTask("pending", "p1");
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
-    const stateRes = await fetch(`http://127.0.0.1:${port}/state`);
+    const stateRes = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     expect(stateRes.status).toBe(200);
     const stateBody = (await stateRes.json()) as { queues: Record<string, { id: string }[]> };
     expect(stateBody.queues.pending?.map((t) => t.id)).toEqual(["p1"]);
 
-    const runsRes = await fetch(`http://127.0.0.1:${port}/runs`);
+    const runsRes = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
     expect(runsRes.status).toBe(200);
     expect(await runsRes.json()).toEqual([]);
   });
 
   it("a directory under uiDir requested as an asset path 404s (not served)", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/assets`);
@@ -927,12 +1105,12 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     try {
       symlinkSync(secret, join(uiDir, "link.js"), "file");
     } catch {
-      handle = createApiServer({ repo, stateDir, uiDir });
+      handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
       await handle.listen(0);
       return; // environment can't create symlinks -- the lstat/isFile guard still holds
     }
 
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/link.js`);
@@ -945,7 +1123,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     // Sentinel sits directly under root, one directory above uiDir.
     writeFileSync(join(root, "secret.txt"), "leak-me-not-via-traversal");
 
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/..%2f..%2fsecret.txt`);
@@ -958,7 +1136,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     const uiDir = seedUiDir();
     writeFileSync(join(root, "secret2.txt"), "leak-me-not-via-encoded-dots");
 
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/%2e%2e/secret2.txt`);
@@ -969,7 +1147,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("an encoded-dot missing asset (/missing%2ejs -> missing.js) 404s, never SPA-fallbacks to index", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     // Decodes to `missing.js` -- an ASSET path with no file. The SPA-vs-asset
@@ -981,7 +1159,7 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 
   it("a path UNDER an existing file (/assets/app.js/foo -> ENOTDIR) 404s, never SPA-fallbacks", async () => {
     const uiDir = seedUiDir();
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     // `assets/app.js` is a file, so lstat of `.../app.js/foo` fails with ENOTDIR
@@ -1002,12 +1180,12 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
       // component, so only realpath containment catches this class.
       symlinkSync(outsideDir, join(uiDir, "extern"), "dir");
     } catch {
-      handle = createApiServer({ repo, stateDir, uiDir });
+      handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
       await handle.listen(0);
       return; // environment can't create dir symlinks -- realpath guard still holds
     }
 
-    handle = createApiServer({ repo, stateDir, uiDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}/extern/secret.js`);
@@ -1019,13 +1197,13 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
 describe("createApiServer / static UI serving (uiDir unset)", () => {
   it("GET / 404s (unchanged behavior) and API routes are unaffected", async () => {
     seedTask("pending", "p1");
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
     const rootRes = await fetch(`http://127.0.0.1:${port}/`);
     expect(rootRes.status).toBe(404);
 
-    const stateRes = await fetch(`http://127.0.0.1:${port}/state`);
+    const stateRes = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     expect(stateRes.status).toBe(200);
   });
 });
@@ -1050,10 +1228,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: 
 
 describe("createApiServer / POST /orchestrate", () => {
   it("404s when onOrchestrate is not configured (read-only deployment)", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "build X" }),
@@ -1063,10 +1241,10 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("GET /orchestrate is not matched by the POST route (falls through to 404)", async () => {
     const onOrchestrate = async (): Promise<void> => {};
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`);
     expect(res.status).toBe(404);
   });
 
@@ -1075,10 +1253,10 @@ describe("createApiServer / POST /orchestrate", () => {
     const onOrchestrate = async (intent: string): Promise<void> => {
       calls.push(intent);
     };
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "build X" }),
@@ -1092,10 +1270,10 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("returns 202 promptly even when onOrchestrate never resolves (response does not wait on it)", async () => {
     const onOrchestrate = (): Promise<void> => new Promise(() => {}); // never settles
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "build X" }),
@@ -1110,11 +1288,11 @@ describe("createApiServer / POST /orchestrate", () => {
       callCount++;
       await d.promise;
     };
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
     const post = (intent: string): Promise<Response> =>
-      fetch(`http://127.0.0.1:${port}/orchestrate`, {
+      fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ intent }),
@@ -1141,15 +1319,12 @@ describe("createApiServer / POST /orchestrate", () => {
     const onOrchestrate = async (): Promise<void> => {
       throw new Error("boom");
     };
-    handle = createApiServer({
-      repo,
-      stateDir,
-      onOrchestrate,
-      log: (level, message) => logs.push(`${level}:${message}`),
-    });
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate }, { log: (level, message) => logs.push(`${level}:${message}`) }),
+    );
     const port = await handle.listen(0);
 
-    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res1 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "x" }),
@@ -1160,7 +1335,7 @@ describe("createApiServer / POST /orchestrate", () => {
     expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("boom"))).toBe(true);
 
     // Flag reset in `finally` -- a subsequent POST must be accepted again.
-    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "y" }),
@@ -1173,15 +1348,12 @@ describe("createApiServer / POST /orchestrate", () => {
     const onOrchestrate = (): Promise<void> => {
       throw new Error("sync boom");
     };
-    handle = createApiServer({
-      repo,
-      stateDir,
-      onOrchestrate,
-      log: (level, message) => logs.push(`${level}:${message}`),
-    });
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate }, { log: (level, message) => logs.push(`${level}:${message}`) }),
+    );
     const port = await handle.listen(0);
 
-    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res1 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "x" }),
@@ -1191,7 +1363,7 @@ describe("createApiServer / POST /orchestrate", () => {
     await tick();
     expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("sync boom"))).toBe(true);
 
-    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "y" }),
@@ -1216,10 +1388,10 @@ describe("createApiServer / POST /orchestrate", () => {
     const throwingLog = (): void => {
       throw new Error("logger down");
     };
-    handle = createApiServer({ repo, stateDir, onOrchestrate, log: throwingLog });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }, { log: throwingLog }));
     const port = await handle.listen(0);
 
-    const res1 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res1 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "x" }),
@@ -1228,7 +1400,7 @@ describe("createApiServer / POST /orchestrate", () => {
 
     await tick();
     // Flag cleared despite BOTH the error-stringify and the logger throwing.
-    const res2 = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "y" }),
@@ -1239,16 +1411,13 @@ describe("createApiServer / POST /orchestrate", () => {
   it("flattens control chars in the logged intent (no log forging); the 202 body still echoes the intent verbatim", async () => {
     const logs: string[] = [];
     const onOrchestrate = async (): Promise<void> => {}; // resolves -> emits the completion INFO log
-    handle = createApiServer({
-      repo,
-      stateDir,
-      onOrchestrate,
-      log: (level, message) => logs.push(`${level}:${message}`),
-    });
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate }, { log: (level, message) => logs.push(`${level}:${message}`) }),
+    );
     const port = await handle.listen(0);
 
     const intent = "build X\nERROR: forged log line";
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent }),
@@ -1266,10 +1435,10 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("400s on a missing intent field, and does not call onOrchestrate", async () => {
     const onOrchestrate = async (): Promise<void> => {};
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -1279,17 +1448,17 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("400s on an empty or whitespace-only intent", async () => {
     const onOrchestrate = async (): Promise<void> => {};
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const resEmpty = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const resEmpty = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "" }),
     });
     expect(resEmpty.status).toBe(400);
 
-    const resWhitespace = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const resWhitespace = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: "   \n\t  " }),
@@ -1299,10 +1468,10 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("400s on a non-string intent", async () => {
     const onOrchestrate = async (): Promise<void> => {};
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: 123 }),
@@ -1312,10 +1481,10 @@ describe("createApiServer / POST /orchestrate", () => {
 
   it("400s on malformed JSON", async () => {
     const onOrchestrate = async (): Promise<void> => {};
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{ not valid json",
@@ -1328,11 +1497,11 @@ describe("createApiServer / POST /orchestrate", () => {
     const onOrchestrate = async (intent: string): Promise<void> => {
       calls.push(intent);
     };
-    handle = createApiServer({ repo, stateDir, onOrchestrate });
+    handle = createApiServer(projectDeps({ repo, stateDir, onOrchestrate }));
     const port = await handle.listen(0);
 
     const huge = "x".repeat(1_000_001 + 64);
-    const res = await fetch(`http://127.0.0.1:${port}/orchestrate`, {
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ intent: huge }),
@@ -1342,14 +1511,162 @@ describe("createApiServer / POST /orchestrate", () => {
     await tick();
     expect(calls).toEqual([]);
   });
+
+  it("single-flight is PER PROJECT: project B can orchestrate while A is in flight", async () => {
+    const dA = deferred<void>();
+    const calls: string[] = [];
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [
+          { id: "a", name: "a", path: "/a", status: "ready" },
+          { id: "b", name: "b", path: "/b", status: "ready" },
+        ],
+        get: async (id) =>
+          id === "a"
+            ? {
+                view: {
+                  repo,
+                  stateDir,
+                  onOrchestrate: async (intent: string) => {
+                    calls.push(`a:${intent}`);
+                    await dA.promise;
+                  },
+                },
+              }
+            : id === "b"
+              ? {
+                  view: {
+                    repo,
+                    stateDir,
+                    onOrchestrate: async (intent: string) => {
+                      calls.push(`b:${intent}`);
+                    },
+                  },
+                }
+              : null,
+      },
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    const post = (pid: string): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}/projects/${pid}/orchestrate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent: "do the thing" }),
+      });
+
+    expect((await post("a")).status).toBe(202); // A starts and hangs
+    expect((await post("a")).status).toBe(409); // A again -> busy
+    expect((await post("b")).status).toBe(202); // B is NOT blocked by A
+
+    dA.resolve();
+    await tick();
+    expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+  });
 });
 
 describe("createApiServer / listen with an explicit bind host", () => {
   it("still binds and is reachable via 127.0.0.1 when host is passed explicitly", async () => {
-    handle = createApiServer({ repo, stateDir });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0, "127.0.0.1");
 
-    const res = await fetch(`http://127.0.0.1:${port}/state`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("createApiServer / multi-project routing", () => {
+  it("GET /projects returns the project list", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { projects: Array<{ id: string }> };
+    expect(body.projects.map((p) => p.id)).toEqual(["p1"]);
+  });
+
+  it("unknown project id -> 404 for every project-scoped route", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    for (const path of ["/projects/zz/state", "/projects/zz/runs", "/projects/zz/escalations/e1"]) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      expect(res.status, path).toBe(404);
+    }
+  });
+
+  it("a project in error state -> 503 with the error body, siblings unaffected", async () => {
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [
+          { id: "ok", name: "ok", path: "/x", status: "ready" },
+          { id: "bad", name: "bad", path: "/y", status: "error", error: "bad config.yaml" },
+        ],
+        get: async (id) =>
+          id === "ok" ? { view: { repo, stateDir } } : id === "bad" ? { error: "bad config.yaml" } : null,
+      },
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+    expect((await fetch(`http://127.0.0.1:${port}/projects/bad/state`)).status).toBe(503);
+    expect((await fetch(`http://127.0.0.1:${port}/projects/ok/state`)).status).toBe(200);
+  });
+
+  it("two projects serve their OWN state (no cross-bleed)", async () => {
+    // Project A is the beforeEach root/repo; seed a pending task only into A.
+    seedTask("pending", "t-a1");
+
+    // Build a SECOND project dir + repo using the same idiom as beforeEach, and
+    // seed one pending task "t-b1" into it mirroring `seedTask`.
+    const rootB = mkdtempSync(join(tmpdir(), "adh-api-b-"));
+    try {
+      const stateDirB = join(rootB, ".autodev");
+      const repoB = new FileBlackboardRepository(rootB, ".autodev");
+      const pendingDirB = join(stateDirB, "queue", "pending");
+      mkdirSync(pendingDirB, { recursive: true });
+      writeFileSync(
+        join(pendingDirB, "t-b1.md"),
+        `---\nid: t-b1\ntitle: t\ntype: tooling\nfile_set:\n  - src/x.ts\n---\nbody`,
+      );
+
+      const deps: ApiServerDeps = {
+        projects: {
+          list: async () => [
+            { id: "a", name: "a", path: stateDir, status: "ready" },
+            { id: "b", name: "b", path: stateDirB, status: "ready" },
+          ],
+          get: async (id) =>
+            id === "a"
+              ? { view: { repo, stateDir } }
+              : id === "b"
+                ? { view: { repo: repoB, stateDir: stateDirB } }
+                : null,
+        },
+      };
+      handle = createApiServer(deps);
+      const port = await handle.listen(0);
+
+      const bBody = (await (await fetch(`http://127.0.0.1:${port}/projects/b/state`)).json()) as {
+        queues: Record<string, { id: string }[]>;
+      };
+      expect(bBody.queues.pending?.map((t) => t.id)).toEqual(["t-b1"]);
+
+      const aBody = (await (await fetch(`http://127.0.0.1:${port}/projects/a/state`)).json()) as {
+        queues: Record<string, { id: string }[]>;
+      };
+      expect(aBody.queues.pending?.map((t) => t.id)).toEqual(["t-a1"]);
+      expect(aBody.queues.pending?.map((t) => t.id)).not.toContain("t-b1");
+    } finally {
+      rmSync(rootB, { recursive: true, force: true });
+    }
+  });
+
+  it("old top-level routes are GONE (404)", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    for (const path of ["/state", "/runs", "/orchestrate"]) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      expect(res.status, path).toBe(404);
+    }
   });
 });
