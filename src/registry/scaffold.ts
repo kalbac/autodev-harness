@@ -11,7 +11,7 @@
  * GOAL.md/INVARIANTS.md/GUARDS.md). The scaffolded config points
  * `contract.invariantsFile`/`guardsFile` at those stubs so they are live.
  */
-import { mkdir, writeFile, readFile, appendFile, stat, lstat } from "node:fs/promises";
+import { mkdir, writeFile, readFile, appendFile, stat, lstat, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -180,12 +180,17 @@ export interface ScaffoldResult {
  * config.yaml LAST (`wx`).
  *
  * SYMLINK GUARD: refuse to scaffold when `.autodev` is a symlink/junction (or
- * any non-directory). `mkdir`/`writeFile` follow a symlink, so a repo carrying a
- * hostile `.autodev -> /outside` link would otherwise have the entire skeleton
- * (queue dirs, stubs, config.yaml) written OUTSIDE the target repo. The check
- * runs BEFORE the config.yaml skip too, so a symlinked `.autodev` is never
- * silently followed for either read or write. A real directory (a partial
- * scaffold) passes.
+ * any non-directory), OR when a real `.autodev` contains a symlinked direct
+ * child. `mkdir`/`writeFile` follow a symlink, so a repo carrying a hostile
+ * `.autodev -> /outside` link (or `.autodev/queue -> /outside`) would otherwise
+ * have skeleton dirs written OUTSIDE the target repo via a recursive mkdir. The
+ * `.autodev` check runs BEFORE the config.yaml skip too, so a symlinked
+ * `.autodev` is never silently followed for either read or write. A real
+ * directory with only real children (a partial scaffold) passes. (Deeper
+ * grandchildren are not scanned: the only ops below a verified-real child are
+ * recursive `mkdir` on the fixed queue/state dirs — mkdir on an existing
+ * symlinked leaf is a no-op, never an out-of-repo content write — and the stubs
+ * are written `wx`/`O_EXCL`, which refuses to follow a final symlink.)
  */
 export async function scaffoldProject(repoRoot: string, form: ScaffoldForm, log?: Log): Promise<ScaffoldResult> {
   const autodevDir = join(repoRoot, ".autodev");
@@ -197,10 +202,21 @@ export async function scaffoldProject(repoRoot: string, form: ScaffoldForm, log?
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  if (autodevLst !== undefined && !autodevLst.isDirectory()) {
-    throw new ScaffoldConfigError(
-      `refusing to scaffold: ${autodevDir} exists but is not a real directory (symlink or file) — resolve it manually`,
-    );
+  if (autodevLst !== undefined) {
+    if (!autodevLst.isDirectory()) {
+      throw new ScaffoldConfigError(
+        `refusing to scaffold: ${autodevDir} exists but is not a real directory (symlink or file) — resolve it manually`,
+      );
+    }
+    // Real .autodev: reject any symlinked direct child so recursive mkdir/writes
+    // below it can't escape the repo (codex re-critic: `.autodev/queue -> /outside`).
+    for (const child of await readdir(autodevDir, { withFileTypes: true })) {
+      if (child.isSymbolicLink()) {
+        throw new ScaffoldConfigError(
+          `refusing to scaffold: ${join(autodevDir, child.name)} is a symlink — resolve it manually`,
+        );
+      }
+    }
   }
 
   if (existsSync(configPath)) return { skipped: true, written: [] };

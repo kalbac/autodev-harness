@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldProject, buildConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
@@ -153,10 +153,21 @@ describe("scaffoldProject", () => {
 
     await expect(scaffoldProject(repo, ScaffoldFormSchema.parse({}))).rejects.toThrow(ScaffoldConfigError);
 
-    // The symlink target must be untouched — no skeleton escaped into it.
-    expect(existsSync(join(outside, "config.yaml"))).toBe(false);
-    expect(existsSync(join(outside, "queue"))).toBe(false);
-    expect(existsSync(join(outside, "GOAL.md"))).toBe(false);
+    // The symlink target must be entirely untouched — no skeleton escaped into it.
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("refuses to scaffold when a real .autodev has a symlinked child — no escape via recursive mkdir (codex re-critic)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "adh-scaf-out2-"));
+    mkdirSync(join(repo, ".autodev")); // a REAL .autodev directory...
+    symlinkSync(outside, join(repo, ".autodev", "queue"), "junction"); // ...with a symlinked child
+
+    await expect(scaffoldProject(repo, ScaffoldFormSchema.parse({}))).rejects.toThrow(ScaffoldConfigError);
+
+    // recursive mkdir(.autodev/queue/pending) must NOT have created anything in the target.
+    expect(readdirSync(outside)).toEqual([]);
+    expect(existsSync(join(repo, ".autodev", "config.yaml"))).toBe(false);
     rmSync(outside, { recursive: true, force: true });
   });
 });
