@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 25.
+> Count: 27.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -32,6 +32,8 @@
 | `[ts/shared-promise-reject]` | Caching an in-flight Promise for concurrent consumers: only the creator awaited in try/catch — a second caller's bare `await cached` rethrows the SHARED rejection (500 instead of the {error}→503 path). Every awaiter needs the creator's rejection handling + compare-before-evict on cleanup; test concurrent FAILURE, not just concurrent success. | `gotchas/shared-inflight-promise-rejection.md` |
 | `[refactor/extraction-eagerness]` | A "pure mechanical extraction" that consolidates N identical call sites into one shared field makes construction EAGER for all consumers — `run` never built the orchestrator before, and `buildOrchestrator` throws for unregistered adapters, so previously-working configs broke. Consolidate throwing constructors into a memoized lazy getter; review the initialization graph, not just moved lines. | `gotchas/extraction-consolidation-changes-laziness.md` |
 | `[multiproject/id-keyed-caches]` | Project ids are RE-BINDABLE (registry edit/re-register) — three separate id-keyed caches went stale independently (hub roots → wrong-repo orchestration; watchers → stale broadcasts under a reused id; lastError → moved project inherits old error). Every id-keyed cache entry must carry its binding (path) and validate on hit; long-lived callbacks need a fire-time identity guard. | `gotchas/id-keyed-caches-rebindable-ids.md` |
+| `[ci/win-83-realpath]` | GitHub's `windows-latest` runner exposes `os.tmpdir()` as an 8.3 short path (`C:\Users\RUNNER~1\…`). `fs.promises.realpath`/`realpathSync.native` EXPAND it to the long form; plain `fs.realpathSync` (non-native) does NOT — so a test comparing a `realpathSync`-seeded path to a code-canonicalized (native) path is green locally, red on the runner. Also: a fn matching against a stored `realpath`'d path must canonicalize its INPUT identically (admin `isRegistered` bug: stored long, compared raw). Fix = `realpathSync.native` in tests; `isRegistered` realpaths its arg like `register` does. | `gotchas/win-83-shortpath-realpath-divergence.md` |
+| `[scaffold/symlink-escape]` | `scaffoldProject` writes `.autodev/` with `mkdir`/`writeFile`, which FOLLOW symlinks — a hostile checkout with `.autodev -> /outside` (or `.autodev/queue -> /outside`) lands the skeleton OUTSIDE the repo (`existsSync`/`stat` follow links, giving a false "safe"). Fix = `lstat` `.autodev` and refuse if it's not a real dir, THEN `readdir` and refuse any symlinked direct child, BEFORE any write. `wx`/`O_EXCL` guards only the final file component, not intermediate dirs a recursive mkdir walks. | `gotchas/scaffold-symlink-escape.md` |
 
 ## Anticipated tag namespaces
 

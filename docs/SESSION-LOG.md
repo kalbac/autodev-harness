@@ -4,6 +4,32 @@
 
 ---
 
+## s17 — 2026-07-03/04 — P3: M3 (New Project backend) + M4 (product shell UI) — both codex/CI-clean, both merged (PR #31, #32)
+
+**M3 — New Project flow backend (PR #31 `7c80a90`, codex-gated).** `GET /fs/dirs` server-side folder browser (dirs-only,
+git/registered badges, symlinks annotated with resolved target, `invalid_path`→400-never-500), `POST /projects` (register +
+optional `.autodev/` scaffold), `DELETE /projects/:id` (registry-only, before root-resolve so a broken-config project is still
+deletable, closes its watcher). Scaffold: config.yaml validated through the real strict schema BEFORE any write, blackboard
+skeleton + GOAL/INVARIANTS stubs (`wx`, never clobber), idempotent `.git/info/exclude`, config last. `isPathRegistered`
+extracted + reused; register/unregister behind a promise-chain mutex. Codex R1 **broken** (4) → HIGH symlink-escape fixed →
+re-critic **uncertain** (narrower symlinked-child residual) → fixed → **clean**. Windows CI caught an 8.3-short-path realpath
+divergence (green locally) → fixed. 592→596 tests, CI green 4/4.
+
+**Autonomy rule sharpened.** Operator: "мержи сам, не жди меня; дёргать ТОЛЬКО на развилках где 100% нужно моё участие."
+Codified in `AGENTS.md` (agent owns ALL git+GH incl. merges; gate on machine bar + green CI, then self-merge) + memory.
+
+**M4 — product shell UI (PR #32 `c121a05`, review-only + one gated backend add).** projectId moved into the router path
+(`/p/:id/…`), query-keys/api/ws gained the projectId dimension, `ProjectGate` shim deleted; M3 api hooks; **gated** read-only
+`GET /projects/:id/config` (curated config for the shell); multi-project sidebar (last-5 runs + verdict seals, settings
+popover, theme control); composer-first Home + top bar; session-inspector rail (Now/Queue/Session/Roles/Tokens-placeholder);
+New Project screen (folder browser + register form). **M4-7 settings screens deferred** (honest placeholder routes).
+**Browser-live-proven end-to-end** (Playwright): shell renders aurora's real config; New Project flow driven fully from the
+browser — folder browser → select fresh git repo → register → `.autodev/` scaffolded on disk + git-exclude + registry entry →
+redirect → immediately drivable. Subagent-driven (sonnet+opus by complexity); config endpoint codex **clean**; CI green 4/4.
+New gotchas: `[ci/win-83-realpath]`, `[scaffold/symlink-escape]`.
+
+---
+
 ## s16 — 2026-07-03 — P3 slice 2: UI/UX design gate + multi-project daemon M1–M2 — codex-gated clean, merged (PR #30)
 
 **Design gate (the operator's reserved topic, resolved WITH him):** operator brought 11 reference screenshots

@@ -1,10 +1,11 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-03 (s16 — **P3 slice 2: UI/UX design gate + multi-project daemon M1–M2 SHIPPED, codex-gated
-> clean after 3 rounds (9 findings fixed), merged (PR #30, `6337215`)**: registry + ProjectHub + `/projects/:id` API +
-> install-relative UI bundle (closes `[ui/serve-uidir-reporoot]`) + interim UI shim. 537 tests, CI green 4/4.
-> **Next: M3 (fs-browser+register+scaffold) → M4 (shell UI per mockup) → M5 (themes); woodev ops-proof still deferred.**)
+> Last updated: 2026-07-04 (s17 — **P3: M3 (New Project backend) + M4 (product shell UI) both SHIPPED & MERGED**
+> (PR #31 `7c80a90` codex-gated clean; PR #32 `c121a05` review-only + gated config endpoint). Daemon is now a real
+> multi-project product: register any git repo from the browser → scaffold → drive it through the shell (sidebar +
+> composer Home + session rail + New Project flow), all **browser-live-proven** on aurora + a fresh UI-registered repo.
+> 596 tests, CI green 4/4. **Next (s18): M4-7 settings screens (tail) → M5 theming → woodev deps-provisioning ops-proof.**)
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -22,7 +23,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29 `dc8b6cd`).** **Slice 2 — UI/UX design + multi-project M1–M2 DONE (s16, PR #30 `6337215`):** spec approved (5 modules), registry + ProjectHub + `/projects/:id` API + install-relative uiDir + UI shim; 3 codex rounds → `clean`, 537 tests, CI green 4/4. **Remaining slices: M3 (fs-browser+register+scaffold), M4 (shell UI per mockup), M5 (themes).** Ops live-proof on a woodev clone still deferred. |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. 596 tests, CI green 4/4. **Remaining: M4-7 settings screens (tail), M5 theming (light tokens + switcher — plumbing already in `lib/theme.ts`).** Ops live-proof on a woodev clone still deferred. |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -33,15 +34,26 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s16, 2026-07-03)
+## Last session (s17, 2026-07-03/04)
 
-- **UI/UX design gate + multi-project daemon M1–M2 shipped (PR #30 `6337215`).** Operator-resolved forks: full
-  multi-project / browser-now-desktop-later / server-side folder browser. Spec `2026-07-03-p3-multiproject-shell-design.md`
-  (M1–M5) + mockup `2026-07-03-s16-shell-mockup.html` + plan `2026-07-03-p3-multiproject-m1-m2.md`.
-- Built: registry (`~/.autodev/projects.json`, identity-only), `src/composition/root.ts` (extracted `buildProjectRoot`),
-  `src/hub/hub.ts` (lazy roots, error isolation), API under `/projects/:id`, per-project single-flight + watchers,
-  WS `projectId`, daemon-global `serve` with install-relative uiDir, interim UI shim. 537 tests; codex R1 `broken`(7) →
-  R2 `broken`(2) → R3 **`clean`**; CI 4/4. Gotchas: `[ts/shared-promise-reject]`, `[refactor/extraction-eagerness]`,
+- **M3 New Project backend + M4 product shell UI both shipped & merged** (PR #31 `7c80a90` codex-gated clean; PR #32
+  `c121a05` review-only + gated config endpoint). The daemon is a real multi-project product now.
+- **M3:** `GET /fs/dirs` folder browser, `POST`/`DELETE /projects`, `.autodev` scaffold (validated-config-before-write,
+  `wx` stubs, idempotent git-exclude, symlink-escape guarded). codex R1 broken(4)→symlink fix→re-critic uncertain
+  (child-symlink residual)→fixed→**clean**. Windows CI 8.3-realpath divergence caught+fixed.
+- **M4:** projectId-in-router (`/p/:id`), M3 api hooks, gated `GET /projects/:id/config`, multi-project sidebar (run
+  seals + settings popover + theme), composer Home + top bar, session rail (Now/Queue/Session/Roles/Tokens), New Project
+  screen. **M4-7 settings deferred** (placeholder routes). Browser-live-proven E2E (register a fresh repo from the UI →
+  scaffold on disk → drivable shell). 596 tests, CI green 4/4. Gotchas: `[ci/win-83-realpath]`, `[scaffold/symlink-escape]`.
+- **Autonomy sharpened:** agent owns ALL git+GH incl. merges — self-merge on machine-bar+green-CI, never wait; interrupt
+  operator only at 100%-his forks (`AGENTS.md` + memory updated).
+
+## Prior session (s16, 2026-07-03)
+
+- **UI/UX design gate + multi-project daemon M1–M2 shipped (PR #30 `6337215`).** Full multi-project / browser-now /
+  server-side folder browser (operator forks). registry + `src/composition/root.ts` (`buildProjectRoot`) + `src/hub/hub.ts`
+  (lazy roots) + API under `/projects/:id` + WS `projectId` + install-relative uiDir + interim UI shim. codex R1 `broken`(7)
+  → R2(2) → R3 **`clean`**; 537 tests, CI 4/4. Gotchas: `[ts/shared-promise-reject]`, `[refactor/extraction-eagerness]`,
   `[multiproject/id-keyed-caches]`.
 
 ## Prior session (s14, 2026-07-02)
@@ -125,23 +137,21 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s17)
+## NEXT ACTIONS (s18)
 
-1. **M3 — New Project flow (backend, gated).** `GET /fs/dirs` folder browser (dirs-only, git/registered badges,
-   hardened per `[api/static-traversal]`), `POST /projects` (validate: exists, git repo, not registered) +
-   `DELETE /projects/:id` (registry-only), **scaffold `.autodev/`** (config.yaml from form values + blackboard skeleton
-   derived from `src/blackboard/`, `.git/info/exclude` append; never clobber an existing `.autodev/`). Spec §3c/§5/§6/§7;
-   write the M3 plan at pickup. Registry write path: reuse `addProject`/`removeProject`/`saveRegistry` (already built+tested).
-2. **M4 — shell UI per the mockup** (`docs/superpowers/specs/2026-07-03-s16-shell-mockup.html`, review-only): projects
-   sidebar w/ last-5 runs + verdict seals, composer-first project Home, project-scoped routes (`/p/:id/...`), session-
-   inspector right rail (Now pipeline / Queue / Session / Roles / Tokens-placeholder), settings screens + footer popover,
-   Board as secondary lens. Replaces the T10 shim (`ui/src/components/ProjectGate.tsx`; shim notes: move projectId into
-   the router, add projectId dimension to query keys).
-3. **M5 — theming:** light token set + System·Dark·Light switcher (client-side persistence).
-4. **Ops live-proof of deps-provisioning on a woodev clone (deferred from s15, operator-observed).** Runbook in
-   `docs/superpowers/plans/2026-07-02-p3-deps-provisioning.md` Task 9 + gotcha `[worktree/win-junction-follow]`.
-5. **Backlog (not blockers):** token/usage instrumentation for the stats rail (phase 2 — adapters emit usage);
-   desktop wrap (Electron/Tauri over the same loopback API); `[ui/verdict-not-persisted]`; run rename/archive/fork.
+1. **M4-7 — settings screens (the M4 tail, review-only).** Global (`/settings`): registry management (unregister via
+   `useDeleteProject`; rename has no endpoint yet) + theme + daemon info. Project (`/p/:id/settings`): read-first view over
+   `GET /projects/:id/config` (already live). Both currently render "coming in M4-7" placeholder routes in `router.tsx`.
+2. **M5 — theming:** light token set in `ui/src/styles.css` (status/verdict hues shared) + wire the existing
+   `System·Dark·Light` switcher (plumbing already in `ui/src/lib/theme.ts` — it sets `data-theme`/`class` + persists;
+   only the light `@theme` tokens are missing).
+3. **Ops live-proof of deps-provisioning on a woodev clone (deferred from s15, operator-observed, do NOT run unsupervised).**
+   Runbook in `docs/superpowers/plans/2026-07-02-p3-deps-provisioning.md` Task 9 + gotcha `[worktree/win-junction-follow]`.
+   The New Project flow now scaffolds `.autodev/` — a woodev clone can be registered from the UI, then ops-proven.
+4. **Backlog (not blockers):** token/usage instrumentation for the stats rail (phase 2 — adapters emit usage); a
+   `GET /projects/:id` rename endpoint (project settings needs it); desktop wrap (Electron/Tauri over the same loopback
+   API); `[ui/verdict-not-persisted]`; run rename/archive/fork; the composer's project-switcher chip is a static label
+   (make it a real menu).
 
 **P2 assets:** backend — `src/api/server.ts` (`/state`, `/runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`,
 `GET /escalations/:id` (s14) + `parseEscalation` in `src/escalate/escalate.ts`, `POST /escalations/:id/reply`,
