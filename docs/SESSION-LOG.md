@@ -4,6 +4,37 @@
 
 ---
 
+## s15 — 2026-07-03 — P3 slice 1: deps-provisioning (real test gate in worktrees) — codex-gated clean, merged (PR #29)
+
+**Context:** P2 done. Design-gated P3 with the operator (reference-first: reconned AO + OD Electron shells). Operator
+scoped the first slice to **"real-use gaps"** — close what blocks the harness taking REAL tasks off the PS-loop — and
+chose the target: a **clone of `woodev_framework`** (most relevant, safe). Recon of the live woodev (read-only) found:
+real gate = `composer check` (phpcs+phpstan+phpunit, no DB); **`plugins-reference/` is gitignored but load-bearing**;
+no `.autodev/config.yaml` (PS config is hardcoded in `_common.ps1`). Spec + 9-task TDD plan written & approved.
+
+**Built (Finding #1): `worktree.provision`** — links gitignored dep dirs (`vendor`, `plugins-reference`) into each
+per-task worktree (junction/Windows, dir-symlink/POSIX) so the gate graduates `php -l` → `composer check`. Empty = off
+(backward compat). Config block (`.strict()`, top-level segments) + link/unlink in the worktree manager + composition-root wiring.
+
+**The hard part — a real, reproduced data-loss class caught by the gate.** sonnet-5 TDD → **4 rounds of independent
+codex GPT-5.5 gate**, each closing a genuine reproduced defect: (R1) `removeLinkOnly` swallowed failures / deleted
+non-links / host-only absolute check + 4 more; (R2) cleanup used only the current config → stale links survived a
+config change; (R3) a best-effort manifest is not authoritative (write-fail/corruption); (R3b) recursive strip removed
+tracked source symlinks. **Key discovery (verified 6/6):** on Windows `git worktree remove --force` **FOLLOWS an NTFS
+junction and recursively deletes its real target**. Final design: **link-only-remove EVERY top-level reparse point
+BEFORE any recursive removal; refuse to recurse otherwise; restrict provision entries to a single top-level segment**
+so the non-recursive scan is complete. R4 verdict: **`clean` (0.88)**; only residual = nested FOREIGN junctions
+(pre-existing git-on-Windows behavior, not introduced here) → documented. Gotcha `[worktree/win-junction-follow]`.
+
+**Result:** 502 tests, typecheck clean, **CI green 4/4**, squash-merged → `main` `dc8b6cd` (PR #29). Subagent-driven
+throughout (1 implementer + spec-review subagent + 4 codex fix/re-critic rounds). **Not yet done: the ops live-proof
+on a woodev clone** (deferred — heavy live run) and the **project picker / UI-UX** (operator wants to design it next).
+
+**Process note (operator feedback, s15):** stop pinging on decidable gate-fix questions — decide & proceed; reserve
+decisions for UI/UX + real merges/live-proofs. Saved as `feedback-decide-dont-ask`. Communicate RESULTS, not activity.
+
+---
+
 ## s14 — 2026-07-02 — P2 Module 5 (dashboard UI) shipped + LIVE-PROVEN on aurora through the browser
 
 **Context:** s13 shipped the P2 backend; the ONE thing left was Module 5 — the React/Vite UI itself. Operator
