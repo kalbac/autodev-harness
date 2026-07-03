@@ -24,6 +24,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
+import type { RegisterInput, RegisterResult } from "../registry/admin.js";
+import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -165,6 +167,18 @@ export interface ApiServerDeps {
    * `resolveStaticPath` / `tryServeStaticFile`.
    */
   uiDir?: string;
+  /**
+   * OPTIONAL project-admin port (New Project flow, spec §3c/§5). When unset the
+   * three admin routes (`GET /fs/dirs`, `POST /projects`, `DELETE /projects/:id`)
+   * respond 404 — a read-only deployment, mirroring `onOrchestrate`'s pattern.
+   * The server never touches the registry or the filesystem itself; it only
+   * validates request shape and maps the port's typed results to HTTP statuses.
+   */
+  admin?: {
+    register(input: RegisterInput): Promise<RegisterResult>;
+    unregister(id: string): Promise<boolean>;
+    listDirs(path?: string): Promise<FsDirsResult>;
+  };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching a project's `stateDir`. Must be swappable. */
   watchFactory?: (stateDir: string, onChange: (path: string) => void) => { close(): Promise<void> | void };
@@ -773,6 +787,78 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     });
   }
 
+  /** GET /fs/dirs?path=<abs> — folder browser (spec §3e). Whole-listing failures
+   *  are 400 (typed invalid_path from the port), never 500 (spec §6). */
+  async function handleFsDirs(url: URL, res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const pathParam = url.searchParams.get("path");
+    const result = await deps.admin.listDirs(pathParam === null || pathParam === "" ? undefined : pathParam);
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.message });
+      return;
+    }
+    sendJson(res, 200, { path: result.path, parent: result.parent, entries: result.entries });
+  }
+
+  /** POST /projects — register (+ optional scaffold). Validation beyond request
+   *  SHAPE lives in the admin port; this handler only maps typed codes to HTTP. */
+  async function handleRegisterProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { path?: unknown; name?: unknown; scaffold?: unknown; config?: unknown } | null;
+    if (typeof parsed?.path !== "string" || parsed.path.trim() === "") {
+      sendJson(res, 400, { error: "path must be a non-empty string" });
+      return;
+    }
+    if (parsed.name !== undefined && typeof parsed.name !== "string") {
+      sendJson(res, 400, { error: "name must be a string" });
+      return;
+    }
+    if (parsed.scaffold !== undefined && typeof parsed.scaffold !== "boolean") {
+      sendJson(res, 400, { error: "scaffold must be a boolean" });
+      return;
+    }
+    // `config` stays unknown here — the admin port validates it (ScaffoldFormSchema)
+    // and reports a typed invalid_config, keeping one source of truth for the form.
+
+    const result = await deps.admin.register({
+      path: parsed.path,
+      ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+      ...(parsed.scaffold !== undefined ? { scaffold: parsed.scaffold } : {}),
+      ...(parsed.config !== undefined ? { config: parsed.config } : {}),
+    });
+    if (result.ok) {
+      log("INFO", `api: registered project '${result.entry.id}' at ${flattenForLog(result.entry.path)}`);
+      sendJson(res, 201, result.entry);
+      return;
+    }
+    sendJson(res, result.code === "already_registered" ? 409 : 400, {
+      error: result.message,
+      code: result.code,
+    });
+  }
+
   /**
    * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
    * body, then -- WITHOUT awaiting it -- kicks off `p.onOrchestrate(intent)` in
@@ -1039,6 +1125,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       sendJson(res, 200, { projects: await deps.projects.list() });
       return;
     }
+    if (req.method === "POST" && (url.pathname === "/projects" || url.pathname === "/projects/")) {
+      return void (await handleRegisterProject(req, res));
+    }
+    if (req.method === "GET" && (url.pathname === "/fs/dirs" || url.pathname === "/fs/dirs/")) {
+      return void (await handleFsDirs(url, res));
+    }
 
     // Every project-scoped route lives under `/projects/:id/...`. Resolve the
     // project ONCE here, then dispatch the sub-path against the resolved
@@ -1051,6 +1143,33 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         sendJson(res, 400, { error: "invalid project id" });
         return;
       }
+      const sub = projMatch[2] ?? "/";
+
+      // DELETE /projects/:id — registry-entry removal only (spec §3a: never touches
+      // the folder). Handled BEFORE the root resolve: a project whose config fails
+      // to build (hub {error} -> 503 on GET routes) must still be deletable. Also
+      // closes this id's live watcher so a later re-registration under the same id
+      // can never receive stale broadcasts ([multiproject/id-keyed-caches]).
+      if (req.method === "DELETE" && (sub === "/" || sub === "")) {
+        if (!deps.admin) {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        const removed = await deps.admin.unregister(rawPid);
+        if (!removed) {
+          sendJson(res, 404, { error: "project not found" });
+          return;
+        }
+        const w = watchers.get(rawPid);
+        if (w) {
+          void Promise.resolve(w.handle.close()).catch(() => {});
+          watchers.delete(rawPid);
+        }
+        log("INFO", `api: unregistered project '${rawPid}'`);
+        sendJson(res, 200, { removed: rawPid });
+        return;
+      }
+
       const resolved = await deps.projects.get(rawPid);
       if (resolved === null) {
         sendJson(res, 404, { error: "project not found" });
@@ -1062,7 +1181,6 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       }
       const p = resolved.view;
       ensureWatcher(rawPid, p.stateDir);
-      const sub = projMatch[2] ?? "/";
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, res));

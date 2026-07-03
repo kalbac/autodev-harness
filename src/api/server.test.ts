@@ -9,6 +9,8 @@ import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
 import { createApiServer, type ApiServerHandle, type ApiServerDeps } from "./server.js";
+import type { RegisterResult } from "../registry/admin.js";
+import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
@@ -1668,5 +1670,206 @@ describe("createApiServer / multi-project routing", () => {
       const res = await fetch(`http://127.0.0.1:${port}${path}`);
       expect(res.status, path).toBe(404);
     }
+  });
+});
+
+/** Fake admin port capturing calls; per-test overrides via the ctor arg. */
+function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {}) {
+  const calls: { register: unknown[]; unregister: string[]; listDirs: (string | undefined)[] } = {
+    register: [],
+    unregister: [],
+    listDirs: [],
+  };
+  const admin: NonNullable<ApiServerDeps["admin"]> = {
+    register: async (input) => {
+      calls.register.push(input);
+      return { ok: true, entry: { id: "new-proj", name: "new-proj", path: String((input as { path: string }).path) } };
+    },
+    unregister: async (id) => {
+      calls.unregister.push(id);
+      return id === "p1";
+    },
+    listDirs: async (path) => {
+      calls.listDirs.push(path);
+      return { ok: true, path: path ?? null, parent: null, entries: [] } satisfies FsDirsResult;
+    },
+    ...overrides,
+  };
+  return { admin, calls };
+}
+
+describe("GET /fs/dirs", () => {
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/dirs`);
+    expect(res.status).toBe(404);
+  });
+
+  it("passes the decoded ?path= through and returns the listing", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/fs/dirs?path=${encodeURIComponent("D:\\Projects")}`);
+    expect(res.status).toBe(200);
+    expect(calls.listDirs).toEqual(["D:\\Projects"]);
+    const body = (await res.json()) as { path: string | null; entries: unknown[] };
+    expect(body.path).toBe("D:\\Projects");
+  });
+
+  it("omits path when the param is absent (roots view)", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/dirs`);
+    expect(res.status).toBe(200);
+    expect(calls.listDirs).toEqual([undefined]);
+  });
+
+  it("maps invalid_path to 400, never 500", async () => {
+    const { admin } = fakeAdmin({
+      listDirs: async () => ({ ok: false, code: "invalid_path", message: "nope" }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/dirs?path=zzz`);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("nope");
+  });
+});
+
+describe("POST /projects", () => {
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:/x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("registers and returns 201 with the entry", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:/Projects/app", name: "App", scaffold: true, config: { gate: { checkCommand: "npm test" } } }),
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()) as { id: string }).toMatchObject({ id: "new-proj" });
+    expect(calls.register[0]).toMatchObject({ path: "D:/Projects/app", name: "App", scaffold: true });
+  });
+
+  it("400s a missing/empty path before calling the port", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    for (const body of [{}, { path: "" }, { path: 42 }]) {
+      const res = await fetch(`http://127.0.0.1:${port}/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(calls.register).toEqual([]);
+  });
+
+  it("maps already_registered to 409 and invalid_path/not_a_git_repo/invalid_config to 400", async () => {
+    const cases: Array<{ code: "already_registered" | "invalid_path" | "not_a_git_repo" | "invalid_config"; status: number }> = [
+      { code: "already_registered", status: 409 },
+      { code: "invalid_path", status: 400 },
+      { code: "not_a_git_repo", status: 400 },
+      { code: "invalid_config", status: 400 },
+    ];
+    for (const c of cases) {
+      const { admin } = fakeAdmin({
+        register: async () => ({ ok: false, code: c.code, message: "m" }) as RegisterResult,
+      });
+      const h = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+      const port = await h.listen(0);
+      const res = await fetch(`http://127.0.0.1:${port}/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: "D:/x" }),
+      });
+      expect(res.status).toBe(c.status);
+      await h.close();
+    }
+  });
+
+  it("rejects invalid JSON with 400", async () => {
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{nope",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /projects/:id", () => {
+  it("unregisters a known id -> 200; unknown id -> 404", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+
+    const ok = await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()) as { removed: string }).toMatchObject({ removed: "p1" });
+
+    const missing = await fetch(`http://127.0.0.1:${port}/projects/ghost`, { method: "DELETE" });
+    expect(missing.status).toBe(404);
+    expect(calls.unregister).toEqual(["p1", "ghost"]);
+  });
+
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
+    expect(res.status).toBe(404);
+  });
+
+  it("works even when the project root would fail to build (never resolves the root)", async () => {
+    const { admin } = fakeAdmin();
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [],
+        get: async () => ({ error: "broken config" }), // GET-path would 503
+      },
+      admin,
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
+    expect(res.status).toBe(200); // DELETE never called projects.get
+  });
+
+  it("closes a live watcher for the removed project id", async () => {
+    let closed = 0;
+    const fakeWatchFactory = (_sd: string, _onChange: (p: string) => void) => ({
+      close: () => {
+        closed++;
+      },
+    });
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin, watchFactory: fakeWatchFactory }));
+    const port = await handle.listen(0);
+
+    // Attach the watcher by touching any project-scoped GET route.
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(closed).toBe(0);
+
+    await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
+    expect(closed).toBe(1);
   });
 });
