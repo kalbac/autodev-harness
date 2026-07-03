@@ -11,6 +11,8 @@ import { RunView } from "./views/RunView";
 import { TaskDetailView } from "./views/TaskDetailView";
 import { BoardView } from "./views/BoardView";
 import { NewProjectView } from "./views/NewProjectView";
+import { GlobalSettingsView } from "./views/GlobalSettingsView";
+import { ProjectSettingsView } from "./views/ProjectSettingsView";
 import { api } from "./lib/api";
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
@@ -48,25 +50,22 @@ const projectRoute = createRoute({
   ),
 });
 
-// Daemon-global settings placeholder (real screen in M4-7). Root child like /new.
+// Daemon-global settings screen. Root child like /new (owns the full main region).
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
   component: () => (
     <AppShell>
-      <div className="grid h-full place-items-center text-muted">Global settings — coming in M4-7</div>
+      <GlobalSettingsView />
     </AppShell>
   ),
 });
 
 const projectHomeRoute = createRoute({ getParentRoute: () => projectRoute, path: "/", component: HomeView });
-// Per-project settings placeholder (real screen in M4-7).
 const projectSettingsRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/settings",
-  component: () => (
-    <div className="grid h-full place-items-center text-muted">Project settings — coming in M4-7</div>
-  ),
+  component: ProjectSettingsView,
 });
 const runRoute = createRoute({ getParentRoute: () => projectRoute, path: "/runs/$runId", component: RunView });
 const taskRoute = createRoute({ getParentRoute: () => projectRoute, path: "/tasks/$taskId", component: TaskDetailView });
