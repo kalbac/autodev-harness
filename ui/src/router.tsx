@@ -10,6 +10,7 @@ import { HomeView } from "./views/HomeView";
 import { RunView } from "./views/RunView";
 import { TaskDetailView } from "./views/TaskDetailView";
 import { BoardView } from "./views/BoardView";
+import { NewProjectView } from "./views/NewProjectView";
 import { api } from "./lib/api";
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
@@ -24,14 +25,15 @@ const indexRoute = createRoute({
   },
 });
 
-// /new route: a placeholder view for now (NewProjectView arrives in M4-6). Render a
-// simple AppShell-wrapped placeholder so the redirect target exists and compiles.
+// /new route: the New Project screen (folder browser + register form). Kept
+// inside AppShell so the sidebar stays; the rail predicate excludes non-`/p/`
+// paths, so the rail does not render here.
 const newProjectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/new",
   component: () => (
     <AppShell>
-      <div className="grid h-full place-items-center text-muted">New Project — coming in M4-6</div>
+      <NewProjectView />
     </AppShell>
   ),
 });
