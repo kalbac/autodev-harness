@@ -617,10 +617,24 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       if (existing.stateDir === projectStateDir) return; // same project, same path -- keep it
       // Re-registered to a different path: close the stale watcher best-effort
       // (ensureWatcher is sync; the close may be async), then attach the new one.
+      // The close is fire-and-forget -- until it settles (or if it never does) the
+      // OLD stateDir's callback could still fire. The identity guard below (closing
+      // over `record`) silences it even so: it only broadcasts while it is STILL the
+      // current map entry for this id, which stops being true the moment we `delete`
+      // it here and `set` the replacement below.
       void Promise.resolve(existing.handle.close()).catch(() => {});
+      watchers.delete(projectId);
     }
-    const handle = watchFactory(projectStateDir, (changedPath) => broadcastChange(projectId, changedPath));
-    watchers.set(projectId, { stateDir: projectStateDir, handle });
+    const record: { stateDir: string; handle: { close(): Promise<void> | void } } = {
+      stateDir: projectStateDir,
+      handle: { close: () => {} }, // placeholder, replaced below before any event can fire
+    };
+    record.handle = watchFactory(projectStateDir, (changedPath) => {
+      // Identity guard: a retired watcher (re-register race / failed close) must
+      // never broadcast under the reused project id.
+      if (watchers.get(projectId) === record) broadcastChange(projectId, changedPath);
+    });
+    watchers.set(projectId, record);
   }
 
   async function handleState(p: ProjectView, res: ServerResponse): Promise<void> {

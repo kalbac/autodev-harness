@@ -234,6 +234,71 @@ describe("createApiServer / watcher re-attach on stateDir change", () => {
     expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/new.md" });
     ws.close();
   });
+
+  it("silences a retired watcher's callback -- the OLD stateDir's onChange must not broadcast after re-registration", async () => {
+    const dirA = join(root, "stateA2");
+    const dirB = join(root, "stateB2");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirB, { recursive: true });
+
+    let currentStateDir = dirA;
+
+    const onChangeByDir = new Map<string, (path: string) => void>();
+    const watchFactory = (sd: string, onChange: (path: string) => void) => {
+      onChangeByDir.set(sd, onChange);
+      // dirA's close handle never resolves -- simulates the fire-and-forget close
+      // hanging (or forever pending), which is exactly the case the identity
+      // guard must cover: the old callback must stay silent regardless. dirB's
+      // close resolves normally so the test's own teardown (`handle.close()`,
+      // which awaits every live watcher) does not hang.
+      return { close: () => (sd === dirA ? new Promise<void>(() => {}) : Promise.resolve()) };
+    };
+
+    const deps: ApiServerDeps = {
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
+        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+      },
+      watchFactory,
+    };
+    handle = createApiServer(deps);
+    const port = await handle.listen(0);
+
+    // First resolution -> watcher attached on dirA, captures its onChange.
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    const oldOnChange = onChangeByDir.get(dirA)!;
+
+    // Re-register p1 to dirB, resolve again -> dirA's watcher is retired (close
+    // never settles), dirB's watcher attaches.
+    currentStateDir = dirB;
+    await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(onChangeByDir.has(dirB)).toBe(true);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    wsClients.push(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+
+    const received: unknown[] = [];
+    ws.on("message", (d) => received.push(JSON.parse(String(d))));
+
+    // Fire the OLD dir's captured callback -- must NOT broadcast anything.
+    oldOnChange("queue/pending/stale.md");
+
+    // Fire the NEW dir's callback -- must broadcast normally, proving the
+    // socket/plumbing is alive and the silence above wasn't incidental.
+    const msg = new Promise<string>((resolve) => ws.once("message", (d) => resolve(String(d))));
+    onChangeByDir.get(dirB)!("queue/pending/new.md");
+    const parsed = JSON.parse(await msg) as { type: string; projectId: string; path: string };
+    expect(parsed).toEqual({ type: "change", projectId: "p1", path: "queue/pending/new.md" });
+
+    // Exactly one message arrived in total -- the stale dirA event was dropped.
+    expect(received).toEqual([{ type: "change", projectId: "p1", path: "queue/pending/new.md" }]);
+
+    ws.close();
+  });
 });
 
 describe("createApiServer / POST /escalations/:id/reply", () => {
