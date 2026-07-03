@@ -40,8 +40,14 @@ export async function loadRegistry(file: string, log?: Log): Promise<Registry> {
   let text: string;
   try {
     text = await readFile(file, "utf8");
-  } catch {
-    return { projects: [] }; // missing (or unreadable) -> empty; registration recreates it
+  } catch (err) {
+    // ENOENT (missing file) is the normal "no registry yet" case -> silent empty;
+    // registration recreates it. Any OTHER read failure (permission/IO/EISDIR) must
+    // NOT be silently reported as zero projects -- log it loudly first.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log?.("WARN", `registry: failed reading ${file}: ${String(err)} — treating as empty`);
+    }
+    return { projects: [] };
   }
   try {
     const parsed = JSON.parse(text) as { projects?: unknown };

@@ -27,6 +27,22 @@ describe("loadRegistry", () => {
     expect(await loadRegistry(file)).toEqual(reg);
   });
 
+  it("missing file logs NOTHING (ENOENT is the normal no-registry case)", async () => {
+    const logs: string[] = [];
+    const reg = await loadRegistry(file, (lvl, msg) => logs.push(`${lvl}:${msg}`));
+    expect(reg).toEqual({ projects: [] });
+    expect(logs).toEqual([]);
+  });
+
+  it("a non-ENOENT read failure -> empty registry + WARN log (readFile on a directory -> EISDIR)", async () => {
+    // Point loadRegistry at a DIRECTORY: readFile on a dir fails with EISDIR on all
+    // platforms -- a non-ENOENT error that must be logged, not silently empty.
+    const logs: string[] = [];
+    const reg = await loadRegistry(dir, (lvl, msg) => logs.push(`${lvl}:${msg}`));
+    expect(reg).toEqual({ projects: [] });
+    expect(logs.some((l) => l.startsWith("WARN:") && l.includes("failed reading"))).toBe(true);
+  });
+
   it("corrupt JSON -> empty registry + loud log, no throw", async () => {
     mkdirSync(join(dir, "sub"), { recursive: true });
     writeFileSync(file, "{ nope", "utf8");
