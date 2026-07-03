@@ -13,6 +13,8 @@ import { detectRepoRoot } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
 import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
 import { loadRegistry } from "./registry/registry.js";
+import { createProjectAdmin } from "./registry/admin.js";
+import { listDirs } from "./fsbrowse/fsbrowse.js";
 import { createProjectHub } from "./hub/hub.js";
 import { createLogger } from "./util/log.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
@@ -124,6 +126,11 @@ async function main(): Promise<void> {
       log,
     });
 
+    // Project admin (New Project flow, M3): register/unregister + the folder
+    // browser's registry-membership check. Same registry file as the hub, so a
+    // registration is visible to hub.list()/get() on the next call.
+    const admin = createProjectAdmin({ registryFile, log });
+
     // UI bundle lives with the INSTALL, not any project (closes [ui/serve-uidir-reporoot]):
     // compiled layout is dist/index.js + dist/ui. AUTODEV_UI_DIR overrides (dev runs vite anyway).
     const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +152,11 @@ async function main(): Promise<void> {
             },
           };
         },
+      },
+      admin: {
+        register: (input) => admin.register(input),
+        unregister: (id) => admin.unregister(id),
+        listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),
       },
       ...(uiDir !== undefined ? { uiDir } : {}),
       log,
