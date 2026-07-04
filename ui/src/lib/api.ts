@@ -110,7 +110,11 @@ export interface ProjectConfigForm {
   allowedBranchPattern?: string;
   gate?: { checkCommand?: string };
   worktree?: { provision?: string[] };
-  roles?: { worker?: { ladder?: string[] } };
+  roles?: {
+    orchestrator?: { adapter?: string; model?: string; effort?: string };
+    worker?: { adapter?: string; ladder?: string[] };
+    critic?: { adapter?: string; model?: string; effort?: string };
+  };
 }
 
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
