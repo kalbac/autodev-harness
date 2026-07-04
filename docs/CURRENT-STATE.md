@@ -86,9 +86,15 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   → filter, manifest-order). Re-critic residual: case-insensitive-fs path-alias (`["t1","T1"]`) → DECLINED w/ rationale,
   documented in the handler. 684 tests (+13), live curl-proof (`tokens:5000 cost:0.08 taskCount:2`; unknown→404). No UI
   consumer yet (a "today" view is the follow-on) — endpoint is the deliverable per scope.
+- **(c) codex `--json` — ASSESSED & DECLINED (operator agreed).** Reconned before building; found it risks the
+  enforcement gate for marginal telemetry (see NEXT ACTIONS for the full rationale). Not built. Recommended cheap next
+  instead: a UI "today" usage view over the new endpoint.
 - **Both s24 PRs MERGED.** main tip = `8067022` (PR #44 squash, carries PR #43 `b9b87f9` beneath it). NOTE: the s24
-  docs (this file + SESSION-LOG + the new gotcha) for module 1 rode into #44's squash; THIS module-2 docs commit sits on
-  local main and rides the next PR (batch-merges). Working tree clean.
+  docs (this file + SESSION-LOG + the new gotcha) for module 1 rode into #44's squash; the module-2 + session-save docs
+  sit on local main and ride the next PR (batch-merges). Working tree clean.
+- **Workflow snag (self-inflicted, avoid next time):** made uncommitted docs edits on the #44 feature branch, then the
+  post-merge `git reset --hard origin/main` DISCARDED them — had to re-apply. Lesson: commit docs (or make them on `main`
+  after the merge-sync) BEFORE any `reset --hard`; never leave uncommitted work in a branch you're about to reset.
 
 ## Prior session (s23, 2026-07-04)
 
@@ -348,12 +354,24 @@ critic-verdict.json persistence + committed-task verdict seal (s24, PR #43), and
 items, s21 landed the deps-provisioning ops-proof. **No operator-gated items remain.** Everything below is backlog
 polish or an optional follow-up; pick with the operator UNLESS granted autonomy.
 
-**Recommended opener candidates for s25:** (a) **desktop wrap (Electron/Tauri over the loopback API)** — the biggest
-remaining stretch item, additive (the daemon already serves install-relative); needs an IA/UX discussion with the
-operator before building. (c) **codex critic `--json`** for an input/output token split + cost (s22 kept plain `codex
-exec`; would need to re-verify the stdout-shape dependency the verdict-resolution path relies on — gate carefully).
-Also optional: a UI "today"/cross-run usage view consuming the new `GET /runs/:id/usage` endpoint (shipped s24, no
-consumer yet). No single obvious must-do; discuss.
+**Recommended opener candidates for s25 (operator-aligned at s24 end):**
+- **UI "today"/cross-run usage view + strip cost** consuming the s24 `GET /runs/:id/usage` endpoint — cheap, pure
+  frontend, gives the endpoint its first consumer. **The recommended cheap next.** **Cost is NOT wanted (operator, s24
+  end): TOKEN COUNT only, no `$` anywhere.** Fold in a small cleanup — strip cost from `SessionRail`, `RunUsageSummary`,
+  `TokenUsageDoc`, `buildTokenUsageDoc`/`buildRunUsageSummary`, and the endpoint (backend part touches the conductor
+  artifact + endpoint → codex-gate it; UI review-only).
+- **Desktop wrap (Electron/Tauri over the loopback API)** — the biggest remaining stretch item, additive (the daemon
+  already serves install-relative); needs an IA/UX discussion with the operator before building.
+- **~~codex critic `--json`~~ (candidate c) — ASSESSED & DECLINED at s24 end (operator agreed).** A subagent reconned the
+  codex adapter: the verdict's authoritative source is the `-o` outfile, but stdout is the FALLBACK (`parseVerdict`
+  outermost-braces) AND `parseCodexTokens` reads a bare `tokens used` footer — a full `--json` switch (JSONL event stream)
+  breaks BOTH. The `--json` event schema is UNDOCUMENTED in-repo, so it needs an empirical `ADH_LIVE` capture to design
+  safely. Two safe designs, both with a bad payoff: (a) a SEPARATE best-effort `codex exec --json` spawn just for usage —
+  doubles the critic spawn (latency+cost) on every task forever; (b) single `--json` call with verdict re-pointed to `-o`
+  only (drop the stdout fallback) — bets the gate on unverified CLI behavior. Reward is marginal — and now near-zero:
+  the operator has said **cost is NOT wanted at all, token count only** (s24 end), so `--json`'s split+cost draw
+  collapses while the gate risk stays. s22's spec already codified this as a bad trade. **Dead unless the operator
+  specifically resurrects the token-split need — and only then after an ADH_LIVE `--json` shape capture.**
 
 -2. **~~Server-side per-run usage aggregation `GET /runs/:id/usage`~~ — DONE (s24, PR #44 `8067022`).** Sums each task's
    `token-usage.json` server-side (the clean path for a cross-run "today" total). Follow-up if wanted: a UI view that

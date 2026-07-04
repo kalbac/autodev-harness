@@ -51,6 +51,16 @@ Since the conductor already writes per-task JSON runtime artifacts (s22 `token-u
   stop next time (operator's call).
 - 1 new gotcha `[conductor/per-round-overwrite-stale]` (34→35). main tip = `b9b87f9`; this docs commit rides the next PR.
 
+**Candidate (c) — codex critic `--json` — ASSESSED & DECLINED (operator agreed).** After the two modules, reconned (c)
+before building. Finding: the verdict's authoritative source is the `-o` outfile, but stdout is the FALLBACK
+(`parseVerdict` outermost-braces) AND `parseCodexTokens` reads a bare `tokens used` footer — a full `--json` switch
+(JSONL event stream) breaks BOTH, and the `--json` event schema is undocumented in-repo (needs an `ADH_LIVE` capture to
+design safely). Safe designs both bad-payoff: a separate `--json` spawn doubles critic cost forever, or a single-call
+switch bets the gate on unverified CLI behavior — for marginal split+cost telemetry. s22's spec already codified this as
+a bad trade. Operator agreed to skip. Recommended cheap next instead: a UI "today" usage view over the new `GET
+/runs/:id/usage`. **Workflow snag:** uncommitted docs on the #44 branch were discarded by the post-merge `reset --hard`
+and re-applied — commit docs before any reset next time.
+
 ---
 
 ## s23 — 2026-07-04 — run rename + archive + UI re-run LANDED (PR #42 `53d2ced`)
