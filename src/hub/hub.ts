@@ -19,6 +19,12 @@ export interface ProjectHub<R> {
   /** Lazily build (and cache) the project's composition root. Unknown id -> null.
    *  Build failure -> {error} — NOT cached, so fixing config.yaml + retrying works. */
   get(id: string): Promise<HubGetResult<R>>;
+  /** Drop any cached root/error for `id` so the NEXT get() rebuilds from disk.
+   *  Synchronous — just mutates the in-memory maps. Used after an external
+   *  on-disk config write (the config-update endpoint) so callers see the fresh
+   *  config on the next read; does not affect an ALREADY-in-flight run, which
+   *  already captured its own root reference before the evict. */
+  evict(id: string): void;
 }
 
 /**
@@ -109,6 +115,11 @@ export function createProjectHub<R>(deps: {
         deps.log?.("ERROR", `hub: failed to build project '${id}' (${entry.path}): ${message}`);
         return { error: message };
       }
+    },
+
+    evict(id: string): void {
+      roots.delete(id);
+      lastError.delete(id);
     },
   };
 }

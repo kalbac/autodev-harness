@@ -29,6 +29,21 @@ describe("createProjectHub", () => {
     expect(builds).toBe(1);
   });
 
+  it("evict() drops the cached root so the NEXT get() rebuilds -- contrast with the no-evict case above", async () => {
+    let builds = 0;
+    const hub = makeHub(async (e) => {
+      builds++;
+      return { marker: e.id };
+    });
+    expect(await hub.get("a")).toEqual({ root: { marker: "a" } });
+    expect(builds).toBe(1);
+
+    hub.evict("a");
+
+    expect(await hub.get("a")).toEqual({ root: { marker: "a" } });
+    expect(builds).toBe(2); // rebuilt, even though the path didn't change
+  });
+
   it("get() on an unknown id -> null (never builds)", async () => {
     let builds = 0;
     const hub = makeHub(async () => {

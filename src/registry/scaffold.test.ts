@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scaffoldProject, buildConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
+import { scaffoldProject, buildConfigYaml, mergeConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
 import { loadConfig } from "../config/config.js";
 import { parseInvariants } from "../gate/invariants.js";
+import { parse as parseYaml } from "yaml";
 
 let repo: string;
 
@@ -55,6 +56,48 @@ describe("buildConfigYaml", () => {
   it("rejects a provision entry with a separator (schema superRefine) with ScaffoldConfigError", () => {
     expect(() =>
       buildConfigYaml(ScaffoldFormSchema.parse({ worktree: { provision: ["a/b"] } })),
+    ).toThrow(ScaffoldConfigError);
+  });
+});
+
+describe("mergeConfigYaml", () => {
+  it("merges gate.checkCommand into an existing config while preserving an unrelated hand-set field", () => {
+    const existing = "antiDrift:\n  model: custom-model\n";
+    const text = mergeConfigYaml(existing, ScaffoldFormSchema.parse({ gate: { checkCommand: "npm test" } }));
+    const parsed = parseYaml(text) as { antiDrift: { model: string }; gate: { checkCommand: string } };
+    expect(parsed.gate.checkCommand).toBe("npm test");
+    expect(parsed.antiDrift.model).toBe("custom-model"); // survives untouched
+  });
+
+  it("preserves roles.worker's extra hand-set fields while updating only the form's ladder", () => {
+    const existing = "roles:\n  worker:\n    adapter: claude\n    maxTurns: 55\n";
+    const text = mergeConfigYaml(
+      existing,
+      ScaffoldFormSchema.parse({ roles: { worker: { ladder: ["sonnet"] } } }),
+    );
+    const parsed = parseYaml(text) as { roles: { worker: { adapter: string; maxTurns: number; ladder: string[] } } };
+    expect(parsed.roles.worker.maxTurns).toBe(55); // survives untouched
+    expect(parsed.roles.worker.adapter).toBe("claude"); // survives untouched
+    expect(parsed.roles.worker.ladder).toEqual(["sonnet"]); // updated by the form
+  });
+
+  it("starts from {} when existingRawText is empty", () => {
+    const text = mergeConfigYaml("", ScaffoldFormSchema.parse({ allowedBranchPattern: "^feature/" }));
+    const parsed = parseYaml(text) as { allowedBranchPattern: string };
+    expect(parsed.allowedBranchPattern).toBe("^feature/");
+  });
+
+  it("throws ScaffoldConfigError when the existing text is a YAML array at the root", () => {
+    expect(() => mergeConfigYaml("- a\n- b\n", ScaffoldFormSchema.parse({}))).toThrow(ScaffoldConfigError);
+  });
+
+  it("throws ScaffoldConfigError when the existing text is a YAML scalar at the root", () => {
+    expect(() => mergeConfigYaml("hello\n", ScaffoldFormSchema.parse({}))).toThrow(ScaffoldConfigError);
+  });
+
+  it("throws ScaffoldConfigError when the merged result fails the real schema (worktree.provision separator)", () => {
+    expect(() =>
+      mergeConfigYaml("", ScaffoldFormSchema.parse({ worktree: { provision: ["a/b"] } })),
     ).toThrow(ScaffoldConfigError);
   });
 });

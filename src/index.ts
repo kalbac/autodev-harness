@@ -173,6 +173,14 @@ async function main(): Promise<void> {
         register: (input) => admin.register(input),
         unregister: (id) => admin.unregister(id),
         rename: (id, name) => admin.rename(id, name),
+        updateConfig: async (id, form) => {
+          const result = await admin.updateConfig(id, form);
+          // config.yaml changed on disk -- drop the cached ProjectRoot (and any stale
+          // error) so the NEXT hub.get() rebuilds from the fresh file. An
+          // already-in-flight run keeps whatever root it already captured.
+          if (result.ok) hub.evict(id);
+          return result;
+        },
         listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),
       },
       ...(uiDir !== undefined ? { uiDir } : {}),

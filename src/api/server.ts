@@ -24,7 +24,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
-import type { RegisterInput, RegisterResult, RenameResult } from "../registry/admin.js";
+import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
@@ -195,6 +195,7 @@ export interface ApiServerDeps {
     register(input: RegisterInput): Promise<RegisterResult>;
     unregister(id: string): Promise<boolean>;
     rename(id: string, name: string): Promise<RenameResult>;
+    updateConfig(id: string, rawForm: unknown): Promise<ConfigUpdateResult>;
     listDirs(path?: string): Promise<FsDirsResult>;
   };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
@@ -919,6 +920,59 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     });
   }
 
+  /** PATCH /projects/:id/config — merge a curated form into `.autodev/config.yaml`
+   *  (the write counterpart of `GET /projects/:id/config`). Unlike
+   *  `handlePatchProject`, the body shape is NOT validated here -- the admin port
+   *  owns `ScaffoldFormSchema` validation, exactly like `POST /projects`'s `config`
+   *  field already does ("config stays unknown here, the admin port validates it").
+   *  `pid` is already the decoded+validated id. */
+  async function handlePatchConfig(pid: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const result = await deps.admin.updateConfig(pid, body);
+    if (!result.ok) {
+      sendJson(res, result.code === "not_found" ? 404 : 400, { error: result.message, code: result.code });
+      return;
+    }
+
+    // The write succeeded -- re-resolve so the response reflects the FRESH
+    // on-disk config. index.ts's wiring evicts the hub cache before this handler
+    // runs, so this `get` triggers a rebuild rather than serving a stale root.
+    const resolved = await deps.projects.get(pid);
+    if (resolved === null) {
+      sendJson(res, 404, { error: "project not found" });
+      return;
+    }
+    if ("error" in resolved) {
+      sendJson(res, 503, { error: `project failed to load: ${resolved.error}` });
+      return;
+    }
+    if (!resolved.view.config) {
+      sendJson(res, 200, { updated: true }); // defensive fallback -- config unset on the view
+      return;
+    }
+    log("INFO", `api: updated config for project '${pid}'`);
+    sendJson(res, 200, resolved.view.config);
+  }
+
   /**
    * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
    * body, then -- WITHOUT awaiting it -- kicks off `p.onOrchestrate(intent)` in
@@ -1235,6 +1289,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // must still be renameable. id stays stable -> id-keyed caches remain valid.
       if (req.method === "PATCH" && (sub === "/" || sub === "")) {
         return void (await handlePatchProject(rawPid, req, res));
+      }
+
+      // PATCH /projects/:id/config — config-write endpoint. Handled BEFORE the root
+      // resolve for the same reason as DELETE/rename: a project whose CURRENT config
+      // fails to build must still be fixable from here.
+      if (req.method === "PATCH" && (sub === "/config" || sub === "/config/")) {
+        return void (await handlePatchConfig(rawPid, req, res));
       }
 
       const resolved = await deps.projects.get(rawPid);

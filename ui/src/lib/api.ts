@@ -102,6 +102,17 @@ export interface ProjectConfigView {
   };
 }
 
+/** Body for `PATCH /projects/:id/config` — a partial config write. Only the
+ *  fields present are changed server-side; everything else (including fields
+ *  this form doesn't cover at all) is preserved. Mirrors the subset of
+ *  `ProjectConfigView` that the UI exposes for editing. */
+export interface ProjectConfigForm {
+  allowedBranchPattern?: string;
+  gate?: { checkCommand?: string };
+  worktree?: { provision?: string[] };
+  roles?: { worker?: { ladder?: string[] } };
+}
+
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
  *  absolute path for the next `?path=` request; for a symlink it is the resolved
  *  real target. */
@@ -203,6 +214,15 @@ export const api = {
   getEscalation: (projectId: string, id: string) =>
     req<Escalation>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}`)),
   getConfig: (projectId: string) => req<ProjectConfigView>(projectPath(projectId, "/config")),
+
+  /** Write a partial config update (registry-adjacent, project-scoped). Returns
+   *  the fresh curated config view. See PATCH /projects/:id/config. */
+  updateProjectConfig: (projectId: string, form: Partial<ProjectConfigForm>) =>
+    req<ProjectConfigView>(projectPath(projectId, "/config"), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(form),
+    }),
 
   /** Runtime files are raw text/json, not a JSON envelope — fetched as text. */
   async getRuntimeFile(

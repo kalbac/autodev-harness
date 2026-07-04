@@ -123,6 +123,60 @@ export function buildConfigYaml(form: ScaffoldForm): string {
   return text;
 }
 
+/**
+ * Merge `form` into an EXISTING raw config object (parsed straight from YAML —
+ * NOT the schema-defaulted HarnessConfig) so hand-set fields the form doesn't
+ * cover survive a save from the UI. Mirrors `buildConfigYaml`'s
+ * validate-before-write discipline: the merged text is parsed back and
+ * validated against the real strict `HarnessConfigSchema` before being
+ * returned, so a bad merge is caught here, never partially written.
+ *
+ * NOTE: re-serializing through the `yaml` library drops any hand-written
+ * comments in the original file (this is a round-trip re-emit, not an
+ * in-place comment-preserving edit) — an accepted UI-save tradeoff, not a bug.
+ */
+export function mergeConfigYaml(existingRawText: string, form: ScaffoldForm): string {
+  const base = existingRawText.trim() === "" ? {} : parseYaml(existingRawText);
+  if (base === null || typeof base !== "object" || Array.isArray(base)) {
+    throw new ScaffoldConfigError("existing config.yaml is not a YAML mapping at the root");
+  }
+  const raw = base as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...raw };
+
+  if (form.allowedBranchPattern !== undefined) merged["allowedBranchPattern"] = form.allowedBranchPattern;
+  if (form.gate?.checkCommand !== undefined) {
+    merged["gate"] = { ...(raw["gate"] as Record<string, unknown> | undefined), checkCommand: form.gate.checkCommand };
+  }
+  if (form.worktree?.provision !== undefined) {
+    merged["worktree"] = {
+      ...(raw["worktree"] as Record<string, unknown> | undefined),
+      provision: form.worktree.provision,
+    };
+  }
+  if (form.roles !== undefined) {
+    const rawRoles = (raw["roles"] as Record<string, unknown> | undefined) ?? {};
+    const mergedRoles: Record<string, unknown> = { ...rawRoles };
+    for (const role of ["orchestrator", "worker", "critic"] as const) {
+      const formRole = form.roles[role];
+      if (formRole !== undefined) {
+        mergedRoles[role] = { ...(rawRoles[role] as Record<string, unknown> | undefined), ...pruneUndefined(formRole) };
+      }
+    }
+    merged["roles"] = mergedRoles;
+  }
+
+  const text = CONFIG_HEADER + stringifyYaml(merged);
+
+  const parsed = HarnessConfigSchema.safeParse(parseYaml(text));
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`)
+      .join("; ");
+    throw new ScaffoldConfigError(`merged config.yaml would not load: ${issues}`);
+  }
+  return text;
+}
+
 /** `writeFile` with `wx`; EEXIST -> false (existing file NEVER clobbered — spec §6). */
 async function writeIfAbsent(path: string, content: string): Promise<boolean> {
   try {
