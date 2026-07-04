@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type RegisterProjectInput } from "./api";
+import { api, type RegisterProjectInput, type ProjectConfigForm } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -38,6 +38,20 @@ export const useEscalation = (p: string, id: string, enabled = true) =>
  *  by WS like everything else. `enabled` guards the daemon-global routes. */
 export const useConfig = (p: string) =>
   useQuery({ queryKey: qk.config(p), queryFn: () => api.getConfig(p), enabled: p !== "" });
+
+/** Write a partial project config update; invalidates this project's config
+ *  query (and the daemon-wide project list, since a broken config can become
+ *  buildable/renamed status can shift) on success. */
+export const useUpdateProjectConfig = (projectId: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (form: ProjectConfigForm) => api.updateProjectConfig(projectId, form),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.config(projectId), data); // optimistic: server already returned the fresh view
+      void qc.invalidateQueries({ queryKey: qk.projects });
+    },
+  });
+};
 
 /** Folder browser (M3). `path` undefined → roots view. Keyed by path so
  *  navigating dirs caches each level. */

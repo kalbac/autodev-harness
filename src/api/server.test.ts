@@ -1685,11 +1685,13 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
     register: unknown[];
     unregister: string[];
     rename: { id: string; name: string }[];
+    updateConfig: { id: string; form: unknown }[];
     listDirs: (string | undefined)[];
   } = {
     register: [],
     unregister: [],
     rename: [],
+    updateConfig: [],
     listDirs: [],
   };
   const admin: NonNullable<ApiServerDeps["admin"]> = {
@@ -1705,6 +1707,12 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
       calls.rename.push({ id, name });
       return id === "p1"
         ? { ok: true, entry: { id, name, path: "D:/Projects/p1" } }
+        : { ok: false, code: "not_found", message: `project not found: ${id}` };
+    },
+    updateConfig: async (id, form) => {
+      calls.updateConfig.push({ id, form });
+      return id === "p1"
+        ? { ok: true }
         : { ok: false, code: "not_found", message: `project not found: ${id}` };
     },
     listDirs: async (path) => {
@@ -2085,5 +2093,149 @@ describe("GET /projects/:id/config", () => {
 
     const res = await fetch(`http://127.0.0.1:${port}/projects/@bad/config`);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("PATCH /projects/:id/config", () => {
+  const sampleConfig: ProjectConfigView = {
+    stateDir: ".autodev",
+    allowedBranchPattern: "^autodev/",
+    gate: { checkCommand: "npm test" },
+    worktree: { provision: ["vendor", "node_modules"] },
+    roles: {
+      orchestrator: { adapter: "claude", model: "opus", effort: "high" },
+      worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
+      critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
+    },
+  };
+
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gate: { checkCommand: "npm test" } }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("success -> 200 with the entry's config; forwards {id, form} to admin.updateConfig", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gate: { checkCommand: "npm test" } }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectConfigView;
+    expect(body).toEqual(sampleConfig);
+    expect(calls.updateConfig).toEqual([{ id: "p1", form: { gate: { checkCommand: "npm test" } } }]);
+  });
+
+  it("unknown id -> 404 not_found", async () => {
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects/ghost/config`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gate: { checkCommand: "npm test" } }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { code: string }).toMatchObject({ code: "not_found" });
+  });
+
+  it("invalid form (admin reports invalid_config) -> 400", async () => {
+    const { admin } = fakeAdmin({
+      updateConfig: async () => ({ ok: false, code: "invalid_config", message: "invalid config form: bogus" }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bogus: true }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { code: string }).toMatchObject({ code: "invalid_config" });
+  });
+
+  it("malformed JSON body -> 400 WITHOUT calling admin.updateConfig", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: "{ not json",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid JSON body" });
+    expect(calls.updateConfig).toEqual([]);
+  });
+
+  it("rejects an over-sized body with 413 and never calls admin.updateConfig", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir, config: sampleConfig }, { admin }));
+    const port = await handle.listen(0);
+    // Same unbounded-body memory-DoS guard as register/rename/reply (`[api/413-teardown]`).
+    const huge = "x".repeat(1_000_001 + 64);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gate: { checkCommand: huge } }),
+    });
+    expect(res.status).toBe(413);
+    expect(calls.updateConfig).toEqual([]);
+  });
+
+  it("succeeds even though the project's config currently fails to build (PATCH sits before root-resolve; the post-write re-resolve then picks up the fixed state)", async () => {
+    // Mirrors the rename PATCH block's "broken-config-still-renameable" test: the
+    // config-write route must be reachable regardless of the CURRENT hub state.
+    // Unlike rename, this route DOES need one post-write `projects.get` call (to
+    // report the fresh config back), so the stateful fake here fails on its FIRST
+    // call (simulating the currently-broken build a plain GET would 503 on) and
+    // succeeds from the SECOND call on (simulating the post-write rebuild that
+    // index.ts's real wiring triggers via hub.evict).
+    const { admin } = fakeAdmin({ updateConfig: async () => ({ ok: true }) });
+    let getCalls = 0;
+    const fixedConfig: ProjectConfigView = { ...sampleConfig, gate: { checkCommand: "fixed" } };
+    handle = createApiServer({
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: stateDir, status: "error" }],
+        get: async (id) => {
+          getCalls++;
+          if (id !== "p1") return null;
+          if (getCalls === 1) return { error: "config currently fails to build" };
+          return { view: { repo, stateDir, config: fixedConfig } };
+        },
+      },
+      admin,
+    });
+    const port = await handle.listen(0);
+
+    // A plain GET while the config is still broken -- 503, and consumes call #1.
+    const getRes = await fetch(`http://127.0.0.1:${port}${p1("/config")}`);
+    expect(getRes.status).toBe(503);
+
+    // The PATCH never consults the broken cached state (it's handled before root-
+    // resolve): it calls admin.updateConfig directly, then does its OWN post-write
+    // get() (call #2), which now reflects the fixed config.
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/config")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ gate: { checkCommand: "fixed" } }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectConfigView;
+    expect(body).toEqual(fixedConfig);
+    expect(getCalls).toBe(2);
   });
 });

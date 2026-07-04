@@ -7,7 +7,7 @@
  * concurrent POST /projects handled without serialization would race
  * (last-writer-wins) and silently lose one entry.
  */
-import { stat, realpath } from "node:fs/promises";
+import { stat, realpath, lstat, readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -19,7 +19,7 @@ import {
   isPathRegistered,
   type RegistryEntry,
 } from "./registry.js";
-import { scaffoldProject, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
+import { scaffoldProject, mergeConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
 
 type Log = (level: string, message: string) => void;
 
@@ -45,12 +45,24 @@ export type RenameResult =
   | { ok: true; entry: RegistryEntry }
   | { ok: false; code: RenameErrorCode; message: string };
 
+export type ConfigUpdateErrorCode = "not_found" | "invalid_config";
+
+export type ConfigUpdateResult = { ok: true } | { ok: false; code: ConfigUpdateErrorCode; message: string };
+
 export interface ProjectAdmin {
   register(input: RegisterInput): Promise<RegisterResult>;
   /** True when removed; false for an unknown id. Registry entry only. */
   unregister(id: string): Promise<boolean>;
   /** Set a project's display name by id. Registry entry only — never touches the folder. */
   rename(id: string, name: string): Promise<RenameResult>;
+  /** Merge `form` into the project's `.autodev/config.yaml` (creating the file
+   *  from an empty base if absent) and write it back. This writes the PROJECT'S
+   *  file, not registry.json, but is still serialized through the same lock so
+   *  it can't race a concurrent register/rename/unregister. Does NOT invalidate
+   *  any hub-cached ProjectRoot — that's the caller's job (index.ts wires
+   *  eviction), keeping this module hub-agnostic (mirrors how DELETE's watcher
+   *  teardown lives in server.ts, not here). */
+  updateConfig(id: string, rawForm: unknown): Promise<ConfigUpdateResult>;
   /** Registry membership by canonical path (folder-browser badge). */
   isRegistered(absPath: string): Promise<boolean>;
 }
@@ -167,6 +179,93 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
         await saveRegistry(deps.registryFile, result.registry);
         deps.log?.("INFO", `admin: renamed project '${id}' to ${JSON.stringify(trimmed)}`);
         return { ok: true, entry: result.entry };
+      });
+    },
+
+    updateConfig(id, rawForm) {
+      // Same read-modify-write mutex as register/unregister/rename: this writes
+      // the PROJECT's config.yaml, not registry.json, but must still be
+      // serialized so it can't race a concurrent register/rename/unregister.
+      return withLock(async (): Promise<ConfigUpdateResult> => {
+        // 1. Validate shape (same issue-join style register already uses).
+        const form = ScaffoldFormSchema.safeParse(rawForm);
+        if (!form.success) {
+          const issues = form.error.issues
+            .map((i) => `${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`)
+            .join("; ");
+          return { ok: false, code: "invalid_config", message: `invalid config form: ${issues}` };
+        }
+
+        // 2. Resolve the entry by id.
+        const registry = await loadRegistry(deps.registryFile, deps.log);
+        const entry = registry.projects.find((p) => p.id === id);
+        if (!entry) {
+          return { ok: false, code: "not_found", message: `project not found: ${id}` };
+        }
+
+        // 3. Symlink guard (same class as `[scaffold/symlink-escape]` — writeFile/
+        //    mkdir follow symlinks, so a hostile `.autodev -> /outside` would write
+        //    outside the repo). A missing `.autodev` is fine; step 6 creates it.
+        const autodevDir = join(entry.path, ".autodev");
+        let autodevLst;
+        try {
+          autodevLst = await lstat(autodevDir);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        if (autodevLst !== undefined && !autodevLst.isDirectory()) {
+          return {
+            ok: false,
+            code: "invalid_config",
+            message: "refusing to write config: .autodev is not a real directory (symlink?)",
+          };
+        }
+
+        // 4. Read the existing config text. Missing -> "" (mirrors loadConfig's own
+        //    missing-file convention -- merge starts from {}). Any OTHER read error
+        //    bubbles up to the route's top-level 500 catch (same as register's
+        //    real-fs-failure precedent). Same symlink-escape guard as `.autodev`
+        //    itself: `.autodev` can be a real directory while `config.yaml` INSIDE
+        //    it is a symlink to an outside file -- readFile/writeFile would follow
+        //    it transparently, so lstat it first and refuse anything but a real file.
+        const configPath = join(autodevDir, "config.yaml");
+        let configLst;
+        try {
+          configLst = await lstat(configPath);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        if (configLst !== undefined && !configLst.isFile()) {
+          return {
+            ok: false,
+            code: "invalid_config",
+            message: "refusing to write config: config.yaml is not a real file (symlink?)",
+          };
+        }
+        let existingText = "";
+        try {
+          existingText = await readFile(configPath, "utf8");
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+
+        // 5. Merge + validate BEFORE any write.
+        let mergedText: string;
+        try {
+          mergedText = mergeConfigYaml(existingText, form.data);
+        } catch (err) {
+          if (err instanceof ScaffoldConfigError) {
+            return { ok: false, code: "invalid_config", message: err.message };
+          }
+          throw err;
+        }
+
+        // 6. Write back (plain overwrite -- single-writer, small file. Project file
+        //    only; registry.json is untouched).
+        await mkdir(autodevDir, { recursive: true });
+        await writeFile(configPath, mergedText, "utf8");
+        deps.log?.("INFO", `admin: updated config for project '${id}'`);
+        return { ok: true };
       });
     },
 
