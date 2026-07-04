@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc } from "./api";
+import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc, type RunPatch } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -30,7 +30,13 @@ export interface RunUsageSummary {
 export const useProjects = () => useQuery({ queryKey: qk.projects, queryFn: api.getProjects });
 
 export const useState = (p: string) => useQuery({ queryKey: qk.state(p), queryFn: () => api.getState(p) });
-export const useRuns = (p: string) => useQuery({ queryKey: qk.runs(p), queryFn: () => api.getRuns(p) });
+/** Runs list. `includeArchived` gets its own cache key (prefixed by `qk.runs(p)`
+ *  so a single `invalidateQueries({queryKey: qk.runs(p)})` still refreshes both). */
+export const useRuns = (p: string, includeArchived = false) =>
+  useQuery({
+    queryKey: includeArchived ? ([...qk.runs(p), "archived"] as const) : qk.runs(p),
+    queryFn: () => api.getRuns(p, includeArchived),
+  });
 export const useRun = (p: string, id: string) =>
   useQuery({ queryKey: qk.run(p, id), queryFn: () => api.getRun(p, id) });
 export const useRuntimeFiles = (p: string, taskId: string) =>
@@ -103,6 +109,19 @@ export const useUpdateProjectConfig = (projectId: string) => {
     onSuccess: (data) => {
       qc.setQueryData(qk.config(projectId), data); // optimistic: server already returned the fresh view
       void qc.invalidateQueries({ queryKey: qk.projects });
+    },
+  });
+};
+
+/** Rename/archive a run manifest; refreshes the run + the runs list (both the
+ *  default and archived variants, via the shared `qk.runs` prefix). */
+export const usePatchRun = (projectId: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, patch }: { runId: string; patch: RunPatch }) => api.patchRun(projectId, runId, patch),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.run(projectId, data.runId), data);
+      void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
     },
   });
 };

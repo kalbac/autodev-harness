@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Inbox } from "lucide-react";
 import { useProjects, useRuns, useState as useProjectState } from "@/lib/queries";
@@ -33,7 +34,8 @@ const SEAL_SUB: Record<Tone, string> = {
 export function HomeView() {
   // Route guarantees projectId under `/p/:projectId/`; `?? ""` is only for the type.
   const projectId = useProjectId() ?? "";
-  const runs = useRuns(projectId);
+  const [showArchived, setShowArchived] = useState(false);
+  const runs = useRuns(projectId, showArchived);
   const state = useProjectState(projectId);
   const projects = useProjects();
 
@@ -59,9 +61,15 @@ export function HomeView() {
 
         {/* Recent runs — cards with a verdict seal. */}
         <div className="mx-auto w-full max-w-3xl px-6 pb-16">
-          <h2 className="mb-3 font-mono text-[11px] uppercase tracking-wider text-subtle">
-            Recent runs
-          </h2>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-mono text-[11px] uppercase tracking-wider text-subtle">Recent runs</h2>
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className="font-mono text-[10px] uppercase tracking-wider text-subtle transition-colors hover:text-muted"
+            >
+              {showArchived ? "hide archived" : "show archived"}
+            </button>
+          </div>
 
           {runs.data && runs.data.length > 0 ? (
             <ul className="flex flex-col gap-2">
@@ -113,7 +121,14 @@ function RunCard({
         {SEAL_LABEL[tone]}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-semibold text-text">{run.intent}</div>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold text-text">{run.name ?? run.intent}</span>
+          {run.archived_at !== undefined && (
+            <span className="shrink-0 rounded border border-line px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-subtle">
+              archived
+            </span>
+          )}
+        </div>
         <div className="truncate font-mono text-[11px] text-subtle">
           {run.taskIds.length} task{run.taskIds.length === 1 ? "" : "s"}
           {SEAL_SUB[tone] ? ` · ${SEAL_SUB[tone]}` : ""}

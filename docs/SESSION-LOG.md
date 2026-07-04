@@ -4,6 +4,40 @@
 
 ---
 
+## s22 — 2026-07-04 — token/usage instrumentation LANDED → the first post-P3 module (PR #41 `675baf0`)
+
+The next real module after P3 closed. Operator scope-gated at session start: **per-task runtime file + client-side
+aggregation by run** (minimal conductor touch; the existing generic runtime-file endpoint serves the artifact, so **no
+new API code** — the key scope win). Enforcement-adjacent (worker/critic adapters) + conductor → full TDD → spec-check →
+independent codex GPT-5.5 gate → re-critic.
+- **Backend.** New pure `src/usage/usage.ts`: `parseClaudeUsage` (last stream-json `result` event's `usage`+`total_cost_usd`),
+  `parseCodexTokens` (line-anchored bare `tokens used` footer), `buildTokenUsageDoc` aggregator. `WorkerResult.usage?`
+  attached in `claude-adapter.toResult`; `CriticResult.usage?` in `codex-adapter` — plain `codex exec` KEPT (not `--json`)
+  so the enforcement verdict-resolution path is byte-unchanged; critic yields a single `tokens` total. Conductor
+  accumulates worker+critic usage per round → writes `token-usage.json` best-effort/never-throws (`[ts/fail-closed]`,
+  same discipline as recordRun/digest/teardown; pushed BEFORE the rate-limit/timeout early-returns so throttled steps
+  still account).
+- **codex GPT-5.5 gate — 1 Medium.** `parseCodexTokens` first matched "tokens used" ANYWHERE in stdout and grabbed the
+  next integer → false telemetry from prose like "No tokens used in this example; finding 3 ...". Fixed = LINE-ANCHORED
+  (the whole trimmed line must BE the footer; inline `: N` or a bare-integer next line) + 3 regression tests including
+  the exact false-telemetry case. **Re-critic clean** — no residual (verified the real `tokens used\n<N>` + `: N` forms
+  still parse, no backtracking, no off-by-one).
+- **UI (review-only).** `SessionRail` Tokens block drops the `phase 2` placeholder; new `useRunUsage` hook sums the
+  newest run's per-task `token-usage.json` on the client (404-tolerant — a task with no usage file is skipped, never
+  fails the summary). `formatTokens` (`52.4k`/`2.1M`) + `formatCost` helpers. `TokenUsageDoc` mirror in `api.ts`.
+- **Verification.** 654 tests (+19: 13 usage, 2 claude, 3 codex, 3 conductor incl. best-effort-throw), typecheck+build
+  green (root+ui), CI green 4/4. **Browser-smoke** on a seeded serve (scratchpad project, port 7822): rail rendered
+  `this run 52.4k · cost $0.0473` (client aggregate over one task-with-usage + one 404 task tolerated); screenshot sent
+  to operator; seeded project + daemon torn down. Self-merged (machine bar: codex-clean + green CI).
+- **Batch-merge note (git mechanics).** The s21 docs commit `66e04c7` was committed locally on main but never pushed
+  (direct push to main is classifier-gated → docs ride with the next PR per AGENTS.md). GitHub's squash of PR #41 folded
+  BOTH the s21 docs AND the s22 module into `675baf0`; `git diff 66e04c7 HEAD -- docs/` = only the new spec file, so all
+  s21 content is preserved in main (the commit OBJECT isn't in linear history, but its content is — exactly how
+  batch-merges are meant to work). Reset local main to `origin/main` to drop a spurious pull-merge commit.
+- No new gotchas (the `parseCodexTokens` lesson is a code-review catch, not a repeated-mistake gotcha; count stays 33).
+
+---
+
 ## s21 — 2026-07-04 — woodev deps-provisioning ops-proof LANDED → P3 loop proven end-to-end (COMMIT `912ef64`)
 
 Operator on `/remote-control` chose the operator-gated ops-proof (Task 9 of the deps-provisioning plan) and observed —

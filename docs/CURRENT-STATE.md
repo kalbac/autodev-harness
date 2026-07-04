@@ -1,14 +1,13 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-04 (s21 — **woodev deps-provisioning ops-proof LANDED → P3 loop proven end-to-end.**
-> Operator (remote-control) chose the gated ops-proof and observed. Cloned `woodev_framework` (disposable),
-> provisioned `vendor` + `plugins-reference` as junctions, ran the harness `run --once`: worker (claude/sonnet)
-> → critic (codex/gpt-5.5 `clean`) → **real multi-tool static gate `composer check:static` (phpcs+phpstan) GREEN
-> in the worktree on the provisioned gitignored deps** → **COMMIT `912ef64`** → safe link-only teardown.
-> Key finding: full `composer check` (incl. phpunit) fatals in a junction-provisioned worktree —
-> `[worktree/vendor-junction-autoload-basedir]` (Composer bakes the junction's realpath as `$baseDir`).
-> **P3 is CLOSED end-to-end; no operator-gated items remain.**)
+> Last updated: 2026-07-04 (s22 — **token/usage instrumentation LANDED (PR #41, squash `675baf0`) — the next real
+> module after P3.** Worker (claude stream-json `result.usage`) + critic (codex bare `tokens used` footer, best-effort)
+> adapters expose usage; conductor persists a per-task `token-usage.json` runtime artifact (best-effort/never-throws);
+> the Tokens rail drops its phase-2 placeholder and aggregates the newest run's tasks on the client via the EXISTING
+> runtime-file endpoint (no new API code). Full TDD → **independent codex GPT-5.5 gate (1 Medium found+fixed → re-critic
+> clean)** → 654 tests, CI green 4/4, browser-smoke proven (`52.4k · $0.0473`). Prior: s21 woodev deps-provisioning
+> ops-proof → P3 loop proven end-to-end (green COMMIT `912ef64`). **P3 CLOSED; no operator-gated items remain.**)
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -26,7 +25,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** **Post-P3 — token/usage instrumentation LANDED (s22, PR #41 `675baf0`):** worker/critic adapters expose usage → conductor persists per-task `token-usage.json` (best-effort) → Tokens rail aggregates on the client; codex-gated (1 Medium fixed → re-critic clean), 654 tests, browser-smoke proven. |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -37,7 +36,29 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s21, 2026-07-04)
+## Last session (s22, 2026-07-04)
+
+- **Token/usage instrumentation SHIPPED & MERGED (PR #41, squash `675baf0`) — the next real module after P3 closed.**
+  Operator scope-gated at session start (per-task runtime file + client-side aggregation by run). Full
+  worker→spec-check→codex-gate→re-critic discipline (enforcement-adjacent adapters + conductor).
+- **Backend (codex-gated):** new pure `src/usage/usage.ts` (`WorkerUsage`/`CriticUsage`/`TokenUsageDoc` +
+  `parseClaudeUsage` last stream-json `result` event / `parseCodexTokens` line-anchored footer / `buildTokenUsageDoc`).
+  `WorkerResult.usage?` parsed in `claude-adapter.toResult`; `CriticResult.usage?` in `codex-adapter` (plain `codex
+  exec` KEPT — not switched to `--json` — so the enforcement verdict path is untouched; critic yields a single `tokens`
+  total). Conductor accumulates worker+critic usage per round → writes `token-usage.json` best-effort/never-throws
+  (`[ts/fail-closed]`), served UNCHANGED by the existing runtime-file endpoint (no new API code — the key scope win).
+- **codex GPT-5.5 gate:** 1 Medium — `parseCodexTokens` loose-matched "tokens used" anywhere in stdout → false
+  telemetry from prose like "No tokens used ... finding 3". Fixed = LINE-ANCHORED footer parse (whole trimmed line
+  must be the footer) + 3 regression tests. **Re-critic clean** (no residual). Nothing else merge-blocking.
+- **UI (review-only):** `SessionRail` Tokens block drops the `phase 2` placeholder; new `useRunUsage` hook sums the
+  newest run's per-task `token-usage.json` on the client (404-tolerant). `formatTokens`/`formatCost` helpers.
+- **Verification:** 654 tests (+19), typecheck+build green (root+ui), CI 4/4. **Browser-smoke** on a seeded serve
+  (scratchpad project, port 7822): rail rendered `this run 52.4k · cost $0.0473`; a task with no usage file (404) was
+  tolerated and excluded from the sum. Screenshot sent to operator. Seeded project + daemon cleaned up after.
+- No new gotchas (the `parseCodexTokens` lesson is a code-review catch, not a repeated-mistake gotcha; count stays 33).
+- main tip = `675baf0`. This docs commit rides with the next PR (batch-merges). Working tree clean.
+
+## Prior session (s21, 2026-07-04)
 
 - **woodev deps-provisioning ops-proof LANDED — the whole P3 loop is now proven end-to-end on a real,
   production-shaped project.** Operator on `/remote-control` chose the operator-gated ops-proof and observed.
@@ -235,29 +256,21 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s22)
+## NEXT ACTIONS (s23)
 
-**P3 is CLOSED end-to-end.** The product shell is complete (register → scaffold → drive → settings → theme), s19+s20
-closed 4 backlog items, and s21 landed the operator-gated deps-provisioning ops-proof (green COMMIT on a real woodev
-clone). **No operator-gated items remain.** Everything below is a real next-module or backlog polish; pick with the
-operator UNLESS granted autonomy, then take the best-scoped item.
+**P3 is CLOSED end-to-end and the first post-P3 module (token/usage instrumentation) is LANDED (s22, PR #41).** The
+product shell is complete (register → scaffold → drive → settings → theme), s19+s20 closed 4 backlog items, s21 landed
+the deps-provisioning ops-proof, and s22 shipped the Tokens rail. **No operator-gated items remain.** Everything below is
+backlog polish or an optional follow-up; pick with the operator UNLESS granted autonomy, then take the best-scoped item.
 
-1. **Token/usage instrumentation for the Tokens rail — SCOPED in s20, the next real module-sized piece.** Sizing note: this is NOT a small
-   polish item — it touches the worker/critic adapters (enforcement-adjacent) AND the conductor (to persist per-task/
-   per-run usage), so it needs the full TDD → spec-check → codex-gate → re-critic discipline, not review-only. s20
-   deliberately did not start it unsupervised (design decisions — per-task vs per-run vs cumulative aggregation, storage
-   shape — are exactly the kind of scope call worth a quick operator sanity-check, even if not a hard blocker). Findings
-   to start from:
-   - **Claude worker** (`src/worker/claude-adapter.ts`) already invokes `claude -p --output-format stream-json`, and
-     `WatchedRunResult.stdout` (`src/watchdog/runner.ts`) already captures the full stdout — the final `stream-json`
-     event of type `"result"` carries a `usage` object (input/output/cache tokens) and `total_cost_usd`. No new CLI flag
-     needed; just parse the existing captured stdout in `toResult()` and add a `usage` field to `WorkerResult`.
-   - **Codex critic** (`src/critic/codex-adapter.ts`) invokes plain `codex exec` (no `--json`); its stdout ends with a
-     bare `tokens used\n<N>` line (confirmed live in s20's own codex-review run this session) — parseable but fragile,
-     OR switch to `--json` for a structured token-count event (more robust, adds a stdout-shape dependency to verify).
-   - Once both adapters expose `usage`, the conductor needs to persist it (new runtime file, sibling to
-     `[ui/verdict-not-persisted]`'s deferred `critic-verdict.json`) and a new read endpoint before the UI's `SessionRail`
-     "Tokens" block (`ui/src/components/SessionRail.tsx:93`) can drop its "phase 2" placeholder.
+1. **~~Token/usage instrumentation~~ — DONE (s22, PR #41 `675baf0`).** Per-task `token-usage.json` (worker
+   stream-json usage + critic bare-footer tokens) written best-effort by the conductor; Tokens rail aggregates the
+   newest run on the client via the existing runtime-file endpoint. Possible follow-ups if the operator wants richer
+   telemetry: (a) a "today"/cross-run cumulative (dropped from s22 — a session rail would need N×M fetches; a small
+   server aggregation endpoint `GET /runs/:id/usage` would be the clean way if it's wanted); (b) switch the codex critic
+   to `--json` for an input/output token SPLIT + cost (s22 kept plain `codex exec` to avoid destabilizing verdict
+   resolution — would need to re-verify the stdout-shape dependency); (c) persist the deferred `critic-verdict.json`
+   (`[ui/verdict-not-persisted]`) alongside token-usage now that the conductor writes a per-task JSON artifact anyway.
 2. **Deps-provisioning phpunit-gate follow-up (optional, backlog).** The s21 ops-proof proved a static gate
    (`composer check:static`) on a junction-provisioned `vendor`; a full runtime gate that runs phpunit fatals in the
    worktree — `[worktree/vendor-junction-autoload-basedir]`. To support a phpunit gate, materialize `vendor` per-worktree
