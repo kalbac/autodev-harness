@@ -1,12 +1,11 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-04 (s18 — **P3 product shell CLOSED: M4-7 settings screens + M5 light theme SHIPPED & MERGED**
-> (PR #34 `75f9675`, review-only static UI). Global `/settings` (registry + two-step unregister + daemon info) and
-> project `/p/:id/settings` (read-first over `GET /projects/:id/config`) replace the placeholder routes; light `@theme`
-> token set completes the System·Dark·Light switcher. **Browser-live-proven** (both screens, both themes, real E2E
-> unregister). Also added a `.claude/settings.json` `gh pr merge` allow-rule (operator-created — agent can't self-write
-> permissions). 596 tests, CI green 4/4. **Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).**)
+> Last updated: 2026-07-04 (s19 — **3 P3 backlog items shipped & merged**: `PATCH /projects/:id` rename (PR #36),
+> `PATCH /projects/:id/config` editable project settings (PR #37), composer project-switcher real menu (PR #38).
+> Registry is no longer read-only for name/config; codex caught 2 real blockers on the config-write module (both
+> fixed) + 1 false-positive (verified and dismissed with evidence). 633 tests, CI green 4/4 on every PR.
+> **Only remaining P3 item: woodev deps-provisioning ops-proof (still operator-gated).**)
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -24,7 +23,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. 596 tests, CI green 4/4. **Product shell CLOSED. Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).** |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Product shell CLOSED. Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).** |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -35,7 +34,31 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s18, 2026-07-04)
+## Last session (s19, 2026-07-04)
+
+- **3 P3 backlog items shipped & merged** (operator away most of the session, auto-mode; woodev ops-proof stayed gated,
+  untouched). Full worker→spec-check→codex-gate→re-critic→self-merge discipline throughout.
+- **PR #36 — `PATCH /projects/:id` rename.** Registry `name` only; `id`/`path` immutable (id-keyed caches stay valid).
+  `renameProject` pure fn → `admin.rename` (same `withLock` mutex as register/unregister) → routed before root-resolve
+  (like DELETE). codex clean; 2 minor test-coverage gaps closed with regression tests. 612 tests. Browser-live E2E (API
+  all paths + UI inline rename with sidebar re-fetch).
+- **PR #37 — `PATCH /projects/:id/config`** (project settings editable in UI, closing the "config-write is the natural
+  next step" note from s18). `mergeConfigYaml` merges into the EXISTING raw config so hand-set fields the form doesn't
+  cover survive; `hub.evict(id)` on write success — otherwise the LIVE daemon keeps running the stale gate/role config
+  after a successful write (found during design, not by codex — a real threat to "never merge bullshit"). **codex found
+  2 blockers:** (1) `config.yaml` itself wasn't symlink-guarded (only `.autodev` dir was) — fixed + regression test; (2)
+  claimed `hub.evict` in-flight-build race — investigated against the FULL `get()` control flow, found NOT reproducible
+  (success path never re-writes the map after its await), codex confirmed on re-review with an explicit call-sequence
+  check. Re-critic clean. 633 tests. **Browser-live-proven on the REAL aurora sandbox** (not a fixture): edited
+  `roles.worker.ladder` via the UI, confirmed hand-set `roles.critic.{adapter,model,effort}`/`gate.checkCommand`
+  survived untouched in the actual committed file, then reverted via a second UI edit.
+- **PR #38 — composer project-switcher** — real dropdown (`ProjectSwitcherMenu`) replacing the static chip; picking a
+  project navigates to its home. Pure frontend, review-only. Browser-live E2E.
+- Ran the daemon live for the operator mid-session; he independently registered a REAL project
+  (`woodev-shipping-plugin-test`) via the New Project flow while watching — left untouched.
+- 3 new gotchas: `[hub/evict-on-config-write]`, `[scaffold/config-file-symlink]`, `[config/yaml-merge-drops-comments]`.
+
+## Prior session (s18, 2026-07-04)
 
 - **P3 product shell CLOSED — M4-7 settings + M5 light theme shipped & merged (PR #34 `75f9675`, review-only static UI).**
   Global `/settings` (`GlobalSettingsView`): Appearance (theme control), Projects registry (list + two-step unregister via
@@ -157,19 +180,21 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s19)
+## NEXT ACTIONS (s20)
 
-The **product shell is complete** (register → scaffold → drive → settings → theme). The one remaining P3 item is the
-operator-gated ops-proof; everything else is backlog polish. Pick with the operator at session start.
+The **product shell is complete** (register → scaffold → drive → settings → theme), and s19 closed 3 more backlog items
+(project rename, config-write/editable settings, composer switcher menu). The one remaining P3 item is the operator-gated
+ops-proof; everything else is further backlog polish. Pick with the operator at session start.
 
 1. **Ops live-proof of deps-provisioning on a woodev clone (operator-GATED — do NOT run unsupervised).** Now easiest path:
    register the clone from the New Project UI (scaffolds `.autodev/`), set its gate/provision in the repo's `config.yaml`,
    then run the runbook: `docs/superpowers/plans/2026-07-02-p3-deps-provisioning.md` Task 9 + gotcha
    `[worktree/win-junction-follow]`. This closes the whole P3 loop.
 2. **Backlog polish (any, review-only unless it touches the conductor):**
-   - `PATCH /projects/:id` rename endpoint → then wire rename into Global settings (registry row) + make config editing
-     in-UI possible (a config-WRITE endpoint is the parallel add for project settings — currently read-only by design).
-   - The composer's project-switcher chip is a static label → make it a real menu.
+   - `roles.orchestrator`/`roles.critic` (adapter/model/effort) and `roles.worker.adapter` are still read-only in the
+     Project Settings edit mode (s19 scoped the first cut to branch pattern / gate command / worktree provision /
+     worker ladder only, as the safer commonly-tweaked subset) — extending edit support to the remaining role fields
+     is a natural follow-up, same `PATCH /projects/:id/config` endpoint already accepts them per `ScaffoldFormSchema`.
    - token/usage instrumentation for the Tokens rail (phase 2 — adapters emit usage; `[ui/verdict-not-persisted]` sibling).
    - desktop wrap (Electron/Tauri over the loopback API — additive, the daemon already serves install-relative).
    - run rename/archive/fork.

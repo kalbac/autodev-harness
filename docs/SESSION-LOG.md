@@ -4,6 +4,28 @@
 
 ---
 
+## s19 — 2026-07-04 — 3 P3 backlog items shipped & merged (PR #36, #37, #38) — registry rename, config-write, switcher menu
+
+Operator away for most of the session (auto-mode); the woodev ops-proof stayed gated (untouched). Picked backlog items by
+judgement, full worker→spec-check→codex-gate→re-critic→self-merge discipline throughout.
+- **PR #36 — `PATCH /projects/:id` rename** (registry `name` only; `id`/`path` immutable). codex clean; 2 minor
+  test-coverage gaps closed with regression tests. 612 tests. Browser-live E2E (API all paths + UI inline rename,
+  sidebar re-fetch).
+- **PR #37 — `PATCH /projects/:id/config`** (project settings editable in UI). `mergeConfigYaml` preserves hand-set
+  fields the form doesn't cover; `hub.evict(id)` on write success (else the live daemon keeps the stale gate/role
+  config — real bug caught by design review, not codex). codex found 2 blockers: (1) `config.yaml` itself unguarded
+  against symlinks (only `.autodev` dir was) — fixed + regression test; (2) claimed `hub.evict` in-flight-build race —
+  investigated against the full `get()` control flow, NOT reproducible, codex confirmed on re-review. Re-critic clean.
+  633 tests. **Browser-live-proven on the REAL aurora sandbox** (not a fixture): edited `roles.worker.ladder`, confirmed
+  hand-set `roles.critic.*`/`gate.checkCommand` survived, reverted.
+- **PR #38 — composer project-switcher** — real dropdown menu replacing the static chip. Pure frontend, review-only.
+- Ran the daemon live for the operator mid-session (aurora + throwaway registry) — operator independently registered a
+  REAL project (`woodev-shipping-plugin-test`) via the New Project flow while watching; left it untouched.
+- 3 new gotchas: `[hub/evict-on-config-write]`, `[scaffold/config-file-symlink]`, `[config/yaml-merge-drops-comments]`.
+- main tip = `a65cd60`. Working tree clean at session end.
+
+---
+
 ## s18 — 2026-07-04 — P3 product shell CLOSED: M4-7 settings screens + M5 light theme — merged (PR #34)
 
 **M4-7 settings + M5 light theme (PR #34 `75f9675`, review-only static UI).** Built directly by the main session (cohesive
