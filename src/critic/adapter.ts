@@ -1,4 +1,5 @@
 import type { Verdict } from "./verdict.js";
+import type { CriticUsage } from "../usage/usage.js";
 
 /**
  * Critic transport seam — parity spec §5 (`invoke-critic.ps1`). Mirrors the
@@ -10,6 +11,10 @@ import type { Verdict } from "./verdict.js";
 export interface CriticResult {
   verdict: Verdict | null;
   rateLimited: boolean;
+  /** Token total of the codex call, parsed best-effort from its bare
+   *  `tokens used\n<N>` stdout line. Omitted (never explicit `undefined`) when the
+   *  line is absent, or when the call was skipped entirely (empty-diff pass-through). */
+  usage?: CriticUsage;
 }
 
 export interface CriticRunInput {

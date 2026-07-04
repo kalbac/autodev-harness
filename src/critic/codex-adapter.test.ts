@@ -266,6 +266,55 @@ describe("CodexCriticAdapter", () => {
     expect(readFileSync(reportPath, "utf8")).toBe("original worker rationale");
   });
 
+  it("attaches parsed critic usage (with the critic model) when stdout has a bare `tokens used` line", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      {
+        result: okResult({ exitCode: 0, stdout: "review prose\ntokens used\n8421\n" }),
+        onCall: (args) => writeFileSync(findOutfile(args), cleanVerdictJson),
+      },
+    ]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict!.verdict).toBe("clean");
+    expect(result.usage).toEqual({ model: cfg.roles.critic.model, tokens: 8421 });
+  });
+
+  it("carries usage on the verdict-null path too (tokens are orthogonal to the verdict)", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      { result: okResult({ exitCode: 4, stdout: "rate limited\ntokens used: 300" }) },
+    ]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict).toBeNull();
+    expect(result.rateLimited).toBe(true);
+    expect(result.usage).toEqual({ model: cfg.roles.critic.model, tokens: 300 });
+  });
+
+  it("omits usage when the token line is absent, and on the no-spawn empty-diff path", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      { result: okResult({ exitCode: 0, stdout: cleanVerdictJson }) }, // valid verdict, no token line
+    ]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const withCall = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+    expect("usage" in withCall).toBe(false);
+
+    const emptyRunner = new FakeRunner([]);
+    const emptyAdapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: emptyRunner.run, schemaPath: "/schema.json" });
+    const empty = await emptyAdapter.run({ diff: "   ", runtimeDir: dir, workerReportPath: null });
+    expect("usage" in empty).toBe(false);
+  });
+
   it("DEFAULT_SCHEMA_PATH points at an existing critic-verdict.schema.json", () => {
     expect(existsSync(DEFAULT_SCHEMA_PATH)).toBe(true);
     expect(DEFAULT_SCHEMA_PATH.endsWith("critic-verdict.schema.json")).toBe(true);

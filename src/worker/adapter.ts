@@ -1,4 +1,5 @@
 import type { Task } from "../blackboard/types.js";
+import type { WorkerUsage } from "../usage/usage.js";
 
 /**
  * Transport-level outcome of a worker invocation — parity spec §6 line
@@ -18,6 +19,11 @@ export interface WorkerResult {
   rateLimited: boolean;
   timedOut: boolean;
   exitCode: number;
+  /** Token/usage of the last ladder step attempted, parsed from the worker's
+   *  stream-json stdout. Omitted (never explicit `undefined`) when the stdout
+   *  carried no parseable usage event — token accounting is best-effort and must
+   *  never change the transport outcome. */
+  usage?: WorkerUsage;
 }
 
 export interface WorkerRunInput {

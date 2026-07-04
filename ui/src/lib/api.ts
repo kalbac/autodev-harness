@@ -143,6 +143,22 @@ export interface RegisterProjectInput {
   config?: unknown;
 }
 
+/** Mirrors `src/usage/usage.ts` TokenUsageDoc — the per-task `token-usage.json`
+ *  runtime artifact the conductor writes, served by the generic runtime-file
+ *  endpoint. Critic (plain `codex exec`) yields only a `tokens` total, no split. */
+export interface TokenUsageDoc {
+  worker: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    total_cost_usd: number;
+  };
+  critic: { tokens: number };
+  total_cost_usd: number;
+  updated_at: number;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

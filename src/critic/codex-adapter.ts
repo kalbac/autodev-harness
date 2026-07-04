@@ -10,6 +10,7 @@ import type { HarnessConfig } from "../config/schema.js";
 import { resolveCriticExe } from "../config/roles.js";
 import { runNative } from "../util/native.js";
 import type { NativeOptions, NativeResult } from "../util/native.js";
+import { parseCodexTokens } from "../usage/usage.js";
 
 export type NativeRunner = (
   command: string,
@@ -103,11 +104,19 @@ export class CodexCriticAdapter implements CriticAdapter {
         verdict = parseVerdict(`${result.stdout}\n${result.stderr}`);
       }
 
+      // Best-effort token parse, orthogonal to verdict resolution: a null (no
+      // bare `tokens used` line) leaves `usage` off the result entirely -- never
+      // an explicit `undefined` (exactOptionalPropertyTypes) -- and never affects
+      // the verdict/rate-limit decision below.
+      const tokens = parseCodexTokens(result.stdout);
+      const usage =
+        tokens !== null ? { usage: { model: this.cfg.roles.critic.model, tokens } } : {};
+
       if (verdict !== null) {
-        return { verdict: attachDiffSha256(verdict, input.diff), rateLimited: false };
+        return { verdict: attachDiffSha256(verdict, input.diff), rateLimited: false, ...usage };
       }
 
-      return { verdict: null, rateLimited: result.exitCode === 4 };
+      return { verdict: null, rateLimited: result.exitCode === 4, ...usage };
     });
   }
 }

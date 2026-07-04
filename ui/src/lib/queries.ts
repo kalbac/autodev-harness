@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type RegisterProjectInput, type ProjectConfigForm } from "./api";
+import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -14,7 +14,17 @@ export const qk = {
   runtimeFile: (p: string, taskId: string, name: string) => ["runtime-file", p, taskId, name] as const,
   escalation: (p: string, id: string) => ["escalation", p, id] as const,
   config: (p: string) => ["config", p] as const,
+  runUsage: (p: string, runId: string) => ["run-usage", p, runId] as const,
 };
+
+/** Client-side token aggregate for one run: the sum of its tasks' `token-usage.json`
+ *  artifacts (s22). `any` is false when NO task in the run has a usage file yet
+ *  (run just started / older run predating instrumentation) so the UI can show "—". */
+export interface RunUsageSummary {
+  tokens: number;
+  cost: number;
+  any: boolean;
+}
 
 /** Daemon-global project registry. */
 export const useProjects = () => useQuery({ queryKey: qk.projects, queryFn: api.getProjects });
@@ -33,6 +43,50 @@ export const useRuntimeFile = (p: string, taskId: string, name: string | null) =
   });
 export const useEscalation = (p: string, id: string, enabled = true) =>
   useQuery({ queryKey: qk.escalation(p, id), queryFn: () => api.getEscalation(p, id), enabled });
+
+/**
+ * Token/usage summary for a run, aggregated ON THE CLIENT (s22 scope decision):
+ * fetch each task's `token-usage.json` via the existing runtime-file endpoint and
+ * sum. A task with no usage file yet (404) is skipped — never fails the whole
+ * summary — so the rail degrades to "—" cleanly. `runId` null disables the query.
+ */
+export const useRunUsage = (p: string, runId: string | null) =>
+  useQuery({
+    queryKey: qk.runUsage(p, runId ?? ""),
+    enabled: p !== "" && runId !== null,
+    queryFn: async (): Promise<RunUsageSummary> => {
+      const run = await api.getRun(p, runId as string);
+      let tokens = 0;
+      let cost = 0;
+      let any = false;
+      await Promise.all(
+        run.taskIds.map(async (taskId) => {
+          let text: string;
+          try {
+            ({ text } = await api.getRuntimeFile(p, taskId, "token-usage.json"));
+          } catch (err) {
+            if (err instanceof ApiError && err.status === 404) return; // no usage for this task yet
+            throw err;
+          }
+          let doc: TokenUsageDoc;
+          try {
+            doc = JSON.parse(text) as TokenUsageDoc;
+          } catch {
+            return; // malformed/truncated usage file — skip, don't fail the summary
+          }
+          any = true;
+          tokens +=
+            doc.worker.input_tokens +
+            doc.worker.output_tokens +
+            doc.worker.cache_read_input_tokens +
+            doc.worker.cache_creation_input_tokens +
+            doc.critic.tokens;
+          cost += doc.total_cost_usd;
+        }),
+      );
+      return { tokens, cost, any };
+    },
+  });
 
 /** Curated project config (top bar + inspector rail). Static-ish — invalidated
  *  by WS like everything else. `enabled` guards the daemon-global routes. */
