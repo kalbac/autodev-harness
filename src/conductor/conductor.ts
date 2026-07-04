@@ -19,6 +19,7 @@ import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
+import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
 
 export interface ConductorDeps {
   cfg: HarnessConfig;
@@ -198,6 +199,24 @@ export function createConductor(deps: ConductorDeps): Conductor {
       }
     };
 
+    // Critic verdict persistence (s24): a CLEAN-committed task never escalates, so its
+    // verdict+confidence would otherwise survive only as a digest line -- the dashboard
+    // could not render a verdict seal for it (gotcha [ui/verdict-not-persisted]). Write a
+    // `critic-verdict.json` runtime artifact ONLY at the decisive point of the round loop
+    // (the clean-break that commits, or the escalation that ends the task) and only for a
+    // parseable verdict -- NOT on intermediate retry rounds. This guarantees the file always
+    // reflects the outcome that actually decided the task, with no stale earlier verdict left
+    // behind when a later round returns a null/unparseable verdict. Best-effort/never-throws,
+    // SAME contract as persistTokenUsage above; served unchanged by the runtime-file endpoint.
+    const persistCriticVerdict = async (verdict: Verdict): Promise<void> => {
+      try {
+        const doc = buildCriticVerdictDoc(verdict, clock.now());
+        await repo.writeRuntimeFile(task.id, "critic-verdict.json", JSON.stringify(doc, null, 2));
+      } catch (err) {
+        safeLog("WARN", `conductor: persisting critic-verdict for ${task.id} failed (ignored): ${String(err)}`);
+      }
+    };
+
     try {
       let round = 0;
       while (true) {
@@ -336,6 +355,9 @@ export function createConductor(deps: ConductorDeps): Conductor {
         }
 
         if (cr.verdict?.verdict === "clean") {
+          // Decisive: this verdict is what commits. Persist it (see the
+          // persistCriticVerdict comment) BEFORE breaking to the gate.
+          await persistCriticVerdict(cr.verdict);
           break;
         }
 
@@ -347,6 +369,14 @@ export function createConductor(deps: ConductorDeps): Conductor {
           (cr.verdict?.broken_contracts.length ?? 0) > 0;
 
         if (contractRisk || round >= maxRounds) {
+          // Decisive: this round escalates. Persist the verdict that drove the
+          // escalation -- but only if it is parseable. A null/unparseable
+          // decisive verdict writes nothing (there is no verdict to record, and
+          // because intermediate rounds are never persisted there is no stale
+          // artifact to correct); the escalation body carries "(unparseable)".
+          if (cr.verdict) {
+            await persistCriticVerdict(cr.verdict);
+          }
           const escType: EscalationType = cr.verdict?.verdict === "broken" ? "disagreement" : "uncertain";
           await repo.moveTask(task.id, "active", "escalated");
           await escalate(

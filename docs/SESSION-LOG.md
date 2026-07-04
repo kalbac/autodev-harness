@@ -4,6 +4,37 @@
 
 ---
 
+## s23 — 2026-07-04 — run rename + archive + UI re-run LANDED (PR #42 `53d2ced`)
+
+Second module of the session. Backlog item NEXT ACTIONS #3 (was unscoped) — designed WITH the operator after a
+**donor recon** (subagent over AO/OD/OpenHands). The recon reshaped the design decisively.
+- **Recon findings.** Rename is donor-unanimous: id immutable + a separate mutable display field (`display_name`/
+  `name`/`title`). Archive appears only at AO's CONTAINER (project) level as a `archived_at` soft-flag; the run/session
+  unit prefers derived status. **Fork:** AO has none; OD/OpenHands fork a *conversation/event-stream* — which we don't
+  have. Our run manifest is a re-derivable index over the blackboard queue, so "fork" ≈ re-orchestrating the intent.
+- **Decisions (operator-gated).** Rename + archive as backend verbs; **fork → UI-only "re-run"** (seed the composer,
+  no backend fork); archive = reversible `archived_at` soft-flag (no hard-delete). All verbs touch ONLY the manifest.
+- **Backend.** `RunManifest` +`name?`/`archived_at?` (`recordRun` unchanged; `isRunManifest` type-validates optionals).
+  Pure `applyRunPatch`. `GET /runs?includeArchived=1` (default hides). `PATCH /projects/:id/runs/:runId` — bounded read
+  (404 on missing/corrupt) + hardened no-follow write.
+- **codex GPT-5.5 gate — 3 defects over 2 rounds, all fixed → re-critic clean.** (1) HIGH `lstat`→`writeFile` TOCTOU
+  followed a symlink swapped in between → replaced with `O_RDWR|O_NOFOLLOW` open + `fstat` + `truncate(0)` +
+  `fh.writeFile`. (2) MEDIUM name length checked AFTER `trim`, so 201 spaces passed and CLEARED an existing name →
+  raw-length check + regression test. (3) MEDIUM `fh.write` can short-write (ENOSPC/quota/net-FS) → `fh.writeFile`
+  (loops). Also: Windows rejects `O_WRONLY|O_TRUNC` without `O_CREAT` (EINVAL) — found empirically, worked around with
+  `O_RDWR` + `truncate(0)`, keeping the no-resurrection property (no `O_CREAT`).
+- **UI (review-only).** `name ?? intent` on the HomeView card / sidebar / RunView header; RunView actions bar (inline
+  rename, archive/unarchive, re-run via a zustand seed store read+cleared by NewRunComposer); HomeView "show archived"
+  toggle + muted tag.
+- **Verification.** 662 tests (+10 backend), typecheck+build green (root+ui). **Browser-smoke** on a seeded serve drove
+  the whole flow live: rename → archive (default list hides) → `?includeArchived` shows → unarchive → re-run (composer
+  pre-filled + navigate home) → HomeView show-archived toggle. Screenshot sent; seeded project + daemon torn down.
+- **Gotcha caught mid-build (noted in CURRENT-STATE):** a UI-only `build:ui` leaves the served `dist/index.js` STALE —
+  a brand-new backend route 404s in the live smoke until a root `npm run build`. Rebuild BOTH before a live smoke.
+- Self-merged (machine bar: codex-clean + green CI 4/4). main tip = `53d2ced`. Branch carried the s22 docs commit too.
+
+---
+
 ## s22 — 2026-07-04 — token/usage instrumentation LANDED → the first post-P3 module (PR #41 `675baf0`)
 
 The next real module after P3 closed. Operator scope-gated at session start: **per-task runtime file + client-side

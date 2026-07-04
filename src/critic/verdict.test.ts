@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseVerdict, attachDiffSha256 } from "./verdict.js";
+import { parseVerdict, attachDiffSha256, buildCriticVerdictDoc } from "./verdict.js";
 import type { Verdict } from "./verdict.js";
 
 describe("parseVerdict", () => {
@@ -108,5 +108,50 @@ describe("attachDiffSha256", () => {
   it("does not mutate the original verdict object", () => {
     attachDiffSha256(base, "some diff");
     expect(base).not.toHaveProperty("diff_sha256");
+  });
+});
+
+describe("buildCriticVerdictDoc", () => {
+  it("builds a doc from a full verdict including diff_sha256", () => {
+    const verdict: Verdict = {
+      verdict: "clean",
+      broken_contracts: [],
+      notes: "all good",
+      confidence: 0.95,
+      diff_sha256: "abc123",
+    };
+    const doc = buildCriticVerdictDoc(verdict, 4242);
+    expect(doc).toEqual({
+      verdict: "clean",
+      broken_contracts: [],
+      notes: "all good",
+      confidence: 0.95,
+      diff_sha256: "abc123",
+      updated_at: 4242,
+    });
+  });
+
+  it("omits diff_sha256 entirely (not just undefined) when the verdict lacks it", () => {
+    const verdict: Verdict = {
+      verdict: "clean",
+      broken_contracts: [],
+      notes: "no diff hash here",
+      confidence: 1,
+    };
+    const doc = buildCriticVerdictDoc(verdict, 1000);
+    expect("diff_sha256" in doc).toBe(false);
+  });
+
+  it("passes broken_contracts through unchanged", () => {
+    const contracts = [{ zone: "billing", file: "src/billing/charge.ts", line: 42, evidence: "removed idempotency check" }];
+    const verdict: Verdict = {
+      verdict: "broken",
+      broken_contracts: contracts,
+      notes: "contract violation found",
+      confidence: 0.8,
+    };
+    const doc = buildCriticVerdictDoc(verdict, 500);
+    expect(doc.broken_contracts).toEqual(contracts);
+    expect(doc.verdict).toBe("broken");
   });
 });

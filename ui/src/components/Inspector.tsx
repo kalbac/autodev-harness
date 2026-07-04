@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FileText } from "lucide-react";
 import type { QueueState } from "@/lib/api";
-import { useEscalation, useRuntimeFile, useRuntimeFiles } from "@/lib/queries";
+import { useEscalation, useRuntimeFile, useRuntimeFiles, useTaskVerdict } from "@/lib/queries";
 import { toneVar, verdictTone } from "@/lib/status";
 import { TabBar, type TabDef } from "./ui/Tabs";
 import { VerdictSeal } from "./ui/VerdictSeal";
@@ -81,11 +81,19 @@ function VerdictTab({
 }) {
   const escalated = state === "escalated";
   const esc = useEscalation(projectId, taskId, escalated);
+  const persisted = useTaskVerdict(projectId, taskId);
   const hasFeedback = names.includes("critic-feedback.md");
   const feedback = useRuntimeFile(projectId, taskId, hasFeedback ? "critic-feedback.md" : null);
 
-  const verdict: Verdict =
-    state === "done"
+  // Prefer the REAL persisted critic verdict (s24 `critic-verdict.json`) — with its true
+  // confidence, notes and broken contracts — over the state-synthesized fallback, which
+  // predates verdict persistence and fabricated placeholder text (gotcha
+  // [ui/verdict-not-persisted]). The fallback still covers undecided tasks and pre-s24 runs.
+  const doc = persisted.data ?? null;
+
+  const verdict: Verdict = doc
+    ? doc.verdict
+    : state === "done"
       ? "clean"
       : state === "quarantine"
         ? "broken"
@@ -107,14 +115,20 @@ function VerdictTab({
 
   if (escalated && esc.isLoading) return <Loading />;
 
-  const notes =
-    (escalated ? esc.data?.evidence : undefined) ??
-    (hasFeedback ? feedback.data?.text : undefined) ??
-    (state === "done" ? "Critic returned clean; committed & merged." : undefined);
+  const notes = doc
+    ? doc.notes
+    : (escalated ? esc.data?.evidence : undefined) ??
+      (hasFeedback ? feedback.data?.text : undefined) ??
+      (state === "done" ? "Critic returned clean; committed & merged." : undefined);
 
   return (
     <div className="flex flex-col gap-4">
-      <VerdictSeal verdict={verdict} notes={notes} />
+      <VerdictSeal
+        verdict={verdict}
+        confidence={doc?.confidence}
+        notes={notes}
+        brokenContracts={doc?.broken_contracts}
+      />
       {escalated && (
         <p className="rounded-md border border-line bg-panel/40 px-3 py-2 text-xs text-subtle">
           The gate refused to merge this. Resolve it with the A/B decision on the left.
