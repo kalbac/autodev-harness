@@ -8,7 +8,7 @@ import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
-import { createApiServer, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
+import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
 import type { RegisterResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
@@ -839,6 +839,151 @@ describe("createApiServer / GET /runs/:id", () => {
     expect(res.status).toBe(400);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not");
+  });
+});
+
+describe("applyRunPatch (pure merge)", () => {
+  const base = { runId: "run-1", intent: "do a thing", taskIds: ["t1"], at: 10 };
+
+  it("renames via a trimmed name and clears it on empty string", () => {
+    expect(applyRunPatch(base, { name: "  My Run  " }, 99)).toEqual({ ...base, name: "My Run" });
+    // Clearing: an existing name removed by an empty string -> key omitted, back to intent.
+    expect(applyRunPatch({ ...base, name: "old" }, { name: "   " }, 99)).toEqual(base);
+    expect("name" in applyRunPatch({ ...base, name: "old" }, { name: "" }, 99)).toBe(false);
+  });
+
+  it("archives with the injected now and unarchives by clearing archived_at", () => {
+    expect(applyRunPatch(base, { archived: true }, 777)).toEqual({ ...base, archived_at: 777 });
+    expect(applyRunPatch({ ...base, archived_at: 5 }, { archived: false }, 777)).toEqual(base);
+    expect("archived_at" in applyRunPatch({ ...base, archived_at: 5 }, { archived: false }, 777)).toBe(false);
+  });
+
+  it("applies name and archived together and never mutates the input", () => {
+    const input = { ...base };
+    const out = applyRunPatch(input, { name: "N", archived: true }, 42);
+    expect(out).toEqual({ ...base, name: "N", archived_at: 42 });
+    expect(input).toEqual(base); // untouched
+  });
+});
+
+describe("createApiServer / PATCH /runs/:id", () => {
+  it("renames a run (name shown; runId/intent immutable) and reflects it on GET", async () => {
+    seedRun("run-r", 10, "original intent", ["t1"]);
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-r`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Nice label" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; intent: string; name?: string };
+    expect(body).toMatchObject({ runId: "run-r", intent: "original intent", name: "Nice label" });
+
+    const get = await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-r`)).json();
+    expect(get).toMatchObject({ name: "Nice label", intent: "original intent" });
+  });
+
+  it("archives a run: hidden from the default list, still openable, re-includable, then unarchivable", async () => {
+    seedRun("run-a", 20);
+    seedRun("run-b", 10);
+    handle = createApiServer(projectDeps({ repo, stateDir }, { now: () => 555 }));
+    const port = await handle.listen(0);
+
+    // Archive run-a.
+    const patch = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-a`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(patch.status).toBe(200);
+    expect(((await patch.json()) as { archived_at?: number }).archived_at).toBe(555);
+
+    // Default list hides it.
+    const listed = (await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}`)).json()) as { runId: string }[];
+    expect(listed.map((r) => r.runId)).toEqual(["run-b"]);
+
+    // ?includeArchived=1 shows both (newest-first).
+    const all = (await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}?includeArchived=1`)).json()) as { runId: string }[];
+    expect(all.map((r) => r.runId)).toEqual(["run-a", "run-b"]);
+
+    // Still directly openable by id.
+    expect((await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-a`)).status).toBe(200);
+
+    // Unarchive -> back in the default list.
+    await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-a`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: false }),
+    });
+    const relisted = (await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}`)).json()) as { runId: string }[];
+    expect(relisted.map((r) => r.runId).sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  it("404s a missing run; 400s an empty patch / bad types / an over-long name / a '..' id", async () => {
+    seedRun("run-x", 1);
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const patch = (id: string, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}${p1("/runs")}/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    expect((await patch("nope", { name: "x" })).status).toBe(404);
+    expect((await patch("run-x", {})).status).toBe(400); // nothing to update
+    expect((await patch("run-x", { name: 123 })).status).toBe(400);
+    expect((await patch("run-x", { archived: "yes" })).status).toBe(400);
+    expect((await patch("run-x", { name: "x".repeat(201) })).status).toBe(400);
+    expect((await patch("foo..bar", { name: "x" })).status).toBe(400);
+    // The valid run was never mutated by any of the rejected requests.
+    const runX = (await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-x`)).json()) as { name?: string };
+    expect(runX.name).toBeUndefined();
+  });
+
+  it("rejects a >200 whitespace-only name with 400 and does NOT clear an existing name (regression)", async () => {
+    // Seed a run that ALREADY has a name, then send a 201-space name. The raw-length
+    // check must 400 BEFORE trim, so the existing name is left untouched (an earlier
+    // trim-then-length bug would have cleared it and returned 200).
+    const runsDir = join(stateDir, "runs");
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, "run-named.json"), JSON.stringify({ runId: "run-named", intent: "i", taskIds: [], at: 1, name: "keep me" }));
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-named`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: " ".repeat(201) }),
+    });
+    expect(res.status).toBe(400);
+    const after = (await (await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-named`)).json()) as { name?: string };
+    expect(after.name).toBe("keep me"); // untouched
+  });
+
+  it("404s (does not follow) a symlinked manifest file on write", async () => {
+    const runsDir = join(stateDir, "runs");
+    mkdirSync(runsDir, { recursive: true });
+    const secret = join(root, "outside-run.json");
+    writeFileSync(secret, JSON.stringify({ runId: "run-link", intent: "leak", taskIds: [], at: 1 }));
+    try {
+      symlinkSync(secret, join(runsDir, "run-link.json"), "file");
+    } catch {
+      return; // environment can't create symlinks -- the lstat/isFile guard still holds
+    }
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-link`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "hijack" }),
+    });
+    expect(res.status).toBe(404);
+    // The outside target was never written through the link.
+    expect(readFileSync(secret, "utf8")).not.toContain("hijack");
   });
 });
 

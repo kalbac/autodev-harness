@@ -225,12 +225,45 @@ interface EscalationReply {
 }
 
 /** Shape written by `createRecordRunCapability` (`src/orchestrator/capabilities.ts`) to
- *  `<stateDir>/runs/<runId>.json`. */
+ *  `<stateDir>/runs/<runId>.json`. `name`/`archived_at` are OPTIONAL operator edits
+ *  applied via `PATCH /runs/:id` — `recordRun` never writes them, so a freshly recorded
+ *  manifest simply omits both (backward-compatible). */
 interface RunManifest {
   runId: string;
   intent: string;
   taskIds: string[];
   at: number;
+  /** Operator display override; when set the UI shows it instead of `intent`. */
+  name?: string;
+  /** Soft-archive timestamp (ms). Present = archived (reversible); absent = active. */
+  archived_at?: number;
+}
+
+/** A partial run edit accepted by `PATCH /runs/:id`. */
+export interface RunPatch {
+  name?: string;
+  archived?: boolean;
+}
+
+/**
+ * Pure merge of a `RunPatch` onto a manifest (the write handler validates shape/policy
+ * first, then calls this). `name`: trimmed; empty string CLEARS it (un-rename back to
+ * `intent`). `archived`: true stamps `archived_at = now`, false CLEARS it (unarchive).
+ * Uses `delete` on a copy so a cleared field is OMITTED, never set to explicit
+ * `undefined` (exactOptionalPropertyTypes). Never mutates the input.
+ */
+export function applyRunPatch(manifest: RunManifest, patch: RunPatch, now: number): RunManifest {
+  const next: RunManifest = { ...manifest };
+  if (patch.name !== undefined) {
+    const trimmed = patch.name.trim();
+    if (trimmed === "") delete next.name;
+    else next.name = trimmed;
+  }
+  if (patch.archived !== undefined) {
+    if (patch.archived) next.archived_at = now;
+    else delete next.archived_at;
+  }
+  return next;
 }
 
 /** Narrow, best-effort validation of a parsed run manifest -- a file that parses as
@@ -249,7 +282,12 @@ function isRunManifest(value: unknown): value is RunManifest {
     Array.isArray(v.taskIds) &&
     v.taskIds.every((t) => typeof t === "string") &&
     typeof v.at === "number" &&
-    Number.isFinite(v.at)
+    Number.isFinite(v.at) &&
+    // Optional operator edits: when PRESENT they must be well-typed, else the
+    // manifest is treated as corrupt (a hand-edited `name: 123` / non-finite
+    // `archived_at` must never surface to the UI or a PATCH read).
+    (v.name === undefined || typeof v.name === "string") &&
+    (v.archived_at === undefined || (typeof v.archived_at === "number" && Number.isFinite(v.archived_at)))
   );
 }
 
@@ -263,6 +301,20 @@ function isRunManifest(value: unknown): value is RunManifest {
  */
 const READ_NO_FOLLOW_FLAGS =
   process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+
+/**
+ * Read-write open flags that do NOT follow a symlink on POSIX (`O_NOFOLLOW` ->
+ * `ELOOP`) and do NOT create (`O_RDWR` only, no `O_CREAT`/`O_TRUNC`): the target
+ * MUST already exist — a raced delete/symlink-swap fails the open (ENOENT/ELOOP),
+ * which the caller maps to 404 rather than writing a stray/followed file. The
+ * caller truncates via `fh.truncate(0)` after the open (Windows rejects a bare
+ * `O_WRONLY|O_TRUNC` without `O_CREAT` with EINVAL, so truncation is a separate
+ * step). Mirrors `READ_NO_FOLLOW_FLAGS` for the write direction; Windows has no
+ * reliable `O_NOFOLLOW`, so a static symlink there is caught by the caller's
+ * `lstat` pre-check and concurrent symlink creation is privilege-gated.
+ */
+const WRITE_NO_FOLLOW_FLAGS =
+  process.platform === "win32" ? constants.O_RDWR : constants.O_RDWR | constants.O_NOFOLLOW;
 
 /**
  * Best-effort bounded read of one run manifest, hardened against TOCTOU: opens a
@@ -1111,8 +1163,129 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     return manifests;
   }
 
-  async function handleListRuns(p: ProjectView, res: ServerResponse): Promise<void> {
-    sendJson(res, 200, await listRunManifests(p.stateDir));
+  async function handleListRuns(p: ProjectView, url: URL, res: ServerResponse): Promise<void> {
+    const includeArchived = ["1", "true"].includes((url.searchParams.get("includeArchived") ?? "").toLowerCase());
+    const all = await listRunManifests(p.stateDir);
+    // Archived runs are hidden from the default list (a reversible soft-flag) but
+    // remain directly openable via GET /runs/:id and re-includable via the query.
+    sendJson(res, 200, includeArchived ? all : all.filter((m) => m.archived_at === undefined));
+  }
+
+  /**
+   * PATCH /projects/:id/runs/:runId — rename (`name`) and/or archive (`archived`)
+   * one run MANIFEST. The manifest is a non-authoritative INDEX: this touches only
+   * `<stateDir>/runs/<runId>.json`, never the blackboard queue / tasks / worktrees /
+   * gate. Mirrors `handleReply`/`handlePatchConfig`: bounded read (404 on missing/
+   * corrupt), symlink-guard the file before writing (`[scaffold/config-file-symlink]`
+   * class), plain overwrite, return the fresh manifest.
+   */
+  async function handlePatchRun(p: ProjectView, rawId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { name?: unknown; archived?: unknown } | null;
+    const patch: RunPatch = {};
+    if (parsed?.name !== undefined) {
+      if (typeof parsed.name !== "string") {
+        sendJson(res, 400, { error: "name must be a string" });
+        return;
+      }
+      // RAW length, before any trim: a >200 name (even whitespace-only) must be
+      // rejected outright, never silently trimmed-to-empty and cleared (which would
+      // MUTATE a manifest the request should have been rejected for).
+      if (parsed.name.length > 200) {
+        sendJson(res, 400, { error: "name must be at most 200 characters" });
+        return;
+      }
+      patch.name = parsed.name;
+    }
+    if (parsed?.archived !== undefined) {
+      if (typeof parsed.archived !== "boolean") {
+        sendJson(res, 400, { error: "archived must be a boolean" });
+        return;
+      }
+      patch.archived = parsed.archived;
+    }
+    if (patch.name === undefined && patch.archived === undefined) {
+      sendJson(res, 400, { error: "nothing to update (expected name and/or archived)" });
+      return;
+    }
+
+    const manifestPath = join(p.stateDir, "runs", `${id}.json`);
+    const manifest = await readBoundedManifest(manifestPath);
+    if (manifest === null) {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+
+    const updated = applyRunPatch(manifest, patch, now());
+
+    // Hardened no-follow WRITE (closes the lstat->write TOCTOU: a symlink swapped
+    // in AFTER the read must not be followed on write -- `[scaffold/config-file-symlink]`
+    // class). Cheap cross-platform lstat pre-check rejects a STATIC symlink/dir up
+    // front (the only guard on Windows, where O_NOFOLLOW is unavailable), then a
+    // single no-follow, truncating fd is opened (ELOOP on a POSIX symlink swapped in
+    // after the lstat; ENOENT on a raced delete) and an fstat on THAT handle
+    // re-verifies a regular file before writing -- mirroring handleReadRuntimeFile's
+    // read discipline for the write direction. No O_CREAT: a vanished target 404s
+    // rather than resurrecting a stray manifest.
+    let lst;
+    try {
+      lst = await lstat(manifestPath);
+    } catch {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+    if (!lst.isFile()) {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+
+    let fh: FileHandle;
+    try {
+      fh = await open(manifestPath, WRITE_NO_FOLLOW_FLAGS);
+    } catch {
+      // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) {
+        sendJson(res, 404, { error: "run not found" });
+        return;
+      }
+      // Truncate THEN writeFile from offset 0: the fd was opened O_RDWR without
+      // O_TRUNC (see WRITE_NO_FOLLOW_FLAGS), so the old (possibly longer) content
+      // must be cleared explicitly or its tail would survive past the new JSON.
+      // `fh.writeFile` (not `fh.write`) LOOPS until every byte is flushed — a bare
+      // `fh.write` can short-write near ENOSPC/quota/network-FS and silently leave
+      // a truncated, corrupt manifest.
+      await fh.truncate(0);
+      await fh.writeFile(JSON.stringify(updated, null, 2), "utf8");
+    } finally {
+      await fh.close();
+    }
+    log("INFO", `api: patched run '${id}' (${patch.name !== undefined ? "rename " : ""}${patch.archived !== undefined ? `archived=${patch.archived}` : ""})`);
+    sendJson(res, 200, updated);
   }
 
   async function handleGetRun(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
@@ -1319,9 +1492,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         sendJson(res, 200, p.config);
         return;
       }
-      if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, res));
+      if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, url, res));
       const runMatch = /^\/runs\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runMatch) return void (await handleGetRun(p, runMatch[1]!, res));
+      if (req.method === "PATCH" && runMatch) return void (await handlePatchRun(p, runMatch[1]!, req, res));
       const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runtimeFileMatch)
         return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowUp, CircleAlert } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { qk, useConfig, useProjects } from "@/lib/queries";
+import { useAppStore } from "@/lib/store";
 import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
@@ -21,6 +22,16 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
   // Rendered on the project home; the route guarantees projectId (`?? ""` for the type).
   const projectId = useProjectId() ?? "";
   const [intent, setIntent] = useState("");
+  // "Re-run" seed from RunView: pre-fill the box once, then clear the store so a
+  // later manual edit / navigation doesn't get clobbered.
+  const composerSeed = useAppStore((s) => s.composerSeed);
+  const clearComposerSeed = useAppStore((s) => s.clearComposerSeed);
+  useEffect(() => {
+    if (composerSeed !== null) {
+      setIntent(composerSeed);
+      clearComposerSeed();
+    }
+  }, [composerSeed, clearComposerSeed]);
   const qc = useQueryClient();
   const projects = useProjects();
   const config = useConfig(projectId);

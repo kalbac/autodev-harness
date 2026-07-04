@@ -83,7 +83,7 @@ function ActiveProject({ project }: { project: ProjectSummary }) {
               className="size-[6px] shrink-0 rounded-[2px]"
               style={{ background: toneVar[runSeal(run, state.data)] }}
             />
-            <span className="min-w-0 flex-1 truncate text-xs">{run.intent}</span>
+            <span className="min-w-0 flex-1 truncate text-xs">{run.name ?? run.intent}</span>
             <span className="ml-auto shrink-0 font-mono text-[10px] text-subtle">{timeAgo(run.at)}</span>
           </Link>
         ))}

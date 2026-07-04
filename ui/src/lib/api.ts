@@ -48,12 +48,24 @@ export interface StateResponse {
   digestTail: string;
 }
 
-/** Mirrors the orchestrator run manifest (`<stateDir>/runs/<runId>.json`). */
+/** Mirrors the orchestrator run manifest (`<stateDir>/runs/<runId>.json`).
+ *  `name`/`archived_at` are optional operator edits via `PATCH /runs/:id`. */
 export interface RunManifest {
   runId: string;
   intent: string;
   taskIds: string[];
   at: number;
+  /** Display override; when set the UI labels the run with it instead of `intent`. */
+  name?: string;
+  /** Soft-archive timestamp (ms). Present = archived (hidden from the default list). */
+  archived_at?: number;
+}
+
+/** Body for `PATCH /runs/:id` — rename (`name`; empty string clears it) and/or
+ *  archive (`archived`). At least one field required. */
+export interface RunPatch {
+  name?: string;
+  archived?: boolean;
 }
 
 export interface EscalationReply {
@@ -226,9 +238,19 @@ export const api = {
     }),
 
   getState: (projectId: string) => req<StateResponse>(projectPath(projectId, "/state")),
-  getRuns: (projectId: string) => req<RunManifest[]>(projectPath(projectId, "/runs")),
+  getRuns: (projectId: string, includeArchived = false) =>
+    req<RunManifest[]>(projectPath(projectId, `/runs${includeArchived ? "?includeArchived=1" : ""}`)),
   getRun: (projectId: string, id: string) =>
     req<RunManifest>(projectPath(projectId, `/runs/${encodeURIComponent(id)}`)),
+
+  /** Rename/archive a run manifest (index-only — never touches the queue/tasks).
+   *  Returns the fresh manifest. See PATCH /runs/:id. */
+  patchRun: (projectId: string, runId: string, patch: RunPatch) =>
+    req<RunManifest>(projectPath(projectId, `/runs/${encodeURIComponent(runId)}`), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
   getRuntimeFiles: (projectId: string, taskId: string) =>
     req<string[]>(projectPath(projectId, `/tasks/${encodeURIComponent(taskId)}/runtime`)),
   getEscalation: (projectId: string, id: string) =>
