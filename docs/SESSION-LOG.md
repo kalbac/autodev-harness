@@ -4,6 +4,33 @@
 
 ---
 
+## s20 — 2026-07-04 — Project Settings edit mode extended to every role field (PR #40); token/usage instrumentation scoped for s21
+
+Operator went to sleep at session start with full autonomy granted ("работай автономно... мержи, пушь"). Woodev
+ops-proof stayed gated, untouched. Picked the lowest-risk, best-scoped remaining backlog item by judgement rather
+than starting the two larger/design-uncertain ones unsupervised.
+- **PR #40 — Project Settings: `roles.orchestrator`/`roles.worker.adapter`/`roles.critic` now editable.** Closes the
+  s19 note ("roles.* scoped out of the first cut"). Pure UI — backend (`PATCH /projects/:id/config` +
+  `ScaffoldFormSchema`) already accepted these fields since PR #37. 7 new `TextFieldRow`s; `buildDiff`/`addIfChanged`
+  send only per-role sub-fields that actually changed, mirroring the established `checkCommand` convention.
+  Review-only (no conductor touch). **Browser-live-proven on the REAL aurora sandbox**: edited
+  `roles.orchestrator.model`, confirmed the live config projection updated immediately (hub-evict from s19 still
+  holding), reverted via a second UI edit. codex GPT-5.5 review: no blockers. CI green 4/4, self-merged.
+- **Scoped, deliberately NOT built: token/usage instrumentation for the Tokens rail.** Sizing call: touches
+  worker/critic adapters + the conductor (persist per-task/run usage) — needs the full TDD→gate discipline, not a
+  quick polish item. Findings for s21: Claude worker already runs `--output-format stream-json` and already
+  captures stdout (`WatchedRunResult.stdout`) — the final `result` event has a ready-made `usage` object, no new
+  adapter flag needed. Codex critic's plain-text stdout ends with a `tokens used\n<N>` line (confirmed live in this
+  session's own codex-review call) — parseable, or switch to `--json` for a structured event. Full findings in
+  `docs/CURRENT-STATE.md` NEXT ACTIONS #2.
+- Also flagged `run rename/archive/fork` as NOT actually scoped (no `name` field on the run manifest today, no
+  defined archive/fork semantics) — needs a short design pass before implementation, unlike the s19 project-rename
+  precedent it superficially resembles.
+- No new gotchas this session.
+- main tip = `565bab2`. Working tree clean at session end.
+
+---
+
 ## s19 — 2026-07-04 — 3 P3 backlog items shipped & merged (PR #36, #37, #38) — registry rename, config-write, switcher menu
 
 Operator away for most of the session (auto-mode); the woodev ops-proof stayed gated (untouched). Picked backlog items by

@@ -1,10 +1,11 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-04 (s19 — **3 P3 backlog items shipped & merged**: `PATCH /projects/:id` rename (PR #36),
-> `PATCH /projects/:id/config` editable project settings (PR #37), composer project-switcher real menu (PR #38).
-> Registry is no longer read-only for name/config; codex caught 2 real blockers on the config-write module (both
-> fixed) + 1 false-positive (verified and dismissed with evidence). 633 tests, CI green 4/4 on every PR.
+> Last updated: 2026-07-04 (s20 — **Project Settings edit mode extended to every role field** (PR #40): the
+> remaining read-only pieces of the config projection (`roles.orchestrator.{adapter,model,effort}`,
+> `roles.worker.adapter`, `roles.critic.{adapter,model,effort}`) are now editable in the UI, backend already
+> accepted them since s19. Review-only, browser-live-proven on aurora, codex-reviewed (no blockers). Operator
+> asleep for the session (full autonomy); woodev ops-proof stayed gated, untouched.
 > **Only remaining P3 item: woodev deps-provisioning ops-proof (still operator-gated).**)
 
 ## Direction (as of s02 — see `adr/002`)
@@ -23,7 +24,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Product shell CLOSED. Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).** |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **Product shell CLOSED. Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).** |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -34,7 +35,29 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s19, 2026-07-04)
+## Last session (s20, 2026-07-04)
+
+- **Operator went to sleep at session start, granted full autonomy** ("работай автономно... мержи, пушь"). Skipped
+  the operator-gated woodev ops-proof entirely (untouched); picked the lowest-risk, best-scoped remaining backlog
+  item by judgement.
+- **PR #40 — Project Settings edit mode extended to every role field**, closing the note left in s19 ("roles.*
+  scoped out of the first cut"). Backend already accepted `roles.orchestrator.{adapter,model,effort}`,
+  `roles.worker.adapter`, `roles.critic.{adapter,model,effort}` via `ScaffoldFormSchema` since PR #37 — this was
+  UI-only: 7 new `TextFieldRow`s in `ProjectSettingsView.tsx`, `buildDiff`/`addIfChanged` extended to send only
+  the per-role sub-fields that actually changed (mirrors the established `checkCommand` non-empty-only-send
+  convention). Review-only (pure presentation, no conductor touch). typecheck + build clean.
+  **Browser-live-proven on the REAL aurora sandbox**: edited `roles.orchestrator.model` via the UI, confirmed the
+  live `GET /projects/:id/config` projection updated immediately (hub-evict from s19 still holding), reverted via
+  a second UI edit. Independent codex GPT-5.5 review: no blockers (one flagged concern didn't apply —
+  `critic.effort` is non-optional in `ProjectConfigView`; the other is pre-existing trim behavior already shipped
+  for `checkCommand` in s19, not a new regression). CI green 4/4, self-merged. 633 tests (unchanged — UI has no
+  test suite by convention, browser-proof stands in).
+- **Scoped (not built) token/usage instrumentation for s21**, per the size/design-uncertainty tradeoff below —
+  see NEXT ACTIONS #1 for the findings.
+- No new gotchas this session.
+- main tip = `565bab2`. Working tree clean at session end.
+
+## Prior session (s19, 2026-07-04)
 
 - **3 P3 backlog items shipped & merged** (operator away most of the session, auto-mode; woodev ops-proof stayed gated,
   untouched). Full worker→spec-check→codex-gate→re-critic→self-merge discipline throughout.
@@ -180,25 +203,41 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s20)
+## NEXT ACTIONS (s21)
 
-The **product shell is complete** (register → scaffold → drive → settings → theme), and s19 closed 3 more backlog items
-(project rename, config-write/editable settings, composer switcher menu). The one remaining P3 item is the operator-gated
-ops-proof; everything else is further backlog polish. Pick with the operator at session start.
+The **product shell is complete** (register → scaffold → drive → settings → theme), and s19+s20 closed 4 backlog items
+(project rename, config-write/editable settings, composer switcher menu, role-fields edit mode). The one remaining P3
+item is the operator-gated ops-proof; everything else is further backlog polish. Pick with the operator at session start
+UNLESS granted full autonomy again — in that case, prefer the ops-proof if the operator is present/reachable, else pick
+the most contained remaining item (see sizing note below).
 
 1. **Ops live-proof of deps-provisioning on a woodev clone (operator-GATED — do NOT run unsupervised).** Now easiest path:
    register the clone from the New Project UI (scaffolds `.autodev/`), set its gate/provision in the repo's `config.yaml`,
    then run the runbook: `docs/superpowers/plans/2026-07-02-p3-deps-provisioning.md` Task 9 + gotcha
    `[worktree/win-junction-follow]`. This closes the whole P3 loop.
-2. **Backlog polish (any, review-only unless it touches the conductor):**
-   - `roles.orchestrator`/`roles.critic` (adapter/model/effort) and `roles.worker.adapter` are still read-only in the
-     Project Settings edit mode (s19 scoped the first cut to branch pattern / gate command / worktree provision /
-     worker ladder only, as the safer commonly-tweaked subset) — extending edit support to the remaining role fields
-     is a natural follow-up, same `PATCH /projects/:id/config` endpoint already accepts them per `ScaffoldFormSchema`.
-   - token/usage instrumentation for the Tokens rail (phase 2 — adapters emit usage; `[ui/verdict-not-persisted]` sibling).
+2. **Token/usage instrumentation for the Tokens rail — SCOPED in s20, not yet built.** Sizing note: this is NOT a small
+   polish item — it touches the worker/critic adapters (enforcement-adjacent) AND the conductor (to persist per-task/
+   per-run usage), so it needs the full TDD → spec-check → codex-gate → re-critic discipline, not review-only. s20
+   deliberately did not start it unsupervised (design decisions — per-task vs per-run vs cumulative aggregation, storage
+   shape — are exactly the kind of scope call worth a quick operator sanity-check, even if not a hard blocker). Findings
+   to start from:
+   - **Claude worker** (`src/worker/claude-adapter.ts`) already invokes `claude -p --output-format stream-json`, and
+     `WatchedRunResult.stdout` (`src/watchdog/runner.ts`) already captures the full stdout — the final `stream-json`
+     event of type `"result"` carries a `usage` object (input/output/cache tokens) and `total_cost_usd`. No new CLI flag
+     needed; just parse the existing captured stdout in `toResult()` and add a `usage` field to `WorkerResult`.
+   - **Codex critic** (`src/critic/codex-adapter.ts`) invokes plain `codex exec` (no `--json`); its stdout ends with a
+     bare `tokens used\n<N>` line (confirmed live in s20's own codex-review run this session) — parseable but fragile,
+     OR switch to `--json` for a structured token-count event (more robust, adds a stdout-shape dependency to verify).
+   - Once both adapters expose `usage`, the conductor needs to persist it (new runtime file, sibling to
+     `[ui/verdict-not-persisted]`'s deferred `critic-verdict.json`) and a new read endpoint before the UI's `SessionRail`
+     "Tokens" block (`ui/src/components/SessionRail.tsx:93`) can drop its "phase 2" placeholder.
+3. **Backlog polish (any, review-only unless it touches the conductor):**
    - desktop wrap (Electron/Tauri over the loopback API — additive, the daemon already serves install-relative).
-   - run rename/archive/fork.
-3. **Light-theme follow-up (only if a light surface renders a verdict tone as TEXT):** add light-tuned darker status hues
+   - run rename/archive/fork — NOT yet scoped; the run manifest (`recordRun` in `src/orchestrator/capabilities.ts`) has
+     no `name` field today (the UI displays the raw `intent` string as the run label), and "archive"/"fork" semantics
+     aren't defined anywhere — this needs a short design pass (ideally with the operator) before implementation, not a
+     mechanical PR #36-style rename.
+4. **Light-theme follow-up (only if a light surface renders a verdict tone as TEXT):** add light-tuned darker status hues
    under `[data-theme="light"]` — see gotcha `[ui/light-theme-tokens]`. Not needed for current screens.
 
 **P2 assets:** backend — `src/api/server.ts` (`/state`, `/runs`, `/runs/:id`, `/tasks/:id/runtime[/:name]`,
