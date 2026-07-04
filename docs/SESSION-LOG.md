@@ -4,6 +4,39 @@
 
 ---
 
+## s21 — 2026-07-04 — woodev deps-provisioning ops-proof LANDED → P3 loop proven end-to-end (COMMIT `912ef64`)
+
+Operator on `/remote-control` chose the operator-gated ops-proof (Task 9 of the deps-provisioning plan) and observed —
+the last open P3 item. The deps-provisioning CODE shipped back in s15 (PR #29); s21 is the live proof on a real,
+production-shaped project.
+- **Setup.** Local `git clone` of `woodev_framework` → disposable `D:/Projects/woodev-harness-clone`, branch
+  `autodev/s21-proof`. Untracked `.autodev` (PS-loop's) + `.serena` (MCP churn) via `.git/info/exclude` so runtime/MCP
+  writes can't dirty the merge tree. Copied gitignored `vendor` (76M) + `plugins-reference` (17M) from the original.
+  Bumped the clone's phpstan `--memory-limit` 2G→4G (base phpstan crashed a parallel worker at 2G — env, not code:
+  `[OK] No errors` at 4G; full `composer check` green on the main tree at 98s). `.autodev/config.yaml`:
+  `worktree.provision: [vendor, plugins-reference]`, worker claude/sonnet, critic codex/gpt-5.5/high. Task = a
+  class-level PHPDoc on `woodev/box-packer/abstract-class-packer.php` (docs, non-contract-zone — mirrors aurora's proven
+  docs task).
+- **Green COMMIT.** `run --once` (detached Start-Process, cwd=clone) → worktree created with `vendor` +
+  `plugins-reference` as NTFS junctions (verified) → worker (sonnet) wrote the docblock → critic (codex/gpt-5.5) `clean`
+  0.88 → gate `composer check:static` (phpcs+phpstan) **GREEN in the worktree on the provisioned deps** →
+  `gate-verdict.json` `composer_green:true decision:COMMIT` → **COMMIT `912ef64`** → link-only deprovision → safe
+  teardown. Main `vendor` intact (5168), original `woodev_framework` untouched, tree clean.
+- **KEY FINDING → new gotcha `[worktree/vendor-junction-autoload-basedir]`.** First attempt used the full `composer
+  check` (incl. **phpunit**) and RETRY'd on exit 255. Root cause (reproduced standalone): phpunit EXECUTES the framework
+  (loads a real plugin fixture through the resolver); `vendor` is a junction, so PHP resolves `__DIR__` inside Composer's
+  autoloader to the junction's REAL target → `$baseDir` = the MAIN clone → project classes autoload from the main clone
+  while worktree-relative `require_once` loads the worktree copy → `Cannot redeclare class Woodev_Packer`. Read-by-path
+  tools (`php -l`/phpcs/phpstan) are unaffected — hence the static gate for the green run. A runtime phpunit gate needs
+  per-worktree `vendor` materialization (backlog).
+- **`[worktree/win-junction-follow]` re-confirmed live, the hard way.** A NON-link-safe manual repro cleanup (bash
+  `rmdir` on a live junction — which fails silently and leaves it — then `git worktree remove --force`) followed the
+  junction and wiped the disposable clone's real `vendor/` (original untouched; recopied). The harness's OWN teardown
+  was safe every time (link-only deprovision logged before recursive removal). Lesson: never bash-`rmdir` a live
+  junction; use PowerShell `(Get-Item link).Delete()` / the harness `removeLinkOnly`.
+- Docs: CURRENT-STATE (P3 CLOSED), 1 new gotcha (32→33). No harness source changed (ops-proof only). main tip advances
+  with this docs commit.
+
 ## s20 — 2026-07-04 — Project Settings edit mode extended to every role field (PR #40); token/usage instrumentation scoped for s21
 
 Operator went to sleep at session start with full autonomy granted ("работай автономно... мержи, пушь"). Woodev

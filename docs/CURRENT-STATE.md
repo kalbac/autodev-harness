@@ -1,12 +1,14 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-04 (s20 — **Project Settings edit mode extended to every role field** (PR #40): the
-> remaining read-only pieces of the config projection (`roles.orchestrator.{adapter,model,effort}`,
-> `roles.worker.adapter`, `roles.critic.{adapter,model,effort}`) are now editable in the UI, backend already
-> accepted them since s19. Review-only, browser-live-proven on aurora, codex-reviewed (no blockers). Operator
-> asleep for the session (full autonomy); woodev ops-proof stayed gated, untouched.
-> **Only remaining P3 item: woodev deps-provisioning ops-proof (still operator-gated).**)
+> Last updated: 2026-07-04 (s21 — **woodev deps-provisioning ops-proof LANDED → P3 loop proven end-to-end.**
+> Operator (remote-control) chose the gated ops-proof and observed. Cloned `woodev_framework` (disposable),
+> provisioned `vendor` + `plugins-reference` as junctions, ran the harness `run --once`: worker (claude/sonnet)
+> → critic (codex/gpt-5.5 `clean`) → **real multi-tool static gate `composer check:static` (phpcs+phpstan) GREEN
+> in the worktree on the provisioned gitignored deps** → **COMMIT `912ef64`** → safe link-only teardown.
+> Key finding: full `composer check` (incl. phpunit) fatals in a junction-provisioned worktree —
+> `[worktree/vendor-junction-autoload-basedir]` (Composer bakes the junction's realpath as `$baseDir`).
+> **P3 is CLOSED end-to-end; no operator-gated items remain.**)
 
 ## Direction (as of s02 — see `adr/002`)
 
@@ -24,7 +26,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **Product shell CLOSED. Only remaining P3 item: woodev deps-provisioning ops-proof (operator-gated).** |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -35,7 +37,37 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s20, 2026-07-04)
+## Last session (s21, 2026-07-04)
+
+- **woodev deps-provisioning ops-proof LANDED — the whole P3 loop is now proven end-to-end on a real,
+  production-shaped project.** Operator on `/remote-control` chose the operator-gated ops-proof and observed.
+- **Setup:** local `git clone` of `woodev_framework` → `D:/Projects/woodev-harness-clone` (disposable), branch
+  `autodev/s21-proof`. Untracked `.autodev` + `.serena` (MCP churn) via `.git/info/exclude` so runtime/MCP writes
+  never dirty the merge tree. Copied the gitignored `vendor` (76M) + `plugins-reference` (17M) from the original.
+  Bumped the clone's phpstan `--memory-limit` 2G→4G (base phpstan crashed a parallel worker at 2G — an env wrinkle,
+  not a code defect: `[OK] No errors` at 4G). `.autodev/config.yaml`: `gate.checkCommand`,
+  `worktree.provision: [vendor, plugins-reference]`, roles (worker claude/sonnet, critic codex/gpt-5.5/high).
+  Task = a class-level PHPDoc on `woodev/box-packer/abstract-class-packer.php` (docs, non-contract-zone).
+- **Result (green COMMIT):** harness `run --once` (detached, cwd=clone) → worktree created with BOTH deps as NTFS
+  junctions → worker (sonnet) wrote the docblock → critic (codex/gpt-5.5) `clean` 0.88 → gate `composer check:static`
+  (phpcs+phpstan) ran **GREEN in the worktree on the provisioned deps** → `gate-verdict.json` `composer_green:true
+  decision:COMMIT` → **COMMIT `912ef64`** → deprovision (link-only) → safe teardown. Main `vendor` intact, original
+  `woodev_framework` untouched, tree clean.
+- **KEY FINDING → gotcha `[worktree/vendor-junction-autoload-basedir]`.** The first attempt used the full
+  `composer check` (phcs+phpstan+**phpunit**) and RETRY'd on exit 255: phpunit EXECUTES the framework (loads a real
+  plugin fixture through the resolver), and because `vendor` is a junction, PHP resolves `__DIR__` inside Composer's
+  autoloader to the junction's REAL target → `$baseDir` = the main clone → project classes autoload from the main
+  clone while worktree-relative `require_once` loads the worktree copy → `Cannot redeclare class`. phpcs/phpstan (read
+  by path) are unaffected — hence the static gate for the green run. A runtime phpunit gate would need per-worktree
+  `vendor` materialization (real copy or autoloader regen) — backlog.
+- **Also re-confirmed `[worktree/win-junction-follow]` live** (the hard way): a NON-link-safe manual repro cleanup
+  (bash `rmdir` on a live junction — which fails and leaves it — then `git worktree remove --force`) followed the
+  junction and wiped the disposable clone's real `vendor/`. The harness's OWN teardown did it safely every time
+  (link-only deprovision logged before recursive removal). Lesson reinforced: never bash-`rmdir` a live junction; use
+  PowerShell `(Get-Item link).Delete()` / the harness `removeLinkOnly`.
+- 1 new gotcha (`[worktree/vendor-junction-autoload-basedir]`, count 32→33). main tip advances with this docs commit.
+
+## Prior session (s20, 2026-07-04)
 
 - **Operator went to sleep at session start, granted full autonomy** ("работай автономно... мержи, пушь"). Skipped
   the operator-gated woodev ops-proof entirely (untouched); picked the lowest-risk, best-scoped remaining backlog
@@ -203,19 +235,14 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s21)
+## NEXT ACTIONS (s22)
 
-The **product shell is complete** (register → scaffold → drive → settings → theme), and s19+s20 closed 4 backlog items
-(project rename, config-write/editable settings, composer switcher menu, role-fields edit mode). The one remaining P3
-item is the operator-gated ops-proof; everything else is further backlog polish. Pick with the operator at session start
-UNLESS granted full autonomy again — in that case, prefer the ops-proof if the operator is present/reachable, else pick
-the most contained remaining item (see sizing note below).
+**P3 is CLOSED end-to-end.** The product shell is complete (register → scaffold → drive → settings → theme), s19+s20
+closed 4 backlog items, and s21 landed the operator-gated deps-provisioning ops-proof (green COMMIT on a real woodev
+clone). **No operator-gated items remain.** Everything below is a real next-module or backlog polish; pick with the
+operator UNLESS granted autonomy, then take the best-scoped item.
 
-1. **Ops live-proof of deps-provisioning on a woodev clone (operator-GATED — do NOT run unsupervised).** Now easiest path:
-   register the clone from the New Project UI (scaffolds `.autodev/`), set its gate/provision in the repo's `config.yaml`,
-   then run the runbook: `docs/superpowers/plans/2026-07-02-p3-deps-provisioning.md` Task 9 + gotcha
-   `[worktree/win-junction-follow]`. This closes the whole P3 loop.
-2. **Token/usage instrumentation for the Tokens rail — SCOPED in s20, not yet built.** Sizing note: this is NOT a small
+1. **Token/usage instrumentation for the Tokens rail — SCOPED in s20, the next real module-sized piece.** Sizing note: this is NOT a small
    polish item — it touches the worker/critic adapters (enforcement-adjacent) AND the conductor (to persist per-task/
    per-run usage), so it needs the full TDD → spec-check → codex-gate → re-critic discipline, not review-only. s20
    deliberately did not start it unsupervised (design decisions — per-task vs per-run vs cumulative aggregation, storage
@@ -231,6 +258,12 @@ the most contained remaining item (see sizing note below).
    - Once both adapters expose `usage`, the conductor needs to persist it (new runtime file, sibling to
      `[ui/verdict-not-persisted]`'s deferred `critic-verdict.json`) and a new read endpoint before the UI's `SessionRail`
      "Tokens" block (`ui/src/components/SessionRail.tsx:93`) can drop its "phase 2" placeholder.
+2. **Deps-provisioning phpunit-gate follow-up (optional, backlog).** The s21 ops-proof proved a static gate
+   (`composer check:static`) on a junction-provisioned `vendor`; a full runtime gate that runs phpunit fatals in the
+   worktree — `[worktree/vendor-junction-autoload-basedir]`. To support a phpunit gate, materialize `vendor` per-worktree
+   (a real copy, or `composer dump-autoload` regenerated with the worktree as `$baseDir`) instead of a junction. Real
+   scope (defeats the zero-copy point); only worth it if a project's gate genuinely needs runtime tests. Not needed for
+   static-analysis gates.
 3. **Backlog polish (any, review-only unless it touches the conductor):**
    - desktop wrap (Electron/Tauri over the loopback API — additive, the daemon already serves install-relative).
    - run rename/archive/fork — NOT yet scoped; the run manifest (`recordRun` in `src/orchestrator/capabilities.ts`) has

@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 32.
+> Count: 33.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -39,6 +39,7 @@
 | `[hub/evict-on-config-write]` | A config-write endpoint that only writes `.autodev/config.yaml` to disk, without evicting the hub's cached `ProjectRoot`, leaves the LIVE daemon running the OLD gate/role config indefinitely — the write looks like it succeeded but nothing changes until a restart. Fix = `hub.evict(id)` after a successful write, wired at the composition root (keeps `admin.ts` hub-agnostic). Also documents a related codex false-positive (claimed in-flight-build race) that did NOT reproduce against the real `get()` control flow — verify a critic's claim against the actual code before patching. | `gotchas/hub-cache-must-evict-on-external-config-write.md` |
 | `[scaffold/config-file-symlink]` | A config-write path must `lstat` the config FILE itself, not just its parent `.autodev` directory — a real `.autodev` dir can still contain a symlinked `config.yaml` pointing outside the repo, which `readFile`/`writeFile` would follow transparently. The existing directory-level guard (`[scaffold/symlink-escape]`) does not transfer automatically to a different write shape (single-file vs. recursive skeleton). | `gotchas/config-write-must-guard-the-file-not-just-its-parent-dir.md` |
 | `[config/yaml-merge-drops-comments]` | A config-write endpoint that merges via parse→merge→`yaml.stringify` re-emits the WHOLE file, silently dropping any hand-written comments in the original `config.yaml` (confirmed live: aurora's custom header was replaced by the generic scaffold header after a single-field UI edit). Accepted tradeoff for a first-cut write endpoint (comment-preserving YAML editing is real scope, not yet needed) — but keep the UI honest that a save rewrites the file. | `gotchas/yaml-merge-write-drops-hand-written-comments.md` |
+| `[worktree/vendor-junction-autoload-basedir]` | Provisioning `vendor` as a junction breaks Composer's autoloader in the worktree: PHP resolves `__DIR__` through the junction to its REAL target, so `$baseDir` → the MAIN clone, and project classes autoload from the main clone while worktree-relative `require_once` loads the worktree copy → `Cannot redeclare class` / exit 255. Read-by-path tools (`php -l`, phpcs, phpstan) are unaffected; a gate that EXECUTES project code (phpunit loading real plugins) fatals — even when identical `composer check` is green on the main tree. Rule: use a static gate (`composer check:static` = phpcs+phpstan) over a junction'd `vendor`; a runtime phpunit gate needs per-worktree vendor materialization (backlog). Found s21 ops-proof. | `gotchas/vendor-junction-composer-autoload-basedir.md` |
 
 ## Anticipated tag namespaces
 
