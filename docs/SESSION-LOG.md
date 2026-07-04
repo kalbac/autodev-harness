@@ -4,6 +4,38 @@
 
 ---
 
+## s24 — 2026-07-04 — critic-verdict.json persistence + committed-task verdict seal LANDED (PR #43 `b9b87f9`)
+
+The recommended s24 opener — closes gotcha `[ui/verdict-not-persisted]`. A CLEAN-committed task never escalates, so its
+critic verdict survived only as a `digest.md` line; the dashboard's "verdict first-class" was rich only on escalation.
+Since the conductor already writes per-task JSON runtime artifacts (s22 `token-usage.json`), a sibling
+`critic-verdict.json` was the natural, well-scoped next module. Full sonnet-TDD → spec-check → codex-gate → re-critic.
+- **Backend (codex-gated, enforcement-adjacent).** Pure `buildCriticVerdictDoc` + `CriticVerdictDoc` in
+  `src/critic/verdict.ts` (exactOptional-safe `diff_sha256` omission). Best-effort/never-throws `persistCriticVerdict`
+  closure in the conductor, written ONLY at a task's DECISIVE point (before the clean `break`, and in the escalate
+  branch guarded `if (cr.verdict)`) — never on intermediate retry rounds. Same never-throws contract as
+  `persistTokenUsage` (`safeLog`, `[ts/fail-closed]`); served unchanged by the runtime-file endpoint (no new API code).
+- **codex GPT-5.5 gate — 3 findings.** (1) Medium: the FIRST cut persisted every round → a `parseable→retry→null→
+  escalate` sequence left a STALE earlier verdict on disk → FIXED via decisive-only placement (intermediate rounds
+  never write; a valueless final round leaves no artifact) + a regression test. (2) Medium: extra `clock.now()` not
+  "purely observational" → DECLINED with rationale (prod clock is side-effect-free; identical to the already-gated s22
+  `persistTokenUsage`; the parity #9 `nowCalls` 3→4 shift crosses NO decision boundary — graceful exit preserved).
+  (3) Low: no throwing-logger test → ADDED (writeRuntimeFile throws AND logger throws → clean task still commits).
+  **Re-critic: behavior/control-flow CLEAN**; one residual doc-comment ("each round") corrected.
+- **UI (review-only, browser-proven).** `CriticVerdictDoc` type + 404-tolerant `useTaskVerdict` hook (mirrors
+  `useRunUsage`). Inspector `VerdictTab` prefers the REAL persisted verdict (confidence + notes + broken_contracts via
+  the reused `VerdictSeal`) over the state-synthesized placeholder; falls back to synthesis for undecided/pre-s24 tasks.
+- **Verification.** 671 tests (+9), typecheck green (root+ui), CI 4/4. **Browser-smoke** on a seeded scratchpad serve:
+  the Verdict tab of a committed task rendered `clean` + confidence `0.92` + the persisted notes (vs the old fabricated
+  "Critic returned clean; committed & merged." with no confidence). Screenshot sent; seed + daemon torn down.
+- **Merge friction.** The auto-mode classifier BLOCKED the self-merge (it discounts the standing memory/CLAUDE.md
+  autonomous-merge grant, wanting an explicit in-session OK). Surfaced to the operator (not a design fork — a mechanical
+  gate); he replied "мёржи" → squash-merged. Consider a `.claude/settings.json` `Bash(gh pr merge:*)` rule to avoid the
+  stop next time (operator's call).
+- 1 new gotcha `[conductor/per-round-overwrite-stale]` (34→35). main tip = `b9b87f9`; this docs commit rides the next PR.
+
+---
+
 ## s23 — 2026-07-04 — run rename + archive + UI re-run LANDED (PR #42 `53d2ced`)
 
 Second module of the session. Backlog item NEXT ACTIONS #3 (was unscoped) — designed WITH the operator after a

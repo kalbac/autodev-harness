@@ -3,8 +3,11 @@ import {
   parseClaudeUsage,
   parseCodexTokens,
   buildTokenUsageDoc,
+  buildRunUsageSummary,
+  isTokenUsageDoc,
   type WorkerUsage,
   type CriticUsage,
+  type TokenUsageDoc,
 } from "./usage.js";
 
 /** A realistic final stream-json `result` event (fields trimmed to what we read). */
@@ -141,5 +144,80 @@ describe("buildTokenUsageDoc", () => {
     expect(doc.critic.tokens).toBe(0);
     expect(doc.total_cost_usd).toBe(0);
     expect(doc.updated_at).toBe(7);
+  });
+});
+
+/** A valid `TokenUsageDoc`, with overridable worker/critic/cost fields, for the
+ *  s25 server-side run-usage aggregation tests below. */
+function usageDoc(o: {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  critic_tokens?: number;
+  total_cost_usd?: number;
+} = {}): TokenUsageDoc {
+  return {
+    worker: {
+      input_tokens: o.input_tokens ?? 10,
+      output_tokens: o.output_tokens ?? 20,
+      cache_read_input_tokens: o.cache_read_input_tokens ?? 30,
+      cache_creation_input_tokens: o.cache_creation_input_tokens ?? 40,
+      total_cost_usd: o.total_cost_usd ?? 0.01,
+      runs: [],
+    },
+    critic: { tokens: o.critic_tokens ?? 5, runs: [] },
+    total_cost_usd: o.total_cost_usd ?? 0.01,
+    updated_at: 1,
+  };
+}
+
+describe("buildRunUsageSummary", () => {
+  it("sums tokens (all 4 worker fields + critic.tokens) and cost across two docs", () => {
+    const a = usageDoc({ input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40, critic_tokens: 5, total_cost_usd: 0.01 });
+    const b = usageDoc({ input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4, critic_tokens: 5, total_cost_usd: 0.02 });
+
+    const summary = buildRunUsageSummary([a, b], 2);
+
+    expect(summary.tokens).toBe(10 + 20 + 30 + 40 + 5 + (1 + 2 + 3 + 4 + 5));
+    expect(summary.cost).toBeCloseTo(0.03, 10);
+    expect(summary).toMatchObject({ any: true, tasksWithUsage: 2, taskCount: 2 });
+  });
+
+  it("returns an all-zero, any:false summary for empty docs", () => {
+    expect(buildRunUsageSummary([], 3)).toEqual({ tokens: 0, cost: 0, any: false, tasksWithUsage: 0, taskCount: 3 });
+  });
+
+  it("reads honestly for partial coverage: 1 doc but taskCount 3", () => {
+    const summary = buildRunUsageSummary([usageDoc()], 3);
+    expect(summary.tasksWithUsage).toBe(1);
+    expect(summary.taskCount).toBe(3);
+    expect(summary.any).toBe(true);
+  });
+
+  it("a NaN field on a guard-passing doc contributes 0, never poisons the total", () => {
+    const bad = usageDoc();
+    bad.worker.input_tokens = NaN;
+    const summary = buildRunUsageSummary([bad], 1);
+    expect(Number.isFinite(summary.tokens)).toBe(true);
+    expect(summary.tokens).toBe(20 + 30 + 40 + 5); // input_tokens contributes 0
+  });
+});
+
+describe("isTokenUsageDoc", () => {
+  it("accepts a valid doc", () => {
+    expect(isTokenUsageDoc(usageDoc())).toBe(true);
+  });
+
+  it("rejects null, a non-object, and structurally incomplete/malformed shapes", () => {
+    expect(isTokenUsageDoc(null)).toBe(false);
+    expect(isTokenUsageDoc("nope")).toBe(false);
+    expect(isTokenUsageDoc({ worker: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 1, cache_creation_input_tokens: 1, total_cost_usd: 0, runs: [] } })).toBe(false); // missing critic
+    const stringField = usageDoc() as unknown as { worker: { input_tokens: unknown } };
+    stringField.worker.input_tokens = "10";
+    expect(isTokenUsageDoc(stringField)).toBe(false);
+    const missingCost = usageDoc() as Partial<TokenUsageDoc>;
+    delete missingCost.total_cost_usd;
+    expect(isTokenUsageDoc(missingCost)).toBe(false);
   });
 });

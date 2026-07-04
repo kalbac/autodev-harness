@@ -169,3 +169,57 @@ export function buildTokenUsageDoc(
     updated_at: updatedAt,
   };
 }
+
+/** Aggregate one run's per-task token-usage docs into a single summary (s25
+ *  server-side aggregation for `GET /runs/:id/usage`). `taskCount` is the run's
+ *  full task count; `tasksWithUsage` is how many had a parseable usage doc, so a
+ *  partially-instrumented run reads honestly. `any` mirrors the s22 client aggregate. */
+export interface RunUsageSummary {
+  tokens: number;
+  cost: number;
+  any: boolean;
+  taskCount: number;
+  tasksWithUsage: number;
+}
+
+/** Narrow structural guard: a file that parses as JSON but isn't a usage doc (older
+ *  schema / hand-edit) is skipped by the aggregator rather than poisoning the sum.
+ *  Mirrors the `isRunManifest`/`isEscalationReply` boundary-validation pattern. */
+export function isTokenUsageDoc(value: unknown): value is TokenUsageDoc {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const w = v.worker;
+  const c = v.critic;
+  if (typeof w !== "object" || w === null || typeof c !== "object" || c === null) return false;
+  const wr = w as Record<string, unknown>;
+  const cr = c as Record<string, unknown>;
+  return (
+    typeof wr.input_tokens === "number" &&
+    typeof wr.output_tokens === "number" &&
+    typeof wr.cache_read_input_tokens === "number" &&
+    typeof wr.cache_creation_input_tokens === "number" &&
+    typeof cr.tokens === "number" &&
+    typeof v.total_cost_usd === "number"
+  );
+}
+
+/** Sum token/cost totals across a run's parsed usage docs. `docs` are ONLY the tasks
+ *  that had a parseable token-usage.json; `taskCount` is the run's total task count
+ *  (so `docs.length <= taskCount`). Pure. Each field goes through `num()` so a NaN/
+ *  Infinity from a malformed-but-guard-passing doc contributes 0, never poisons the
+ *  total (same discipline as buildTokenUsageDoc). Mirrors the s22 client summation:
+ *  worker 4 token fields + critic.tokens; cost = worker `total_cost_usd`. */
+export function buildRunUsageSummary(docs: TokenUsageDoc[], taskCount: number): RunUsageSummary {
+  let tokens = 0;
+  let cost = 0;
+  for (const d of docs) {
+    tokens +=
+      num(d.worker.input_tokens) +
+      num(d.worker.output_tokens) +
+      num(d.worker.cache_read_input_tokens) +
+      num(d.worker.cache_creation_input_tokens) +
+      num(d.critic.tokens);
+    cost += num(d.total_cost_usd);
+  }
+  return { tokens, cost, any: docs.length > 0, taskCount, tasksWithUsage: docs.length };
+}

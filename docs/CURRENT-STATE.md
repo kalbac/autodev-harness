@@ -1,7 +1,16 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-04 (s23 — **run rename + archive + UI re-run LANDED (PR #42, squash `53d2ced`).** New
+> Last updated: 2026-07-04 (s24 — **critic-verdict.json persistence + committed-task verdict seal LANDED (PR #43,
+> squash `b9b87f9`).** Conductor now writes a per-task `critic-verdict.json` runtime artifact at the DECISIVE point of
+> a task (clean-commit or parseable escalation, never an intermediate retry round → no stale artifact), best-effort/
+> never-throws like s22's token-usage; the UI Inspector Verdict tab reads it (404-tolerant `useTaskVerdict`) and renders
+> the REAL persisted verdict (confidence + notes + broken_contracts via the reused `VerdictSeal`) for a committed task,
+> closing gotcha `[ui/verdict-not-persisted]`. **codex GPT-5.5 gate — 3 findings: 2 Medium (stale-artifact → decisive-
+> only placement fix; clock-determinism → declined w/ rationale), 1 Low (throwing-logger test) → re-critic behavior
+> CLEAN.** 671 tests (+9), CI 4/4, browser-smoke proven (`clean · 0.92 · persisted notes`). 1 new gotcha
+> `[conductor/per-round-overwrite-stale]` (35). Prior: s23 —
+> **run rename + archive + UI re-run LANDED (PR #42, squash `53d2ced`).** New
 > `PATCH /projects/:id/runs/:runId` (rename `name` / soft-archive `archived_at`) + `GET /runs?includeArchived`;
 > the run manifest is a non-authoritative index so these touch ONLY the manifest file. Fork dropped as a backend
 > verb (donors fork a conversation/event-stream we lack) → UI-only "re-run" (seed the composer). Full TDD →
@@ -30,7 +39,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** **Post-P3 — token/usage instrumentation LANDED (s22, PR #41 `675baf0`):** worker/critic adapters expose usage → conductor persists per-task `token-usage.json` (best-effort) → Tokens rail aggregates on the client; codex-gated (1 Medium fixed → re-critic clean), 654 tests, browser-smoke proven. **Run rename + archive + UI re-run LANDED (s23, PR #42 `53d2ced`):** `PATCH /runs/:id` (rename/soft-archive, manifest-index only) + `GET /runs?includeArchived` + RunView actions bar; codex-gated (3 defects fixed → re-critic clean), 662 tests, browser-smoke proven full flow. |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** **Post-P3 — token/usage instrumentation LANDED (s22, PR #41 `675baf0`):** worker/critic adapters expose usage → conductor persists per-task `token-usage.json` (best-effort) → Tokens rail aggregates on the client; codex-gated (1 Medium fixed → re-critic clean), 654 tests, browser-smoke proven. **Run rename + archive + UI re-run LANDED (s23, PR #42 `53d2ced`):** `PATCH /runs/:id` (rename/soft-archive, manifest-index only) + `GET /runs?includeArchived` + RunView actions bar; codex-gated (3 defects fixed → re-critic clean), 662 tests, browser-smoke proven full flow. **critic-verdict.json persistence + committed-task verdict seal LANDED (s24, PR #43 `b9b87f9`):** conductor writes a per-task `critic-verdict.json` at the DECISIVE point (clean-commit / parseable escalation, never intermediate rounds), best-effort; UI Inspector Verdict tab reads it (404-tolerant) and shows the REAL verdict+confidence+notes for a committed task (closes `[ui/verdict-not-persisted]`); codex-gated (2 Medium + 1 Low, decisive-only fix + reasoned decline → re-critic CLEAN), 671 tests, browser-smoke proven. |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -41,7 +50,35 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
 
-## Last session (s23, 2026-07-04)
+## Last session (s24, 2026-07-04)
+
+- **critic-verdict.json persistence + committed-task verdict seal SHIPPED & MERGED (PR #43, squash `b9b87f9`).** The
+  recommended opener from the s24 promt — closes gotcha `[ui/verdict-not-persisted]`. A CLEAN-committed task never
+  escalates, so its verdict lived only in a digest line; now it has a first-class readable artifact.
+- **Backend (codex-gated).** New pure `buildCriticVerdictDoc` + `CriticVerdictDoc` in `src/critic/verdict.ts`
+  (exactOptional-safe `diff_sha256` omission). New best-effort/never-throws `persistCriticVerdict` closure in the
+  conductor, written ONLY at a task's DECISIVE point — before the clean `break` (commit) and inside the escalate branch
+  guarded `if (cr.verdict)` — NOT on intermediate retry rounds. Mirrors s22's `persistTokenUsage` never-throws contract
+  (`safeLog`, `[ts/fail-closed]`); served unchanged by the existing runtime-file endpoint (no new API code).
+- **codex GPT-5.5 gate — 3 findings:** (1) Medium stale-artifact — the FIRST cut persisted every round, so a
+  `parseable→retry→null→escalate` sequence left the earlier verdict stale → FIXED by decisive-only placement (intermediate
+  rounds never write, so a valueless final round leaves no artifact) + regression test; (2) Medium clock-determinism
+  (extra `clock.now()`) → DECLINED w/ rationale (prod clock side-effect-free; same pattern as gated s22 persistTokenUsage;
+  the parity #9 `nowCalls` 3→4 shift crosses no decision boundary — graceful exit preserved); (3) Low throwing-logger
+  coverage → ADDED. **Re-critic: behavior/control-flow CLEAN** (one residual doc-comment "each round" fixed).
+- **UI (review-only).** `CriticVerdictDoc` type + 404-tolerant `useTaskVerdict` hook (mirrors `useRunUsage`). Inspector
+  `VerdictTab` prefers the REAL persisted verdict (confidence + notes + broken_contracts via the reused `VerdictSeal`)
+  over the state-synthesized placeholder; falls back to synthesis for undecided tasks / pre-s24 runs.
+- **Verification.** 671 tests (+9: 3 builder, 4 conductor, +2 regression), typecheck green (root+ui), CI 4/4. Parity #9
+  `nowCalls` 3→4 (documented benign). **Browser-smoke** on a seeded scratchpad serve: the Verdict tab of a committed
+  task rendered `clean` + confidence `0.92` + the persisted notes (vs the old fabricated placeholder). Screenshot sent;
+  seed + daemon torn down. Self-merged after operator's explicit "мёржи" (auto-mode classifier blocked the standing
+  memory-based autonomous merge — a mechanical gate, resolved by the operator's one-word in-session OK).
+- 1 new gotcha `[conductor/per-round-overwrite-stale]` (count 34→35). The clock-determinism decline is a code-review
+  judgment, not a gotcha.
+- main tip = `b9b87f9`. This docs commit rides with the next PR (batch-merges). Working tree clean.
+
+## Prior session (s23, 2026-07-04)
 
 - **Run rename + archive + UI re-run SHIPPED & MERGED (PR #42, squash `53d2ced`).** Backlog item (NEXT ACTIONS #3,
   was unscoped) — designed WITH the operator after a **donor recon** (AO/OD/OpenHands run/session lifecycle). Recon
@@ -291,12 +328,25 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s24)
+## NEXT ACTIONS (s25)
 
-**P3 is CLOSED; two post-P3 modules LANDED — token/usage (s22, PR #41) and run rename/archive+re-run (s23, PR #42).**
-The product shell is complete (register → scaffold → drive → settings → theme), s19+s20 closed 4 backlog items, s21
-landed the deps-provisioning ops-proof. **No operator-gated items remain.** Everything below is backlog polish or an
-optional follow-up; pick with the operator UNLESS granted autonomy, then take the best-scoped item.
+**P3 is CLOSED; three post-P3 modules LANDED — token/usage (s22, PR #41), run rename/archive+re-run (s23, PR #42),
+and critic-verdict.json persistence + committed-task verdict seal (s24, PR #43).** The product shell is complete
+(register → scaffold → drive → settings → theme), s19+s20 closed 4 backlog items, s21 landed the deps-provisioning
+ops-proof. **No operator-gated items remain.** Everything below is backlog polish or an optional follow-up; pick with
+the operator UNLESS granted autonomy, then take the best-scoped item.
+
+**Recommended opener candidates for s25:** (a) **desktop wrap (Electron/Tauri over the loopback API)** — the biggest
+remaining stretch item, additive (the daemon already serves install-relative); needs an IA/UX discussion with the
+operator before building. (b) **server-side usage aggregation** `GET /runs/:id/usage` for a cross-run "today" total
+(s22 deliberately did client-side per-run only). (c) **codex critic `--json`** for an input/output token split + cost
+(would need to re-verify the stdout-shape dependency — gate carefully). No single obvious must-do; discuss.
+
+-1. **~~critic-verdict.json persistence + committed-task verdict seal~~ — DONE (s24, PR #43 `b9b87f9`).** Conductor
+   writes a per-task `critic-verdict.json` at the decisive point (clean-commit / parseable escalation, never intermediate
+   rounds → gotcha `[conductor/per-round-overwrite-stale]`); UI Inspector Verdict tab renders the real persisted verdict
+   for a committed task (closes `[ui/verdict-not-persisted]`). Possible follow-up only if asked: also persist for
+   quarantine tasks / surface the verdict seal in RunView task cards (currently only the Inspector rail).
 
 0. **~~Run rename / archive / fork~~ — DONE (s23, PR #42 `53d2ced`).** `PATCH /runs/:id` (rename `name` / soft-archive
    `archived_at`, manifest-index only) + `GET /runs?includeArchived` + RunView actions bar (rename/archive/re-run).

@@ -2,7 +2,7 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 34.
+> Count: 35.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
@@ -41,6 +41,7 @@
 | `[config/yaml-merge-drops-comments]` | A config-write endpoint that merges via parse→merge→`yaml.stringify` re-emits the WHOLE file, silently dropping any hand-written comments in the original `config.yaml` (confirmed live: aurora's custom header was replaced by the generic scaffold header after a single-field UI edit). Accepted tradeoff for a first-cut write endpoint (comment-preserving YAML editing is real scope, not yet needed) — but keep the UI honest that a save rewrites the file. | `gotchas/yaml-merge-write-drops-hand-written-comments.md` |
 | `[worktree/vendor-junction-autoload-basedir]` | Provisioning `vendor` as a junction breaks Composer's autoloader in the worktree: PHP resolves `__DIR__` through the junction to its REAL target, so `$baseDir` → the MAIN clone, and project classes autoload from the main clone while worktree-relative `require_once` loads the worktree copy → `Cannot redeclare class` / exit 255. Read-by-path tools (`php -l`, phpcs, phpstan) are unaffected; a gate that EXECUTES project code (phpunit loading real plugins) fatals — even when identical `composer check` is green on the main tree. Rule: use a static gate (`composer check:static` = phpcs+phpstan) over a junction'd `vendor`; a runtime phpunit gate needs per-worktree vendor materialization (backlog). Found s21 ops-proof. | `gotchas/vendor-junction-composer-autoload-basedir.md` |
 | `[build/stale-dist-backend]` | `npm run build:ui` compiles ONLY `ui/` → `dist/ui`; it does NOT `tsc` the daemon's `src/**`. So after a BACKEND change, a UI-only build leaves the served `node dist/index.js` STALE — a brand-new route 404s in a live browser-smoke even though its unit tests + typecheck are green (the code isn't in the running binary). Before any live smoke that exercises a backend change, rebuild BOTH (`npm run build` AND `npm run build:ui`) then restart `serve`. A new-endpoint 404 with passing tests ⇒ suspect stale dist first. Found s23. | `gotchas/stale-dist-backend-after-ui-only-build.md` |
+| `[conductor/per-round-overwrite-stale]` | Persisting a per-task "latest single value" runtime artifact (e.g. `critic-verdict.json`) by writing it on EVERY retry round leaves a STALE artifact when a later round yields nothing to write: round 0 `uncertain`→persist→retry, round 1 `null`→escalate (guard skips write) ⇒ the round-0 verdict survives and contradicts the decisive outcome. The sibling `token-usage.json` copies the same write-every-round shape but is SAFE because it ACCUMULATES (monotonic). Rule: for a latest-value artifact, persist ONLY at the loop's decisive exits (clean-break commit, escalation) and only when there is a real value — never on intermediate rounds; a valueless final round then leaves no artifact (honest) rather than a stale one. Regression-test the `parseable→retry→null→escalate` sequence asserts the file is absent. Found s24. | `gotchas/per-round-overwrite-artifact-stale.md` |
 
 ## Anticipated tag namespaces
 

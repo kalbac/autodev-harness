@@ -26,6 +26,7 @@ import type { BlackboardRepository, QueueState } from "../blackboard/repository.
 import { parseEscalation } from "../escalate/escalate.js";
 import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
+import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -1305,6 +1306,64 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, manifest);
   }
 
+  /**
+   * Server-side per-run token-usage aggregation (s25): reads the run manifest, then
+   * best-effort reads each task's `token-usage.json` with the same TOCTOU-hardened
+   * bounded reader as `handleReadRuntimeFile` (`readBoundedFileText`), and sums them
+   * via the pure `buildRunUsageSummary`. This is the clean server-side path that lets
+   * a future cross-run "today" total avoid N x M client fetches (s22 only aggregated
+   * client-side, per open run). READ-ONLY; no new file-reading security code -- every
+   * read goes through an existing hardened reader.
+   */
+  async function handleGetRunUsage(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeIdSegment(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+    const manifest = await readBoundedManifest(join(p.stateDir, "runs", `${id}.json`));
+    if (!manifest) {
+      sendJson(res, 404, { error: "run not found" });
+      return;
+    }
+    // Read each task's token-usage.json server-side with the same hardened bounded
+    // reader as the runtime-file endpoint. The manifest is an on-disk, hand-editable
+    // file, so up front: DROP any path-unsafe task id (`safeIdSegment` is strictly
+    // narrower than `runtimeDir`'s guard, so a surviving id can never make it throw)
+    // and DEDUPE, so a duplicate id can't double-count one task's usage and `taskCount`
+    // reflects the run's unique, legitimate tasks. Each per-task read is fully wrapped:
+    // a missing / malformed / non-usage file -- or ANY unexpected reader error -- yields
+    // `null` and is skipped (best-effort, mirrors the s22 client aggregate) instead of
+    // rejecting the whole request. Returning from the map (not pushing) also keeps the
+    // sum in manifest order -> deterministic totals.
+    // Accepted residual: dedupe is by string identity, so on a case-INSENSITIVE fs a
+    // pathological manifest listing `["t1","T1"]` would read one on-disk task twice. Not
+    // guarded because (a) orchestrator-generated ids are unique and never case-variant,
+    // (b) on such a fs two case-variant tasks can't even coexist -- their queue `.md`
+    // files and runtime dirs collide, so only a hand-corrupted manifest hits it, (c) the
+    // impact is a bounded over-count in a read-only display number (no traversal -- both
+    // resolve inside runtime/), and (d) a portable fix (case-fold) would WRONGLY merge
+    // legitimately-distinct ids on a case-sensitive fs (Linux/CI). Not worth an fs-realpath.
+    const ids = [...new Set(manifest.taskIds.filter((t) => safeIdSegment(t)))];
+    const results = await Promise.all(
+      ids.map(async (taskId): Promise<TokenUsageDoc | null> => {
+        try {
+          const text = await readBoundedFileText(
+            join(p.repo.runtimeDir(taskId), "token-usage.json"),
+            MAX_RUNTIME_FILE_READ_BYTES,
+          );
+          if (text === null) return null;
+          const parsed: unknown = JSON.parse(text);
+          return isTokenUsageDoc(parsed) ? parsed : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const docs = results.filter((d): d is TokenUsageDoc => d !== null);
+    sendJson(res, 200, buildRunUsageSummary(docs, ids.length));
+  }
+
   async function handleListRuntimeFiles(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
@@ -1496,6 +1555,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       const runMatch = /^\/runs\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runMatch) return void (await handleGetRun(p, runMatch[1]!, res));
       if (req.method === "PATCH" && runMatch) return void (await handlePatchRun(p, runMatch[1]!, req, res));
+      const runUsageMatch = /^\/runs\/([^/]+)\/usage\/?$/.exec(sub);
+      if (req.method === "GET" && runUsageMatch) return void (await handleGetRunUsage(p, runUsageMatch[1]!, res));
       const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runtimeFileMatch)
         return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));
