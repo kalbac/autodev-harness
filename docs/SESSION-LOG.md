@@ -4,7 +4,24 @@
 
 ---
 
-## s24 — 2026-07-04 — critic-verdict.json persistence + committed-task verdict seal LANDED (PR #43 `b9b87f9`)
+## s24 — 2026-07-04 — TWO modules: critic-verdict.json persistence (PR #43 `b9b87f9`) + server-side run usage aggregation (PR #44 `8067022`)
+
+**Module 2 — server-side per-run usage aggregation `GET /projects/:id/runs/:runId/usage` (PR #44 `8067022`).** Operator
+picked NEXT-ACTIONS candidate (b). s22 aggregated token usage client-side per open run only; a cross-run "today" total
+would need N×M client fetches, so this adds the clean server path. Pure `buildRunUsageSummary(docs, taskCount)` +
+`isTokenUsageDoc` guard in `src/usage/usage.ts` (`num()`-coerced sum; boundary validation skips non-usage JSON);
+`handleGetRunUsage` + route in `server.ts` REUSING the existing TOCTOU-hardened readers (`readBoundedManifest` +
+`readBoundedFileText`) — no new file-reading security code. Returns `{tokens, cost, any, taskCount, tasksWithUsage}`.
+**codex gate — 3 findings:** Medium duplicate-id double-count → FIXED (dedupe + drop path-unsafe ids up front,
+`taskCount` = unique-safe) + regression; Low `Promise.all`-rejects-on-throw → FIXED (per-task body wrapped → returns
+`TokenUsageDoc|null`, filtered = best-effort by construction); Low nondeterministic sum order → FIXED by the same change
+(manifest order). **Re-critic residual:** case-insensitive-fs path-alias double-count (`["t1","T1"]`) → DECLINED with
+rationale (orchestrator ids unique + never case-variant; such tasks can't coexist on a case-insensitive fs; bounded
+read-only display over-count; a portable case-fold would wrongly merge distinct ids on Linux/CI) — documented in the
+handler as an accepted residual. 684 tests, typecheck green, live curl-proof (`tokens:5000 cost:0.08 taskCount:2`).
+No UI consumer yet (a "today" view is the follow-on) — the endpoint is the deliverable per the operator's scope.
+
+**Module 1 — critic-verdict.json persistence + committed-task verdict seal (PR #43 `b9b87f9`).**
 
 The recommended s24 opener — closes gotcha `[ui/verdict-not-persisted]`. A CLEAN-committed task never escalates, so its
 critic verdict survived only as a `digest.md` line; the dashboard's "verdict first-class" was rich only on escalation.
