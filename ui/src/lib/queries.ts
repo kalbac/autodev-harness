@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc, type RunPatch } from "./api";
+import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc, type CriticVerdictDoc, type RunPatch } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -15,6 +15,7 @@ export const qk = {
   escalation: (p: string, id: string) => ["escalation", p, id] as const,
   config: (p: string) => ["config", p] as const,
   runUsage: (p: string, runId: string) => ["run-usage", p, runId] as const,
+  taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
 };
 
 /** Client-side token aggregate for one run: the sum of its tasks' `token-usage.json`
@@ -91,6 +92,34 @@ export const useRunUsage = (p: string, runId: string | null) =>
         }),
       );
       return { tokens, cost, any };
+    },
+  });
+
+/**
+ * The persisted critic verdict for one task (s24): reads `critic-verdict.json` via the
+ * existing runtime-file endpoint. 404-tolerant — an undecided task (still pending/active)
+ * or a run predating verdict persistence has no file, so the query resolves to `null` and
+ * the UI falls back to its state-synthesized verdict. A malformed/truncated file also
+ * yields `null` rather than failing. Closes gotcha [ui/verdict-not-persisted] for the
+ * committed-task case, where the synthesized verdict was a fabricated placeholder.
+ */
+export const useTaskVerdict = (p: string, taskId: string) =>
+  useQuery({
+    queryKey: qk.taskVerdict(p, taskId),
+    enabled: p !== "" && taskId !== "",
+    queryFn: async (): Promise<CriticVerdictDoc | null> => {
+      let text: string;
+      try {
+        ({ text } = await api.getRuntimeFile(p, taskId, "critic-verdict.json"));
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null; // no persisted verdict for this task
+        throw err;
+      }
+      try {
+        return JSON.parse(text) as CriticVerdictDoc;
+      } catch {
+        return null; // malformed/truncated — fall back to the synthesized verdict
+      }
     },
   });
 

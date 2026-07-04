@@ -87,3 +87,39 @@ export function attachDiffSha256(verdict: Verdict, diff: string): Verdict {
   const diff_sha256 = createHash("sha256").update(diff).digest("hex");
   return { ...verdict, diff_sha256 };
 }
+
+/** The persisted per-task critic verdict artifact (`runtime/<id>/critic-verdict.json`).
+ *  Mirrors the token-usage.json pattern (s22): a best-effort snapshot the conductor
+ *  writes only at the DECISIVE point of a task (the clean verdict that commits, or the
+ *  parseable verdict that escalates -- never an intermediate retry round), so a
+ *  CLEAN-committed task -- which never escalates and so has no escalation body -- still
+ *  exposes a readable verdict+confidence to the dashboard (closes gotcha
+ *  [ui/verdict-not-persisted]). Carries the full parsed verdict plus a clock timestamp
+ *  for UI freshness. */
+export interface CriticVerdictDoc {
+  verdict: "clean" | "broken" | "uncertain";
+  confidence: number;
+  notes: string;
+  broken_contracts: BrokenContract[];
+  diff_sha256?: string;
+  /** Conductor `clock.now()` at the write -- lets the UI show freshness. */
+  updated_at: number;
+}
+
+/** Build the persisted doc from a parsed verdict + the conductor clock. Pure and
+ *  idempotent (a given verdict + timestamp always yields the same doc). `diff_sha256`
+ *  is OMITTED (never set to `undefined`) when the verdict lacks it, per
+ *  `exactOptionalPropertyTypes`. */
+export function buildCriticVerdictDoc(verdict: Verdict, updatedAt: number): CriticVerdictDoc {
+  const doc: CriticVerdictDoc = {
+    verdict: verdict.verdict,
+    confidence: verdict.confidence,
+    notes: verdict.notes,
+    broken_contracts: verdict.broken_contracts,
+    updated_at: updatedAt,
+  };
+  if (verdict.diff_sha256 !== undefined) {
+    doc.diff_sha256 = verdict.diff_sha256;
+  }
+  return doc;
+}

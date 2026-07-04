@@ -171,6 +171,20 @@ export interface TokenUsageDoc {
   updated_at: number;
 }
 
+/** Mirrors `src/critic/verdict.ts` CriticVerdictDoc — the per-task `critic-verdict.json`
+ *  runtime artifact the conductor writes at a task's DECISIVE point (the clean verdict
+ *  that commits, or the parseable verdict that escalates), served by the generic
+ *  runtime-file endpoint. Lets the dashboard render a REAL verdict seal for a committed
+ *  task instead of a synthesized one (gotcha [ui/verdict-not-persisted]). */
+export interface CriticVerdictDoc {
+  verdict: "clean" | "broken" | "uncertain";
+  confidence: number;
+  notes: string;
+  broken_contracts: { zone: string; file: string; line: number; evidence: string }[];
+  diff_sha256?: string;
+  updated_at: number;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

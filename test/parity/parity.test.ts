@@ -659,7 +659,12 @@ describe("parity divergence #9 -- MaxSessionHours graceful exit", () => {
     // proves the graceful exit fired, not the backstop.
     await h.conductor.run({ maxIterations: 50 });
 
-    expect(nowCalls).toBe(3); // startMs + 2 loop-top checks -- NOT 50
+    // startMs baseline + iter-1 loop-top check + persistCriticVerdict's
+    // updated_at read (s24; the clean verdict is persisted mid-iteration) +
+    // iter-2 loop-top check that trips the budget = 4 -- NOT 50. The extra read
+    // vs. the historical 3 is the new critic-verdict.json timestamp; it does not
+    // change the graceful-exit behaviour (both call>=2 return the tripped 10h).
+    expect(nowCalls).toBe(4);
     expect(existsSync(h.queuePath("done", "t9"))).toBe(true); // the one iteration that ran did commit
   });
 });

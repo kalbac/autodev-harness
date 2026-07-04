@@ -1214,6 +1214,161 @@ describe("runIteration -- token-usage persistence", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Critic verdict persistence (s24)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- critic-verdict.json persistence", () => {
+  it("persists critic-verdict.json for a clean verdict", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic } = makeCritic([{ result: { verdict: makeCleanVerdict({ confidence: 0.87 }), rateLimited: false } }]);
+
+    const deps = buildDeps({ repo, scheduler, critic, clock: { now: () => 4242 } });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(true);
+    const raw = state.runtimeFiles.get(task.id)?.get("critic-verdict.json");
+    expect(raw).toBeDefined();
+    const doc = JSON.parse(raw!) as { verdict: string; confidence: number; notes: string; updated_at: number };
+    expect(doc.verdict).toBe("clean");
+    expect(doc.confidence).toBe(0.87);
+    expect(doc.updated_at).toBe(4242);
+  });
+
+  it("persists critic-verdict.json for an escalating (broken) verdict", async () => {
+    const task = makeTask({ touches_contract_zone: true });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const brokenVerdict: Verdict = {
+      verdict: "broken",
+      broken_contracts: [{ zone: "z1", file: "a.ts", line: 3, evidence: "changed the enum" }],
+      notes: "this breaks contract z1",
+      confidence: 0.9,
+    };
+    const { critic } = makeCritic([{ result: { verdict: brokenVerdict, rateLimited: false } }]);
+
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    const raw = state.runtimeFiles.get(task.id)?.get("critic-verdict.json");
+    expect(raw).toBeDefined();
+    const doc = JSON.parse(raw!) as { verdict: string };
+    expect(doc.verdict).toBe("broken");
+  });
+
+  it("writes nothing when the critic verdict is null/unparseable (not rate-limited)", async () => {
+    const task = makeTask({ touches_contract_zone: true });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate } = makeEscalate();
+    const { critic } = makeCritic([{ result: { verdict: null, rateLimited: false } }]);
+
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(state.runtimeFiles.get(task.id)?.has("critic-verdict.json")).toBeFalsy();
+  });
+
+  it("is best-effort: a throwing critic-verdict write neither rejects nor blocks the commit", async () => {
+    const task = makeTask();
+    const { repo: base, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], base);
+    const repo: BlackboardRepository = {
+      ...base,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "critic-verdict.json") throw new Error("disk full");
+        return base.writeRuntimeFile(id, name, content);
+      },
+    };
+    const { critic } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+
+    const deps = buildDeps({ repo, scheduler, critic });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+    expect(state.runtimeFiles.get(task.id)?.has("critic-verdict.json")).toBe(false);
+  });
+
+  it("leaves NO stale artifact when an earlier round was parseable but the decisive round is null", async () => {
+    // Decisive-only persistence: round 0 returns a parseable `uncertain` (a
+    // non-contract, non-final round -> retry, NOT persisted); round 1 returns a
+    // null/unparseable verdict and escalates. Because intermediate rounds are
+    // never written, the round-0 `uncertain` must NOT survive on disk as a
+    // misleading "current" verdict -- the file stays absent.
+    const task = makeTask({ max_rounds: 1 }); // round 0 retries, round 1 escalates
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const uncertain: Verdict = {
+      verdict: "uncertain",
+      broken_contracts: [],
+      notes: "not sure, please retry",
+      confidence: 0.4,
+    };
+    const { critic } = makeCritic([
+      { result: { verdict: uncertain, rateLimited: false } },
+      { result: { verdict: null, rateLimited: false } },
+    ]);
+
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    // The round-0 uncertain was never persisted, and the null round wrote
+    // nothing -> no stale verdict on disk.
+    expect(state.runtimeFiles.get(task.id)?.has("critic-verdict.json")).toBeFalsy();
+  });
+
+  it("never-throws even when the catch-block logger itself throws (fail-closed [ts/fail-closed])", async () => {
+    // Both the primary dep (writeRuntimeFile) AND the failure logger throw --
+    // the gotcha's exact scenario. safeLog must swallow the logger throw so the
+    // enforcement loop still commits the clean task.
+    const task = makeTask();
+    const { repo: base, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], base);
+    const repo: BlackboardRepository = {
+      ...base,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "critic-verdict.json") throw new Error("disk full");
+        return base.writeRuntimeFile(id, name, content);
+      },
+    };
+    const { critic } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+    const log = (_level: string, message: string): void => {
+      if (message.includes("critic-verdict")) throw new Error("logger exploded");
+    };
+
+    const deps = buildDeps({ repo, scheduler, critic, log });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+  });
+});
+
 describe("run -- MaxSessionHours graceful exit", () => {
   it("stops before claiming anything once the session budget is exhausted", async () => {
     const { repo } = makeRepo();
