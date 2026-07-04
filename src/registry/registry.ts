@@ -130,3 +130,14 @@ export function addProject(registry: Registry, input: { path: string; name?: str
 export function removeProject(registry: Registry, id: string): Registry {
   return { projects: registry.projects.filter((p) => p.id !== id) };
 }
+
+/** Pure: set a project's display `name` by id. Returns the updated registry +
+ *  entry, or null for an unknown id. Never changes `id` or `path` (id unchanged →
+ *  id-keyed hub/watcher caches stay valid). */
+export function renameProject(registry: Registry, id: string, name: string): { registry: Registry; entry: RegistryEntry } | null {
+  const idx = registry.projects.findIndex((p) => p.id === id);
+  if (idx === -1) return null;
+  const entry: RegistryEntry = { ...registry.projects[idx]!, name };
+  const projects = registry.projects.map((p, i) => (i === idx ? entry : p));
+  return { registry: { projects }, entry };
+}

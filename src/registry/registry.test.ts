@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRegistry, saveRegistry, addProject, removeProject, slugForName, isPathRegistered, type Registry } from "./registry.js";
+import { loadRegistry, saveRegistry, addProject, removeProject, renameProject, slugForName, isPathRegistered, type Registry } from "./registry.js";
 
 let dir: string;
 let file: string;
@@ -137,6 +137,36 @@ describe("addProject / removeProject (pure)", () => {
     const reg = { projects: [{ id: "a", name: "a", path: "/a" }] };
     expect(removeProject(reg, "a").projects).toEqual([]);
     expect(removeProject(reg, "zz").projects).toEqual(reg.projects);
+  });
+});
+
+describe("renameProject (pure)", () => {
+  it("renames the matching entry's name; id+path preserved, other entries untouched, input not mutated", () => {
+    const reg: Registry = {
+      projects: [
+        { id: "a", name: "Alpha", path: "/a" },
+        { id: "b", name: "Beta", path: "/b" },
+      ],
+    };
+    const result = renameProject(reg, "a", "Alpha Renamed");
+    expect(result).not.toBeNull();
+    if (result === null) return;
+    expect(result.entry).toEqual({ id: "a", name: "Alpha Renamed", path: "/a" });
+    expect(result.registry.projects).toEqual([
+      { id: "a", name: "Alpha Renamed", path: "/a" },
+      { id: "b", name: "Beta", path: "/b" },
+    ]);
+    // input not mutated
+    expect(reg.projects[0]).toEqual({ id: "a", name: "Alpha", path: "/a" });
+    expect(result.registry).not.toBe(reg);
+    expect(result.registry.projects).not.toBe(reg.projects);
+  });
+
+  it("returns null for an unknown id", () => {
+    const reg: Registry = { projects: [{ id: "a", name: "Alpha", path: "/a" }] };
+    expect(renameProject(reg, "zz", "Nope")).toBeNull();
+    // input untouched
+    expect(reg.projects).toEqual([{ id: "a", name: "Alpha", path: "/a" }]);
   });
 });
 

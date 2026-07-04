@@ -1681,9 +1681,15 @@ describe("createApiServer / multi-project routing", () => {
 
 /** Fake admin port capturing calls; per-test overrides via the ctor arg. */
 function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {}) {
-  const calls: { register: unknown[]; unregister: string[]; listDirs: (string | undefined)[] } = {
+  const calls: {
+    register: unknown[];
+    unregister: string[];
+    rename: { id: string; name: string }[];
+    listDirs: (string | undefined)[];
+  } = {
     register: [],
     unregister: [],
+    rename: [],
     listDirs: [],
   };
   const admin: NonNullable<ApiServerDeps["admin"]> = {
@@ -1694,6 +1700,12 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
     unregister: async (id) => {
       calls.unregister.push(id);
       return id === "p1";
+    },
+    rename: async (id, name) => {
+      calls.rename.push({ id, name });
+      return id === "p1"
+        ? { ok: true, entry: { id, name, path: "D:/Projects/p1" } }
+        : { ok: false, code: "not_found", message: `project not found: ${id}` };
     },
     listDirs: async (path) => {
       calls.listDirs.push(path);
@@ -1877,6 +1889,145 @@ describe("DELETE /projects/:id", () => {
 
     await fetch(`http://127.0.0.1:${port}/projects/p1`, { method: "DELETE" });
     expect(closed).toBe(1);
+  });
+});
+
+describe("PATCH /projects/:id", () => {
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("renames a known id -> 200 with the updated entry; forwards id+name to admin.rename", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { id: string; name: string }).toMatchObject({ id: "p1", name: "New Name" });
+    expect(calls.rename).toEqual([{ id: "p1", name: "New Name" }]);
+  });
+
+  it("unknown id -> 404", async () => {
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/ghost`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { code: string }).toMatchObject({ code: "not_found" });
+  });
+
+  it("empty/invalid name -> 400 (admin reports invalid_name)", async () => {
+    const { admin } = fakeAdmin({
+      rename: async () => ({ ok: false, code: "invalid_name", message: "name must not be empty" }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { code: string }).toMatchObject({ code: "invalid_name" });
+  });
+
+  it("non-string name -> 400 WITHOUT calling admin.rename", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: 123 }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "name must be a string" });
+    expect(calls.rename).toEqual([]);
+  });
+
+  it("invalid project id segment -> 400 'invalid project id'", async () => {
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/${encodeURIComponent("bad id!")}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid project id" });
+  });
+
+  it("malformed JSON body -> 400 WITHOUT calling admin.rename", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: "{ not json",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid JSON body" });
+    expect(calls.rename).toEqual([]);
+  });
+
+  it("rejects an over-sized body with 413 and never calls admin.rename", async () => {
+    const { admin, calls } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    // Same unbounded-body memory-DoS guard as register/reply (`[api/413-teardown]`).
+    const huge = "x".repeat(1_000_001 + 64);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: huge }),
+    });
+    expect(res.status).toBe(413);
+    expect(calls.rename).toEqual([]);
+  });
+
+  it("renames even when the project's config fails to build (handled before root resolve)", async () => {
+    // The whole reason PATCH sits BEFORE `projects.get`: a project whose config is
+    // broken (get -> {error}, or here a throw) must still be renameable. Assert the
+    // rename lands and `projects.get` is never consulted for this route.
+    const { admin, calls } = fakeAdmin();
+    let getCalls = 0;
+    handle = createApiServer({
+      projects: {
+        list: async () => [{ id: "p1", name: "p1", path: stateDir, status: "error" }],
+        get: async () => {
+          getCalls++;
+          throw new Error("config failed to build");
+        },
+      },
+      admin,
+    });
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/projects/p1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Renamed Despite Broken Config" }),
+    });
+    expect(res.status).toBe(200);
+    expect(calls.rename).toEqual([{ id: "p1", name: "Renamed Despite Broken Config" }]);
+    expect(getCalls).toBe(0);
   });
 });
 
