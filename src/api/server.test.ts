@@ -842,6 +842,128 @@ describe("createApiServer / GET /runs/:id", () => {
   });
 });
 
+/** Write a valid `token-usage.json` under a task's runtimeDir, mirroring the shape
+ * persisted by the conductor's `buildTokenUsageDoc` (s22). */
+function seedUsage(
+  taskId: string,
+  o: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; critic_tokens?: number; total_cost_usd?: number } = {},
+): void {
+  const dir = repo.runtimeDir(taskId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "token-usage.json"),
+    JSON.stringify({
+      worker: {
+        input_tokens: o.input_tokens ?? 10,
+        output_tokens: o.output_tokens ?? 20,
+        cache_read_input_tokens: o.cache_read_input_tokens ?? 30,
+        cache_creation_input_tokens: o.cache_creation_input_tokens ?? 40,
+        total_cost_usd: o.total_cost_usd ?? 0.01,
+        runs: [],
+      },
+      critic: { tokens: o.critic_tokens ?? 5, runs: [] },
+      total_cost_usd: o.total_cost_usd ?? 0.01,
+      updated_at: 1,
+    }),
+  );
+}
+
+describe("createApiServer / GET /runs/:id/usage", () => {
+  it("sums two tasks' token-usage.json into one summary", async () => {
+    seedRun("run-u1", 1, "i", ["t1", "t2"]);
+    seedUsage("t1", { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40, critic_tokens: 5, total_cost_usd: 0.01 });
+    seedUsage("t2", { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4, critic_tokens: 5, total_cost_usd: 0.02 });
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u1/usage`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tokens: number; cost: number; any: boolean; taskCount: number; tasksWithUsage: number };
+    expect(body.tokens).toBe(10 + 20 + 30 + 40 + 5 + (1 + 2 + 3 + 4 + 5));
+    expect(body.cost).toBeCloseTo(0.03, 10);
+    expect(body).toMatchObject({ any: true, taskCount: 2, tasksWithUsage: 2 });
+  });
+
+  it("reads honestly when only one of two tasks has a usage file", async () => {
+    seedRun("run-u2", 1, "i", ["t1", "t2"]);
+    seedUsage("t1");
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u2/usage`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { any: boolean; taskCount: number; tasksWithUsage: number; tokens: number };
+    expect(body).toMatchObject({ any: true, taskCount: 2, tasksWithUsage: 1 });
+    expect(body.tokens).toBe(10 + 20 + 30 + 40 + 5);
+  });
+
+  it("returns an all-zero, any:false summary when no task has a usage file", async () => {
+    seedRun("run-u3", 1, "i", ["t1", "t2", "t3"]);
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u3/usage`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tokens: 0, cost: 0, any: false, taskCount: 3, tasksWithUsage: 0 });
+  });
+
+  it("404s for a missing/unknown run id", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/does-not-exist/usage`);
+    expect(res.status).toBe(404);
+  });
+
+  it("skips a task whose token-usage.json is malformed JSON (not counted, no 500)", async () => {
+    seedRun("run-u4", 1, "i", ["t1", "t2"]);
+    seedUsage("t1");
+    const dir2 = repo.runtimeDir("t2");
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(join(dir2, "token-usage.json"), "{ not valid json ");
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u4/usage`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { any: boolean; taskCount: number; tasksWithUsage: number };
+    expect(body).toMatchObject({ any: true, taskCount: 2, tasksWithUsage: 1 });
+  });
+
+  it("dedupes duplicate task ids in the manifest — one task's usage is not double-counted", async () => {
+    seedRun("run-u5", 1, "i", ["t1", "t1"]);
+    seedUsage("t1", { input_tokens: 100, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, critic_tokens: 0, total_cost_usd: 0.05 });
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u5/usage`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tokens: number; cost: number; taskCount: number; tasksWithUsage: number };
+    expect(body.tokens).toBe(100); // counted ONCE, not 200
+    expect(body.cost).toBeCloseTo(0.05, 10);
+    expect(body).toMatchObject({ taskCount: 1, tasksWithUsage: 1 });
+  });
+
+  it("drops a path-unsafe manifest task id (no traversal, no 500) and counts the rest", async () => {
+    seedRun("run-u6", 1, "i", ["../evil", "t1"]);
+    seedUsage("t1", { input_tokens: 7, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, critic_tokens: 0, total_cost_usd: 0 });
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-u6/usage`);
+    expect(res.status).toBe(200); // the unsafe id is filtered before any path is built
+    const body = (await res.json()) as { tokens: number; taskCount: number; tasksWithUsage: number };
+    expect(body.tokens).toBe(7);
+    expect(body).toMatchObject({ taskCount: 1, tasksWithUsage: 1 }); // only the safe unique id
+  });
+});
+
 describe("applyRunPatch (pure merge)", () => {
   const base = { runId: "run-1", intent: "do a thing", taskIds: ["t1"], at: 10 };
 
