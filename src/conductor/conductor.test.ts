@@ -1123,6 +1123,97 @@ describe("runIteration -- harvestWorkerReport wiring", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Token/usage instrumentation (s22)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- token-usage persistence", () => {
+  const workerUsage = {
+    model: "sonnet",
+    input_tokens: 100,
+    output_tokens: 200,
+    cache_read_input_tokens: 300,
+    cache_creation_input_tokens: 40,
+    total_cost_usd: 0.05,
+  };
+  const criticUsage = { model: "gpt-5.5", tokens: 777 };
+
+  it("persists an aggregated token-usage.json when worker and critic report usage", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [{ result: { status: "DONE", model: "sonnet", rateLimited: false, timedOut: false, exitCode: 0, usage: workerUsage }, report: "status: DONE" }],
+      repo,
+    );
+    const { critic } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false, usage: criticUsage } }]);
+
+    const deps = buildDeps({ repo, scheduler, worker, critic, clock: { now: () => 4242 } });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(true);
+    const raw = state.runtimeFiles.get(task.id)?.get("token-usage.json");
+    expect(raw).toBeDefined();
+    const doc = JSON.parse(raw!) as {
+      worker: { input_tokens: number; total_cost_usd: number; runs: unknown[] };
+      critic: { tokens: number; runs: unknown[] };
+      total_cost_usd: number;
+      updated_at: number;
+    };
+    expect(doc.worker.input_tokens).toBe(100);
+    expect(doc.worker.total_cost_usd).toBeCloseTo(0.05, 10);
+    expect(doc.worker.runs).toHaveLength(1);
+    expect(doc.critic.tokens).toBe(777);
+    expect(doc.critic.runs).toHaveLength(1);
+    expect(doc.total_cost_usd).toBeCloseTo(0.05, 10);
+    expect(doc.updated_at).toBe(4242);
+  });
+
+  it("does not write token-usage.json when neither adapter reports usage", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+
+    const deps = buildDeps({ repo, scheduler }); // default worker/critic carry no usage
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.has("token-usage.json")).toBeFalsy();
+  });
+
+  it("is best-effort: a throwing token-usage write neither rejects nor blocks the commit", async () => {
+    const task = makeTask();
+    const { repo: base, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], base);
+    // Wrap the repo so ONLY the token-usage write throws; every other runtime
+    // write (diff.patch, worker-report.md, ...) delegates unchanged.
+    const repo: BlackboardRepository = {
+      ...base,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "token-usage.json") throw new Error("disk full");
+        return base.writeRuntimeFile(id, name, content);
+      },
+    };
+    const { worker } = makeWorker(
+      [{ result: { status: "DONE", model: "sonnet", rateLimited: false, timedOut: false, exitCode: 0, usage: workerUsage }, report: "status: DONE" }],
+      repo,
+    );
+    const { critic } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false, usage: criticUsage } }]);
+
+    const deps = buildDeps({ repo, scheduler, worker, critic });
+    const conductor = createConductor(deps);
+
+    // Must resolve (not reject) and still commit despite the token-write throw.
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+    expect(state.runtimeFiles.get(task.id)?.has("token-usage.json")).toBe(false);
+  });
+});
+
 describe("run -- MaxSessionHours graceful exit", () => {
   it("stops before claiming anything once the session budget is exhausted", async () => {
     const { repo } = makeRepo();

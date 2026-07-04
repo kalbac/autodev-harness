@@ -1,7 +1,19 @@
 import type { ReactNode } from "react";
-import { useConfig, useRuns, useState as useProjectState } from "@/lib/queries";
+import { useConfig, useRuns, useRunUsage, useState as useProjectState } from "@/lib/queries";
 import { Dot } from "./ui/Dot";
 import { cn } from "@/lib/utils";
+
+/** Compact token count: 12345 -> "12.3k", 2_100_000 -> "2.1M", <1000 -> as-is. */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** Cost in USD, enough precision for sub-cent runs. */
+function formatCost(usd: number): string {
+  return `$${usd < 1 ? usd.toFixed(4) : usd.toFixed(2)}`;
+}
 
 /**
  * The per-SESSION inspector rail (s16 mockup `.rail`) — a sibling of `main` at
@@ -16,7 +28,11 @@ import { cn } from "@/lib/utils";
 export function SessionRail({ projectId }: { projectId: string }) {
   const state = useProjectState(projectId);
   const config = useConfig(projectId);
-  useRuns(projectId); // warm the runs cache used elsewhere; not rendered here
+  const runs = useRuns(projectId);
+  // "This run" = the newest run manifest (server sorts newest-first); its tasks'
+  // token-usage.json files are summed on the client by useRunUsage.
+  const newestRunId = runs.data?.[0]?.runId ?? null;
+  const usage = useRunUsage(projectId, newestRunId);
 
   const queues = state.data?.queues;
   const activeTask = queues?.active[0];
@@ -90,17 +106,10 @@ export function SessionRail({ projectId }: { projectId: string }) {
         <Kv k="critic" v={roleCritic} />
       </Block>
 
-      {/* Tokens — no instrumentation yet (phase 2) */}
-      <Block
-        title="Tokens"
-        badge={
-          <span className="ml-auto rounded-[5px] border border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] px-1.5 py-px font-mono text-[9px] text-accent">
-            phase 2
-          </span>
-        }
-      >
-        <Kv k="this run" v={dash} />
-        <Kv k="today" v={dash} />
+      {/* Tokens — client-aggregated from the newest run's per-task usage (s22) */}
+      <Block title="Tokens">
+        <Kv k="this run" v={usage.data?.any ? formatTokens(usage.data.tokens) : dash} />
+        <Kv k="cost" v={usage.data?.any ? formatCost(usage.data.cost) : dash} />
       </Block>
     </aside>
   );

@@ -257,6 +257,41 @@ describe("ClaudeWorkerAdapter", () => {
     expect(runner.calls[0]!.stdin).toBe(buildWorkerPrompt(task, cfg, feedback));
   });
 
+  it("attaches parsed usage (with the ladder model) when stdout carries a stream-json result event", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const resultEvent = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      total_cost_usd: 0.042,
+      usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 56, cache_creation_input_tokens: 7 },
+    });
+    const runner = new FakeRunner([
+      okResult({ exitCode: 0, stdout: `${JSON.stringify({ type: "system" })}\n${resultEvent}\n` }),
+    ]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+
+    const result = await adapter.run({ task: makeTask(), worktreePath: "/wt", ladder: ["sonnet"], runtimeDir: "/rt" });
+
+    expect(result.usage).toEqual({
+      model: "sonnet",
+      input_tokens: 12,
+      output_tokens: 34,
+      cache_read_input_tokens: 56,
+      cache_creation_input_tokens: 7,
+      total_cost_usd: 0.042,
+    });
+  });
+
+  it("omits the usage key entirely when stdout carries no parseable usage event", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([okResult({ exitCode: 0, stdout: "no json here" })]);
+    const adapter = new ClaudeWorkerAdapter({ runner, cfg });
+
+    const result = await adapter.run({ task: makeTask(), worktreePath: "/wt", ladder: ["opus"], runtimeDir: "/rt" });
+
+    expect("usage" in result).toBe(false);
+  });
+
   it("throws a clear error when the ladder is empty", async () => {
     const cfg = HarnessConfigSchema.parse({});
     const runner = new FakeRunner([]);

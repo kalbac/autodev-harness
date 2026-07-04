@@ -1,0 +1,171 @@
+/**
+ * Token/usage instrumentation types + pure parsers (s22). See
+ * `docs/superpowers/specs/2026-07-04-token-usage-instrumentation.md`.
+ *
+ * Deliberately dependency-free and side-effect-free: the two adapters call the
+ * parsers on their captured stdout, and the conductor calls `buildTokenUsageDoc`
+ * to aggregate per-round runs into the persisted `token-usage.json` artifact.
+ * Everything here is best-effort by contract — a parse miss returns `null`, never
+ * throws, so token accounting can never break the enforcement loop.
+ */
+
+/** One worker (claude) invocation's usage, as read from its final stream-json
+ *  `result` event. `model` is attached by the adapter (the parser only reads the
+ *  token/cost numbers, which the event does not label with a model). */
+export interface WorkerUsage {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_cost_usd: number;
+}
+
+/** One critic (codex) invocation's usage. Plain `codex exec` prints only a bare
+ *  `tokens used\n<N>` total — no input/output split and no cost — so this carries
+ *  a single `tokens` number. See the spec for why we don't switch codex to `--json`. */
+export interface CriticUsage {
+  model: string;
+  tokens: number;
+}
+
+/** The persisted per-task artifact (`runtime/<id>/token-usage.json`). Sums every
+ *  worker + critic invocation across all rounds of a task, keeping per-invocation
+ *  detail in the `runs` arrays. */
+export interface TokenUsageDoc {
+  worker: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    total_cost_usd: number;
+    runs: WorkerUsage[];
+  };
+  critic: {
+    tokens: number;
+    runs: CriticUsage[];
+  };
+  /** Worker cost total. Plain `codex exec` yields no critic cost, so this is the
+   *  worker's summed `total_cost_usd`. */
+  total_cost_usd: number;
+  /** Conductor `clock.now()` at the last write — lets the UI show freshness. */
+  updated_at: number;
+}
+
+/** Coerce an unknown JSON value to a finite non-negative-safe number, defaulting
+ *  to 0 for anything missing / non-numeric (a usage field a CLI version omits
+ *  must contribute 0, never NaN). */
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Parse the LAST `type:"result"` stream-json event that carries a `usage` object
+ * out of a claude worker's captured stdout (`claude -p --output-format
+ * stream-json --verbose` emits JSONL). Tolerant: non-JSON / non-`{` lines are
+ * skipped, and a run that never emitted a usage-bearing result event yields
+ * `null`. The `model` is NOT set here — the adapter attaches the ladder model it
+ * actually ran.
+ */
+export function parseClaudeUsage(stdout: string): Omit<WorkerUsage, "model"> | null {
+  let found: Record<string, unknown> | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed[0] !== "{") continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (
+      obj !== null &&
+      typeof obj === "object" &&
+      (obj as Record<string, unknown>).type === "result" &&
+      typeof (obj as Record<string, unknown>).usage === "object" &&
+      (obj as Record<string, unknown>).usage !== null
+    ) {
+      found = obj as Record<string, unknown>;
+    }
+  }
+  if (found === null) return null;
+  const u = found.usage as Record<string, unknown>;
+  return {
+    input_tokens: num(u.input_tokens),
+    output_tokens: num(u.output_tokens),
+    cache_read_input_tokens: num(u.cache_read_input_tokens),
+    cache_creation_input_tokens: num(u.cache_creation_input_tokens),
+    total_cost_usd: num(found.total_cost_usd),
+  };
+}
+
+/** Strip thousands separators and parse; `null` on a non-finite result. */
+function toTokenCount(raw: string): number | null {
+  const n = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Parse the bare `tokens used\n<N>` (or `tokens used: N`) FOOTER codex prints near
+ * the end of a plain `codex exec` run. Best-effort and format-specific by design
+ * (see spec). LINE-ANCHORED to avoid false telemetry: only a line whose entire
+ * (trimmed) content is the token footer counts — prose that merely mentions
+ * "tokens used" mid-sentence (e.g. a critic note "No tokens used in this example;
+ * finding 3 ...") must NOT be mistaken for the accounting line. Scans from the end
+ * (the footer is last); accepts the count inline on that line or as a bare integer
+ * on the next non-empty line. Returns `null` when no such footer is present.
+ */
+export function parseCodexTokens(stdout: string): number | null {
+  const lines = stdout.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    // Whole line IS the footer: "tokens used", optionally "... : <N>" inline.
+    const m = /^tokens?\s+used\b\s*:?\s*([0-9][0-9,]*)?$/i.exec(line);
+    if (m === null) continue;
+    if (m[1] !== undefined) return toTokenCount(m[1]);
+    // Bare footer — the count is the next non-empty line, which must be a plain
+    // integer (anything else is not the accounting number).
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!.trim();
+      if (next === "") continue;
+      return /^[0-9][0-9,]*$/.test(next) ? toTokenCount(next) : null;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Aggregate per-round worker + critic usage into the persisted doc. Pure sum —
+ * the conductor passes the running arrays and its clock; overwriting the file
+ * with a fresh doc each round is idempotent.
+ */
+export function buildTokenUsageDoc(
+  workerRuns: WorkerUsage[],
+  criticRuns: CriticUsage[],
+  updatedAt: number,
+): TokenUsageDoc {
+  const worker = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    total_cost_usd: 0,
+    runs: workerRuns,
+  };
+  for (const r of workerRuns) {
+    worker.input_tokens += r.input_tokens;
+    worker.output_tokens += r.output_tokens;
+    worker.cache_read_input_tokens += r.cache_read_input_tokens;
+    worker.cache_creation_input_tokens += r.cache_creation_input_tokens;
+    worker.total_cost_usd += r.total_cost_usd;
+  }
+  let criticTokens = 0;
+  for (const r of criticRuns) criticTokens += r.tokens;
+  return {
+    worker,
+    critic: { tokens: criticTokens, runs: criticRuns },
+    total_cost_usd: worker.total_cost_usd,
+    updated_at: updatedAt,
+  };
+}

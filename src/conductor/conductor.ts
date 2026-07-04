@@ -18,6 +18,7 @@ import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
+import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 
 export interface ConductorDeps {
   cfg: HarnessConfig;
@@ -179,6 +180,24 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const workerReportPath = `${runtimeDir}/worker-report.md`;
 
     const wt = await worktree.create(task.id, loopBranch);
+
+    // Token/usage accounting (s22): accumulate every worker + critic invocation
+    // across all rounds of this task and persist a `token-usage.json` runtime
+    // artifact. Best-effort by contract -- a write/aggregate failure must NEVER
+    // break the enforcement loop or convert a decided iteration into a rejection
+    // (same never-throws discipline as recordRun / digest / teardown, gotcha
+    // [ts/fail-closed]). Served unchanged by the existing runtime-file endpoint.
+    const workerRuns: WorkerUsage[] = [];
+    const criticRuns: CriticUsage[] = [];
+    const persistTokenUsage = async (): Promise<void> => {
+      try {
+        const doc = buildTokenUsageDoc(workerRuns, criticRuns, clock.now());
+        await repo.writeRuntimeFile(task.id, "token-usage.json", JSON.stringify(doc, null, 2));
+      } catch (err) {
+        safeLog("WARN", `conductor: persisting token-usage for ${task.id} failed (ignored): ${String(err)}`);
+      }
+    };
+
     try {
       let round = 0;
       while (true) {
@@ -196,6 +215,13 @@ export function createConductor(deps: ConductorDeps): Conductor {
           runtimeDir,
           ...(criticFeedback !== undefined ? { criticFeedback } : {}),
         });
+
+        // Record worker usage BEFORE the rate-limit/timeout early returns so a
+        // throttled or timed-out step still accounts for whatever it burned.
+        if (wr.usage) {
+          workerRuns.push(wr.usage);
+          await persistTokenUsage();
+        }
 
         if (wr.rateLimited) {
           await repo.setAttempts(task.id, attempts - 1);
@@ -297,6 +323,11 @@ export function createConductor(deps: ConductorDeps): Conductor {
         const diff = await worktree.diff(wt, task.file_set);
         await repo.writeRuntimeFile(task.id, "diff.patch", diff);
         const cr = await critic.run({ diff, runtimeDir, workerReportPath });
+
+        if (cr.usage) {
+          criticRuns.push(cr.usage);
+          await persistTokenUsage();
+        }
 
         if (cr.verdict === null && cr.rateLimited) {
           await repo.setAttempts(task.id, attempts - 1);

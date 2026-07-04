@@ -4,6 +4,7 @@ import { buildWorkerPrompt } from "./prompt.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { resolveWorkerExe } from "../config/roles.js";
 import type { WatchedProcessRunner, WatchedRunResult } from "../watchdog/runner.js";
+import { parseClaudeUsage } from "../usage/usage.js";
 
 export interface ClaudeWorkerAdapterDeps {
   runner: WatchedProcessRunner;
@@ -92,11 +93,17 @@ function toResult(
   model: string,
   result: WatchedRunResult,
 ): WorkerResult {
+  // Best-effort usage parse: a null (no parseable stream-json result event)
+  // leaves `usage` off the result entirely -- never assigned an explicit
+  // `undefined` (exactOptionalPropertyTypes) -- so the transport shape is
+  // byte-identical to the pre-instrumentation result when stdout carries no usage.
+  const parsed = parseClaudeUsage(result.stdout);
   return {
     status,
     model,
     rateLimited: result.rateLimited,
     timedOut: result.timedOut,
     exitCode: result.exitCode,
+    ...(parsed !== null ? { usage: { model, ...parsed } } : {}),
   };
 }
