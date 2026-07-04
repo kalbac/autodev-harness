@@ -6,6 +6,7 @@ import { api, ApiError } from "@/lib/api";
 import { qk, useConfig, useProjects } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
+import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Spinner } from "./ui/Feedback";
 
 const CHIP =
@@ -67,10 +68,7 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           className="w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-text placeholder:text-subtle outline-none"
         />
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
-          {/* Project switcher lives here in the mockup — static chip for now. */}
-          <span className={CHIP}>
-            project <b className="font-medium text-text">{projectName}</b>
-          </span>
+          <ProjectSwitcherMenu projectId={projectId} projectName={projectName} />
           {/* Roles are read-only; clicking opens project settings. */}
           <Link
             to="/p/$projectId/settings"
