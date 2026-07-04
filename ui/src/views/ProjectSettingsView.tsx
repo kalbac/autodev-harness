@@ -16,6 +16,13 @@ interface EditDraft {
   checkCommand: string;
   provision: string[];
   ladder: string[];
+  orchestratorAdapter: string;
+  orchestratorModel: string;
+  orchestratorEffort: string;
+  workerAdapter: string;
+  criticAdapter: string;
+  criticModel: string;
+  criticEffort: string;
 }
 
 function draftFrom(config: ProjectConfigView): EditDraft {
@@ -24,11 +31,28 @@ function draftFrom(config: ProjectConfigView): EditDraft {
     checkCommand: config.gate.checkCommand ?? "",
     provision: [...config.worktree.provision],
     ladder: [...config.roles.worker.ladder],
+    orchestratorAdapter: config.roles.orchestrator.adapter,
+    orchestratorModel: config.roles.orchestrator.model,
+    orchestratorEffort: config.roles.orchestrator.effort ?? "",
+    workerAdapter: config.roles.worker.adapter,
+    criticAdapter: config.roles.critic.adapter,
+    criticModel: config.roles.critic.model,
+    criticEffort: config.roles.critic.effort,
   };
 }
 
 function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Sets `target[key]` only when the trimmed draft value is non-empty AND
+ *  differs from the loaded config value — mirrors `gate.checkCommand`'s
+ *  established convention (clearing a field client-side is a silent no-op,
+ *  not an "unset" request), applied uniformly to every role adapter/model/
+ *  effort text field. */
+function addIfChanged(target: Record<string, string>, key: string, draftValue: string, currentValue: string): void {
+  const trimmed = draftValue.trim();
+  if (trimmed.length > 0 && trimmed !== currentValue) target[key] = trimmed;
 }
 
 /** Builds the PATCH body from only the fields the user actually changed vs.
@@ -48,9 +72,31 @@ function buildDiff(config: ProjectConfigView, draft: EditDraft): ProjectConfigFo
   if (!arraysEqual(draft.provision, config.worktree.provision)) {
     diff.worktree = { provision: draft.provision };
   }
-  if (!arraysEqual(draft.ladder, config.roles.worker.ladder)) {
-    diff.roles = { worker: { ladder: draft.ladder } };
+
+  const roles: NonNullable<ProjectConfigForm["roles"]> = {};
+
+  const orchestrator: Record<string, string> = {};
+  addIfChanged(orchestrator, "adapter", draft.orchestratorAdapter, config.roles.orchestrator.adapter);
+  addIfChanged(orchestrator, "model", draft.orchestratorModel, config.roles.orchestrator.model);
+  addIfChanged(orchestrator, "effort", draft.orchestratorEffort, config.roles.orchestrator.effort ?? "");
+  if (Object.keys(orchestrator).length > 0) roles.orchestrator = orchestrator;
+
+  const worker: { adapter?: string; ladder?: string[] } = {};
+  const trimmedWorkerAdapter = draft.workerAdapter.trim();
+  if (trimmedWorkerAdapter.length > 0 && trimmedWorkerAdapter !== config.roles.worker.adapter) {
+    worker.adapter = trimmedWorkerAdapter;
   }
+  if (!arraysEqual(draft.ladder, config.roles.worker.ladder)) worker.ladder = draft.ladder;
+  if (Object.keys(worker).length > 0) roles.worker = worker;
+
+  const critic: Record<string, string> = {};
+  addIfChanged(critic, "adapter", draft.criticAdapter, config.roles.critic.adapter);
+  addIfChanged(critic, "model", draft.criticModel, config.roles.critic.model);
+  addIfChanged(critic, "effort", draft.criticEffort, config.roles.critic.effort);
+  if (Object.keys(critic).length > 0) roles.critic = critic;
+
+  if (Object.keys(roles).length > 0) diff.roles = roles;
+
   return diff;
 }
 
@@ -67,10 +113,10 @@ function validateProvisionEntry(value: string): string | null {
  * Per-project settings (mockup `Project settings`): a projection of the
  * project's `.autodev/config.yaml`, served curated (no secrets) by
  * `GET /projects/:id/config`. The editable subset — branch pattern, gate check
- * command, worktree provisioning, worker ladder — can be changed in place via
- * `PATCH /projects/:id/config`; everything else (path, state dir, adapters/
- * models/effort) stays read-only and is still file-edited. Renders inside the
- * project route; the rail predicate excludes `/settings`, so this owns the
+ * command, worktree provisioning, worker ladder, and every role's
+ * adapter/model/effort — can be changed in place via `PATCH /projects/:id/config`;
+ * only path and state dir stay read-only (fixed at registration). Renders inside
+ * the project route; the rail predicate excludes `/settings`, so this owns the
  * whole main region.
  */
 export function ProjectSettingsView() {
@@ -250,11 +296,40 @@ function ConfigSections({
       </SettingsSection>
 
       <SettingsSection title="Roles">
-        <SettingsRow
-          label="Orchestrator"
-          value={roleLine(roles.orchestrator.adapter, roles.orchestrator.model, roles.orchestrator.effort)}
-        />
-        <SettingsRow label="Worker adapter" value={roles.worker.adapter} />
+        {editable ? (
+          <>
+            <TextFieldRow
+              label="Orchestrator adapter"
+              value={draft.orchestratorAdapter}
+              onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
+            />
+            <TextFieldRow
+              label="Orchestrator model"
+              value={draft.orchestratorModel}
+              onChange={(v) => onDraftChange({ orchestratorModel: v })}
+            />
+            <TextFieldRow
+              label="Orchestrator effort"
+              value={draft.orchestratorEffort}
+              onChange={(v) => onDraftChange({ orchestratorEffort: v })}
+              placeholder="optional"
+            />
+          </>
+        ) : (
+          <SettingsRow
+            label="Orchestrator"
+            value={roleLine(roles.orchestrator.adapter, roles.orchestrator.model, roles.orchestrator.effort)}
+          />
+        )}
+        {editable ? (
+          <TextFieldRow
+            label="Worker adapter"
+            value={draft.workerAdapter}
+            onChange={(v) => onDraftChange({ workerAdapter: v })}
+          />
+        ) : (
+          <SettingsRow label="Worker adapter" value={roles.worker.adapter} />
+        )}
         {editable ? (
           <EditableList
             items={draft.ladder}
@@ -265,10 +340,30 @@ function ConfigSections({
         ) : (
           <SettingsRow label="Worker ladder" value={roles.worker.ladder.join(" → ")} />
         )}
-        <SettingsRow
-          label="Critic"
-          value={roleLine(roles.critic.adapter, roles.critic.model, roles.critic.effort)}
-        />
+        {editable ? (
+          <>
+            <TextFieldRow
+              label="Critic adapter"
+              value={draft.criticAdapter}
+              onChange={(v) => onDraftChange({ criticAdapter: v })}
+            />
+            <TextFieldRow
+              label="Critic model"
+              value={draft.criticModel}
+              onChange={(v) => onDraftChange({ criticModel: v })}
+            />
+            <TextFieldRow
+              label="Critic effort"
+              value={draft.criticEffort}
+              onChange={(v) => onDraftChange({ criticEffort: v })}
+            />
+          </>
+        ) : (
+          <SettingsRow
+            label="Critic"
+            value={roleLine(roles.critic.adapter, roles.critic.model, roles.critic.effort)}
+          />
+        )}
       </SettingsSection>
     </>
   );
