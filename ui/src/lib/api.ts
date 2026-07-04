@@ -186,6 +186,14 @@ export const api = {
   deleteProject: (id: string) =>
     req<{ removed: string }>(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
+  /** Rename a project's display name (registry entry only — id and path never change). */
+  renameProject: (id: string, name: string) =>
+    req<ProjectSummary>(`/projects/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+
   getState: (projectId: string) => req<StateResponse>(projectPath(projectId, "/state")),
   getRuns: (projectId: string) => req<RunManifest[]>(projectPath(projectId, "/runs")),
   getRun: (projectId: string, id: string) =>

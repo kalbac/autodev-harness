@@ -61,3 +61,12 @@ export const useDeleteProject = () => {
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
   });
 };
+
+/** Rename a project; invalidates the project list on success so the sidebar + registry update. */
+export const useRenameProject = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameProject(id, name),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
+  });
+};

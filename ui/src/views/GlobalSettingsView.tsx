@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, FolderGit2, Plus } from "lucide-react";
-import { useProjects, useDeleteProject } from "@/lib/queries";
+import { ArrowLeft, FolderGit2, Pencil, Plus } from "lucide-react";
+import { useProjects, useDeleteProject, useRenameProject } from "@/lib/queries";
 import { useAppStore, type ConnState } from "@/lib/store";
 import { useTheme, type Theme } from "@/lib/theme";
 import { ApiError, type ProjectSummary } from "@/lib/api";
@@ -130,18 +130,51 @@ export function GlobalSettingsView() {
   );
 }
 
-/** One registry row with a two-step (click → confirm) unregister. Unregister
- *  removes the registry entry only — it never touches the folder on disk. */
+/** One registry row with an inline rename and a two-step (click → confirm)
+ *  unregister. Both edit the registry entry only — never the folder on disk;
+ *  rename touches the display `name`, and `id`/`path` stay immutable. */
 function RegistryRow({ project }: { project: ProjectSummary }) {
   const del = useDeleteProject();
+  const rename = useRenameProject();
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(project.name);
   const isError = project.status === "error";
+
+  const trimmed = draft.trim();
+  const canSave = trimmed.length > 0 && trimmed !== project.name && trimmed.length <= 200;
+
+  const startEditing = () => {
+    setDraft(project.name);
+    setEditing(true);
+  };
+  const cancelEditing = () => {
+    setEditing(false);
+    rename.reset(); // drop a prior failed-rename error so it can't re-surface on re-open
+  };
+  const save = () => {
+    if (!canSave) return;
+    rename.mutate({ id: project.id, name: trimmed }, { onSuccess: () => setEditing(false) });
+  };
 
   return (
     <li className="flex items-center gap-3 px-4 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-semibold text-text">{project.name}</span>
+          {editing ? (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save();
+                else if (e.key === "Escape") cancelEditing();
+              }}
+              className="w-full rounded-md border border-line-strong bg-surface px-2 py-1 text-[13px] text-text outline-none transition-colors focus:border-accent"
+            />
+          ) : (
+            <span className="truncate text-[13px] font-semibold text-text">{project.name}</span>
+          )}
           {isError && (
             <span className="shrink-0 rounded border border-[color-mix(in_srgb,var(--color-broken)_35%,transparent)] px-1.5 py-px font-mono text-[9px] uppercase tracking-wide text-broken">
               error
@@ -154,9 +187,27 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
             {del.error instanceof ApiError ? del.error.message : "unregister failed"}
           </div>
         )}
+        {rename.error && editing && (
+          <div className="mt-1 font-mono text-[11px] text-broken">
+            {rename.error instanceof ApiError ? rename.error.message : "rename failed"}
+          </div>
+        )}
       </div>
 
-      {del.isPending && del.variables === project.id ? (
+      {editing ? (
+        rename.isPending ? (
+          <Spinner />
+        ) : (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button size="sm" variant="ghost" onClick={cancelEditing}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" onClick={save} disabled={!canSave}>
+              Save
+            </Button>
+          </div>
+        )
+      ) : del.isPending && del.variables === project.id ? (
         <Spinner />
       ) : confirming ? (
         <div className="flex shrink-0 items-center gap-1.5">
@@ -184,9 +235,15 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
           </Button>
         </div>
       ) : (
-        <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
-          Unregister
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button size="sm" variant="ghost" onClick={startEditing}>
+            <Pencil className="size-3" />
+            Rename
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+            Unregister
+          </Button>
+        </div>
       )}
     </li>
   );

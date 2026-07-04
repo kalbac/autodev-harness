@@ -139,6 +139,70 @@ describe("createProjectAdmin / unregister", () => {
   });
 });
 
+describe("createProjectAdmin / rename", () => {
+  it("renames a registered project: ok+entry, on-disk name updated, id/path preserved", async () => {
+    const repo = makeRepo("ren");
+    const admin = createProjectAdmin({ registryFile });
+    const reg = await admin.register({ path: repo });
+    if (!reg.ok) throw new Error("register failed");
+
+    const res = await admin.rename(reg.entry.id, "My Renamed Project");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.entry).toMatchObject({ id: reg.entry.id, name: "My Renamed Project", path: reg.entry.path });
+
+    const onDisk = await loadRegistry(registryFile);
+    expect(onDisk.projects).toEqual([{ id: reg.entry.id, name: "My Renamed Project", path: reg.entry.path }]);
+  });
+
+  it("trims surrounding whitespace before storing", async () => {
+    const repo = makeRepo("trim");
+    const admin = createProjectAdmin({ registryFile });
+    const reg = await admin.register({ path: repo });
+    if (!reg.ok) throw new Error("register failed");
+
+    const res = await admin.rename(reg.entry.id, "  spaced  ");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.entry.name).toBe("spaced");
+    expect((await loadRegistry(registryFile)).projects[0]!.name).toBe("spaced");
+  });
+
+  it("empty/whitespace-only name -> invalid_name, on-disk name unchanged", async () => {
+    const repo = makeRepo("empty");
+    const admin = createProjectAdmin({ registryFile });
+    const reg = await admin.register({ path: repo });
+    if (!reg.ok) throw new Error("register failed");
+    const before = (await loadRegistry(registryFile)).projects[0]!.name;
+
+    const res = await admin.rename(reg.entry.id, "   ");
+    expect(res).toMatchObject({ ok: false, code: "invalid_name" });
+    expect((await loadRegistry(registryFile)).projects[0]!.name).toBe(before);
+  });
+
+  it("unknown id -> not_found, registry unchanged", async () => {
+    const repo = makeRepo("known");
+    const admin = createProjectAdmin({ registryFile });
+    const reg = await admin.register({ path: repo });
+    if (!reg.ok) throw new Error("register failed");
+    const before = await loadRegistry(registryFile);
+
+    const res = await admin.rename("nope", "Whatever");
+    expect(res).toMatchObject({ ok: false, code: "not_found" });
+    expect(await loadRegistry(registryFile)).toEqual(before);
+  });
+
+  it("a name over 200 chars -> invalid_name", async () => {
+    const repo = makeRepo("toolong");
+    const admin = createProjectAdmin({ registryFile });
+    const reg = await admin.register({ path: repo });
+    if (!reg.ok) throw new Error("register failed");
+
+    const res = await admin.rename(reg.entry.id, "x".repeat(201));
+    expect(res).toMatchObject({ ok: false, code: "invalid_name" });
+  });
+});
+
 describe("createProjectAdmin / isRegistered", () => {
   it("reflects registry membership by canonical path", async () => {
     const repo = makeRepo("member");

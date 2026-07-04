@@ -172,6 +172,7 @@ async function main(): Promise<void> {
       admin: {
         register: (input) => admin.register(input),
         unregister: (id) => admin.unregister(id),
+        rename: (id, name) => admin.rename(id, name),
         listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),
       },
       ...(uiDir !== undefined ? { uiDir } : {}),

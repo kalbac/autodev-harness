@@ -24,7 +24,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
-import type { RegisterInput, RegisterResult } from "../registry/admin.js";
+import type { RegisterInput, RegisterResult, RenameResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
@@ -194,6 +194,7 @@ export interface ApiServerDeps {
   admin?: {
     register(input: RegisterInput): Promise<RegisterResult>;
     unregister(id: string): Promise<boolean>;
+    rename(id: string, name: string): Promise<RenameResult>;
     listDirs(path?: string): Promise<FsDirsResult>;
   };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
@@ -876,6 +877,48 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     });
   }
 
+  /** PATCH /projects/:id — rename the display `name` (registry entry only; id and
+   *  path stay put). Validation beyond request SHAPE lives in the admin port; this
+   *  handler only maps typed codes to HTTP. `pid` is already the decoded+validated id. */
+  async function handlePatchProject(pid: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { name?: unknown } | null;
+    if (typeof parsed?.name !== "string") {
+      sendJson(res, 400, { error: "name must be a string" });
+      return;
+    }
+
+    const result = await deps.admin.rename(pid, parsed.name);
+    if (result.ok) {
+      log("INFO", `api: renamed project '${pid}'`);
+      sendJson(res, 200, result.entry);
+      return;
+    }
+    sendJson(res, result.code === "not_found" ? 404 : 400, {
+      error: result.message,
+      code: result.code,
+    });
+  }
+
   /**
    * 202-async launcher for `POST /orchestrate` (R1 boundary): reads+validates the
    * body, then -- WITHOUT awaiting it -- kicks off `p.onOrchestrate(intent)` in
@@ -1185,6 +1228,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         log("INFO", `api: unregistered project '${rawPid}'`);
         sendJson(res, 200, { removed: rawPid });
         return;
+      }
+
+      // PATCH /projects/:id — rename (registry entry only). Handled BEFORE the root
+      // resolve for the same reason as DELETE: a project whose config fails to build
+      // must still be renameable. id stays stable -> id-keyed caches remain valid.
+      if (req.method === "PATCH" && (sub === "/" || sub === "")) {
+        return void (await handlePatchProject(rawPid, req, res));
       }
 
       const resolved = await deps.projects.get(rawPid);

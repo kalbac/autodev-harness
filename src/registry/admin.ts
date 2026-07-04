@@ -15,6 +15,7 @@ import {
   saveRegistry,
   addProject,
   removeProject,
+  renameProject,
   isPathRegistered,
   type RegistryEntry,
 } from "./registry.js";
@@ -38,10 +39,18 @@ export type RegisterResult =
   | { ok: true; entry: RegistryEntry }
   | { ok: false; code: RegisterErrorCode; message: string };
 
+export type RenameErrorCode = "not_found" | "invalid_name";
+
+export type RenameResult =
+  | { ok: true; entry: RegistryEntry }
+  | { ok: false; code: RenameErrorCode; message: string };
+
 export interface ProjectAdmin {
   register(input: RegisterInput): Promise<RegisterResult>;
   /** True when removed; false for an unknown id. Registry entry only. */
   unregister(id: string): Promise<boolean>;
+  /** Set a project's display name by id. Registry entry only — never touches the folder. */
+  rename(id: string, name: string): Promise<RenameResult>;
   /** Registry membership by canonical path (folder-browser badge). */
   isRegistered(absPath: string): Promise<boolean>;
 }
@@ -129,6 +138,35 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
         await saveRegistry(deps.registryFile, removeProject(registry, id));
         deps.log?.("INFO", `admin: unregistered project '${id}' (registry entry only, folder untouched)`);
         return true;
+      });
+    },
+
+    rename(id, name) {
+      // Same read-modify-write mutex as `unregister`: the registry is a single JSON
+      // file with plain-overwrite saves, so a concurrent rename must be serialized.
+      // Renames only the display `name` — id (and its id-keyed hub/watcher caches)
+      // and path stay valid.
+      return withLock(async (): Promise<RenameResult> => {
+        // 1. Validate the display name (policy lives here, not in the pure fn).
+        const trimmed = name.trim();
+        if (trimmed === "") {
+          return { ok: false, code: "invalid_name", message: "name must not be empty" };
+        }
+        if (trimmed.length > 200) {
+          return { ok: false, code: "invalid_name", message: "name must be at most 200 characters" };
+        }
+
+        // 2. Apply the pure rename; an unknown id -> not_found, without saving.
+        const registry = await loadRegistry(deps.registryFile, deps.log);
+        const result = renameProject(registry, id, trimmed);
+        if (result === null) {
+          return { ok: false, code: "not_found", message: `project not found: ${id}` };
+        }
+
+        // 3. Persist (inside the same lock as the load above).
+        await saveRegistry(deps.registryFile, result.registry);
+        deps.log?.("INFO", `admin: renamed project '${id}' to ${JSON.stringify(trimmed)}`);
+        return { ok: true, entry: result.entry };
       });
     },
 
