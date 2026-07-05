@@ -34,6 +34,21 @@ operator's "token count only, NO cost" cleanup.** Backend codex-gated; UI review
 - main tip = `c4fae71` (PR #45 squash — folded in the two unpushed s24 docs commits `0860506`+`4cf7ed9` per batch-merges).
   This session-save docs commit rides the next PR. Working tree clean.
 
+**Live token-run demo + bug find (post-merge, operator-driven).** Served the daemon on aurora's REAL state and the
+operator drove a fresh `orchestrate` from the UI to see live tokens. Outcome: worker (sonnet) → `php -l` gate → **codex
+critic `clean` 0.98** → **COMMIT `9b373aa`**; `token-usage.json` written with real worker usage (**531,533 tokens**) and
+**no `cost` field** — the s25 strip proven on a live run; rail rendered this run/today/all-time = 531.5k; s24's persisted
+`critic-verdict.json` also exercised (real seal). **Bug surfaced live → gotcha `[escalate/replied-holds-filelock]` (37):**
+the run first would NOT start — decompose+enqueue OK but the task sat in pending, worker never ran, `conductor.log`
+silent, `--once` a 0-second no-op. Root cause = a replied-but-uncleared escalation (`docs-llmfactory-classdoc-v2`, s14)
+still in `queue/escalated/` held its `file_set`, and `claimNextTask` locks on `escalated` exactly like `active`, so every
+same-file run was silently blocked with no operator signal. Unblocked by moving the resolved escalation → `done`
+(operator-approved). **This is the s26 opener (variant 1):** the reply-apply path must move `escalated → done` (accepted)
+or re-queue `→ pending` (redo). **Operator UI/UX steer:** the dashboard is a PILOT, not final — PATH auto-detect of
+installed CLIs, preset model/effort pickers, richer role matrix, skills/plugins/MCP surface are unbuilt; **polish the web
+UI to a real product BEFORE the desktop wrap → desktop DEFERRED** (`FUTURE-BACKLOG.md` "Web UI: pilot → product"). Demo
+daemon + scratch registry torn down; aurora left on disposable branch `autodev/s25-token-demo`.
+
 ---
 
 ## s24 — 2026-07-04 — TWO modules: critic-verdict.json persistence (PR #43 `b9b87f9`) + server-side run usage aggregation (PR #44 `8067022`)
