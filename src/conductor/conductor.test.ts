@@ -1134,7 +1134,6 @@ describe("runIteration -- token-usage persistence", () => {
     output_tokens: 200,
     cache_read_input_tokens: 300,
     cache_creation_input_tokens: 40,
-    total_cost_usd: 0.05,
   };
   const criticUsage = { model: "gpt-5.5", tokens: 777 };
 
@@ -1157,17 +1156,14 @@ describe("runIteration -- token-usage persistence", () => {
     const raw = state.runtimeFiles.get(task.id)?.get("token-usage.json");
     expect(raw).toBeDefined();
     const doc = JSON.parse(raw!) as {
-      worker: { input_tokens: number; total_cost_usd: number; runs: unknown[] };
+      worker: { input_tokens: number; runs: unknown[] };
       critic: { tokens: number; runs: unknown[] };
-      total_cost_usd: number;
       updated_at: number;
     };
     expect(doc.worker.input_tokens).toBe(100);
-    expect(doc.worker.total_cost_usd).toBeCloseTo(0.05, 10);
     expect(doc.worker.runs).toHaveLength(1);
     expect(doc.critic.tokens).toBe(777);
     expect(doc.critic.runs).toHaveLength(1);
-    expect(doc.total_cost_usd).toBeCloseTo(0.05, 10);
     expect(doc.updated_at).toBe(4242);
   });
 

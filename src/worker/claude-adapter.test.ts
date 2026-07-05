@@ -278,7 +278,6 @@ describe("ClaudeWorkerAdapter", () => {
       output_tokens: 34,
       cache_read_input_tokens: 56,
       cache_creation_input_tokens: 7,
-      total_cost_usd: 0.042,
     });
   });
 

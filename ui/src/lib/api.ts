@@ -157,18 +157,30 @@ export interface RegisterProjectInput {
 
 /** Mirrors `src/usage/usage.ts` TokenUsageDoc — the per-task `token-usage.json`
  *  runtime artifact the conductor writes, served by the generic runtime-file
- *  endpoint. Critic (plain `codex exec`) yields only a `tokens` total, no split. */
+ *  endpoint. Critic (plain `codex exec`) yields only a `tokens` total, no split.
+ *  Token count only — cost was intentionally stripped (s25). A legacy on-disk doc
+ *  may still carry a `total_cost_usd`; it is simply ignored. */
 export interface TokenUsageDoc {
   worker: {
     input_tokens: number;
     output_tokens: number;
     cache_read_input_tokens: number;
     cache_creation_input_tokens: number;
-    total_cost_usd: number;
   };
   critic: { tokens: number };
-  total_cost_usd: number;
   updated_at: number;
+}
+
+/** Mirrors `src/usage/usage.ts` RunUsageSummary — the server-side per-run token
+ *  aggregate from `GET /runs/:id/usage` (s24). Sums each task's `token-usage.json`
+ *  server-side, so a cross-run total avoids the s22 N×M client walk.
+ *  `tasksWithUsage <= taskCount`; `any` is false when no task in the run has a
+ *  usage file yet. Token count only (no cost). */
+export interface RunUsageSummary {
+  tokens: number;
+  any: boolean;
+  taskCount: number;
+  tasksWithUsage: number;
 }
 
 /** Mirrors `src/critic/verdict.ts` CriticVerdictDoc — the per-task `critic-verdict.json`
@@ -256,6 +268,11 @@ export const api = {
     req<RunManifest[]>(projectPath(projectId, `/runs${includeArchived ? "?includeArchived=1" : ""}`)),
   getRun: (projectId: string, id: string) =>
     req<RunManifest>(projectPath(projectId, `/runs/${encodeURIComponent(id)}`)),
+
+  /** Server-side per-run token aggregate (sums each task's `token-usage.json`
+   *  server-side — the clean path that avoids N×M client fetches). See GET /runs/:id/usage. */
+  getRunUsage: (projectId: string, runId: string) =>
+    req<RunUsageSummary>(projectPath(projectId, `/runs/${encodeURIComponent(runId)}/usage`)),
 
   /** Rename/archive a run manifest (index-only — never touches the queue/tasks).
    *  Returns the fresh manifest. See PATCH /runs/:id. */

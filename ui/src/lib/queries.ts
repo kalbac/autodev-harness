@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type TokenUsageDoc, type CriticVerdictDoc, type RunPatch } from "./api";
+import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type RunUsageSummary, type CriticVerdictDoc, type RunPatch } from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -14,17 +14,17 @@ export const qk = {
   runtimeFile: (p: string, taskId: string, name: string) => ["runtime-file", p, taskId, name] as const,
   escalation: (p: string, id: string) => ["escalation", p, id] as const,
   config: (p: string) => ["config", p] as const,
-  runUsage: (p: string, runId: string) => ["run-usage", p, runId] as const,
+  sessionUsage: (p: string) => ["session-usage", p] as const,
   taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
 };
 
-/** Client-side token aggregate for one run: the sum of its tasks' `token-usage.json`
- *  artifacts (s22). `any` is false when NO task in the run has a usage file yet
- *  (run just started / older run predating instrumentation) so the UI can show "—". */
-export interface RunUsageSummary {
-  tokens: number;
-  cost: number;
-  any: boolean;
+/** Cross-run token totals for the session rail (s25). Token count only — cost was
+ *  intentionally stripped. Each bucket's `any` is false when no contributing run
+ *  has a usage file yet, so the rail shows "—" instead of a misleading 0. */
+export interface SessionUsage {
+  thisRun: { tokens: number; any: boolean };
+  today: { tokens: number; any: boolean };
+  allTime: { tokens: number; any: boolean };
 }
 
 /** Daemon-global project registry. */
@@ -52,46 +52,60 @@ export const useEscalation = (p: string, id: string, enabled = true) =>
   useQuery({ queryKey: qk.escalation(p, id), queryFn: () => api.getEscalation(p, id), enabled });
 
 /**
- * Token/usage summary for a run, aggregated ON THE CLIENT (s22 scope decision):
- * fetch each task's `token-usage.json` via the existing runtime-file endpoint and
- * sum. A task with no usage file yet (404) is skipped — never fails the whole
- * summary — so the rail degrades to "—" cleanly. `runId` null disables the query.
+ * Cross-run token totals for the session rail (s25) — the first consumer of the
+ * server-side per-run aggregate `GET /runs/:id/usage`, which retires the s22 N×M
+ * client walk (one call per run instead of one per task). One runs-list fetch +
+ * one `getRunUsage` per run, bucketed in a single pass: `thisRun` = the newest run
+ * (server sorts newest-first), `today` = runs whose manifest `at` falls in the
+ * local calendar day, `allTime` = every (non-archived) run. A run whose usage 404s
+ * (manifest raced away) is skipped, never failing the whole summary. Token only.
  */
-export const useRunUsage = (p: string, runId: string | null) =>
+export const useSessionUsage = (p: string) =>
   useQuery({
-    queryKey: qk.runUsage(p, runId ?? ""),
-    enabled: p !== "" && runId !== null,
-    queryFn: async (): Promise<RunUsageSummary> => {
-      const run = await api.getRun(p, runId as string);
-      let tokens = 0;
-      let cost = 0;
-      let any = false;
+    queryKey: qk.sessionUsage(p),
+    enabled: p !== "",
+    queryFn: async (): Promise<SessionUsage> => {
+      const runs = await api.getRuns(p); // newest-first, non-archived
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const todayMs = startOfToday.getTime();
+      const newestId = runs[0]?.runId ?? null;
+
+      let thisRunTokens = 0;
+      let thisRunAny = false;
+      let todayTokens = 0;
+      let todayAny = false;
+      let allTokens = 0;
+      let allAny = false;
+
       await Promise.all(
-        run.taskIds.map(async (taskId) => {
-          let text: string;
+        runs.map(async (r) => {
+          let u: RunUsageSummary;
           try {
-            ({ text } = await api.getRuntimeFile(p, taskId, "token-usage.json"));
+            u = await api.getRunUsage(p, r.runId);
           } catch (err) {
-            if (err instanceof ApiError && err.status === 404) return; // no usage for this task yet
+            if (err instanceof ApiError && err.status === 404) return; // run raced away
             throw err;
           }
-          let doc: TokenUsageDoc;
-          try {
-            doc = JSON.parse(text) as TokenUsageDoc;
-          } catch {
-            return; // malformed/truncated usage file — skip, don't fail the summary
+          if (!u.any) return;
+          allTokens += u.tokens;
+          allAny = true;
+          if (r.at >= todayMs) {
+            todayTokens += u.tokens;
+            todayAny = true;
           }
-          any = true;
-          tokens +=
-            doc.worker.input_tokens +
-            doc.worker.output_tokens +
-            doc.worker.cache_read_input_tokens +
-            doc.worker.cache_creation_input_tokens +
-            doc.critic.tokens;
-          cost += doc.total_cost_usd;
+          if (r.runId === newestId) {
+            thisRunTokens = u.tokens;
+            thisRunAny = true;
+          }
         }),
       );
-      return { tokens, cost, any };
+
+      return {
+        thisRun: { tokens: thisRunTokens, any: thisRunAny },
+        today: { tokens: todayTokens, any: todayAny },
+        allTime: { tokens: allTokens, any: allAny },
+      };
     },
   });
 
