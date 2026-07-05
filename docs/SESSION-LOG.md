@@ -4,6 +4,38 @@
 
 ---
 
+## s25 — 2026-07-05 — UI cross-run token view (this run/today/all-time) + strip cost from telemetry (PR #45 `c4fae71`)
+
+**The recommended s24 opener — first consumer of the s24 server-side aggregate `GET /runs/:id/usage`, plus the
+operator's "token count only, NO cost" cleanup.** Backend codex-gated; UI review-only.
+
+- **UI (review-only).** SessionRail **Tokens** block now shows three rows — **this run / today / all-time** — via one
+  `useSessionUsage` hook: fetch the runs list once, call `getRunUsage` per run, bucket in a SINGLE pass (`thisRun` =
+  newest run, `today` = runs whose manifest `at` is in the local calendar day, `allTime` = every non-archived run).
+  This RETIRES the s22 client-side N×M `useRunUsage` walk (one call per run, not per task). New `api.ts` server
+  `RunUsageSummary` type + `getRunUsage` client method; `SessionUsage` shape in `queries.ts`.
+- **Strip cost end-to-end (backend, codex-gated — touches the conductor artifact + endpoint).** Operator directive
+  (s24 end, memory `[[feedback-usage-tokens-not-cost]]`): TOKEN COUNT only, no `$` anywhere. Removed `total_cost_usd`/
+  `cost` from `WorkerUsage`, `TokenUsageDoc` (nested + top-level), `parseClaudeUsage`, `buildTokenUsageDoc`,
+  `RunUsageSummary`, `buildRunUsageSummary`, `isTokenUsageDoc`, and the UI mirrors (`api.ts` `TokenUsageDoc`,
+  `queries.ts`, `SessionRail` `formatCost`). **Backward-compatible**: a legacy `token-usage.json` still carrying
+  `total_cost_usd` validates and contributes its tokens (never its cost) — `isTokenUsageDoc` ignores the extra field.
+- **codex GPT-5.5 gate — 1 Medium + 1 Low → fixed → re-critic CLEAN.** Medium: `buildTokenUsageDoc` persisted
+  `worker.runs` by REFERENCE — dropping the field from the *type* does not strip it from a *runtime* object handed in,
+  and `JSON.stringify` serializes the real shape → a stray cost could leak into the written artifact. No active trigger
+  (the sole `WorkerUsage` constructor `parseClaudeUsage` is cost-free), but at a persisted-artifact write boundary under
+  a "no cost anywhere" contract, the defense is cheap and makes the guarantee STRUCTURAL. Fixed: rebuild worker+critic
+  per-run arrays as token-only copies at the write boundary + regression test asserting `JSON.stringify(doc)` carries no
+  `/cost/i`. New gotcha `[usage/type-strip-not-runtime-strip]` (36).
+- **Verification.** 688 tests (+2 skipped), typecheck green (root+ui), both bundles rebuilt. **Live-smoke** on a seeded
+  2-run project (run-a today / run-b 2 days ago): endpoint curl-proved (`run-a` tokens=120 with **no `cost` field**;
+  `run-b`=100; the legacy-with-cost task counted token-only) → rail rendered **this run 120 / today 120 / all-time 220**
+  (older run correctly excluded from today, included in all-time). Screenshot sent; seed + daemon torn down.
+- main tip = `c4fae71` (PR #45 squash — folded in the two unpushed s24 docs commits `0860506`+`4cf7ed9` per batch-merges).
+  This session-save docs commit rides the next PR. Working tree clean.
+
+---
+
 ## s24 — 2026-07-04 — TWO modules: critic-verdict.json persistence (PR #43 `b9b87f9`) + server-side run usage aggregation (PR #44 `8067022`)
 
 **Module 2 — server-side per-run usage aggregation `GET /projects/:id/runs/:runId/usage` (PR #44 `8067022`).** Operator
