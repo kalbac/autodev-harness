@@ -13,6 +13,40 @@ describe("runNative", () => {
     expect(r.exitCode).toBe(3);
   });
 
+  it("kills a hung child at timeoutMs and resolves (does not leak or hang)", async () => {
+    const started = Date.now();
+    // A child that would otherwise run ~30s; the kill deadline must reap it fast.
+    const r = await runNative(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+      timeoutMs: 300,
+    });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(5000); // resolved via the kill, not the 30s runtime
+    expect(r.exitCode).not.toBe(0); // killed, so a non-clean exit code (signal / null -> -1)
+  });
+
+  it("does not kill a fast child that finishes before timeoutMs", async () => {
+    const r = await runNative(process.execPath, ["-e", "process.stdout.write('ok')"], {
+      timeoutMs: 5000,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("ok");
+  });
+
+  it("escalates to SIGKILL when the child ignores SIGTERM (never hangs)", async () => {
+    const started = Date.now();
+    // A child that traps SIGTERM and would otherwise run ~30s. On POSIX the first
+    // SIGTERM is ignored, so termination must come from the escalated SIGKILL; on
+    // Windows the first kill is already forceful. Either way it must settle fast.
+    const r = await runNative(
+      process.execPath,
+      ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"],
+      { timeoutMs: 300 },
+    );
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(10000); // 300ms + ~2s grace, NOT the 30s runtime
+    expect(r.exitCode).not.toBe(0);
+  });
+
   it("captures stderr", async () => {
     const r = await runNative(process.execPath, ["-e", "process.stderr.write('boom')"]);
     expect(r.stderr).toContain("boom");

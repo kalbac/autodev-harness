@@ -29,6 +29,7 @@ import type { BlackboardRepository, QueueState } from "../blackboard/repository.
 import { parseEscalation } from "../escalate/escalate.js";
 import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
+import type { DetectedAgent } from "../detect/detect-agents.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
@@ -190,10 +191,11 @@ export interface ApiServerDeps {
   uiDir?: string;
   /**
    * OPTIONAL project-admin port (New Project flow, spec §3c/§5). When unset the
-   * three admin routes (`GET /fs/dirs`, `POST /projects`, `DELETE /projects/:id`)
-   * respond 404 — a read-only deployment, mirroring `onOrchestrate`'s pattern.
-   * The server never touches the registry or the filesystem itself; it only
-   * validates request shape and maps the port's typed results to HTTP statuses.
+   * admin routes (`GET /fs/dirs`, `GET /agents/detect`, `POST /projects`,
+   * `DELETE /projects/:id`) respond 404 — a read-only deployment, mirroring
+   * `onOrchestrate`'s pattern. The server never touches the registry or the
+   * filesystem itself; it only validates request shape and maps the port's
+   * typed results to HTTP statuses.
    */
   admin?: {
     register(input: RegisterInput): Promise<RegisterResult>;
@@ -201,6 +203,8 @@ export interface ApiServerDeps {
     rename(id: string, name: string): Promise<RenameResult>;
     updateConfig(id: string, rawForm: unknown): Promise<ConfigUpdateResult>;
     listDirs(path?: string): Promise<FsDirsResult>;
+    /** PATH-scan auto-detect of installed CLI agents (read-only, best-effort, never throws). */
+    detectAgents(): Promise<DetectedAgent[]>;
   };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching a project's `stateDir`. Must be swappable. */
@@ -906,6 +910,17 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, { path: result.path, parent: result.parent, entries: result.entries });
   }
 
+  /** GET /agents/detect — PATH-scan auto-detect of installed CLI agents.
+   *  Best-effort/never-throws by contract (see `detectAgents`), so no typed
+   *  failure union is needed here -- only the admin-port gate. */
+  async function handleDetectAgents(res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendJson(res, 200, { agents: await deps.admin.detectAgents() });
+  }
+
   /** POST /projects — register (+ optional scaffold). Validation beyond request
    *  SHAPE lives in the admin port; this handler only maps typed codes to HTTP. */
   async function handleRegisterProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1507,6 +1522,9 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
     if (req.method === "GET" && (url.pathname === "/fs/dirs" || url.pathname === "/fs/dirs/")) {
       return void (await handleFsDirs(url, res));
+    }
+    if (req.method === "GET" && (url.pathname === "/agents/detect" || url.pathname === "/agents/detect/")) {
+      return void (await handleDetectAgents(res));
     }
 
     // Every project-scoped route lives under `/projects/:id/...`. Resolve the

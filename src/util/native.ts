@@ -6,6 +6,10 @@
 // `model_reasoning_effort="high"` survives intact. A no-op passthrough on POSIX.
 import spawn from "cross-spawn";
 
+/** Grace period between SIGTERM and the escalated SIGKILL when a `timeoutMs`
+ *  deadline fires (POSIX; Windows kills forcefully on the first signal). */
+const SIGKILL_GRACE_MS = 2000;
+
 export interface NativeResult {
   exitCode: number;
   stdout: string;
@@ -16,6 +20,16 @@ export interface NativeOptions {
   cwd?: string;
   stdin?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Kill deadline in ms. When set, the child is SIGTERM'd after `timeoutMs` and,
+   * if it ignores that, SIGKILL'd after a short grace period — so the promise
+   * always settles via the `close` handler even for a child that traps SIGTERM.
+   * Opt-in — omitted means no timeout, so existing callers are unaffected. On
+   * Windows a `.cmd`/`.bat` shim runs under `cmd.exe`; killing reaps the direct
+   * child (the wrapper), which is sufficient for a fast-exiting probe like
+   * `--version` (and Windows terminates forcefully on the first signal anyway).
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -42,8 +56,42 @@ export function runNative(
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (d) => (stdout += d));
     child.stderr?.on("data", (d) => (stderr += d));
-    child.on("error", reject); // spawn failure (ENOENT) is a real error
-    child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
+    // Kill deadline: reap a hung child instead of leaking it (a repeatedly-hit
+    // endpoint could otherwise accumulate orphans). SIGTERM first, then escalate
+    // to SIGKILL after a grace period -- a child that IGNORES SIGTERM must still
+    // terminate, or the promise would hang forever (on POSIX; on Windows both map
+    // to a forceful TerminateProcess, so the first kill already ends it). The kill
+    // triggers 'close', which resolves normally below; both timers clear on settle.
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const timer =
+      options.timeoutMs !== undefined
+        ? setTimeout(() => {
+            try {
+              child.kill("SIGTERM");
+            } catch {
+              /* already gone */
+            }
+            killTimer = setTimeout(() => {
+              try {
+                child.kill("SIGKILL");
+              } catch {
+                /* already gone */
+              }
+            }, SIGKILL_GRACE_MS);
+          }, options.timeoutMs)
+        : undefined;
+    const clearTimers = (): void => {
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+    };
+    child.on("error", (err) => {
+      clearTimers();
+      reject(err); // spawn failure (ENOENT) is a real error
+    });
+    child.on("close", (code) => {
+      clearTimers();
+      resolve({ exitCode: code ?? -1, stdout, stderr });
+    });
     // Writing stdin races the child closing its read end: a child that never
     // reads stdin and exits fast (e.g. many `git` subcommands) leaves the pipe's
     // reader gone, so our `end()` write raises EPIPE. That is benign here -- the

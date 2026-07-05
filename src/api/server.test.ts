@@ -11,6 +11,7 @@ import type { EscalationInput } from "../escalate/escalate.js";
 import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
 import type { RegisterResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
+import type { DetectedAgent } from "../detect/detect-agents.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
@@ -2080,12 +2081,14 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
     rename: { id: string; name: string }[];
     updateConfig: { id: string; form: unknown }[];
     listDirs: (string | undefined)[];
+    detectAgents: number;
   } = {
     register: [],
     unregister: [],
     rename: [],
     updateConfig: [],
     listDirs: [],
+    detectAgents: 0,
   };
   const admin: NonNullable<ApiServerDeps["admin"]> = {
     register: async (input) => {
@@ -2111,6 +2114,10 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
     listDirs: async (path) => {
       calls.listDirs.push(path);
       return { ok: true, path: path ?? null, parent: null, entries: [] } satisfies FsDirsResult;
+    },
+    detectAgents: async () => {
+      calls.detectAgents++;
+      return [] satisfies DetectedAgent[];
     },
     ...overrides,
   };
@@ -2155,6 +2162,36 @@ describe("GET /fs/dirs", () => {
     const res = await fetch(`http://127.0.0.1:${port}/fs/dirs?path=zzz`);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("nope");
+  });
+});
+
+describe("createApiServer / GET /agents/detect", () => {
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/agents/detect`);
+    expect(res.status).toBe(404);
+  });
+
+  it("200s with the admin port's detection result wrapped in {agents}", async () => {
+    const stub: DetectedAgent[] = [
+      { id: "claude", name: "Claude Code", supported: true, available: true, path: "/usr/bin/claude", version: "1.0.0" },
+      { id: "gemini", name: "Gemini CLI", supported: false, available: false },
+    ];
+    let detectCalls = 0;
+    const { admin } = fakeAdmin({
+      detectAgents: async () => {
+        detectCalls++;
+        return stub;
+      },
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/agents/detect`);
+    expect(res.status).toBe(200);
+    expect(detectCalls).toBe(1);
+    expect((await res.json()) as { agents: DetectedAgent[] }).toEqual({ agents: stub });
   });
 });
 
