@@ -75,5 +75,14 @@ describe("buildProjectRoot", () => {
     expect(root.repoRoot).toBe(repoRoot);
     expect(root.stateDirAbs).toBe(join(repoRoot, ".autodev"));
     expect(typeof root.orchestrator.handleIntent).toBe("function");
+    expect(root.plannerConfigured).toBe(false); // no explicit roles.planner -> false (R1)
+  });
+
+  it("sets plannerConfigured=true when the raw config explicitly sets roles.planner (R1)", async () => {
+    writeConfig(repoRoot, ["roles:", "  planner:", "    adapter: codex", "    model: o3", ""].join("\n"));
+    const root = await buildProjectRoot(repoRoot);
+    expect(root.plannerConfigured).toBe(true);
+    // The parsed cfg carries the resolved planner values (raw is only the presence gate).
+    expect(root.cfg.roles.planner).toMatchObject({ adapter: "codex", model: "o3" });
   });
 });

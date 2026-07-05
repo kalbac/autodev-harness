@@ -2479,7 +2479,10 @@ describe("GET /projects/:id/config", () => {
       orchestrator: { adapter: "claude", model: "opus", effort: "high" },
       worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
+      planner: { adapter: "codex", model: "o3", effort: "high" },
     },
+    policy: { heterogeneity: "warn" },
+    heterogeneityWarnings: [],
   };
 
   it("404s when the view has no config (default projectDeps helper doesn't set it)", async () => {
@@ -2537,6 +2540,8 @@ describe("PATCH /projects/:id/config", () => {
       worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
     },
+    policy: { heterogeneity: "warn" },
+    heterogeneityWarnings: [],
   };
 
   it("404s when no admin port is configured", async () => {

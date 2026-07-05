@@ -152,7 +152,16 @@ export interface ProjectConfigView {
     orchestrator: { adapter: string; model: string; effort?: string };
     worker: { adapter: string; ladder: string[] };
     critic: { adapter: string; model: string; effort: string };
+    /** Present ONLY when the operator explicitly set `roles.planner` in the raw
+     *  config (planner is optional — omitted, the orchestrator plans). Values are
+     *  the resolved/defaulted ones, mirroring orchestrator. */
+    planner?: { adapter: string; model: string; effort?: string };
   };
+  /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
+  policy: { heterogeneity: "warn" | "off" };
+  /** The heterogeneity warnings the daemon computes at wire-time (empty when
+   *  policy=off or worker/critic families differ) — the UI renders these verbatim. */
+  heterogeneityWarnings: string[];
 }
 
 /** Per-project view the server needs — a narrow slice of the hub's ProjectRoot. */

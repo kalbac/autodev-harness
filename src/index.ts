@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 
 import { detectRepoRoot } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
+import { buildProjectConfigView } from "./api/config-view.js";
 import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
 import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
@@ -151,21 +152,7 @@ async function main(): Promise<void> {
               repo: root.repo,
               stateDir: root.stateDirAbs,
               onOrchestrate: (intent: string) => root.orchestrator.handleIntent(intent),
-              config: {
-                stateDir: c.stateDir,
-                allowedBranchPattern: c.allowedBranchPattern,
-                gate: { checkCommand: c.gate.checkCommand },
-                worktree: { provision: c.worktree.provision },
-                roles: {
-                  orchestrator: {
-                    adapter: c.roles.orchestrator.adapter,
-                    model: c.roles.orchestrator.model,
-                    ...(c.roles.orchestrator.effort !== undefined ? { effort: c.roles.orchestrator.effort } : {}),
-                  },
-                  worker: { adapter: c.roles.worker.adapter, ladder: c.roles.worker.ladder },
-                  critic: { adapter: c.roles.critic.adapter, model: c.roles.critic.model, effort: c.roles.critic.effort },
-                },
-              },
+              config: buildProjectConfigView(c, root.plannerConfigured),
             },
           };
         },
