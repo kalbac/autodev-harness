@@ -1,7 +1,22 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-05 (s26 — **PATH-scan auto-detect of installed CLI agents LANDED (PR #47) — first slice of the
+> Last updated: 2026-07-06 (s27 — **TWO web-UI modules LANDED.** (A) **role-matrix editor** (PR #48 `b8ebce6`): Project
+> Settings roles section rewritten from a flat list into a 4-card matrix (orchestrator/worker/critic/planner), the
+> operator-chosen cards layout. Backend (codex-gated **clean**, 0 findings): `ProjectConfigView` now exposes `roles.planner`
+> (optional — projected ONLY when explicitly set in raw config via new `loadConfigWithRaw`+`isPlannerExplicitlyConfigured`),
+> `policy.heterogeneity` + server-computed `heterogeneityWarnings` (reuses the existing source of truth, respects `off`);
+> `ScaffoldFormSchema` accepts `roles.planner.{adapter,model,effort}`. UI (review-only): cards reuse s26
+> `SelectOrCustomRow`/`EditableList`; planner OPTIONAL with "+ Configure planner" (seeds claude/sonnet) + orchestrator
+> fallback; heterogeneity warn badge on the critic card. **LIVE-PROVEN**: full planner round-trip (unset→Configure→Save→
+> config.yaml→projection includes planner→read card), detection-backed dropdowns. New gotcha
+> `[ui/heterogeneity-badge-forward-looking]` (39) — the badge can't fire today (assertKnownAdapters forces
+> claude-worker/codex-critic = always different families), it's forward-looking. (B) **plan checklist in the SessionRail**
+> (PR #49 `e485c36`, operator ask): the newest run's ordered `taskIds` render as a live todo checklist (status glyph +
+> title + done/total badge) after "Now"; binds `useRuns`+`useTaskIndex`, no new backend, WS-live. **LIVE-PROVEN** on a
+> seeded 4-task run (Plan 1/4, per-status glyphs). 737 tests, CI 4/4 both PRs. Backlog: parked operator asks — per-field
+> help tooltips/modals (early) + i18n Russian UI (late). **s28 opener candidate = web-UI item (4) skills/plugins/MCP
+> surface**, then (5) polish. **Prior: s26 —** **PATH-scan auto-detect of installed CLI agents LANDED (PR #47) — first slice of the
 > web-UI pilot→product track.** Backend (codex-gated): pure `src/detect/detect-agents.ts` curated catalog (claude/codex
 > supported w/ model+effort catalogs; gemini/aider/opencode/cursor-agent/qwen/**ollama**/**kilocode** display-only),
 > PATHEXT-aware **executable** PATH probe (`isFile`+POSIX`X_OK`, not bare `existsSync` — catches `codex.cmd`, rejects a
@@ -80,6 +95,56 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 4. **Isolation:** per-task `git worktree` (AO pattern), non-destructive teardown.
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
+
+## Last session (s27, 2026-07-06)
+
+**Two web-UI pilot→product modules landed: (A) the role-matrix editor (item 3, PR #48), then (B) the plan checklist in
+the session rail (operator ask, PR #49). Both self-merged after codex-gate(where applicable)+green CI+live-proof.**
+
+### (A) Role-matrix editor — web-UI item 3 (PR #48 `b8ebce6`)
+- **Layout discussed WITH the operator first** (his zone): chose **cards** (not a grid), planner **optional** with
+  orchestrator-fallback, and heterogeneity warning **surfaced honestly from the backend**.
+- **Recon-first** (Explore subagent) mapped `src/config/roles.ts` (roles registry, `heterogeneityWarnings`,
+  `adapterMeta`, `assertKnownAdapters`), the config projection (`ProjectConfigView` + `src/index.ts` populate + GET
+  handler), `ScaffoldFormSchema`, and the existing `ProjectSettingsView` roles section + `SelectOrCustomRow` + `buildDiff`.
+- **Backend (codex-gated `93928af`, Opus worker, TDD):** `ProjectConfigView` gains `roles.planner?` (projected ONLY when
+  the operator explicitly set `roles.planner` in the RAW config — new `loadConfigWithRaw` returns `{cfg, raw}` with no
+  second read; `isPlannerExplicitlyConfigured(raw)` gates it, since the parsed cfg always defaults planner),
+  `policy.heterogeneity` (read-only) + `heterogeneityWarnings[]` (reuses `heterogeneityWarnings(cfg)` — respects `off`).
+  `ScaffoldFormSchema` accepts `roles.planner.{adapter,model,effort}` (strict, mirrors orchestrator; wired through
+  `buildConfigYaml`+`mergeConfigYaml`). Pure `buildProjectConfigView` extracted to `src/api/config-view.ts`. No runtime
+  planner routing (reserved). **codex GPT-5.5 gate: merge-clean, 0 findings.**
+- **UI (review-only `61c5d4c`, Opus worker):** roles section → 4 role cards; reuse s26 `SelectOrCustomRow`/`EditableList`.
+  Planner OPTIONAL: read-unset→dimmed "not set · orchestrator handles planning"; edit-unset→"+ Configure planner" (seeds
+  claude/sonnet, `addPlanner` intent flag gates `buildDiff` so planner never sent unless added); configured→editable.
+  Heterogeneity warn badge on the critic card + verbatim strip (reuses `--color-uncertain` amber token). `buildDiff`
+  send-only-changed contract preserved.
+- **Verification:** 737 tests / 3 skip, typecheck clean (root+ui), CI 4/4. **LIVE-PROVEN** on a real serve: read/edit
+  cards, detection-backed dropdowns (Claude Code/Codex CLI/GPT-5.5/effort), and the FULL planner round-trip
+  (unset→Configure→Save→`roles.planner` in config.yaml→projection includes planner via the raw-presence gate→"claude ·
+  sonnet" read card). Screenshots to operator. New gotcha `[ui/heterogeneity-badge-forward-looking]` (39): the badge
+  can't fire today because `assertKnownAdapters` forces worker=claude/critic=codex (always different families) — it's
+  deliberate forward-looking insurance, not dead code; data path proven by `config-view.test.ts`.
+
+### (B) Plan checklist in the session rail (operator ask, PR #49 `e485c36`)
+- Operator asked mid-session: after the plan is written, show the plan todo list in the right sidebar as a checklist.
+- **Recon-first** (Explore) mapped `SessionRail.tsx` (Now/Queue/Session/Roles/Tokens `Block`s), the run→tasks
+  association (`RunManifest.taskIds` is the ordered plan; no `run_id` on tasks), `useTaskIndex` join, and `QUEUE_META`/
+  `StatusPill`/`Dot` primitives. **No new backend needed** — `useRuns`+`useTaskIndex` (over `/runs`+`/state`) fully supply
+  ordered ids + live per-task status, both already WS-invalidated.
+- **UI (review-only, Sonnet worker):** new `<Block title="Plan">` after "Now": newest run (`runs[0]`, same convention as
+  `useSessionUsage`) → its `taskIds` as a checklist. Glyph map (reuse `QUEUE_META` tones): done→`Check` (clean),
+  pending→`Square` (idle), active→pulsing working dot, escalated→uncertain dot, quarantine→broken dot, unresolved
+  id→muted idle dot (mirrors RunView's fallback so length==plan). `done/total` progress badge; plan label; "no plan yet"
+  empty state.
+- **Verification:** typecheck clean (root+ui), build:ui green, CI 4/4. **LIVE-PROVEN** on a seeded run (4 tasks across
+  done/active/pending/escalated) → rail rendered **Plan · 1/4** with the correct per-status glyphs. Screenshot to
+  operator. Follow-up noted (not blocking): active & escalated both render amber-family dots (inherited Board palette).
+
+### Backlog captured (operator asks, `e485c36` docs commit rode PR #48)
+- **Per-field help — tooltips/option-description modals** (many settings options aren't self-explanatory even to the
+  operator). Scheduled EARLY in the polish pass. - **i18n / Russian UI language** — scheduled near the END (cross-cutting
+  string refactor). Both in `FUTURE-BACKLOG.md` "Web UI: pilot → product".
 
 ## Last session (s26, 2026-07-05)
 
@@ -466,7 +531,18 @@ pilot→product slice (agent auto-detect, PR #47).**
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s27)
+## NEXT ACTIONS (s28)
+
+**s27 landed TWO web-UI modules — role-matrix editor (item 3, PR #48) + plan checklist in the session rail (operator
+ask, PR #49).** Both self-merged (backend codex-gated where applicable, green CI 4/4, live-proven). origin/main =
+`e485c36`. **s28 opener candidate = web-UI item (4): skills/plugins/MCP surface** (expose the extensibility trio in the
+UI — Open Design pattern — instead of file-only config; recon the OD donor first, discuss layout with the operator).
+Then (5) general polish, into which the two parked operator asks fold: **per-field help tooltips/modals (do EARLY)** and
+**i18n Russian UI (do LATE)**. A cheap early-polish item worth pulling forward: the s27 heterogeneity-badge follow-up
+(active & escalated both render amber — add distinct escalated/quarantine glyphs or a per-row status label). Desktop wrap
+stays DEFERRED. Below: the older post-P3 backlog, mostly done.
+
+## Prior NEXT ACTIONS (s27 — mostly closed)
 
 **P3 is CLOSED; FIVE post-P3 modules LANDED — token/usage (s22, PR #41), run rename/archive+re-run (s23, PR #42),
 critic-verdict.json persistence + committed-task verdict seal (s24, PR #43), server-side per-run usage aggregation

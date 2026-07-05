@@ -4,6 +4,62 @@
 
 ---
 
+## s27 (B) — 2026-07-06 — Plan checklist in the session rail (operator ask) (PR #49 `e485c36`)
+
+**Second s27 module — an operator ask raised mid-session:** after a plan is written, show the plan todo list in the right
+sidebar as a checklist. Recon-first, review-only UI, no backend, live-proven.
+
+- **Recon** (Explore) mapped `SessionRail.tsx` (the Now/Queue/Session/Roles/Tokens `Block`s), the run→tasks link
+  (`RunManifest.taskIds` IS the ordered plan; tasks carry no `run_id`, status = the queue they sit in), the `useTaskIndex`
+  join, and the `QUEUE_META`/`StatusPill`/`Dot` primitives. **No new backend** — `useRuns`+`useTaskIndex` (over
+  `/runs`+`/state`, both WS-invalidated) fully supply ordered ids + live per-task status.
+- **UI (review-only, Sonnet worker):** new `<Block title="Plan">` after "Now": newest run (`runs[0]`, matching
+  `useSessionUsage`) → its `taskIds` as a live checklist. Row = status glyph + truncated title (native tooltip); `Block`
+  header carries a `done/total` badge; a truncated plan label (`name ?? intent`) sits under it. Glyph map (reuse
+  `QUEUE_META` tones): done→`Check`(clean), pending→`Square`(idle), active→pulsing working dot, escalated→uncertain dot,
+  quarantine→broken dot, unresolved id→muted idle dot (mirrors RunView's "not in any queue" fallback so length==plan).
+  "no plan yet" empty/loading state.
+- **Verification:** typecheck clean (root+ui), build:ui green, CI 4/4. **LIVE-PROVEN** on a seeded run (4 tasks across
+  done/active/pending/escalated) → rail rendered **Plan · 1/4** with correct per-status glyphs + label. Screenshot to
+  operator. Self-merged. Follow-up (not blocking): active & escalated both render amber-family dots (inherited Board
+  palette — working/uncertain are close); a per-row status label or distinct escalated/quarantine icons would sharpen them.
+
+---
+
+## s27 (A) — 2026-07-06 — Role-matrix editor: role cards + planner/heterogeneity config projection (web-UI item 3) (PR #48 `b8ebce6`)
+
+**s27 opener — web-UI pilot→product item 3.** Layout discussed WITH the operator (his zone) BEFORE building: chose
+**cards** (not a grid), planner **optional** with orchestrator-fallback, heterogeneity warning **surfaced honestly from
+the backend**. Recon → codex-gated backend → review-only UI → live-proof.
+
+- **Recon** (Explore) mapped `src/config/roles.ts` (roles registry, `heterogeneityWarnings`, `adapterMeta`,
+  `assertKnownAdapters`), the config projection (`ProjectConfigView` + `src/index.ts` populate + GET handler),
+  `ScaffoldFormSchema`, and the existing `ProjectSettingsView` roles section + `SelectOrCustomRow` + `buildDiff`. Flagged:
+  planner is nowhere in the projection/write-schema; `policy.heterogeneity` + warnings are server-internal (logged only).
+- **Backend (codex-gated `93928af`, Opus worker, TDD):** `ProjectConfigView` gains `roles.planner?` (projected ONLY when
+  the operator explicitly set `roles.planner` in the RAW config — new `loadConfigWithRaw` returns `{cfg, raw}` with NO
+  second read; `loadConfig` delegates; `isPlannerExplicitlyConfigured(raw)` gates it since the parsed cfg always defaults
+  planner), `policy.heterogeneity` (read-only) + `heterogeneityWarnings[]` (reuses the existing `heterogeneityWarnings(cfg)`
+  — respects `off`). `ScaffoldFormSchema` accepts `roles.planner.{adapter,model,effort}` (strict, mirrors orchestrator;
+  wired through `buildConfigYaml`+`mergeConfigYaml`, preserves hand-set fields). Pure `buildProjectConfigView` extracted to
+  `src/api/config-view.ts`. No runtime planner routing (reserved). **codex GPT-5.5 gate: merge-clean, 0 findings.**
+- **UI (review-only `61c5d4c`, Opus worker):** roles → 4 role cards; reuse s26 `SelectOrCustomRow`/`EditableList` +
+  detected-agents catalog. Planner OPTIONAL: read-unset→dimmed "not set · orchestrator handles planning";
+  edit-unset→"+ Configure planner" (seeds claude/sonnet, `addPlanner` intent flag ensures `buildDiff` never emits planner
+  unless added); configured→editable. Heterogeneity warn badge on the critic card + verbatim strip (reuses
+  `--color-uncertain` amber token). `buildDiff` send-only-changed contract preserved (planner uses the same `addIfChanged`).
+- **Verification:** 737 tests / 3 skip, typecheck clean (root+ui), CI 4/4. **LIVE-PROVEN** on a real serve: read/edit
+  cards, detection-backed dropdowns (Claude Code/Codex CLI/GPT-5.5/effort), the FULL planner round-trip
+  (unset→"+ Configure planner"→Save→`roles.planner` written to config.yaml→projection includes planner via the raw-presence
+  gate→"claude · sonnet" read card). Screenshots to operator.
+- **New gotcha `[ui/heterogeneity-badge-forward-looking]` (39):** the badge can't fire on a currently-valid config —
+  `assertKnownAdapters` forces worker=claude/critic=codex (families always differ) so `heterogeneityWarnings` is always
+  `[]` and a same-family config never loads. Deliberate forward-looking insurance (lights up when the adapter allowlist
+  widens); data path proven by `config-view.test.ts`, not a live serve. Also parked two operator asks in `FUTURE-BACKLOG.md`
+  (docs commit `e7361b2` rode PR #48): per-field help tooltips/modals (EARLY) + i18n Russian UI (LATE).
+
+---
+
 ## s26 (B) — 2026-07-05 — PATH-scan auto-detect of installed CLI agents (web-UI pilot→product slice 1) (PR #47)
 
 **Second module of s26 — the operator's web-UI pilot→product track opens.** Recon-first (Open Design donor), operator
