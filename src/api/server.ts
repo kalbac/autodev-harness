@@ -6,7 +6,10 @@
  * test-fakes -- see `docs/superpowers/plans/2026-07-01-harness-p1-core-loop.md`
  * Task 27). `digest.md` and `escalations/` are read/written directly under
  * `stateDir` via `node:fs/promises`, exactly like `src/index.ts` wires the
- * escalate module.
+ * escalate module. The one deliberate exception: applying an escalation
+ * reply moves the replied task out of `queue/escalated/` (A -> quarantine,
+ * B -> pending) via `repo.moveTask`, to release its scheduler file-lock
+ * (gotcha `[escalate/replied-holds-filelock]`).
  *
  * Escalation replies are a STRUCTURED A/B choice ONLY (parity spec §8): the
  * `choice` field is the sole executable signal this endpoint accepts. The
@@ -786,6 +789,34 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     await mkdir(escalationsDir, { recursive: true });
     await writeFile(join(escalationsDir, `${id}.reply.json`), JSON.stringify(reply, null, 2), "utf8");
     log("INFO", `api: recorded escalation reply ${id} -> ${choice}`);
+
+    // A replied escalation must not keep holding its file_set as a scheduler lock
+    // (gotcha [escalate/replied-holds-filelock], found live s25). The A/B choice
+    // releases the lock by transitioning the task out of queue/escalated/:
+    //   B (rework) -> pending    (re-queued for another run).
+    //   A (accept) -> quarantine (NOT done): the escalated worker's work was never
+    //     committed (the gate escalated instead of committing) and the harness has
+    //     no apply-on-accept machinery, so `done` would falsely satisfy a dependent
+    //     task's depends_on (doneIds) on work that is absent from the repo. quarantine
+    //     releases the lock without claiming repo-completion (it is not in doneIds and
+    //     not in the scheduler lock set, which is active+escalated only).
+    const target: QueueState = choice === "A" ? "quarantine" : "pending";
+    try {
+      await p.repo.moveTask(id, "escalated", target);
+      log("INFO", `api: escalation ${id} reply ${choice} -> moved escalated/ -> ${target}/`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        // No queue task in escalated/ (a drift-* escalation has an artifact but no
+        // queue file; or a double-reply already moved it) -- benign: the reply is
+        // recorded and there is no lock to release.
+        log("INFO", `api: escalation ${id} reply recorded; no escalated queue task to release`);
+      } else {
+        // The lock is still held -- surface it, do not silently 200.
+        log("ERROR", `api: escalation ${id} reply recorded but lock release failed: ${String(err)}`);
+        sendJson(res, 500, { error: "reply recorded but failed to release the escalation lock", id, choice });
+        return;
+      }
+    }
 
     sendJson(res, 200, reply);
   }

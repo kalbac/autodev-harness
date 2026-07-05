@@ -11,6 +11,7 @@ import type { EscalationInput } from "../escalate/escalate.js";
 import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
 import type { RegisterResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
+import { createScheduler } from "../scheduler/scheduler.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
@@ -54,12 +55,22 @@ let wsClients: WebSocket[];
 
 /** Seed a task file directly under `<stateDir>/queue/<state>/<id>.md`, mirroring
  * the seeding style used by `src/blackboard/file-repository.test.ts`. */
-function seedTask(state: "pending" | "active" | "done", id: string): void {
+function seedTask(
+  state: "pending" | "active" | "done" | "escalated" | "quarantine",
+  id: string,
+  opts?: { fileSet?: string[]; dependsOn?: string[] },
+): void {
   const dir = join(stateDir, "queue", state);
   mkdirSync(dir, { recursive: true });
+  const fileSet = opts?.fileSet ?? ["src/x.ts"];
+  const fileSetYaml = fileSet.map((f) => `  - ${f}`).join("\n");
+  const dependsYaml =
+    opts?.dependsOn && opts.dependsOn.length
+      ? `depends_on:\n${opts.dependsOn.map((d) => `  - ${d}`).join("\n")}\n`
+      : "";
   writeFileSync(
     join(dir, `${id}.md`),
-    `---\nid: ${id}\ntitle: t\ntype: tooling\nfile_set:\n  - src/x.ts\n---\nbody`,
+    `---\nid: ${id}\ntitle: t\ntype: tooling\n${dependsYaml}file_set:\n${fileSetYaml}\n---\nbody`,
   );
 }
 
@@ -410,6 +421,97 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     });
     expect(res.status).toBe(413);
     expect(existsSync(join(stateDir, "escalations", "esc-big.reply.json"))).toBe(false);
+  });
+
+  it("choice A moves the escalated task to quarantine/ (NOT done) and leaves escalated/ (gotcha [escalate/replied-holds-filelock])", async () => {
+    seedTask("escalated", "esc-a");
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-a/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-a.md"))).toBe(false);
+    // quarantine, not done -- A releases the lock without claiming repo-completion
+    // (the escalated work was never committed; done would falsely satisfy depends_on).
+    expect(existsSync(join(stateDir, "queue", "quarantine", "esc-a.md"))).toBe(true);
+    expect(existsSync(join(stateDir, "queue", "done", "esc-a.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "escalations", "esc-a.reply.json"))).toBe(true);
+  });
+
+  it("choice B re-queues the escalated task to pending/", async () => {
+    seedTask("escalated", "esc-b");
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-b/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-b.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-b.md"))).toBe(true);
+  });
+
+  it("a replied escalation no longer blocks a same-file_set pending task", async () => {
+    seedTask("escalated", "esc-lock");
+    seedTask("pending", "p-blocked");
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const scheduler = createScheduler(repo);
+    expect(await scheduler.claimNextTask()).toBeNull();
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-lock/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+
+    const claimed = await scheduler.claimNextTask();
+    expect(claimed?.id).toBe("p-blocked");
+  });
+
+  it("a reply to an escalation with no queue task (drift-style) still records the reply and returns 200", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/drift-123/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "escalations", "drift-123.reply.json"))).toBe(true);
+  });
+
+  it("choice A does NOT falsely satisfy a dependent's depends_on (quarantine is not in doneIds)", async () => {
+    // The escalated task's work was never committed, so accepting it must not let a
+    // dependent run as though the prerequisite were in the repo. A -> quarantine keeps
+    // the dependent blocked (correct); only a real committed `done` would release it.
+    seedTask("escalated", "esc-dep", { fileSet: ["src/a.ts"] });
+    seedTask("pending", "p-dependent", { fileSet: ["src/b.ts"], dependsOn: ["esc-dep"] });
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const scheduler = createScheduler(repo);
+    expect(await scheduler.claimNextTask()).toBeNull(); // blocked: esc-dep not done
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-dep/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "quarantine", "esc-dep.md"))).toBe(true);
+
+    // Still blocked: esc-dep is quarantined, not done, so p-dependent must not claim.
+    expect(await scheduler.claimNextTask()).toBeNull();
   });
 });
 
