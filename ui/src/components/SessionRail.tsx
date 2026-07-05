@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
-import { useConfig, useSessionUsage, useState as useProjectState } from "@/lib/queries";
+import { Check, Square } from "lucide-react";
+import { useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
+import { useTaskIndex } from "@/lib/useTaskIndex";
+import { QUEUE_META } from "@/lib/status";
+import type { QueueState } from "@/lib/api";
 import { Dot } from "./ui/Dot";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +30,17 @@ export function SessionRail({ projectId }: { projectId: string }) {
   // Token totals across runs, from the server-side per-run aggregate
   // (GET /runs/:id/usage): this run (newest) / today / all-time. Token only.
   const usage = useSessionUsage(projectId);
+  // Plan checklist: the newest run is "this plan" (same convention as
+  // useSessionUsage's thisRun = runs[0]); resolve its ordered taskIds to live
+  // queue status via the shared task index. Both auto-refresh on the root WS.
+  const runs = useRuns(projectId);
+  const { index } = useTaskIndex(projectId);
+  const plan = runs.data?.[0];
+  const planTaskIds = plan?.taskIds ?? [];
+  const planDone = planTaskIds.reduce(
+    (n, id) => (index.get(id)?.state === "done" ? n + 1 : n),
+    0,
+  );
 
   const queues = state.data?.queues;
   const activeTask = queues?.active[0];
@@ -74,6 +89,43 @@ export function SessionRail({ projectId }: { projectId: string }) {
         </div>
       </Block>
 
+      {/* Plan — the newest run's ordered tasks as a live status checklist */}
+      <Block
+        title="Plan"
+        badge={
+          planTaskIds.length > 0 ? (
+            <span className="ml-auto font-mono text-[10px] normal-case tracking-normal text-muted">
+              {planDone}/{planTaskIds.length}
+            </span>
+          ) : undefined
+        }
+      >
+        {planTaskIds.length === 0 ? (
+          <div className="font-mono text-[11px] text-subtle">no plan yet</div>
+        ) : (
+          <>
+            {plan && (
+              <div className="mb-2 truncate text-[11px] text-muted" title={plan.name ?? plan.intent}>
+                {plan.name ?? plan.intent}
+              </div>
+            )}
+            <ol className="flex flex-col gap-1.5">
+              {planTaskIds.map((id) => {
+                const located = index.get(id);
+                return (
+                  <PlanRow
+                    key={id}
+                    state={located?.state}
+                    label={located?.task.title ?? id}
+                    resolved={located !== undefined}
+                  />
+                );
+              })}
+            </ol>
+          </>
+        )}
+      </Block>
+
       {/* Queue — counters from the live blackboard */}
       <Block title="Queue">
         <div className="flex gap-1.5">
@@ -119,6 +171,35 @@ function Block({ title, badge, children }: { title: string; badge?: ReactNode; c
       {children}
     </div>
   );
+}
+
+/**
+ * One checklist row: a status glyph + the task title (truncated, native tooltip).
+ * Glyph maps the 5 queue states: done → checked box (clean), pending → empty box
+ * (idle), active → pulsing dot (working), escalated → uncertain dot, quarantine →
+ * broken dot. An unresolved id (not in any queue) degrades to a muted idle dot.
+ */
+function PlanRow({ state, label, resolved }: { state?: QueueState; label: string; resolved: boolean }) {
+  const done = state === "done";
+  const dimmed = !resolved || state === "pending";
+  return (
+    <li className="flex items-center gap-2 font-mono text-[11px]">
+      <span className="grid size-3.5 shrink-0 place-items-center">
+        <PlanGlyph state={state} resolved={resolved} />
+      </span>
+      <span className={cn("truncate", done ? "text-muted" : dimmed ? "text-subtle" : "text-text")} title={label}>
+        {label}
+      </span>
+    </li>
+  );
+}
+
+function PlanGlyph({ state, resolved }: { state?: QueueState; resolved: boolean }) {
+  if (!resolved || state === undefined) return <Dot tone="idle" className="size-[7px]" />;
+  if (state === "done") return <Check className="size-3.5 text-clean" strokeWidth={2.5} />;
+  if (state === "pending") return <Square className="size-3 text-subtle" strokeWidth={2} />;
+  const meta = QUEUE_META[state];
+  return <Dot tone={meta.tone} pulse={state === "active"} className="size-[7px]" />;
 }
 
 function Kv({ k, v }: { k: string; v: string }) {
