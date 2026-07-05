@@ -111,7 +111,16 @@ export interface ProjectConfigView {
     orchestrator: { adapter: string; model: string; effort?: string };
     worker: { adapter: string; ladder: string[] };
     critic: { adapter: string; model: string; effort: string };
+    /** Present ONLY when the operator explicitly configured planner in
+     *  `.autodev/config.yaml`; undefined otherwise (planner is optional — when
+     *  unset the orchestrator handles planning). Mirrors orchestrator's shape. */
+    planner?: { adapter: string; model: string; effort?: string };
   };
+  /** Read-only policy toggle the UI shows but never writes. */
+  policy: { heterogeneity: "warn" | "off" };
+  /** Server-computed warnings (rendered verbatim) — non-empty when worker &
+   *  critic share an adapter family AND `policy.heterogeneity === "warn"`. */
+  heterogeneityWarnings: string[];
 }
 
 /** Body for `PATCH /projects/:id/config` — a partial config write. Only the
@@ -126,6 +135,7 @@ export interface ProjectConfigForm {
     orchestrator?: { adapter?: string; model?: string; effort?: string };
     worker?: { adapter?: string; ladder?: string[] };
     critic?: { adapter?: string; model?: string; effort?: string };
+    planner?: { adapter?: string; model?: string; effort?: string };
   };
 }
 

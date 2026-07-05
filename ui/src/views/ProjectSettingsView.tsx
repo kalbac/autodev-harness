@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, FileWarning, Pencil, Plus, X } from "lucide-react";
 import { useConfig, useProjects, useUpdateProjectConfig, useDetectedAgents } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { ApiError, type ProjectConfigForm, type ProjectConfigView, type DetectedAgent } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Loading, EmptyState, Spinner } from "@/components/ui/Feedback";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
@@ -23,6 +24,14 @@ interface EditDraft {
   criticAdapter: string;
   criticModel: string;
   criticEffort: string;
+  plannerAdapter: string;
+  plannerModel: string;
+  plannerEffort: string;
+  /** Intent flag: planner participates in diffing only when true — true from
+   *  the start when planner is already configured, or once the operator clicks
+   *  "+ Configure planner". While false, `buildDiff` NEVER emits planner, so an
+   *  unconfigured planner stays unset. */
+  addPlanner: boolean;
 }
 
 function draftFrom(config: ProjectConfigView): EditDraft {
@@ -38,6 +47,10 @@ function draftFrom(config: ProjectConfigView): EditDraft {
     criticAdapter: config.roles.critic.adapter,
     criticModel: config.roles.critic.model,
     criticEffort: config.roles.critic.effort,
+    plannerAdapter: config.roles.planner?.adapter ?? "",
+    plannerModel: config.roles.planner?.model ?? "",
+    plannerEffort: config.roles.planner?.effort ?? "",
+    addPlanner: config.roles.planner !== undefined,
   };
 }
 
@@ -94,6 +107,19 @@ function buildDiff(config: ProjectConfigView, draft: EditDraft): ProjectConfigFo
   addIfChanged(critic, "model", draft.criticModel, config.roles.critic.model);
   addIfChanged(critic, "effort", draft.criticEffort, config.roles.critic.effort);
   if (Object.keys(critic).length > 0) roles.critic = critic;
+
+  // planner is optional: only diffed once `addPlanner` intent is set (already
+  // configured, or the operator clicked "+ Configure planner"). Same
+  // `addIfChanged` convention as orchestrator/critic; `?? ""` for the absent
+  // case makes fresh defaults (claude/sonnet) send while an unchanged planner
+  // sends nothing. When `addPlanner` is false, planner never enters the diff.
+  if (draft.addPlanner) {
+    const planner: Record<string, string> = {};
+    addIfChanged(planner, "adapter", draft.plannerAdapter, config.roles.planner?.adapter ?? "");
+    addIfChanged(planner, "model", draft.plannerModel, config.roles.planner?.model ?? "");
+    addIfChanged(planner, "effort", draft.plannerEffort, config.roles.planner?.effort ?? "");
+    if (Object.keys(planner).length > 0) roles.planner = planner;
+  }
 
   if (Object.keys(roles).length > 0) diff.roles = roles;
 
@@ -256,6 +282,10 @@ function ConfigSections({
   const orchestratorAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.orchestratorAdapter) : undefined;
   const workerAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.workerAdapter) : undefined;
   const criticAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.criticAdapter) : undefined;
+  const plannerAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.plannerAdapter) : undefined;
+
+  const heteroWarnings = config.heterogeneityWarnings;
+  const hasHeteroWarning = heteroWarnings.length > 0;
 
   return (
     <>
@@ -310,144 +340,273 @@ function ConfigSections({
         )}
       </SettingsSection>
 
-      <SettingsSection title="Roles">
-        {editable ? (
-          <>
-            {detectedAgents ? (
-              <SelectOrCustomRow
-                label="Orchestrator adapter"
-                value={draft.orchestratorAdapter}
-                onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
-                options={supportedOptions}
+      <SettingsSection title="Roles" className="flex flex-col gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {/* Orchestrator — adapter · model · effort (effort hidden for a matched
+              adapter with no effort concept). */}
+          <RoleCard title="Orchestrator">
+            {editable ? (
+              <RoleFields
+                adapter={draft.orchestratorAdapter}
+                model={draft.orchestratorModel}
+                effort={draft.orchestratorEffort}
+                onAdapterChange={(v) => onDraftChange({ orchestratorAdapter: v })}
+                onModelChange={(v) => onDraftChange({ orchestratorModel: v })}
+                onEffortChange={(v) => onDraftChange({ orchestratorEffort: v })}
+                detectedAgents={detectedAgents}
+                agent={orchestratorAgent}
+                supportedOptions={supportedOptions}
+                effortOptional
               />
             ) : (
-              <TextFieldRow
-                label="Orchestrator adapter"
-                value={draft.orchestratorAdapter}
-                onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
+              <RoleReadValue
+                value={roleLine(roles.orchestrator.adapter, roles.orchestrator.model, roles.orchestrator.effort)}
               />
             )}
-            {detectedAgents ? (
-              <SelectOrCustomRow
-                label="Orchestrator model"
-                value={draft.orchestratorModel}
-                onChange={(v) => onDraftChange({ orchestratorModel: v })}
-                options={modelOptionsFor(orchestratorAgent)}
+          </RoleCard>
+
+          {/* Worker — adapter · ladder (no single model, no effort). */}
+          <RoleCard title="Worker">
+            {editable ? (
+              <>
+                {detectedAgents ? (
+                  <SelectOrCustomRow
+                    label="Adapter"
+                    value={draft.workerAdapter}
+                    onChange={(v) => onDraftChange({ workerAdapter: v })}
+                    options={supportedOptions}
+                  />
+                ) : (
+                  <TextFieldRow
+                    label="Adapter"
+                    value={draft.workerAdapter}
+                    onChange={(v) => onDraftChange({ workerAdapter: v })}
+                  />
+                )}
+                <EditableList
+                  items={draft.ladder}
+                  onChange={(items) => onDraftChange({ ladder: items })}
+                  placeholder="model name"
+                  emptyError="ladder needs at least one model"
+                  suggestions={workerAgent?.models?.map((m) => m.id)}
+                />
+              </>
+            ) : (
+              <>
+                <RoleReadValue value={roles.worker.adapter} />
+                <RoleReadValue value={roles.worker.ladder.join(" → ")} muted={roles.worker.ladder.length === 0} />
+              </>
+            )}
+          </RoleCard>
+
+          {/* Critic — adapter · model · effort. Header carries the heterogeneity
+              badge when worker & critic share an adapter family. */}
+          <RoleCard
+            title="Critic"
+            badge={hasHeteroWarning ? <HeterogeneityBadge /> : undefined}
+          >
+            {editable ? (
+              <RoleFields
+                adapter={draft.criticAdapter}
+                model={draft.criticModel}
+                effort={draft.criticEffort}
+                onAdapterChange={(v) => onDraftChange({ criticAdapter: v })}
+                onModelChange={(v) => onDraftChange({ criticModel: v })}
+                onEffortChange={(v) => onDraftChange({ criticEffort: v })}
+                detectedAgents={detectedAgents}
+                agent={criticAgent}
+                supportedOptions={supportedOptions}
               />
             ) : (
-              <TextFieldRow
-                label="Orchestrator model"
-                value={draft.orchestratorModel}
-                onChange={(v) => onDraftChange({ orchestratorModel: v })}
-              />
+              <RoleReadValue value={roleLine(roles.critic.adapter, roles.critic.model, roles.critic.effort)} />
             )}
-            {!(detectedAgents && hasNoEffortConcept(orchestratorAgent)) &&
-              (detectedAgents ? (
-                <SelectOrCustomRow
-                  label="Orchestrator effort"
-                  value={draft.orchestratorEffort}
-                  onChange={(v) => onDraftChange({ orchestratorEffort: v })}
-                  options={effortOptionsFor(orchestratorAgent)}
-                  placeholder="optional"
+          </RoleCard>
+
+          {/* Planner — OPTIONAL. Unset in read mode → dimmed "not set" card; unset
+              in edit mode → "+ Configure planner" affordance; set → orchestrator-
+              like fields. No remove path (clear-is-no-op backend convention). */}
+          {editable ? (
+            draft.addPlanner ? (
+              <RoleCard title="Planner">
+                <RoleFields
+                  adapter={draft.plannerAdapter}
+                  model={draft.plannerModel}
+                  effort={draft.plannerEffort}
+                  onAdapterChange={(v) => onDraftChange({ plannerAdapter: v })}
+                  onModelChange={(v) => onDraftChange({ plannerModel: v })}
+                  onEffortChange={(v) => onDraftChange({ plannerEffort: v })}
+                  detectedAgents={detectedAgents}
+                  agent={plannerAgent}
+                  supportedOptions={supportedOptions}
+                  effortOptional
                 />
-              ) : (
-                <TextFieldRow
-                  label="Orchestrator effort"
-                  value={draft.orchestratorEffort}
-                  onChange={(v) => onDraftChange({ orchestratorEffort: v })}
-                  placeholder="optional"
-                />
-              ))}
-          </>
-        ) : (
-          <SettingsRow
-            label="Orchestrator"
-            value={roleLine(roles.orchestrator.adapter, roles.orchestrator.model, roles.orchestrator.effort)}
-          />
-        )}
-        {editable ? (
-          detectedAgents ? (
-            <SelectOrCustomRow
-              label="Worker adapter"
-              value={draft.workerAdapter}
-              onChange={(v) => onDraftChange({ workerAdapter: v })}
-              options={supportedOptions}
-            />
+              </RoleCard>
+            ) : (
+              <RoleCard title="Planner" dimmed>
+                <div className="flex flex-col items-start gap-2 py-1">
+                  <span className="font-mono text-[11px] text-subtle">
+                    not set · orchestrator handles planning
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      onDraftChange({
+                        addPlanner: true,
+                        plannerAdapter: "claude",
+                        plannerModel: "sonnet",
+                        plannerEffort: "",
+                      })
+                    }
+                  >
+                    <Plus className="size-3" />
+                    Configure planner
+                  </Button>
+                </div>
+              </RoleCard>
+            )
+          ) : roles.planner ? (
+            <RoleCard title="Planner">
+              <RoleReadValue value={roleLine(roles.planner.adapter, roles.planner.model, roles.planner.effort)} />
+            </RoleCard>
           ) : (
-            <TextFieldRow
-              label="Worker adapter"
-              value={draft.workerAdapter}
-              onChange={(v) => onDraftChange({ workerAdapter: v })}
-            />
-          )
-        ) : (
-          <SettingsRow label="Worker adapter" value={roles.worker.adapter} />
-        )}
-        {editable ? (
-          <EditableList
-            items={draft.ladder}
-            onChange={(items) => onDraftChange({ ladder: items })}
-            placeholder="model name"
-            emptyError="ladder needs at least one model"
-            suggestions={workerAgent?.models?.map((m) => m.id)}
-          />
-        ) : (
-          <SettingsRow label="Worker ladder" value={roles.worker.ladder.join(" → ")} />
-        )}
-        {editable ? (
-          <>
-            {detectedAgents ? (
-              <SelectOrCustomRow
-                label="Critic adapter"
-                value={draft.criticAdapter}
-                onChange={(v) => onDraftChange({ criticAdapter: v })}
-                options={supportedOptions}
-              />
-            ) : (
-              <TextFieldRow
-                label="Critic adapter"
-                value={draft.criticAdapter}
-                onChange={(v) => onDraftChange({ criticAdapter: v })}
-              />
-            )}
-            {detectedAgents ? (
-              <SelectOrCustomRow
-                label="Critic model"
-                value={draft.criticModel}
-                onChange={(v) => onDraftChange({ criticModel: v })}
-                options={modelOptionsFor(criticAgent)}
-              />
-            ) : (
-              <TextFieldRow
-                label="Critic model"
-                value={draft.criticModel}
-                onChange={(v) => onDraftChange({ criticModel: v })}
-              />
-            )}
-            {!(detectedAgents && hasNoEffortConcept(criticAgent)) &&
-              (detectedAgents ? (
-                <SelectOrCustomRow
-                  label="Critic effort"
-                  value={draft.criticEffort}
-                  onChange={(v) => onDraftChange({ criticEffort: v })}
-                  options={effortOptionsFor(criticAgent)}
-                />
-              ) : (
-                <TextFieldRow
-                  label="Critic effort"
-                  value={draft.criticEffort}
-                  onChange={(v) => onDraftChange({ criticEffort: v })}
-                />
-              ))}
-          </>
-        ) : (
-          <SettingsRow
-            label="Critic"
-            value={roleLine(roles.critic.adapter, roles.critic.model, roles.critic.effort)}
-          />
+            <RoleCard title="Planner" dimmed>
+              <RoleReadValue value="not set · orchestrator handles planning" muted />
+            </RoleCard>
+          )}
+        </div>
+
+        {/* Server-computed heterogeneity warning(s) — rendered verbatim. */}
+        {hasHeteroWarning && (
+          <div className="flex flex-col gap-1 rounded-md border border-[color-mix(in_srgb,var(--color-uncertain)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-uncertain)_8%,transparent)] px-3 py-2">
+            {heteroWarnings.map((w) => (
+              <p key={w} className="font-mono text-[11px] leading-relaxed text-uncertain">
+                {w}
+              </p>
+            ))}
+          </div>
         )}
       </SettingsSection>
     </>
+  );
+}
+
+/** One bordered role card in the role matrix: a header (role name + optional
+ *  badge) over the role's editable/read body. `dimmed` softens an inactive
+ *  (unset planner) card. Sits inside the "Roles" `SettingsSection`, so it uses a
+ *  slightly raised surface to read as a distinct tile. */
+function RoleCard({
+  title,
+  badge,
+  dimmed,
+  children,
+}: {
+  title: string;
+  badge?: ReactNode;
+  dimmed?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn("rounded-md border border-line bg-surface-2/40 px-3 py-2.5", dimmed && "opacity-70")}>
+      <div className="mb-1.5 flex items-center gap-2 border-b border-line pb-1.5">
+        <h3 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{title}</h3>
+        {badge && <div className="ml-auto">{badge}</div>}
+      </div>
+      <div className="flex flex-col">{children}</div>
+    </div>
+  );
+}
+
+/** The adapter · model · effort trio shared by orchestrator/critic/planner cards
+ *  — reuses `SelectOrCustomRow` (with the `detectedAgents === null` fallback to
+ *  `TextFieldRow`) exactly as the flat layout did, and hides the effort row for a
+ *  matched adapter that declares no effort concept. `effortOptional` flags the
+ *  roles whose effort is optional (orchestrator/planner → placeholder), vs the
+ *  critic whose effort is required. */
+function RoleFields({
+  adapter,
+  model,
+  effort,
+  onAdapterChange,
+  onModelChange,
+  onEffortChange,
+  detectedAgents,
+  agent,
+  supportedOptions,
+  effortOptional,
+}: {
+  adapter: string;
+  model: string;
+  effort: string;
+  onAdapterChange: (v: string) => void;
+  onModelChange: (v: string) => void;
+  onEffortChange: (v: string) => void;
+  detectedAgents: DetectedAgent[] | null;
+  agent: DetectedAgent | undefined;
+  supportedOptions: SelectOption[];
+  effortOptional?: boolean;
+}) {
+  const showEffort = !(detectedAgents && hasNoEffortConcept(agent));
+  return (
+    <>
+      {detectedAgents ? (
+        <SelectOrCustomRow label="Adapter" value={adapter} onChange={onAdapterChange} options={supportedOptions} />
+      ) : (
+        <TextFieldRow label="Adapter" value={adapter} onChange={onAdapterChange} />
+      )}
+      {detectedAgents ? (
+        <SelectOrCustomRow label="Model" value={model} onChange={onModelChange} options={modelOptionsFor(agent)} />
+      ) : (
+        <TextFieldRow label="Model" value={model} onChange={onModelChange} />
+      )}
+      {showEffort &&
+        (detectedAgents ? (
+          <SelectOrCustomRow
+            label="Effort"
+            value={effort}
+            onChange={onEffortChange}
+            options={effortOptionsFor(agent)}
+            placeholder={effortOptional ? "optional" : undefined}
+          />
+        ) : (
+          <TextFieldRow
+            label="Effort"
+            value={effort}
+            onChange={onEffortChange}
+            placeholder={effortOptional ? "optional" : undefined}
+          />
+        ))}
+    </>
+  );
+}
+
+/** Read-mode value line inside a role card: a right-aligned mono string, or a
+ *  muted em-dash-style caption when `muted`/empty. */
+function RoleReadValue({ value, muted }: { value: string; muted?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "min-w-0 break-words py-1 text-right font-mono text-[11px]",
+        muted || value === "" ? "text-subtle" : "text-text",
+      )}
+    >
+      {value === "" ? "—" : value}
+    </div>
+  );
+}
+
+/** Inline amber pill on the critic card header when worker & critic share an
+ *  adapter family (server-flagged). Reuses the `uncertain` (amber/warn) verdict
+ *  token — the same color-mix border idiom the escalation/needs-you UI uses —
+ *  rather than a hardcoded hex. */
+function HeterogeneityBadge() {
+  return (
+    <span
+      className="rounded border px-1.5 py-0.5 font-mono text-[10px] text-uncertain"
+      style={{ borderColor: "color-mix(in srgb, var(--color-uncertain) 30%, transparent)" }}
+    >
+      ⚠ same family
+    </span>
   );
 }
 
