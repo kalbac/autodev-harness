@@ -157,6 +157,10 @@ export interface ProjectConfigView {
      *  the resolved/defaulted ones, mirroring orchestrator. */
     planner?: { adapter: string; model: string; effort?: string };
   };
+  /** Worker ambient-extension isolation, always projected as plain booleans
+   *  (all false = current inherit-everything behavior). The UI renders these as
+   *  the clean-room / MCP / skills toggles. */
+  isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
   /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
   policy: { heterogeneity: "warn" | "off" };
   /** The heterogeneity warnings the daemon computes at wire-time (empty when

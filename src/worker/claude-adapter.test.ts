@@ -111,6 +111,35 @@ describe("ClaudeWorkerAdapter", () => {
     expect(call.timeoutSeconds).toBe(cfg.roles.worker.timeoutMinutes * 60);
   });
 
+  it("excludes isolation flags for a default cfg and appends --bare for a cleanRoom cfg", async () => {
+    // Default cfg: isolation all-OFF → no isolation flags in the arg array.
+    const defCfg = HarnessConfigSchema.parse({});
+    const defRunner = new FakeRunner([okResult()]);
+    await new ClaudeWorkerAdapter({ runner: defRunner, cfg: defCfg }).run({
+      task: makeTask(),
+      worktreePath: "/wt",
+      ladder: ["opus"],
+      runtimeDir: "/rt",
+    });
+    const defArgs = defRunner.calls[0]!.args;
+    expect(defArgs).not.toContain("--bare");
+    expect(defArgs).not.toContain("--strict-mcp-config");
+    expect(defArgs).not.toContain("--disable-slash-commands");
+
+    // cleanRoom cfg: --bare appended after --output-format stream-json.
+    const isoCfg = HarnessConfigSchema.parse({ isolation: { worker: { cleanRoom: true } } });
+    const isoRunner = new FakeRunner([okResult()]);
+    await new ClaudeWorkerAdapter({ runner: isoRunner, cfg: isoCfg }).run({
+      task: makeTask(),
+      worktreePath: "/wt",
+      ladder: ["opus"],
+      runtimeDir: "/rt",
+    });
+    const isoArgs = isoRunner.calls[0]!.args;
+    expect(isoArgs).toContain("--bare");
+    expect(isoArgs.slice(-3)).toEqual(["--output-format", "stream-json", "--bare"]);
+  });
+
   it("steps down to the next (cheaper) ladder entry on a non-contract rate limit", async () => {
     const cfg = HarnessConfigSchema.parse({});
     const runner = new FakeRunner([

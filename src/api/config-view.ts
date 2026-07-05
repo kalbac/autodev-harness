@@ -44,6 +44,13 @@ export function buildProjectConfigView(cfg: HarnessConfig, plannerConfigured: bo
           }
         : {}),
     },
+    isolation: {
+      worker: {
+        cleanRoom: cfg.isolation.worker.cleanRoom,
+        mcp: cfg.isolation.worker.mcp,
+        skills: cfg.isolation.worker.skills,
+      },
+    },
     policy: { heterogeneity: cfg.policy.heterogeneity },
     heterogeneityWarnings: heterogeneityWarnings(cfg),
   };

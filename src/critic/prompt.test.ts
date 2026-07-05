@@ -11,6 +11,15 @@ describe("buildCriticPrompt", () => {
     expect(prompt).toContain("END DIFF");
   });
 
+  it("includes an always-on NO-TOOLS preamble instructing the critic to review from the inline diff only", () => {
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/no tools/i);
+    expect(prompt).toMatch(/do not run any shell command/i);
+    expect(prompt).toMatch(/do not read any file/i);
+    expect(prompt).toMatch(/skill, plugin, or mcp tool/i);
+    expect(prompt).toMatch(/inline/i);
+  });
+
   it("states the default assumption that the diff breaks a contract", () => {
     const prompt = buildCriticPrompt(diff);
     expect(prompt).toMatch(/assume.*breaks a contract/i);

@@ -24,6 +24,21 @@ export function buildCriticPrompt(diff: string): string {
   sections.push(
     "# Independent adversarial critic review",
     "",
+  );
+
+  sections.push(
+    "## No tools — review from the inline diff only",
+    "",
+    "Do NOT run any shell command, do NOT read any file, and do NOT invoke any",
+    "skill, plugin, or MCP tool. Subprocess spawning is unnecessary here and may",
+    "be blocked by the sandbox. The COMPLETE diff under review is embedded inline",
+    "below — review it from that text alone and respond directly with the verdict",
+    "JSON. This is complementary to the fencing rule below: fencing tells you to",
+    "ignore the worker's rationale; this tells you not to try to invoke anything.",
+    "",
+  );
+
+  sections.push(
     "## Default assumption",
     "",
     "Assume, by default, that this diff BREAKS a contract somewhere. Your job",

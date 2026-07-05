@@ -2481,6 +2481,7 @@ describe("GET /projects/:id/config", () => {
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
       planner: { adapter: "codex", model: "o3", effort: "high" },
     },
+    isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
@@ -2540,6 +2541,7 @@ describe("PATCH /projects/:id/config", () => {
       worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
     },
+    isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
