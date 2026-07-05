@@ -10,7 +10,9 @@ import {
   type TokenUsageDoc,
 } from "./usage.js";
 
-/** A realistic final stream-json `result` event (fields trimmed to what we read). */
+/** A realistic final stream-json `result` event (fields trimmed to what we read).
+ *  Claude's CLI still emits `total_cost_usd` on this event; we keep it in the
+ *  fixture to prove `parseClaudeUsage` ignores it rather than surfacing cost. */
 function resultEvent(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     type: "result",
@@ -28,7 +30,7 @@ function resultEvent(overrides: Record<string, unknown> = {}): string {
 }
 
 describe("parseClaudeUsage", () => {
-  it("extracts usage + total_cost_usd from the result event in a JSONL stream", () => {
+  it("extracts usage token fields from the result event in a JSONL stream, ignoring total_cost_usd", () => {
     const stdout = [
       JSON.stringify({ type: "system", subtype: "init" }),
       JSON.stringify({ type: "assistant", message: { role: "assistant" } }),
@@ -40,7 +42,6 @@ describe("parseClaudeUsage", () => {
       output_tokens: 50,
       cache_read_input_tokens: 100,
       cache_creation_input_tokens: 5,
-      total_cost_usd: 0.0123,
     });
   });
 
@@ -53,17 +54,15 @@ describe("parseClaudeUsage", () => {
     const parsed = parseClaudeUsage(stdout);
     expect(parsed?.input_tokens).toBe(999);
     expect(parsed?.output_tokens).toBe(888);
-    expect(parsed?.total_cost_usd).toBe(0.5);
   });
 
-  it("defaults every missing usage field (and cost) to 0, never NaN", () => {
-    const stdout = resultEvent({ usage: { input_tokens: 7 }, total_cost_usd: undefined });
+  it("defaults every missing usage field to 0, never NaN", () => {
+    const stdout = resultEvent({ usage: { input_tokens: 7 } });
     expect(parseClaudeUsage(stdout)).toEqual({
       input_tokens: 7,
       output_tokens: 0,
       cache_read_input_tokens: 0,
       cache_creation_input_tokens: 0,
-      total_cost_usd: 0,
     });
   });
 
@@ -119,35 +118,44 @@ describe("buildTokenUsageDoc", () => {
     output_tokens: 20,
     cache_read_input_tokens: 30,
     cache_creation_input_tokens: 40,
-    total_cost_usd: 0.01,
     ...o,
   });
   const c = (o: Partial<CriticUsage> = {}): CriticUsage => ({ model: "gpt-5.5", tokens: 100, ...o });
 
-  it("sums worker fields + cost and critic tokens across rounds, keeping per-run detail", () => {
-    const doc = buildTokenUsageDoc([w(), w({ input_tokens: 5, total_cost_usd: 0.02 })], [c(), c({ tokens: 50 })], 1234);
+  it("sums worker fields and critic tokens across rounds, keeping per-run detail", () => {
+    const doc = buildTokenUsageDoc([w(), w({ input_tokens: 5 })], [c(), c({ tokens: 50 })], 1234);
 
     expect(doc.worker.input_tokens).toBe(15);
     expect(doc.worker.output_tokens).toBe(40);
-    expect(doc.worker.total_cost_usd).toBeCloseTo(0.03, 10);
     expect(doc.worker.runs).toHaveLength(2);
     expect(doc.critic.tokens).toBe(150);
     expect(doc.critic.runs).toHaveLength(2);
-    expect(doc.total_cost_usd).toBeCloseTo(0.03, 10);
     expect(doc.updated_at).toBe(1234);
   });
 
   it("produces an all-zero doc for empty runs", () => {
     const doc = buildTokenUsageDoc([], [], 7);
     expect(doc.worker.input_tokens).toBe(0);
-    expect(doc.worker.total_cost_usd).toBe(0);
     expect(doc.critic.tokens).toBe(0);
-    expect(doc.total_cost_usd).toBe(0);
     expect(doc.updated_at).toBe(7);
+  });
+
+  it("sanitizes per-run copies at the write boundary: a stray total_cost_usd on an input never reaches the persisted artifact", () => {
+    // Defense-in-depth for the operator's "NO cost anywhere" contract (s25): even
+    // if a caller hands us a WorkerUsage still carrying a cost field, the writer
+    // must persist token-only run entries so JSON.stringify can't leak it.
+    const enrichedWorker = { ...w(), total_cost_usd: 0.42 } as WorkerUsage;
+    const enrichedCritic = { ...c(), total_cost_usd: 0.13 } as CriticUsage;
+    const doc = buildTokenUsageDoc([enrichedWorker], [enrichedCritic], 1);
+
+    expect(doc.worker.runs[0]).not.toHaveProperty("total_cost_usd");
+    expect(doc.critic.runs[0]).not.toHaveProperty("total_cost_usd");
+    // The whole serialized artifact carries no "cost" substring anywhere.
+    expect(JSON.stringify(doc)).not.toMatch(/cost/i);
   });
 });
 
-/** A valid `TokenUsageDoc`, with overridable worker/critic/cost fields, for the
+/** A valid `TokenUsageDoc`, with overridable worker/critic fields, for the
  *  s25 server-side run-usage aggregation tests below. */
 function usageDoc(o: {
   input_tokens?: number;
@@ -155,7 +163,6 @@ function usageDoc(o: {
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
   critic_tokens?: number;
-  total_cost_usd?: number;
 } = {}): TokenUsageDoc {
   return {
     worker: {
@@ -163,29 +170,26 @@ function usageDoc(o: {
       output_tokens: o.output_tokens ?? 20,
       cache_read_input_tokens: o.cache_read_input_tokens ?? 30,
       cache_creation_input_tokens: o.cache_creation_input_tokens ?? 40,
-      total_cost_usd: o.total_cost_usd ?? 0.01,
       runs: [],
     },
     critic: { tokens: o.critic_tokens ?? 5, runs: [] },
-    total_cost_usd: o.total_cost_usd ?? 0.01,
     updated_at: 1,
   };
 }
 
 describe("buildRunUsageSummary", () => {
-  it("sums tokens (all 4 worker fields + critic.tokens) and cost across two docs", () => {
-    const a = usageDoc({ input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40, critic_tokens: 5, total_cost_usd: 0.01 });
-    const b = usageDoc({ input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4, critic_tokens: 5, total_cost_usd: 0.02 });
+  it("sums tokens (all 4 worker fields + critic.tokens) across two docs", () => {
+    const a = usageDoc({ input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40, critic_tokens: 5 });
+    const b = usageDoc({ input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4, critic_tokens: 5 });
 
     const summary = buildRunUsageSummary([a, b], 2);
 
     expect(summary.tokens).toBe(10 + 20 + 30 + 40 + 5 + (1 + 2 + 3 + 4 + 5));
-    expect(summary.cost).toBeCloseTo(0.03, 10);
     expect(summary).toMatchObject({ any: true, tasksWithUsage: 2, taskCount: 2 });
   });
 
   it("returns an all-zero, any:false summary for empty docs", () => {
-    expect(buildRunUsageSummary([], 3)).toEqual({ tokens: 0, cost: 0, any: false, tasksWithUsage: 0, taskCount: 3 });
+    expect(buildRunUsageSummary([], 3)).toEqual({ tokens: 0, any: false, tasksWithUsage: 0, taskCount: 3 });
   });
 
   it("reads honestly for partial coverage: 1 doc but taskCount 3", () => {
@@ -202,6 +206,16 @@ describe("buildRunUsageSummary", () => {
     expect(Number.isFinite(summary.tokens)).toBe(true);
     expect(summary.tokens).toBe(20 + 30 + 40 + 5); // input_tokens contributes 0
   });
+
+  it("ignores a leftover total_cost_usd on an old on-disk doc: never summed, never surfaced", () => {
+    // Backward-compat: a token-usage.json written before the cost strip still
+    // carries `total_cost_usd` on disk. It must parse fine and contribute nothing.
+    const legacy = { ...usageDoc(), total_cost_usd: 0.5 } as TokenUsageDoc;
+    expect(isTokenUsageDoc(legacy)).toBe(true);
+    const summary = buildRunUsageSummary([legacy], 1);
+    expect(summary).not.toHaveProperty("cost");
+    expect(summary.tokens).toBe(10 + 20 + 30 + 40 + 5);
+  });
 });
 
 describe("isTokenUsageDoc", () => {
@@ -209,15 +223,16 @@ describe("isTokenUsageDoc", () => {
     expect(isTokenUsageDoc(usageDoc())).toBe(true);
   });
 
+  it("accepts a doc that still carries a leftover total_cost_usd field (backward-compat)", () => {
+    expect(isTokenUsageDoc({ ...usageDoc(), total_cost_usd: 0.01 })).toBe(true);
+  });
+
   it("rejects null, a non-object, and structurally incomplete/malformed shapes", () => {
     expect(isTokenUsageDoc(null)).toBe(false);
     expect(isTokenUsageDoc("nope")).toBe(false);
-    expect(isTokenUsageDoc({ worker: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 1, cache_creation_input_tokens: 1, total_cost_usd: 0, runs: [] } })).toBe(false); // missing critic
+    expect(isTokenUsageDoc({ worker: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 1, cache_creation_input_tokens: 1, runs: [] } })).toBe(false); // missing critic
     const stringField = usageDoc() as unknown as { worker: { input_tokens: unknown } };
     stringField.worker.input_tokens = "10";
     expect(isTokenUsageDoc(stringField)).toBe(false);
-    const missingCost = usageDoc() as Partial<TokenUsageDoc>;
-    delete missingCost.total_cost_usd;
-    expect(isTokenUsageDoc(missingCost)).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useConfig, useRuns, useRunUsage, useState as useProjectState } from "@/lib/queries";
+import { useConfig, useSessionUsage, useState as useProjectState } from "@/lib/queries";
 import { Dot } from "./ui/Dot";
 import { cn } from "@/lib/utils";
 
@@ -10,16 +10,11 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** Cost in USD, enough precision for sub-cent runs. */
-function formatCost(usd: number): string {
-  return `$${usd < 1 ? usd.toFixed(4) : usd.toFixed(2)}`;
-}
-
 /**
  * The per-SESSION inspector rail (s16 mockup `.rail`) — a sibling of `main` at
  * the shell level. Five blocks: Now (pipeline), Queue (counters), Session
- * (facts), Roles (real config), Tokens (phase-2 placeholder). Distinct from the
- * per-TASK `Inspector.tsx`. Every value degrades to "—" while data loads.
+ * (facts), Roles (real config), Tokens (cross-run token totals). Distinct from
+ * the per-TASK `Inspector.tsx`. Every value degrades to "—" while data loads.
  *
  * Step granularity in "Now" is INFERRED from queue state — there is no live
  * per-step feed. An active task means the worker is running; gate → critic →
@@ -28,11 +23,9 @@ function formatCost(usd: number): string {
 export function SessionRail({ projectId }: { projectId: string }) {
   const state = useProjectState(projectId);
   const config = useConfig(projectId);
-  const runs = useRuns(projectId);
-  // "This run" = the newest run manifest (server sorts newest-first); its tasks'
-  // token-usage.json files are summed on the client by useRunUsage.
-  const newestRunId = runs.data?.[0]?.runId ?? null;
-  const usage = useRunUsage(projectId, newestRunId);
+  // Token totals across runs, from the server-side per-run aggregate
+  // (GET /runs/:id/usage): this run (newest) / today / all-time. Token only.
+  const usage = useSessionUsage(projectId);
 
   const queues = state.data?.queues;
   const activeTask = queues?.active[0];
@@ -106,10 +99,11 @@ export function SessionRail({ projectId }: { projectId: string }) {
         <Kv k="critic" v={roleCritic} />
       </Block>
 
-      {/* Tokens — client-aggregated from the newest run's per-task usage (s22) */}
+      {/* Tokens — cross-run totals via the server-side per-run aggregate (s25) */}
       <Block title="Tokens">
-        <Kv k="this run" v={usage.data?.any ? formatTokens(usage.data.tokens) : dash} />
-        <Kv k="cost" v={usage.data?.any ? formatCost(usage.data.cost) : dash} />
+        <Kv k="this run" v={usage.data?.thisRun.any ? formatTokens(usage.data.thisRun.tokens) : dash} />
+        <Kv k="today" v={usage.data?.today.any ? formatTokens(usage.data.today.tokens) : dash} />
+        <Kv k="all-time" v={usage.data?.allTime.any ? formatTokens(usage.data.allTime.tokens) : dash} />
       </Block>
     </aside>
   );

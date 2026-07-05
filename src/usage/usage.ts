@@ -11,14 +11,13 @@
 
 /** One worker (claude) invocation's usage, as read from its final stream-json
  *  `result` event. `model` is attached by the adapter (the parser only reads the
- *  token/cost numbers, which the event does not label with a model). */
+ *  token numbers, which the event does not label with a model). */
 export interface WorkerUsage {
   model: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
-  total_cost_usd: number;
 }
 
 /** One critic (codex) invocation's usage. Plain `codex exec` prints only a bare
@@ -38,16 +37,12 @@ export interface TokenUsageDoc {
     output_tokens: number;
     cache_read_input_tokens: number;
     cache_creation_input_tokens: number;
-    total_cost_usd: number;
     runs: WorkerUsage[];
   };
   critic: {
     tokens: number;
     runs: CriticUsage[];
   };
-  /** Worker cost total. Plain `codex exec` yields no critic cost, so this is the
-   *  worker's summed `total_cost_usd`. */
-  total_cost_usd: number;
   /** Conductor `clock.now()` at the last write — lets the UI show freshness. */
   updated_at: number;
 }
@@ -95,7 +90,6 @@ export function parseClaudeUsage(stdout: string): Omit<WorkerUsage, "model"> | n
     output_tokens: num(u.output_tokens),
     cache_read_input_tokens: num(u.cache_read_input_tokens),
     cache_creation_input_tokens: num(u.cache_creation_input_tokens),
-    total_cost_usd: num(found.total_cost_usd),
   };
 }
 
@@ -139,33 +133,49 @@ export function parseCodexTokens(stdout: string): number | null {
  * Aggregate per-round worker + critic usage into the persisted doc. Pure sum —
  * the conductor passes the running arrays and its clock; overwriting the file
  * with a fresh doc each round is idempotent.
+ *
+ * The per-run arrays are rebuilt as token-only copies at this write boundary
+ * (never persisted by reference): the operator's contract is NO cost anywhere in
+ * telemetry (s25), and `JSON.stringify` would otherwise preserve any stray field
+ * a caller left on an input object (e.g. a legacy `WorkerUsage` still carrying
+ * `total_cost_usd`). Sanitizing here makes "no cost in the artifact" a structural
+ * guarantee of the writer, not a property that depends on every upstream
+ * constructor staying cost-free.
  */
 export function buildTokenUsageDoc(
   workerRuns: WorkerUsage[],
   criticRuns: CriticUsage[],
   updatedAt: number,
 ): TokenUsageDoc {
+  const workerRunCopies: WorkerUsage[] = workerRuns.map((r) => ({
+    model: r.model,
+    input_tokens: r.input_tokens,
+    output_tokens: r.output_tokens,
+    cache_read_input_tokens: r.cache_read_input_tokens,
+    cache_creation_input_tokens: r.cache_creation_input_tokens,
+  }));
+  const criticRunCopies: CriticUsage[] = criticRuns.map((r) => ({
+    model: r.model,
+    tokens: r.tokens,
+  }));
   const worker = {
     input_tokens: 0,
     output_tokens: 0,
     cache_read_input_tokens: 0,
     cache_creation_input_tokens: 0,
-    total_cost_usd: 0,
-    runs: workerRuns,
+    runs: workerRunCopies,
   };
-  for (const r of workerRuns) {
+  for (const r of workerRunCopies) {
     worker.input_tokens += r.input_tokens;
     worker.output_tokens += r.output_tokens;
     worker.cache_read_input_tokens += r.cache_read_input_tokens;
     worker.cache_creation_input_tokens += r.cache_creation_input_tokens;
-    worker.total_cost_usd += r.total_cost_usd;
   }
   let criticTokens = 0;
-  for (const r of criticRuns) criticTokens += r.tokens;
+  for (const r of criticRunCopies) criticTokens += r.tokens;
   return {
     worker,
-    critic: { tokens: criticTokens, runs: criticRuns },
-    total_cost_usd: worker.total_cost_usd,
+    critic: { tokens: criticTokens, runs: criticRunCopies },
     updated_at: updatedAt,
   };
 }
@@ -176,7 +186,6 @@ export function buildTokenUsageDoc(
  *  partially-instrumented run reads honestly. `any` mirrors the s22 client aggregate. */
 export interface RunUsageSummary {
   tokens: number;
-  cost: number;
   any: boolean;
   taskCount: number;
   tasksWithUsage: number;
@@ -198,20 +207,18 @@ export function isTokenUsageDoc(value: unknown): value is TokenUsageDoc {
     typeof wr.output_tokens === "number" &&
     typeof wr.cache_read_input_tokens === "number" &&
     typeof wr.cache_creation_input_tokens === "number" &&
-    typeof cr.tokens === "number" &&
-    typeof v.total_cost_usd === "number"
+    typeof cr.tokens === "number"
   );
 }
 
-/** Sum token/cost totals across a run's parsed usage docs. `docs` are ONLY the tasks
+/** Sum token totals across a run's parsed usage docs. `docs` are ONLY the tasks
  *  that had a parseable token-usage.json; `taskCount` is the run's total task count
  *  (so `docs.length <= taskCount`). Pure. Each field goes through `num()` so a NaN/
  *  Infinity from a malformed-but-guard-passing doc contributes 0, never poisons the
  *  total (same discipline as buildTokenUsageDoc). Mirrors the s22 client summation:
- *  worker 4 token fields + critic.tokens; cost = worker `total_cost_usd`. */
+ *  worker 4 token fields + critic.tokens. */
 export function buildRunUsageSummary(docs: TokenUsageDoc[], taskCount: number): RunUsageSummary {
   let tokens = 0;
-  let cost = 0;
   for (const d of docs) {
     tokens +=
       num(d.worker.input_tokens) +
@@ -219,7 +226,6 @@ export function buildRunUsageSummary(docs: TokenUsageDoc[], taskCount: number): 
       num(d.worker.cache_read_input_tokens) +
       num(d.worker.cache_creation_input_tokens) +
       num(d.critic.tokens);
-    cost += num(d.total_cost_usd);
   }
-  return { tokens, cost, any: docs.length > 0, taskCount, tasksWithUsage: docs.length };
+  return { tokens, any: docs.length > 0, taskCount, tasksWithUsage: docs.length };
 }
