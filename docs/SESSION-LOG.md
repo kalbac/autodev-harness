@@ -4,6 +4,84 @@
 
 ---
 
+## s26 — 2026-07-05 — fix the replied-escalation file-lock (s26 opener, variant 1)
+
+**The operator-chosen s26 opener — a real correctness/UX bug found live in s25** (`[escalate/replied-holds-filelock]`,
+gotcha 37). A replied escalation was left in `queue/escalated/`, where its `file_set` silently blocked every future
+run on the same file(s) (`claimNextTask` locks on `active`+`escalated` alike) with no operator signal.
+
+- **Recon-first** (Explore subagent): mapped `handleReply` (`src/api/server.ts`) ↔ `parseEscalation`/reply-write
+  (`src/escalate/escalate.ts`) ↔ the scheduler lock (`claimNextTask`, `const locked = [...active, ...escalated]`) ↔
+  the single transition helper `repo.moveTask` (atomic `fs.rename`). Confirmed: escalation id === task id; `escalated`
+  is effectively terminal — nothing in the codebase ever moved a task OUT of it.
+- **Fix (TDD, Sonnet worker):** `handleReply` now transitions the replied task out of `escalated/` after writing the
+  reply file — **B (rework) → `pending`** (re-queue), **A (accept) → `quarantine`**. ENOENT tolerated (drift-* has no
+  queue file; double-reply) → 200; other move errors → 500 (surface a still-held lock, never silent-200).
+- **codex GPT-5.5 gate — 1 High + 1 Medium → fixed → re-critic CLEAN.** High: the first cut used **A → `done`**, which
+  falsely satisfies a dependent's `depends_on` (`doneIds`) on work that was NEVER committed (the gate escalated
+  *instead of* committing; there is no apply-on-accept machinery). **Operator decision: A → `quarantine`** — releases
+  the file-lock without claiming repo-completion (quarantine is neither in the lock set nor in `doneIds`). Medium:
+  added a dependency-safety regression test (a dependent stays blocked after an A reply). Re-critic: safe to merge.
+- **Verification.** 693 tests (+5) / 2 skip, typecheck green (root+ui). The regression tests run the REAL
+  `FileBlackboardRepository` + REAL `createScheduler` over a REAL HTTP server (`createApiServer` + `listen(0)` + `fetch`):
+  a replied escalation leaves `escalated/`, unblocks a same-`file_set` pending task, and does NOT falsely satisfy a
+  dependent. Real serve wiring (`src/index.ts:150` `view: { repo: root.repo }`) statically confirmed → `p.repo.moveTask`
+  works at runtime, not just under the test fake. Proportional: no expensive aurora live-run (the integration test already
+  exercises the exact HTTP→repo→scheduler path; no UI surface changed).
+- **codex operational gotcha captured** (added to `[critic/codex]`): a background codex run can STALL trying to spawn its
+  own plugins/skills in the blocked Windows sandbox and get killed before emitting a verdict (happened twice) — prepend a
+  hard NO-TOOLS preamble + run foreground; with the diff inline codex answers in one turn.
+- Branch `autodev/s26-escalation-filelock`, fix commit `d5738d4`. PR + self-merge (machine bar + green CI).
+
+---
+
+## s25 — 2026-07-05 — UI cross-run token view (this run/today/all-time) + strip cost from telemetry (PR #45 `c4fae71`)
+
+**The recommended s24 opener — first consumer of the s24 server-side aggregate `GET /runs/:id/usage`, plus the
+operator's "token count only, NO cost" cleanup.** Backend codex-gated; UI review-only.
+
+- **UI (review-only).** SessionRail **Tokens** block now shows three rows — **this run / today / all-time** — via one
+  `useSessionUsage` hook: fetch the runs list once, call `getRunUsage` per run, bucket in a SINGLE pass (`thisRun` =
+  newest run, `today` = runs whose manifest `at` is in the local calendar day, `allTime` = every non-archived run).
+  This RETIRES the s22 client-side N×M `useRunUsage` walk (one call per run, not per task). New `api.ts` server
+  `RunUsageSummary` type + `getRunUsage` client method; `SessionUsage` shape in `queries.ts`.
+- **Strip cost end-to-end (backend, codex-gated — touches the conductor artifact + endpoint).** Operator directive
+  (s24 end, memory `[[feedback-usage-tokens-not-cost]]`): TOKEN COUNT only, no `$` anywhere. Removed `total_cost_usd`/
+  `cost` from `WorkerUsage`, `TokenUsageDoc` (nested + top-level), `parseClaudeUsage`, `buildTokenUsageDoc`,
+  `RunUsageSummary`, `buildRunUsageSummary`, `isTokenUsageDoc`, and the UI mirrors (`api.ts` `TokenUsageDoc`,
+  `queries.ts`, `SessionRail` `formatCost`). **Backward-compatible**: a legacy `token-usage.json` still carrying
+  `total_cost_usd` validates and contributes its tokens (never its cost) — `isTokenUsageDoc` ignores the extra field.
+- **codex GPT-5.5 gate — 1 Medium + 1 Low → fixed → re-critic CLEAN.** Medium: `buildTokenUsageDoc` persisted
+  `worker.runs` by REFERENCE — dropping the field from the *type* does not strip it from a *runtime* object handed in,
+  and `JSON.stringify` serializes the real shape → a stray cost could leak into the written artifact. No active trigger
+  (the sole `WorkerUsage` constructor `parseClaudeUsage` is cost-free), but at a persisted-artifact write boundary under
+  a "no cost anywhere" contract, the defense is cheap and makes the guarantee STRUCTURAL. Fixed: rebuild worker+critic
+  per-run arrays as token-only copies at the write boundary + regression test asserting `JSON.stringify(doc)` carries no
+  `/cost/i`. New gotcha `[usage/type-strip-not-runtime-strip]` (36).
+- **Verification.** 688 tests (+2 skipped), typecheck green (root+ui), both bundles rebuilt. **Live-smoke** on a seeded
+  2-run project (run-a today / run-b 2 days ago): endpoint curl-proved (`run-a` tokens=120 with **no `cost` field**;
+  `run-b`=100; the legacy-with-cost task counted token-only) → rail rendered **this run 120 / today 120 / all-time 220**
+  (older run correctly excluded from today, included in all-time). Screenshot sent; seed + daemon torn down.
+- main tip = `c4fae71` (PR #45 squash — folded in the two unpushed s24 docs commits `0860506`+`4cf7ed9` per batch-merges).
+  This session-save docs commit rides the next PR. Working tree clean.
+
+**Live token-run demo + bug find (post-merge, operator-driven).** Served the daemon on aurora's REAL state and the
+operator drove a fresh `orchestrate` from the UI to see live tokens. Outcome: worker (sonnet) → `php -l` gate → **codex
+critic `clean` 0.98** → **COMMIT `9b373aa`**; `token-usage.json` written with real worker usage (**531,533 tokens**) and
+**no `cost` field** — the s25 strip proven on a live run; rail rendered this run/today/all-time = 531.5k; s24's persisted
+`critic-verdict.json` also exercised (real seal). **Bug surfaced live → gotcha `[escalate/replied-holds-filelock]` (37):**
+the run first would NOT start — decompose+enqueue OK but the task sat in pending, worker never ran, `conductor.log`
+silent, `--once` a 0-second no-op. Root cause = a replied-but-uncleared escalation (`docs-llmfactory-classdoc-v2`, s14)
+still in `queue/escalated/` held its `file_set`, and `claimNextTask` locks on `escalated` exactly like `active`, so every
+same-file run was silently blocked with no operator signal. Unblocked by moving the resolved escalation → `done`
+(operator-approved). **This is the s26 opener (variant 1):** the reply-apply path must move `escalated → done` (accepted)
+or re-queue `→ pending` (redo). **Operator UI/UX steer:** the dashboard is a PILOT, not final — PATH auto-detect of
+installed CLIs, preset model/effort pickers, richer role matrix, skills/plugins/MCP surface are unbuilt; **polish the web
+UI to a real product BEFORE the desktop wrap → desktop DEFERRED** (`FUTURE-BACKLOG.md` "Web UI: pilot → product"). Demo
+daemon + scratch registry torn down; aurora left on disposable branch `autodev/s25-token-demo`.
+
+---
+
 ## s24 — 2026-07-04 — TWO modules: critic-verdict.json persistence (PR #43 `b9b87f9`) + server-side run usage aggregation (PR #44 `8067022`)
 
 **Module 2 — server-side per-run usage aggregation `GET /projects/:id/runs/:runId/usage` (PR #44 `8067022`).** Operator

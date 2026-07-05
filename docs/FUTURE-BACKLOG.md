@@ -2,7 +2,34 @@
 
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
+## Web UI: pilot → product (operator steer, s25 2026-07-05)
+
+The current dashboard is a **working pilot**, NOT the final product UX. The full end-to-end skeleton
+works (register → scaffold → drive → gate → verdict → settings → theme), but the envisioned
+product-completeness (much of it the Open Design donor's UX draw) is unbuilt. **Operator decision:
+finish debugging + polishing the WEB UI to a real product BEFORE the desktop wrap** — desktop is
+deferred until then (see below). Near-term product-UX backlog, roughly in build order:
+
+- **PATH-scan auto-detection of installed CLI agents** — discover `claude`/`codex`/etc. on `PATH`
+  (+ version) instead of hand-typing `adapter`/`exe` in settings. Reuse Open Design's detection
+  logic (Apache-2.0). The single biggest "pilot → product" jump. (Also listed under Open Design
+  candidates below — this is now a committed near-term track, not a maybe.)
+- **Preset model + effort pickers per adapter** — dropdowns from a known model/effort list per
+  adapter, replacing today's free-text `model`/`effort`/`ladder` fields (which accept typos silently).
+- **Richer role-matrix editing** — a first-class per-role editor (orchestrator/worker/critic/planner)
+  over the raw config fields, with adapter→model→effort constrained by the detected/known sets.
+- **Skills / plugins / MCP surface** — expose the extensibility trio in the UI (Open Design pattern),
+  not just file-based config.
+- **General UX polish pass** — the pilot's rough edges once the above land.
+
+Rationale for sequencing: a desktop shell over an unfinished web product just wraps the gaps in a
+heavier package. Polish the product surface first; wrap it once it's real.
+
 ## Deferred features
+
+- **Desktop wrap (Electron/Tauri over the loopback API)** — DEFERRED by operator (s25) until the web
+  UI is debugged + polished to a real product (see "pilot → product" above). Additive when it comes
+  (the daemon already serves install-relative); needs an IA/UX discussion before building.
 
 - **Tier-2: native critic-gate concept in AO** — model the critic verdict + gate as
   first-class daemon state, not just `ao review submit`. Deferred until Tier-1 proves
@@ -72,6 +99,11 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   pulling AO updates starts to hurt.
 - **Two-provider critic dependency** — the gate needs codex (GPT-5.5) available;
   define graceful behaviour when it's down (park, don't silent-pass).
+- **Replied escalation never cleared → silent file-lock** (`[escalate/replied-holds-filelock]`,
+  found s25 live). `POST /escalations/:id/reply` writes the reply but leaves the task in
+  `escalated/`, where its `file_set` blocks every future same-file run with zero operator signal.
+  **Scheduled as the s26 opener (variant 1):** the reply-apply path must move the task
+  `escalated → done` (accepted) or re-queue `→ pending` (redo). Codex-gate it.
 
 ## Related
 

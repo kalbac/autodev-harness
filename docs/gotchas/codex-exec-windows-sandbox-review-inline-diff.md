@@ -35,6 +35,18 @@ self-exploration, not the review itself.
   (plan Task 14) that way from the start.
 - Ignore the `CreateProcessAsUserW failed: 5`, MCP `403`, and plugin-hook parse warnings in codex
   output — they do not invalidate a parsed verdict.
+- **s26 wrinkle — codex can STALL trying to spawn its OWN plugins/skills, not just your review commands.**
+  A newer codex CLI (v0.142.x) auto-selects installed skills (`coderabbit:code-review`,
+  `superpowers:using-superpowers`) and tries to `Get-Content` their `SKILL.md` via pwsh at turn start —
+  each spawn hits the sandbox and errors `orchestrator_helper_exit_nonzero: setup helper exited with
+  status Some(-1073741502)` (STATUS_DLL_INIT_FAILED). Run **in the background** and it can loop on these
+  failures and get killed before ever emitting a verdict (happened twice this session: two `run_in_background`
+  codex runs came back `killed` with only the prompt echoed, no findings). **Fix: prepend a hard NO-TOOLS
+  preamble** — *"Do NOT run any shell command, read any file, or invoke any skill/plugin/MCP tool;
+  subprocess spawning is blocked by the sandbox; the COMPLETE diff is inline below; review from it and
+  respond directly."* With the diff already inline codex needs no tools, answers in ONE turn, and a
+  **foreground** run (timeout ~7 min) returns a clean verdict fast (~8k–20k tokens). Inline diff + no-tools
+  preamble + foreground is the reliable recipe on this box.
 
 ## Related
 - `../superpowers/donor-extraction/autodev-loop-parity-spec.md` §5 — critic fencing / inline diff.
