@@ -155,6 +155,30 @@ export interface RegisterProjectInput {
   config?: unknown;
 }
 
+/** One entry in a supported agent's static model catalog (M2 PATH-scan detect). */
+export interface AgentModelOption {
+  id: string;
+  label?: string;
+}
+
+/** Mirrors `src/detect/detect-agents.ts` DetectedAgent — one entry from
+ *  `GET /agents/detect` (M2). `path`/`version` are present only when the
+ *  binary resolved on PATH (and, for `version`, the probe succeeded); `models`/
+ *  `efforts` are present only for catalog entries that declare them (claude has
+ *  no `efforts`). Catalog order (claude, codex, then the display-only entries)
+ *  is preserved by the daemon. */
+export interface DetectedAgent {
+  id: string;
+  name: string;
+  supported: boolean;
+  available: boolean;
+  path?: string;
+  version?: string;
+  models?: AgentModelOption[];
+  efforts?: string[];
+  installUrl?: string;
+}
+
 /** Mirrors `src/usage/usage.ts` TokenUsageDoc — the per-task `token-usage.json`
  *  runtime artifact the conductor writes, served by the generic runtime-file
  *  endpoint. Critic (plain `codex exec`) yields only a `tokens` total, no split.
@@ -242,6 +266,17 @@ export const api = {
   /** Daemon-global folder browser (M3). No `path` → drive roots / `/`. */
   getFsDirs: (path?: string) =>
     req<FsDirsResponse>(`/fs/dirs${path !== undefined ? `?path=${encodeURIComponent(path)}` : ""}`),
+
+  /** Daemon-global PATH-scan auto-detect of installed CLI agents (M2). 404s when
+   *  the daemon has no admin port — the endpoint is otherwise best-effort/never-
+   *  throws server-side, so callers should treat any failure as "detection
+   *  unavailable", not a crash. Unwraps the `{agents}` envelope here (unlike
+   *  `getProjects`, which returns its envelope as-is) since M2 has no other
+   *  consumer of the raw shape. */
+  getDetectedAgents: async (): Promise<DetectedAgent[]> => {
+    const { agents } = await req<{ agents: DetectedAgent[] }>("/agents/detect");
+    return agents;
+  },
 
   /** Register a project (+ optional `.autodev/` scaffold). 201 entry / 400 / 409 (`{error,code}`). */
   postProject: (input: RegisterProjectInput) =>

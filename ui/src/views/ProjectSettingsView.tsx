@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, FileWarning, Pencil, Plus, X } from "lucide-react";
-import { useConfig, useProjects, useUpdateProjectConfig } from "@/lib/queries";
+import { useConfig, useProjects, useUpdateProjectConfig, useDetectedAgents } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
-import { ApiError, type ProjectConfigForm, type ProjectConfigView } from "@/lib/api";
+import { ApiError, type ProjectConfigForm, type ProjectConfigView, type DetectedAgent } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Loading, EmptyState, Spinner } from "@/components/ui/Feedback";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
@@ -124,6 +124,11 @@ export function ProjectSettingsView() {
   const projects = useProjects();
   const config = useConfig(projectId);
   const updateConfig = useUpdateProjectConfig(projectId);
+  const detected = useDetectedAgents();
+  // `null` = detection not (yet) usable — the dropdowns are an enhancement, so
+  // any state short of a successful load falls back to the original free-text
+  // fields rather than blocking or half-rendering a select.
+  const detectedAgents = detected.isSuccess ? detected.data : null;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft | null>(null);
@@ -212,6 +217,7 @@ export function ProjectSettingsView() {
             editing={editing}
             draft={draft}
             onDraftChange={patchDraft}
+            detectedAgents={detectedAgents}
           />
         </>
       ) : null}
@@ -232,15 +238,24 @@ function ConfigSections({
   editing,
   draft,
   onDraftChange,
+  detectedAgents,
 }: {
   config: ProjectConfigView;
   projectPath?: string;
   editing: boolean;
   draft: EditDraft | null;
   onDraftChange: (patch: Partial<EditDraft>) => void;
+  /** `null` = detection unavailable/not loaded — role rows fall back to plain
+   *  text fields. Non-null = a successfully loaded catalog to build selects from. */
+  detectedAgents: DetectedAgent[] | null;
 }) {
   const { gate, allowedBranchPattern, stateDir, worktree, roles } = config;
   const editable = editing && draft;
+
+  const supportedOptions = detectedAgents ? supportedAgentOptions(detectedAgents) : [];
+  const orchestratorAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.orchestratorAdapter) : undefined;
+  const workerAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.workerAdapter) : undefined;
+  const criticAgent = detectedAgents && draft ? findAgent(detectedAgents, draft.criticAdapter) : undefined;
 
   return (
     <>
@@ -298,22 +313,51 @@ function ConfigSections({
       <SettingsSection title="Roles">
         {editable ? (
           <>
-            <TextFieldRow
-              label="Orchestrator adapter"
-              value={draft.orchestratorAdapter}
-              onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
-            />
-            <TextFieldRow
-              label="Orchestrator model"
-              value={draft.orchestratorModel}
-              onChange={(v) => onDraftChange({ orchestratorModel: v })}
-            />
-            <TextFieldRow
-              label="Orchestrator effort"
-              value={draft.orchestratorEffort}
-              onChange={(v) => onDraftChange({ orchestratorEffort: v })}
-              placeholder="optional"
-            />
+            {detectedAgents ? (
+              <SelectOrCustomRow
+                label="Orchestrator adapter"
+                value={draft.orchestratorAdapter}
+                onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
+                options={supportedOptions}
+              />
+            ) : (
+              <TextFieldRow
+                label="Orchestrator adapter"
+                value={draft.orchestratorAdapter}
+                onChange={(v) => onDraftChange({ orchestratorAdapter: v })}
+              />
+            )}
+            {detectedAgents ? (
+              <SelectOrCustomRow
+                label="Orchestrator model"
+                value={draft.orchestratorModel}
+                onChange={(v) => onDraftChange({ orchestratorModel: v })}
+                options={modelOptionsFor(orchestratorAgent)}
+              />
+            ) : (
+              <TextFieldRow
+                label="Orchestrator model"
+                value={draft.orchestratorModel}
+                onChange={(v) => onDraftChange({ orchestratorModel: v })}
+              />
+            )}
+            {!(detectedAgents && hasNoEffortConcept(orchestratorAgent)) &&
+              (detectedAgents ? (
+                <SelectOrCustomRow
+                  label="Orchestrator effort"
+                  value={draft.orchestratorEffort}
+                  onChange={(v) => onDraftChange({ orchestratorEffort: v })}
+                  options={effortOptionsFor(orchestratorAgent)}
+                  placeholder="optional"
+                />
+              ) : (
+                <TextFieldRow
+                  label="Orchestrator effort"
+                  value={draft.orchestratorEffort}
+                  onChange={(v) => onDraftChange({ orchestratorEffort: v })}
+                  placeholder="optional"
+                />
+              ))}
           </>
         ) : (
           <SettingsRow
@@ -322,11 +366,20 @@ function ConfigSections({
           />
         )}
         {editable ? (
-          <TextFieldRow
-            label="Worker adapter"
-            value={draft.workerAdapter}
-            onChange={(v) => onDraftChange({ workerAdapter: v })}
-          />
+          detectedAgents ? (
+            <SelectOrCustomRow
+              label="Worker adapter"
+              value={draft.workerAdapter}
+              onChange={(v) => onDraftChange({ workerAdapter: v })}
+              options={supportedOptions}
+            />
+          ) : (
+            <TextFieldRow
+              label="Worker adapter"
+              value={draft.workerAdapter}
+              onChange={(v) => onDraftChange({ workerAdapter: v })}
+            />
+          )
         ) : (
           <SettingsRow label="Worker adapter" value={roles.worker.adapter} />
         )}
@@ -336,27 +389,56 @@ function ConfigSections({
             onChange={(items) => onDraftChange({ ladder: items })}
             placeholder="model name"
             emptyError="ladder needs at least one model"
+            suggestions={workerAgent?.models?.map((m) => m.id)}
           />
         ) : (
           <SettingsRow label="Worker ladder" value={roles.worker.ladder.join(" → ")} />
         )}
         {editable ? (
           <>
-            <TextFieldRow
-              label="Critic adapter"
-              value={draft.criticAdapter}
-              onChange={(v) => onDraftChange({ criticAdapter: v })}
-            />
-            <TextFieldRow
-              label="Critic model"
-              value={draft.criticModel}
-              onChange={(v) => onDraftChange({ criticModel: v })}
-            />
-            <TextFieldRow
-              label="Critic effort"
-              value={draft.criticEffort}
-              onChange={(v) => onDraftChange({ criticEffort: v })}
-            />
+            {detectedAgents ? (
+              <SelectOrCustomRow
+                label="Critic adapter"
+                value={draft.criticAdapter}
+                onChange={(v) => onDraftChange({ criticAdapter: v })}
+                options={supportedOptions}
+              />
+            ) : (
+              <TextFieldRow
+                label="Critic adapter"
+                value={draft.criticAdapter}
+                onChange={(v) => onDraftChange({ criticAdapter: v })}
+              />
+            )}
+            {detectedAgents ? (
+              <SelectOrCustomRow
+                label="Critic model"
+                value={draft.criticModel}
+                onChange={(v) => onDraftChange({ criticModel: v })}
+                options={modelOptionsFor(criticAgent)}
+              />
+            ) : (
+              <TextFieldRow
+                label="Critic model"
+                value={draft.criticModel}
+                onChange={(v) => onDraftChange({ criticModel: v })}
+              />
+            )}
+            {!(detectedAgents && hasNoEffortConcept(criticAgent)) &&
+              (detectedAgents ? (
+                <SelectOrCustomRow
+                  label="Critic effort"
+                  value={draft.criticEffort}
+                  onChange={(v) => onDraftChange({ criticEffort: v })}
+                  options={effortOptionsFor(criticAgent)}
+                />
+              ) : (
+                <TextFieldRow
+                  label="Critic effort"
+                  value={draft.criticEffort}
+                  onChange={(v) => onDraftChange({ criticEffort: v })}
+                />
+              ))}
           </>
         ) : (
           <SettingsRow
@@ -395,6 +477,115 @@ function TextFieldRow({
   );
 }
 
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+/** id-in-catalog value the native `<select>` uses for its synthetic "Custom…"
+ *  entry — never a real adapter/model/effort id, so it can't collide. */
+const CUSTOM_OPTION = "__custom__";
+
+/** `supported` catalog agents as adapter select options. */
+function supportedAgentOptions(agents: DetectedAgent[]): SelectOption[] {
+  return agents.filter((a) => a.supported).map((a) => ({ value: a.id, label: a.name }));
+}
+
+function findAgent(agents: DetectedAgent[], id: string): DetectedAgent | undefined {
+  return agents.find((a) => a.id === id);
+}
+
+/** The selected adapter's static model catalog, or `[]` for an unmatched
+ *  (custom) adapter — which just leaves the model field in free-text mode. */
+function modelOptionsFor(agent: DetectedAgent | undefined): SelectOption[] {
+  return (agent?.models ?? []).map((m) => ({ value: m.id, label: m.label ?? m.id }));
+}
+
+function effortOptionsFor(agent: DetectedAgent | undefined): SelectOption[] {
+  return (agent?.efforts ?? []).map((e) => ({ value: e, label: e }));
+}
+
+/** True only when the adapter is a MATCHED catalog entry that explicitly
+ *  declares no effort concept (e.g. claude — `efforts` absent). An unmatched
+ *  (custom) adapter keeps the effort row, since we simply don't know whether
+ *  it has one. */
+function hasNoEffortConcept(agent: DetectedAgent | undefined): boolean {
+  return agent !== undefined && (agent.efforts === undefined || agent.efforts.length === 0);
+}
+
+/**
+ * A `<select>` styled like `TextFieldRow`, with a synthetic "Custom…" entry
+ * that swaps in a free-text input in its place — the escape hatch for a
+ * hand-set adapter/model/effort that isn't (yet) in the detected-agent
+ * catalog (mirrors Open Design's `supportsCustomModel` idea). `value`/
+ * `onChange` back BOTH modes directly — no separate "custom draft" field, so
+ * the value always round-trips through the same `EditDraft` key regardless of
+ * which control produced it.
+ *
+ * The select-vs-custom mode is decided ONCE at mount (from whether `value` is
+ * already a known option, or whether there are no options at all) and from
+ * then on is the user's to toggle via the select's "Custom…" entry or the
+ * text mode's "list" button — this only remounts (and re-decides) when the
+ * parent remounts it, i.e. when edit mode is (re-)entered.
+ */
+function SelectOrCustomRow({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: SelectOption[];
+  placeholder?: string;
+}) {
+  const [custom, setCustom] = useState(() => options.length === 0 || !options.some((o) => o.value === value));
+
+  if (custom) {
+    return (
+      <div className="flex items-center justify-between gap-6 py-1.5">
+        <span className="shrink-0 text-[13px] text-muted">{label}</span>
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+          <input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
+          />
+          {options.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => setCustom(false)}>
+              list
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-6 py-1.5">
+      <span className="shrink-0 text-[13px] text-muted">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => {
+          if (e.target.value === CUSTOM_OPTION) setCustom(true);
+          else onChange(e.target.value);
+        }}
+        className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        <option value={CUSTOM_OPTION}>Custom…</option>
+      </select>
+    </div>
+  );
+}
+
 /** Editable list of single-value strings (`worktree.provision` /
  *  `roles.worker.ladder`): a chip per entry with a remove button, plus an
  *  add input+button. `validate` runs on the pending add-input only — already
@@ -406,17 +597,25 @@ function EditableList({
   placeholder,
   validate,
   emptyError,
+  suggestions,
 }: {
   items: string[];
   onChange: (items: string[]) => void;
   placeholder: string;
   validate?: (value: string) => string | null;
   emptyError?: string;
+  /** Optional model-id hints (e.g. the worker adapter's catalog) shown as
+   *  clickable chips below the add-input — clicking one appends it directly
+   *  (already-added ids are filtered out, so no dedup surprises; these are
+   *  trusted catalog ids so `validate` doesn't apply, same as committed items
+   *  from the server). Existing add/remove behavior is untouched when omitted. */
+  suggestions?: string[];
 }) {
   const [pending, setPending] = useState("");
   const trimmed = pending.trim();
   const validationError = trimmed.length > 0 ? (validate?.(trimmed) ?? null) : null;
   const canAdd = trimmed.length > 0 && !validationError && !items.includes(trimmed);
+  const suggestionChips = (suggestions ?? []).filter((s) => !items.includes(s));
 
   const add = () => {
     if (!canAdd) return;
@@ -466,6 +665,20 @@ function EditableList({
           <Plus className="size-3" />
         </Button>
       </div>
+      {suggestionChips.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
+          {suggestionChips.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onChange([...items, s])}
+              className="rounded border border-dashed border-line px-1.5 py-0.5 font-mono text-[10px] text-subtle transition-colors hover:border-accent hover:text-accent"
+            >
+              + {s}
+            </button>
+          ))}
+        </div>
+      )}
       {validationError && (
         <div className="mt-1 text-right font-mono text-[11px] text-broken">{validationError}</div>
       )}

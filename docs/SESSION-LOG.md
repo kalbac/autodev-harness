@@ -4,6 +4,37 @@
 
 ---
 
+## s26 (B) — 2026-07-05 — PATH-scan auto-detect of installed CLI agents (web-UI pilot→product slice 1) (PR #47)
+
+**Second module of s26 — the operator's web-UI pilot→product track opens.** Recon-first (Open Design donor), operator
+UX gate (Settings dropdowns + a Global "Installed agents" panel; add ollama + kilocode), then a codex-gated backend +
+review-only UI, browser-live-proven.
+
+- **Recon** (subagent) mapped Open Design's detection (`references/open-design`): hardcoded registry + pure `existsSync`
+  PATHEXT walk (not `which`), `execFile` version probe, static + live model catalogs, per-agent `reasoningOptions`, SSE.
+  Our constraints: only claude/codex are live adapters; `cross-spawn` already owns spawn-time PATHEXT, so detection is a
+  SEPARATE read-only probe; the UI seam mirrors `GET /fs/dirs`.
+- **M1 backend (codex-gated, `c9418d2`)**: pure `src/detect/detect-agents.ts` — curated catalog (2 supported + 7
+  display-only incl. ollama/kilocode), PATHEXT-aware **executable** probe (`isFile` + POSIX `X_OK`, not bare `existsSync`),
+  best-effort version; `GET /agents/detect` daemon-global via the admin port; `runNative` opt-in `timeoutMs`
+  (SIGTERM→SIGKILL, default unset = existing callers untouched).
+- **codex GPT-5.5 gate — 3 rounds → CLEAN**: R1 1 High (probe timeout leaked the child — `withTimeout` resolved null but
+  never killed) + 2 Medium (`existsSync` reports dirs/non-exec as installed; win32 PATHEXT test non-portable on
+  case-sensitive CI) + 1 Low (relative PATH → non-absolute path). Fixed: `runNative` kill deadline; `isExecutableFile`;
+  `codex.CMD` test; `path.resolve`. R2 flagged the kill only sent SIGTERM (ignorable) → escalated to SIGKILL after a grace
+  period + a SIGTERM-trapping test. R3 CLEAN (safe to merge).
+- **M2 UI (review-only, `0a2b7f4`)**: Global Settings "Installed agents" panel (status pill + version + supported tag +
+  install link + Rescan); Project Settings adapter/model/effort **dropdowns** (`SelectOrCustomRow` with a Custom… escape
+  hatch; effort row hidden for no-effort adapters like claude; worker ladder unchanged; `buildDiff` untouched — both modes
+  write the same draft string; falls back to free-text on detection failure).
+- **Verification**: 712 tests / 3 skipped, typecheck+build green (root+ui). **LIVE-PROVEN** on a real serve: endpoint
+  returned claude (`claude.EXE`) + codex (`codex.CMD` — the PATHEXT shim was resolved, the whole point) supported with
+  versions; ollama/kilocode/opencode/cursor-agent/qwen detected display-only; gemini/aider not-detected. Both UI surfaces
+  rendered correctly in the browser (screenshots to operator). Daemon + scratch seed torn down.
+- New gotcha `[detect/executable-probe]` (38). Branch `autodev/s26-agent-autodetect`.
+
+---
+
 ## s26 — 2026-07-05 — fix the replied-escalation file-lock (s26 opener, variant 1)
 
 **The operator-chosen s26 opener — a real correctness/UX bug found live in s25** (`[escalate/replied-holds-filelock]`,

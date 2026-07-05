@@ -15,6 +15,7 @@ import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
 import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
+import { detectAgents } from "./detect/detect-agents.js";
 import { createProjectHub } from "./hub/hub.js";
 import { createLogger } from "./util/log.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
@@ -182,6 +183,7 @@ async function main(): Promise<void> {
           return result;
         },
         listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),
+        detectAgents: () => detectAgents({}),
       },
       ...(uiDir !== undefined ? { uiDir } : {}),
       log,

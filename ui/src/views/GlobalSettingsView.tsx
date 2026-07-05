@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, FolderGit2, Pencil, Plus } from "lucide-react";
-import { useProjects, useDeleteProject, useRenameProject } from "@/lib/queries";
+import { ArrowLeft, FolderGit2, Pencil, Plus, RefreshCw, Bot } from "lucide-react";
+import { useProjects, useDeleteProject, useRenameProject, useDetectedAgents } from "@/lib/queries";
 import { useAppStore, type ConnState } from "@/lib/store";
 import { useTheme, type Theme } from "@/lib/theme";
-import { ApiError, type ProjectSummary } from "@/lib/api";
+import { ApiError, type ProjectSummary, type DetectedAgent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Dot } from "@/components/ui/Dot";
 import { Button } from "@/components/ui/Button";
-import { Spinner, EmptyState } from "@/components/ui/Feedback";
+import { StatusPill } from "@/components/ui/StatusPill";
+import { Spinner, Loading, EmptyState } from "@/components/ui/Feedback";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
 
 const THEME_SEGMENTS: { value: Theme; label: string }[] = [
@@ -32,10 +33,12 @@ const CONN_TONE = { connecting: "uncertain", live: "clean", offline: "broken" } 
  */
 export function GlobalSettingsView() {
   const projects = useProjects();
+  const agents = useDetectedAgents();
   const [theme, setTheme] = useTheme();
   const conn = useAppStore((s) => s.conn);
 
   const list = projects.data?.projects ?? [];
+  const agentList = agents.data ?? [];
 
   return (
     <SettingsPage
@@ -107,6 +110,37 @@ export function GlobalSettingsView() {
           <ul className="divide-y divide-line">
             {list.map((p) => (
               <RegistryRow key={p.id} project={p} />
+            ))}
+          </ul>
+        )}
+      </SettingsSection>
+
+      {/* Installed agents (M2 PATH-scan auto-detect) */}
+      <SettingsSection
+        title="Installed agents"
+        aside={
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void agents.refetch()}
+            disabled={agents.isFetching}
+          >
+            <RefreshCw className={cn("size-3", agents.isFetching && "animate-spin")} />
+            Rescan
+          </Button>
+        }
+        className="p-0"
+      >
+        {agents.isLoading ? (
+          <Loading label="Scanning PATH…" />
+        ) : agents.isError ? (
+          <p className="px-4 py-6 text-sm text-muted">couldn't detect agents</p>
+        ) : agentList.length === 0 ? (
+          <EmptyState icon={Bot} title="No agents found" description="No known CLI coding agents were detected on PATH." />
+        ) : (
+          <ul className="divide-y divide-line">
+            {agentList.map((a) => (
+              <AgentRow key={a.id} agent={a} />
             ))}
           </ul>
         )}
@@ -245,6 +279,50 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
           </Button>
         </div>
       )}
+    </li>
+  );
+}
+
+/** One detected-agent row (M2 headline surface): name + a "supported"/"not yet
+ *  supported" tag on the left, a status pill (version / "installed" / "not
+ *  detected") on the right, and the resolved path (or an install link when
+ *  absent) as muted subtext. Purely a projection of `GET /agents/detect` —
+ *  this component writes nothing back. */
+function AgentRow({ agent }: { agent: DetectedAgent }) {
+  const statusLabel = agent.available ? (agent.version ?? "installed") : "not detected";
+  return (
+    <li className="flex items-center gap-3 px-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[13px] font-semibold text-text">{agent.name}</span>
+          <span
+            className={cn(
+              "shrink-0 rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide",
+              agent.supported
+                ? "border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)] text-accent"
+                : "border-line text-subtle",
+            )}
+          >
+            {agent.supported ? "supported" : "not yet supported"}
+          </span>
+        </div>
+        {agent.available && agent.path ? (
+          <div className="truncate font-mono text-[11px] text-subtle">{agent.path}</div>
+        ) : (
+          !agent.available &&
+          agent.installUrl && (
+            <a
+              href={agent.installUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[11px] text-accent hover:underline"
+            >
+              install →
+            </a>
+          )
+        )}
+      </div>
+      <StatusPill tone={agent.available ? "clean" : "idle"} label={statusLabel} />
     </li>
   );
 }

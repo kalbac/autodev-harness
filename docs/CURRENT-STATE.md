@@ -1,7 +1,18 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-05 (s26 — **replied-escalation file-lock FIXED (s26 opener, variant 1).** `POST /escalations/:id/reply`
+> Last updated: 2026-07-05 (s26 — **PATH-scan auto-detect of installed CLI agents LANDED (PR #47) — first slice of the
+> web-UI pilot→product track.** Backend (codex-gated): pure `src/detect/detect-agents.ts` curated catalog (claude/codex
+> supported w/ model+effort catalogs; gemini/aider/opencode/cursor-agent/qwen/**ollama**/**kilocode** display-only),
+> PATHEXT-aware **executable** PATH probe (`isFile`+POSIX`X_OK`, not bare `existsSync` — catches `codex.cmd`, rejects a
+> same-named dir), best-effort version probe; daemon-global `GET /agents/detect` (mirrors `/fs/dirs`). `runNative` gained
+> opt-in `timeoutMs` (SIGTERM→SIGKILL escalation; default unset = existing callers unaffected). UI (review-only): Global
+> Settings "Installed agents" panel (status pill + version + Rescan) + Project Settings adapter/model/effort **dropdowns**
+> (Custom… escape hatch; effort hidden where absent; buildDiff untouched). codex gate 3 rounds (1 High probe-leak + 2
+> Medium + 1 Low → fixed; re-critic flagged SIGTERM-ignorable → SIGKILL → **re-critic CLEAN**). 712 tests, **LIVE-PROVEN**
+> (real serve: claude.EXE + codex.CMD supported w/ versions, ollama/kilocode/opencode/cursor/qwen detected, both UI
+> surfaces browser-proven). New gotcha `[detect/executable-probe]` (38). Commits `c9418d2`(M1)+`0a2b7f4`(M2), branch
+> `autodev/s26-agent-autodetect`. Prior s26 — **replied-escalation file-lock FIXED (s26 opener, variant 1; PR #46 `351aa54`).** `POST /escalations/:id/reply`
 > now transitions the replied task out of `queue/escalated/` to release its scheduler file-lock (gotcha 37, found live s25):
 > **B (rework) → `pending`**, **A (accept) → `quarantine`**. A goes to quarantine NOT `done` — a codex **High**: `done`
 > would falsely satisfy a dependent's `depends_on` (`doneIds`) on work that was never committed (the gate escalated instead
@@ -72,6 +83,30 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 
 ## Last session (s26, 2026-07-05)
 
+**Two modules landed this session: (A) the s26 opener (escalation file-lock fix, PR #46), then (B) the first web-UI
+pilot→product slice (agent auto-detect, PR #47).**
+
+### (B) PATH-scan auto-detect of installed CLI agents (PR #47) — web-UI pilot→product slice 1
+- **Recon-first** (general subagent) mapped Open Design's donor detection (`references/open-design`): hardcoded ~25-agent
+  registry + pure `existsSync` PATHEXT-aware PATH walk (not `which`), `execFile` version probe, static `fallbackModels` +
+  optional live probe, per-agent `reasoningOptions`, SSE streaming. Our reality: only 2 live adapters (claude/codex);
+  `cross-spawn` already owns spawn-time PATHEXT so detection is a SEPARATE read-only probe; UI seam = `GET /fs/dirs`.
+- **Operator UX steer**: Settings dropdowns (claude/codex) **+ a Global "Installed agents" panel** (all agents, unsupported
+  greyed). Operator also asked to add **ollama + kilocode** to the catalog (display-only).
+- **M1 backend (codex-gated, `c9418d2`)**: `src/detect/detect-agents.ts` — curated catalog, PATHEXT-aware executable probe
+  (`isFile`+POSIX `X_OK`), best-effort version; `GET /agents/detect` daemon-global (via admin port). `runNative` opt-in
+  `timeoutMs` (SIGTERM→SIGKILL). **codex 3 rounds**: High (probe timeout leaked the child → `runNative` kill deadline) +
+  Medium (`existsSync` false-positives for dirs/non-exec → `isFile`+`X_OK`) + Medium (non-portable win32 test → `codex.CMD`)
+  + Low (relative path → `resolve`) → fixed; re-critic caught SIGTERM-ignorable → SIGKILL escalation → **re-critic CLEAN**.
+- **M2 UI (review-only, `0a2b7f4`)**: Global "Installed agents" panel (status pill/version/Rescan) + Project Settings
+  adapter/model/effort dropdowns (`SelectOrCustomRow` with Custom… escape hatch; effort hidden for no-effort adapters;
+  worker ladder unchanged; `buildDiff` untouched — both control modes write the same draft string).
+- **Verification**: 712 tests, typecheck+build green (root+ui). **LIVE-PROVEN** on a real serve: `/agents/detect` returned
+  claude (`claude.EXE` v2.1.201) + codex (`codex.CMD` v0.142.5 — PATHEXT shim resolved, NOT missed) supported; ollama
+  (`ollama.EXE`), kilocode (`kilocode.CMD`), opencode, cursor-agent, qwen detected display-only; gemini/aider not-detected.
+  Both UI surfaces browser-proven (screenshots to operator). New gotcha `[detect/executable-probe]` (38).
+
+### (A) Replied-escalation file-lock fix (s26 opener, variant 1; PR #46 `351aa54`)
 - **Replied-escalation file-lock FIXED — the s26 opener (operator-chosen variant 1), a real correctness/UX bug found live
   in s25** (`[escalate/replied-holds-filelock]`, gotcha 37). `POST /escalations/:id/reply` recorded a `*.reply.json` but
   left the task in `queue/escalated/`, whose `file_set` silently blocked every future same-file run (`claimNextTask` locks
@@ -447,12 +482,18 @@ work). codex-gated (1 High + 1 Medium → fixed → re-critic CLEAN), 693 tests,
 only if asked: surface a "this escalation is resolved/cleared" state in the UI (today the reply just records + releases
 the lock; the RunView/board doesn't visibly distinguish a quarantined-by-accept task from a poisoned one).
 
-**s27 OPENER (operator steer, s25) — Web UI pilot → product: the current dashboard is a PILOT, not final.** Finish
-debugging + polishing the web UI to a real product BEFORE any desktop wrap. Near-term product-UX track (build order):
-(1) **PATH-scan auto-detect of installed CLI agents** (biggest jump; Open Design donor logic) — replaces hand-typed
-`adapter`/`exe`; (2) **preset model + effort pickers per adapter** — replace today's free-text fields; (3) richer
-role-matrix editor; (4) skills/plugins/MCP surface; (5) general polish. Full detail in `FUTURE-BACKLOG.md`
-"Web UI: pilot → product".
+**Web UI pilot → product track (operator steer, s25): the current dashboard is a PILOT, not final.** Finish
+debugging + polishing the web UI to a real product BEFORE any desktop wrap. Build order + status:
+(1) **~~PATH-scan auto-detect of installed CLI agents~~ — DONE (s26, PR #47).** Backend detector + `GET /agents/detect`
++ Global "Installed agents" panel; replaces hand-typed `adapter`/`exe` with a detected list. (2) **~~preset model +
+effort pickers per adapter~~ — DONE (s26, PR #47).** Project Settings adapter/model/effort dropdowns from the detected
+catalog (Custom… escape hatch). **s27 OPENER = (3) richer role-matrix editor** (the roles section is now dropdown-driven;
+next is a cohesive matrix view over all four roles + heterogeneity/warn surfacing); then (4) **skills/plugins/MCP surface**;
+(5) general polish. Full detail in `FUTURE-BACKLOG.md` "Web UI: pilot → product". **Possible follow-ups for the detect
+feature (only if asked):** SSE-stream detection (paint cards as each resolves — Open Design's `?stream=1`); live model-list
+probe (`codex debug models`) instead of the static catalog; a New Project registration-time agent picker (currently
+Settings-only); reconcile a stale model when the adapter dropdown changes (a model not in the new adapter's catalog stays
+in the draft until the user re-picks).
 
 **DEFERRED — Desktop wrap (Electron/Tauri).** Operator (s25): NOT until the web UI is debugged + polished to a real
 product. Additive when it comes; needs an IA/UX discussion first. Do not start early.

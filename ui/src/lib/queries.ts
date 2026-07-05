@@ -16,6 +16,7 @@ export const qk = {
   config: (p: string) => ["config", p] as const,
   sessionUsage: (p: string) => ["session-usage", p] as const,
   taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
+  detectedAgents: ["detected-agents"] as const,
 };
 
 /** Cross-run token totals for the session rail (s25). Token count only — cost was
@@ -173,6 +174,13 @@ export const usePatchRun = (projectId: string) => {
  *  navigating dirs caches each level. */
 export const useFsDirs = (path?: string) =>
   useQuery({ queryKey: ["fs-dirs", path ?? "__roots__"], queryFn: () => api.getFsDirs(path) });
+
+/** PATH-scan auto-detect of installed CLI agents (M2), daemon-global. A short
+ *  `staleTime` (the PATH doesn't change often) and NO `refetchInterval` — this
+ *  is a manual "Rescan" action (see the Global Settings panel), not a poll.
+ *  Callers that want a rescan button use the returned `refetch`. */
+export const useDetectedAgents = () =>
+  useQuery({ queryKey: qk.detectedAgents, queryFn: api.getDetectedAgents, staleTime: 30_000 });
 
 /** Register a project; invalidates the project list on success so the sidebar updates. */
 export const useRegisterProject = () => {
