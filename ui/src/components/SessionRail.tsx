@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { Check, Square } from "lucide-react";
+import { AlertTriangle, Ban, CheckSquare, Loader2, Square } from "lucide-react";
 import { useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
 import { useTaskIndex } from "@/lib/useTaskIndex";
-import { QUEUE_META } from "@/lib/status";
+import { toneVar } from "@/lib/status";
 import type { QueueState } from "@/lib/api";
 import { Dot } from "./ui/Dot";
 import { cn } from "@/lib/utils";
@@ -175,9 +175,10 @@ function Block({ title, badge, children }: { title: string; badge?: ReactNode; c
 
 /**
  * One checklist row: a status glyph + the task title (truncated, native tooltip).
- * Glyph maps the 5 queue states: done → checked box (clean), pending → empty box
- * (idle), active → pulsing dot (working), escalated → uncertain dot, quarantine →
- * broken dot. An unresolved id (not in any queue) degrades to a muted idle dot.
+ * Each of the 5 queue states gets a DISTINCT icon SHAPE (not just a tone) so
+ * active vs escalated read apart at a glance: done → checked box, pending → empty
+ * box, active → spinner, escalated → warning triangle, quarantine → ban.
+ * An unresolved id (not in any queue) degrades to a muted idle dot.
  */
 function PlanRow({ state, label, resolved }: { state?: QueueState; label: string; resolved: boolean }) {
   const done = state === "done";
@@ -194,12 +195,18 @@ function PlanRow({ state, label, resolved }: { state?: QueueState; label: string
   );
 }
 
+/** Distinct icon per queue state, tinted by its `QUEUE_META` tone (via `toneVar`
+ *  inline color). Shape carries the meaning so tone-adjacent states (active
+ *  `working` vs escalated `uncertain`) never blur together. */
 function PlanGlyph({ state, resolved }: { state?: QueueState; resolved: boolean }) {
   if (!resolved || state === undefined) return <Dot tone="idle" className="size-[7px]" />;
-  if (state === "done") return <Check className="size-3.5 text-clean" strokeWidth={2.5} />;
-  if (state === "pending") return <Square className="size-3 text-subtle" strokeWidth={2} />;
-  const meta = QUEUE_META[state];
-  return <Dot tone={meta.tone} pulse={state === "active"} className="size-[7px]" />;
+  if (state === "done") return <CheckSquare className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.clean }} />;
+  if (state === "active")
+    return <Loader2 className="size-3.5 animate-spin" strokeWidth={2.5} style={{ color: toneVar.working }} />;
+  if (state === "escalated")
+    return <AlertTriangle className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.uncertain }} />;
+  if (state === "quarantine") return <Ban className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.broken }} />;
+  return <Square className="size-3 text-subtle" strokeWidth={2} />; // pending — empty checkbox
 }
 
 function Kv({ k, v }: { k: string; v: string }) {
