@@ -11,7 +11,7 @@ import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 
-import { loadConfig } from "../config/config.js";
+import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 import { createWorktreeManager, type Worktree } from "../worktree/worktree.js";
@@ -79,10 +79,15 @@ export interface ProjectRoot {
   log: Logger;
   /** Absolute `<repoRoot>/<stateDir>` — what the API server needs. */
   stateDirAbs: string;
+  /** Whether the operator EXPLICITLY set `roles.planner` in the raw config. The
+   *  parsed `cfg` always carries a defaulted planner, so the config projection
+   *  (R1) needs this raw-presence signal to expose planner only when configured. */
+  plannerConfigured: boolean;
 }
 
 export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
-  const cfg = await loadConfig(repoRoot);
+  const { cfg, raw } = await loadConfigWithRaw(repoRoot);
+  const plannerConfigured = isPlannerExplicitlyConfigured(raw);
 
   const log = createLogger(join(repoRoot, cfg.stateDir, "conductor.log"));
 
@@ -327,6 +332,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     orchestrator: { handleIntent: (intent) => getOrchestrator().handleIntent(intent) },
     log,
     stateDirAbs: join(repoRoot, cfg.stateDir),
+    plannerConfigured,
   };
 }
 

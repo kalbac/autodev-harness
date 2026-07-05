@@ -20,7 +20,22 @@ deferred until then (see below). Near-term product-UX backlog, roughly in build 
   over the raw config fields, with adapter→model→effort constrained by the detected/known sets.
 - **Skills / plugins / MCP surface** — expose the extensibility trio in the UI (Open Design pattern),
   not just file-based config.
+- **Per-field help — tooltips / option-description modals** (operator ask, s27 2026-07-06). Many
+  settings options are not self-explanatory ("even I don't understand how many of them work" — the
+  operator; a new user will be lost). Add inline help affordances (a `?` tooltip, or a modal with a
+  fuller description) to non-obvious fields — especially the roles matrix (adapter/model/effort/ladder,
+  the heterogeneity policy) and the gate/worktree/branch fields. Should land relatively EARLY in the
+  polish pass (it lowers the comprehension barrier for the whole settings surface), not deferred to the
+  end. Copy source: distill from `docs/` (roles/adapters, heterogeneity §9, gate) into short field blurbs.
 - **General UX polish pass** — the pilot's rough edges once the above land.
+- **i18n / l10n — Russian UI language support** (operator ask, s27 2026-07-06). Implement a real i18n
+  layer (message catalogue + a language switch) so the UI can render in Russian (and stay
+  English-extensible). Operator's call: schedule this **near the END** of the pilot→product track (or
+  wherever it fits best) — it's a cross-cutting refactor (every user-facing string routes through the
+  i18n layer) with the most churn-risk, so it pays to do it once the screens/copy have stabilised.
+  Pairs naturally with the per-field help item (both are string/copy surfaces — build the help blurbs
+  i18n-ready so they translate too). NB: the operator/artifact language split still holds (Russian is a
+  UI-render choice for the product's end users; docs/code/commits stay English per `AGENTS.md`).
 
 Rationale for sequencing: a desktop shell over an unfinished web product just wraps the gaps in a
 heavier package. Polish the product surface first; wrap it once it's real.

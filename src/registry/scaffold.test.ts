@@ -100,6 +100,51 @@ describe("mergeConfigYaml", () => {
       mergeConfigYaml("", ScaffoldFormSchema.parse({ worktree: { provision: ["a/b"] } })),
     ).toThrow(ScaffoldConfigError);
   });
+
+  it("merges roles.planner end-to-end and the result round-trips through loadConfig (R3)", async () => {
+    const text = mergeConfigYaml(
+      "",
+      ScaffoldFormSchema.parse({ roles: { planner: { adapter: "codex", model: "o3", effort: "high" } } }),
+    );
+    const parsed = parseYaml(text) as { roles: { planner: { adapter: string; model: string; effort: string } } };
+    expect(parsed.roles.planner).toEqual({ adapter: "codex", model: "o3", effort: "high" });
+    // Prove it loads through the real strict schema (mirrors the buildConfigYaml round-trip test).
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), text);
+    const cfg = await loadConfig(repo);
+    expect(cfg.roles.planner).toMatchObject({ adapter: "codex", model: "o3", effort: "high" });
+  });
+
+  it("preserves a hand-set planner field while updating only the form's planner keys", () => {
+    const existing = "roles:\n  planner:\n    adapter: codex\n    exe: my-codex\n";
+    const merged = mergeConfigYaml(existing, ScaffoldFormSchema.parse({ roles: { planner: { model: "o3" } } }));
+    const parsed = parseYaml(merged) as { roles: { planner: { adapter: string; exe: string; model: string } } };
+    expect(parsed.roles.planner.exe).toBe("my-codex"); // survives untouched
+    expect(parsed.roles.planner.adapter).toBe("codex"); // survives untouched
+    expect(parsed.roles.planner.model).toBe("o3"); // updated by the form
+  });
+});
+
+describe("ScaffoldFormSchema — planner (R3)", () => {
+  it("accepts roles.planner.{adapter,model,effort}", () => {
+    const r = ScaffoldFormSchema.safeParse({ roles: { planner: { adapter: "codex", model: "o3", effort: "high" } } });
+    expect(r.success).toBe(true);
+  });
+
+  it("still REJECTS roles.worker.model (worker stays ladder-only)", () => {
+    const r = ScaffoldFormSchema.safeParse({ roles: { worker: { model: "opus" } } });
+    expect(r.success).toBe(false);
+  });
+
+  it("REJECTS an unknown planner key via .strict() (planner.bogus)", () => {
+    const r = ScaffoldFormSchema.safeParse({ roles: { planner: { bogus: "x" } } });
+    expect(r.success).toBe(false);
+  });
+
+  it("REJECTS planner.exe (mirrors orchestrator's strict shape — exe is not a form field)", () => {
+    const r = ScaffoldFormSchema.safeParse({ roles: { planner: { exe: "my-codex" } } });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe("scaffoldProject", () => {

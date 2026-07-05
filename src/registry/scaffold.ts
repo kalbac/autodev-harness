@@ -42,6 +42,13 @@ export const ScaffoldFormSchema = z
           .object({ adapter: z.string().optional(), model: z.string().optional(), effort: z.string().optional() })
           .strict()
           .optional(),
+        // planner: OPTIONAL role (reserved; no live adapter). Same strict shape as
+        // orchestrator — {adapter, model, effort}. `exe`/unknown keys are rejected
+        // (mirrors orchestrator). Projection-read is R1; this is the R3 write path.
+        planner: z
+          .object({ adapter: z.string().optional(), model: z.string().optional(), effort: z.string().optional() })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -100,6 +107,7 @@ export function buildConfigYaml(form: ScaffoldForm): string {
   if (form.roles?.orchestrator !== undefined) roles["orchestrator"] = pruneUndefined(form.roles.orchestrator);
   if (form.roles?.worker !== undefined) roles["worker"] = pruneUndefined(form.roles.worker);
   if (form.roles?.critic !== undefined) roles["critic"] = pruneUndefined(form.roles.critic);
+  if (form.roles?.planner !== undefined) roles["planner"] = pruneUndefined(form.roles.planner);
 
   const cfg: Record<string, unknown> = {
     contract: { invariantsFile: ".autodev/INVARIANTS.md", guardsFile: ".autodev/GUARDS.md" },
@@ -156,7 +164,7 @@ export function mergeConfigYaml(existingRawText: string, form: ScaffoldForm): st
   if (form.roles !== undefined) {
     const rawRoles = (raw["roles"] as Record<string, unknown> | undefined) ?? {};
     const mergedRoles: Record<string, unknown> = { ...rawRoles };
-    for (const role of ["orchestrator", "worker", "critic"] as const) {
+    for (const role of ["orchestrator", "worker", "critic", "planner"] as const) {
       const formRole = form.roles[role];
       if (formRole !== undefined) {
         mergedRoles[role] = { ...(rawRoles[role] as Record<string, unknown> | undefined), ...pruneUndefined(formRole) };

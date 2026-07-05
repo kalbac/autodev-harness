@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, detectRepoRoot } from "./config.js";
+import { loadConfig, loadConfigWithRaw, isPlannerExplicitlyConfigured, detectRepoRoot } from "./config.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "adh-cfg-")); });
@@ -121,5 +121,55 @@ describe("loadConfig", () => {
     // YAML single-quoted scalars treat backslash as a literal character.
     writeFileSync(join(dir, ".autodev", "config.yaml"), "worktree:\n  provision: ['a\\b']\n");
     await expect(loadConfig(dir)).rejects.toThrow(/provision/);
+  });
+});
+
+describe("loadConfigWithRaw", () => {
+  it("returns the parsed cfg AND the pre-defaults raw YAML object", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "gate:\n  checkCommand: npm test\n");
+    const { cfg, raw } = await loadConfigWithRaw(dir);
+    expect(cfg.gate.checkCommand).toBe("npm test");
+    // raw carries ONLY what the operator wrote (no schema defaults filled in).
+    expect(raw).toEqual({ gate: { checkCommand: "npm test" } });
+  });
+
+  it("returns raw {} when no config file exists (all-defaults path)", async () => {
+    const { cfg, raw } = await loadConfigWithRaw(dir);
+    expect(cfg.stateDir).toBe(".autodev");
+    expect(raw).toEqual({});
+  });
+
+  it("throws (same as loadConfig) on an invalid config", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "loop:\n  maxAttempts: not-a-number\n");
+    await expect(loadConfigWithRaw(dir)).rejects.toThrow(/maxAttempts/);
+  });
+});
+
+describe("isPlannerExplicitlyConfigured", () => {
+  it("is true only when roles.planner is present in the raw object", () => {
+    expect(isPlannerExplicitlyConfigured({ roles: { planner: { adapter: "codex" } } })).toBe(true);
+    expect(isPlannerExplicitlyConfigured({ roles: { planner: {} } })).toBe(true);
+  });
+
+  it("is false when roles is absent, roles.planner is absent, or roles is not a mapping", () => {
+    expect(isPlannerExplicitlyConfigured({})).toBe(false);
+    expect(isPlannerExplicitlyConfigured({ roles: { orchestrator: { adapter: "claude" } } })).toBe(false);
+    expect(isPlannerExplicitlyConfigured({ roles: [] as unknown as Record<string, unknown> })).toBe(false);
+  });
+
+  it("reflects raw presence end-to-end through loadConfigWithRaw", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "roles:\n  planner:\n    adapter: codex\n    model: o3\n");
+    const { raw } = await loadConfigWithRaw(dir);
+    expect(isPlannerExplicitlyConfigured(raw)).toBe(true);
+  });
+
+  it("is false end-to-end for a config that omits planner", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "gate:\n  checkCommand: npm test\n");
+    const { raw } = await loadConfigWithRaw(dir);
+    expect(isPlannerExplicitlyConfigured(raw)).toBe(false);
   });
 });
