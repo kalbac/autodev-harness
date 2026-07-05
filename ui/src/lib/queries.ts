@@ -17,6 +17,7 @@ export const qk = {
   sessionUsage: (p: string) => ["session-usage", p] as const,
   taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
   detectedAgents: ["detected-agents"] as const,
+  agentExtensions: (p: string) => ["agent-extensions", p] as const,
 };
 
 /** Cross-run token totals for the session rail (s25). Token count only — cost was
@@ -181,6 +182,18 @@ export const useFsDirs = (path?: string) =>
  *  Callers that want a rescan button use the returned `refetch`. */
 export const useDetectedAgents = () =>
   useQuery({ queryKey: qk.detectedAgents, queryFn: api.getDetectedAgents, staleTime: 30_000 });
+
+/** Best-effort agent-extensions visibility scan (M2), project-scoped. `enabled:
+ *  false` — this is a manual "Scan" action (spawns a real `claude` and can take
+ *  a few seconds), never an auto-fetch on settings-page load. Callers trigger
+ *  it via the returned `refetch()`, same idiom as `useDetectedAgents`'s Rescan
+ *  but on-demand from the start rather than after an initial auto-fetch. */
+export const useAgentExtensions = (p: string) =>
+  useQuery({
+    queryKey: qk.agentExtensions(p),
+    queryFn: () => api.getAgentExtensions(p),
+    enabled: false,
+  });
 
 /** Register a project; invalidates the project list on success so the sidebar updates. */
 export const useRegisterProject = () => {
