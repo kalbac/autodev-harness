@@ -4,6 +4,37 @@
 
 ---
 
+## s26 — 2026-07-05 — fix the replied-escalation file-lock (s26 opener, variant 1)
+
+**The operator-chosen s26 opener — a real correctness/UX bug found live in s25** (`[escalate/replied-holds-filelock]`,
+gotcha 37). A replied escalation was left in `queue/escalated/`, where its `file_set` silently blocked every future
+run on the same file(s) (`claimNextTask` locks on `active`+`escalated` alike) with no operator signal.
+
+- **Recon-first** (Explore subagent): mapped `handleReply` (`src/api/server.ts`) ↔ `parseEscalation`/reply-write
+  (`src/escalate/escalate.ts`) ↔ the scheduler lock (`claimNextTask`, `const locked = [...active, ...escalated]`) ↔
+  the single transition helper `repo.moveTask` (atomic `fs.rename`). Confirmed: escalation id === task id; `escalated`
+  is effectively terminal — nothing in the codebase ever moved a task OUT of it.
+- **Fix (TDD, Sonnet worker):** `handleReply` now transitions the replied task out of `escalated/` after writing the
+  reply file — **B (rework) → `pending`** (re-queue), **A (accept) → `quarantine`**. ENOENT tolerated (drift-* has no
+  queue file; double-reply) → 200; other move errors → 500 (surface a still-held lock, never silent-200).
+- **codex GPT-5.5 gate — 1 High + 1 Medium → fixed → re-critic CLEAN.** High: the first cut used **A → `done`**, which
+  falsely satisfies a dependent's `depends_on` (`doneIds`) on work that was NEVER committed (the gate escalated
+  *instead of* committing; there is no apply-on-accept machinery). **Operator decision: A → `quarantine`** — releases
+  the file-lock without claiming repo-completion (quarantine is neither in the lock set nor in `doneIds`). Medium:
+  added a dependency-safety regression test (a dependent stays blocked after an A reply). Re-critic: safe to merge.
+- **Verification.** 693 tests (+5) / 2 skip, typecheck green (root+ui). The regression tests run the REAL
+  `FileBlackboardRepository` + REAL `createScheduler` over a REAL HTTP server (`createApiServer` + `listen(0)` + `fetch`):
+  a replied escalation leaves `escalated/`, unblocks a same-`file_set` pending task, and does NOT falsely satisfy a
+  dependent. Real serve wiring (`src/index.ts:150` `view: { repo: root.repo }`) statically confirmed → `p.repo.moveTask`
+  works at runtime, not just under the test fake. Proportional: no expensive aurora live-run (the integration test already
+  exercises the exact HTTP→repo→scheduler path; no UI surface changed).
+- **codex operational gotcha captured** (added to `[critic/codex]`): a background codex run can STALL trying to spawn its
+  own plugins/skills in the blocked Windows sandbox and get killed before emitting a verdict (happened twice) — prepend a
+  hard NO-TOOLS preamble + run foreground; with the diff inline codex answers in one turn.
+- Branch `autodev/s26-escalation-filelock`, fix commit `d5738d4`. PR + self-merge (machine bar + green CI).
+
+---
+
 ## s25 — 2026-07-05 — UI cross-run token view (this run/today/all-time) + strip cost from telemetry (PR #45 `c4fae71`)
 
 **The recommended s24 opener — first consumer of the s24 server-side aggregate `GET /runs/:id/usage`, plus the

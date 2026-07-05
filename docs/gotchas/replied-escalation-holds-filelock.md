@@ -36,18 +36,36 @@ child). Confirm: `ls .autodev/queue/escalated/` and compare each escalated task'
 pending task's `file_set:`. Any overlap = the block. `scheduler.listClaimable()` also reports
 `blocked_by: escalated:<id>`.
 
-## Workaround (until the real fix lands)
+## Workaround (pre-s26, historical)
 
-Move the resolved escalation out of `escalated/` to release its lock: `mv .autodev/queue/escalated/<id>.md
-.autodev/queue/done/<id>.md` (operator-approved — it alters queue state). Then the pending task claims and
-runs normally.
+Before the fix, move the resolved escalation out of `escalated/` to release its lock: `mv
+.autodev/queue/escalated/<id>.md .autodev/queue/quarantine/<id>.md` (operator-approved — it alters queue
+state). Then the pending task claims and runs normally.
 
-## The real fix (scheduled s26 — variant 1)
+## RESOLVED (s26) — reply-apply transitions the task out of `escalated/`
 
-Applying/closing an escalation reply must transition the task out of `escalated/`: either
-`escalated → done` (reply accepted, no further work) or re-queue `escalated → pending` (reply says redo),
-mirroring the reply's A/B semantics. Until then a replied escalation is a silent, accumulating file-lock
-land-mine. Codex-gate the reply-apply path (it touches queue-state transitions the scheduler reads).
+`POST /escalations/:id/reply` (`handleReply` in `src/api/server.ts`) now moves the replied task out of
+`queue/escalated/` via the existing atomic `repo.moveTask`, keyed on the A/B choice:
+
+- **B (rework) → `pending`** — re-queued for another run.
+- **A (accept) → `quarantine`, NOT `done`.** The originally-planned target was `done`, but the codex gate
+  flagged a **High**: the escalated worker's work was never committed (the gate escalated *instead of*
+  committing) and the harness has **no apply-on-accept machinery**, so marking it `done` would falsely
+  satisfy a dependent task's `depends_on` (`doneIds`) on work that is absent from the repo. `quarantine`
+  releases the file-lock **without** claiming repo-completion — it is neither in the scheduler lock set
+  (`active`+`escalated` only) nor in `doneIds`. Operator confirmed A→`quarantine` after the gate finding.
+
+`ENOENT` on the move is tolerated (a `drift-*` escalation has an escalation artifact but no queue task file;
+a double-reply already moved it) → still `200`; any **other** move error → `500`, so a still-held lock is
+surfaced rather than silently `200`'d. Independent codex GPT-5.5 gate: 1 High + 1 Medium → fixed (A→quarantine
++ a dependency-safety regression test) → **re-critic CLEAN**. Regression tests in `src/api/server.test.ts`
+assert a replied escalation leaves `escalated/`, unblocks a same-`file_set` pending task, and does NOT falsely
+satisfy a dependent's `depends_on`.
+
+**Known follow-up (non-blocking, codex Low):** `B → pending` re-queues the same task id to run from scratch;
+if any stale runtime state (a leftover worktree for that id, a prior `worker-report.md`) survived the
+escalation, the re-run could collide. Pre-existing concern, not introduced by this fix; the conductor
+recreates the worktree on claim. Backlog if it ever bites.
 
 ## Related
 - `src/scheduler/scheduler.ts` `claimNextTask` — the file-set lock over `active` + `escalated`.

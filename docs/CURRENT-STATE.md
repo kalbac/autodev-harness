@@ -1,7 +1,15 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-05 (s25 — **UI cross-run token view (this run/today/all-time) + strip cost from telemetry
+> Last updated: 2026-07-05 (s26 — **replied-escalation file-lock FIXED (s26 opener, variant 1).** `POST /escalations/:id/reply`
+> now transitions the replied task out of `queue/escalated/` to release its scheduler file-lock (gotcha 37, found live s25):
+> **B (rework) → `pending`**, **A (accept) → `quarantine`**. A goes to quarantine NOT `done` — a codex **High**: `done`
+> would falsely satisfy a dependent's `depends_on` (`doneIds`) on work that was never committed (the gate escalated instead
+> of committing; no apply-on-accept machinery), so quarantine releases the lock without claiming repo-completion (operator
+> decision after the gate). ENOENT tolerated (drift-*/double-reply)→200; other move errors→500. codex gate 1 High + 1 Medium
+> → fixed (A→quarantine + dependency-safety regression test) → **re-critic CLEAN**. 693 tests (+5), typecheck green (root+ui);
+> regression suite runs the REAL repo + REAL scheduler over REAL HTTP; real serve wiring statically confirmed. Fix commit
+> `d5738d4`, branch `autodev/s26-escalation-filelock`. gotcha 37 marked RESOLVED. Prior: s25 — **UI cross-run token view (this run/today/all-time) + strip cost from telemetry
 > LANDED (PR #45, squash `c4fae71`).** First consumer of the s24 `GET /runs/:id/usage` endpoint: SessionRail Tokens
 > block shows three token rows via one `useSessionUsage` hook (retires the s22 N×M client walk). Operator's "token
 > count only, NO cost" cleanup stripped `total_cost_usd`/`cost` end-to-end (backward-compatible — legacy docs with the
@@ -51,7 +59,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 | **P1 — Core loop (headless TS daemon)** | ✅ **DONE (s09).** Behavioral parity with the PS oracle on the fixture (18-scenario parity harness) AND one live real-repo workload (aurora → green COMMIT, live claude+codex) + CI green cross-platform. 272 tests. |
 | **adr/003 — role matrix + LLM orchestrator** | ✅ **DONE (s11); LIVE-PROVEN (s12).** R3 role registry (PR #21) + R1/R2 orchestrator layer (PR #22/#23). `orchestrate` proven end-to-end on aurora → green COMMIT `2c77106`, codex critic `clean`, R1 held. 384 tests. |
 | **P2 — Web UI (localhost dashboard over the core)** | ✅ **DONE (s14).** Backend (s13, PR #26) + Module 5 UI (s14): agent-desktop React/Vite dashboard → `dist/ui` (own `ui/` workspace) + one gated backend add `GET /escalations/:id`. **LIVE-PROVEN on aurora through the browser** (opus decompose → claude → `php -l` → codex `uncertain` → escalated → A/B reply, all from the composer). 480 tests. |
-| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** **Post-P3 — token/usage instrumentation LANDED (s22, PR #41 `675baf0`):** worker/critic adapters expose usage → conductor persists per-task `token-usage.json` (best-effort) → Tokens rail aggregates on the client; codex-gated (1 Medium fixed → re-critic clean), 654 tests, browser-smoke proven. **Run rename + archive + UI re-run LANDED (s23, PR #42 `53d2ced`):** `PATCH /runs/:id` (rename/soft-archive, manifest-index only) + `GET /runs?includeArchived` + RunView actions bar; codex-gated (3 defects fixed → re-critic clean), 662 tests, browser-smoke proven full flow. **critic-verdict.json persistence + committed-task verdict seal LANDED (s24, PR #43 `b9b87f9`):** conductor writes a per-task `critic-verdict.json` at the DECISIVE point (clean-commit / parseable escalation, never intermediate rounds), best-effort; UI Inspector Verdict tab reads it (404-tolerant) and shows the REAL verdict+confidence+notes for a committed task (closes `[ui/verdict-not-persisted]`); codex-gated (2 Medium + 1 Low, decisive-only fix + reasoned decline → re-critic CLEAN), 671 tests, browser-smoke proven. **Server-side per-run usage aggregation `GET /runs/:id/usage` LANDED (s24, PR #44 `8067022`):** read-only endpoint sums each task's `token-usage.json` server-side (clean path for a cross-run "today" total); reuses TOCTOU-hardened readers, no new security code; codex-gated (dup-id + Promise.all-throw + sum-order fixed, case-alias residual declined) → 684 tests, live curl-proven. **UI cross-run token view + strip-cost LANDED (s25, PR #45 `c4fae71`):** SessionRail Tokens = this run / today / all-time via one `useSessionUsage` hook over `GET /runs/:id/usage` (retires the s22 N×M client walk); operator's "token count only, NO cost" cleanup strips `total_cost_usd`/`cost` end-to-end, backward-compatible (legacy docs still validate + count token-only); codex-gated (1 Medium persist-by-reference cost-leak at the write boundary + 1 Low → fixed → re-critic CLEAN), new gotcha `[usage/type-strip-not-runtime-strip]` (36); 688 tests, live-smoke rendered this run 120 / today 120 / all-time 220. |
+| **P3 — Product phase (grafts + wrap)** | 🟡 **IN PROGRESS.** Design-gated with operator; decomposed into slices. **Slice 1 — deps-provisioning DONE (s15, PR #29).** **Slice 2 — multi-project M1–M2 DONE (s16, PR #30).** **M3 New Project backend DONE (s17, PR #31 `7c80a90`):** `/fs/dirs` + `POST`/`DELETE /projects` + `.autodev` scaffold, codex R1 broken→re-critic uncertain→**clean**. **M4 product shell UI DONE (s17, PR #32 `c121a05`):** projectId-in-router, multi-project sidebar, composer Home, session rail, New Project screen + gated `GET /projects/:id/config`; browser-live-proven E2E. **M4-7 settings + M5 light theme DONE (s18, PR #34 `75f9675`, review-only):** Global + project settings screens replace the placeholders; `[data-theme="light"]` token set completes the switcher; browser-proven both themes + real E2E unregister. **Backlog polish DONE (s19):** rename endpoint (PR #36), config-write endpoint + editable project settings (PR #37, codex found+fixed 2 blockers), composer project-switcher real menu (PR #38). 633 tests, CI green 4/4. **Backlog polish continued (s20):** Project Settings edit mode extended to every role field (PR #40, review-only). **woodev deps-provisioning ops-proof LANDED (s21):** real woodev clone provisioned (`vendor`+`plugins-reference` junctions) → harness `run --once` → real static gate `composer check:static` (phpcs+phpstan) GREEN in worktree → **COMMIT `912ef64`** → safe teardown. **P3 CLOSED end-to-end; no operator-gated items remain.** **Post-P3 — token/usage instrumentation LANDED (s22, PR #41 `675baf0`):** worker/critic adapters expose usage → conductor persists per-task `token-usage.json` (best-effort) → Tokens rail aggregates on the client; codex-gated (1 Medium fixed → re-critic clean), 654 tests, browser-smoke proven. **Run rename + archive + UI re-run LANDED (s23, PR #42 `53d2ced`):** `PATCH /runs/:id` (rename/soft-archive, manifest-index only) + `GET /runs?includeArchived` + RunView actions bar; codex-gated (3 defects fixed → re-critic clean), 662 tests, browser-smoke proven full flow. **critic-verdict.json persistence + committed-task verdict seal LANDED (s24, PR #43 `b9b87f9`):** conductor writes a per-task `critic-verdict.json` at the DECISIVE point (clean-commit / parseable escalation, never intermediate rounds), best-effort; UI Inspector Verdict tab reads it (404-tolerant) and shows the REAL verdict+confidence+notes for a committed task (closes `[ui/verdict-not-persisted]`); codex-gated (2 Medium + 1 Low, decisive-only fix + reasoned decline → re-critic CLEAN), 671 tests, browser-smoke proven. **Server-side per-run usage aggregation `GET /runs/:id/usage` LANDED (s24, PR #44 `8067022`):** read-only endpoint sums each task's `token-usage.json` server-side (clean path for a cross-run "today" total); reuses TOCTOU-hardened readers, no new security code; codex-gated (dup-id + Promise.all-throw + sum-order fixed, case-alias residual declined) → 684 tests, live curl-proven. **UI cross-run token view + strip-cost LANDED (s25, PR #45 `c4fae71`):** SessionRail Tokens = this run / today / all-time via one `useSessionUsage` hook over `GET /runs/:id/usage` (retires the s22 N×M client walk); operator's "token count only, NO cost" cleanup strips `total_cost_usd`/`cost` end-to-end, backward-compatible (legacy docs still validate + count token-only); codex-gated (1 Medium persist-by-reference cost-leak at the write boundary + 1 Low → fixed → re-critic CLEAN), new gotcha `[usage/type-strip-not-runtime-strip]` (36); 688 tests, live-smoke rendered this run 120 / today 120 / all-time 220. **Replied-escalation file-lock FIXED (s26, commit `d5738d4`):** `POST /escalations/:id/reply` moves the replied task out of `queue/escalated/` (B→`pending`, A→`quarantine`; A→quarantine not `done` per codex High — `done` would falsely satisfy a dependent's `depends_on` on uncommitted work) → releases the scheduler file-lock (gotcha 37 RESOLVED); codex-gated 1 High + 1 Medium → re-critic CLEAN, 693 tests. |
 
 ## Frozen skeleton (codex-verified — do not re-litigate without cause)
 
@@ -61,6 +69,29 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 4. **Isolation:** per-task `git worktree` (AO pattern), non-destructive teardown.
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
+
+## Last session (s26, 2026-07-05)
+
+- **Replied-escalation file-lock FIXED — the s26 opener (operator-chosen variant 1), a real correctness/UX bug found live
+  in s25** (`[escalate/replied-holds-filelock]`, gotcha 37). `POST /escalations/:id/reply` recorded a `*.reply.json` but
+  left the task in `queue/escalated/`, whose `file_set` silently blocked every future same-file run (`claimNextTask` locks
+  on `active`+`escalated` alike) — no operator signal.
+- **Recon-first** (Explore subagent) mapped the reply handler ↔ escalate module ↔ scheduler lock ↔ the one transition
+  helper `repo.moveTask`. Confirmed escalation id === task id; `escalated` was effectively terminal (nothing moved a task
+  out of it anywhere).
+- **Fix (TDD):** `handleReply` transitions the replied task out of `escalated/` after writing the reply — **B → `pending`**
+  (re-queue/rework), **A → `quarantine`** (accept). ENOENT tolerated (drift-* has no queue file; double-reply)→200; other
+  move errors→500 (surface a still-held lock).
+- **codex GPT-5.5 gate — 1 High + 1 Medium → fixed → re-critic CLEAN.** High: the first cut used **A → `done`**, which
+  falsely satisfies a dependent's `depends_on` (`doneIds`) on work never committed (no apply-on-accept machinery). **Operator
+  decided A → `quarantine`** (releases the lock without claiming repo-completion; quarantine is neither in the lock set nor
+  in `doneIds`). Medium: added a dependency-safety regression test. No new gotcha (gotcha 37 marked RESOLVED; +1 operational
+  note to `[critic/codex]` — a background codex run can stall spawning its own plugins in the blocked sandbox, use a
+  NO-TOOLS preamble + foreground).
+- **Verification.** 693 tests (+5) / 2 skip, typecheck green (root+ui). Regression suite drives the REAL
+  `FileBlackboardRepository` + REAL `createScheduler` over a REAL HTTP server; real serve wiring (`src/index.ts:150`)
+  statically confirmed so `p.repo.moveTask` works at runtime. Proportional — no aurora live-run (integration test already
+  exercises the HTTP→repo→scheduler path; no UI surface changed). Fix commit `d5738d4` on `autodev/s26-escalation-filelock`.
 
 ## Last session (s25, 2026-07-05)
 
@@ -400,7 +431,7 @@ single source of truth**, assembling the verified best-of from four donors. Skel
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s26)
+## NEXT ACTIONS (s27)
 
 **P3 is CLOSED; FIVE post-P3 modules LANDED — token/usage (s22, PR #41), run rename/archive+re-run (s23, PR #42),
 critic-verdict.json persistence + committed-task verdict seal (s24, PR #43), server-side per-run usage aggregation
@@ -409,16 +440,14 @@ scaffold → drive → settings → theme), the usage telemetry is now token-onl
 rail. **No operator-gated items remain.** Everything below is backlog polish or an optional stretch; pick with the
 operator UNLESS granted autonomy.
 
-**s26 OPENER (operator-chosen, variant 1): fix the replied-escalation file-lock bug** (`[escalate/replied-holds-filelock]`,
-found live s25). `POST /escalations/:id/reply` writes the reply but leaves the task in `queue/escalated/`, where its
-`file_set` silently blocks every future same-file run (`claimNextTask` locks on escalated exactly like active) — no
-operator signal. **Fix: the reply-apply path must transition the task out of `escalated/`** — `escalated → done`
-(reply accepted / choice A-style) or re-queue `escalated → pending` (redo / choice B-style), matching the A/B reply
-semantics. Touches queue-state transitions the scheduler reads → **codex-gate it** + regression test (a replied
-escalation must not remain a claim-blocking lock). See gotcha `[escalate/replied-holds-filelock]` +
-`docs/gotchas/replied-escalation-holds-filelock.md`.
+**~~s26 OPENER (variant 1): fix the replied-escalation file-lock~~ — DONE (s26, commit `d5738d4`).** `POST
+/escalations/:id/reply` now moves the replied task out of `queue/escalated/` (B→`pending`, A→`quarantine`; A→quarantine
+not `done` per a codex High + operator decision — `done` would falsely satisfy a dependent's `depends_on` on uncommitted
+work). codex-gated (1 High + 1 Medium → fixed → re-critic CLEAN), 693 tests, gotcha 37 RESOLVED. Possible follow-up
+only if asked: surface a "this escalation is resolved/cleared" state in the UI (today the reply just records + releases
+the lock; the RunView/board doesn't visibly distinguish a quarantined-by-accept task from a poisoned one).
 
-**Then — Web UI pilot → product (operator steer, s25): the current dashboard is a PILOT, not final.** Finish
+**s27 OPENER (operator steer, s25) — Web UI pilot → product: the current dashboard is a PILOT, not final.** Finish
 debugging + polishing the web UI to a real product BEFORE any desktop wrap. Near-term product-UX track (build order):
 (1) **PATH-scan auto-detect of installed CLI agents** (biggest jump; Open Design donor logic) — replaces hand-typed
 `adapter`/`exe`; (2) **preset model + effort pickers per adapter** — replace today's free-text fields; (3) richer
