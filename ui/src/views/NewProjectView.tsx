@@ -19,22 +19,22 @@ export function NewProjectView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-3 border-b border-line px-4 h-14">
+      <div className="flex items-center gap-3 border-b border-border px-4 h-14">
         <Link
           to="/"
-          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:border-line-strong hover:text-text"
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
           back
         </Link>
-        <span className="font-sans text-[15px] font-semibold text-text">New Project</span>
-        <span className="font-mono text-[11px] text-subtle">
+        <span className="font-sans text-[15px] font-semibold text-foreground">New Project</span>
+        <span className="font-mono text-[11px] text-muted-foreground">
           register a git repo the daemon will orchestrate
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 border-r border-line">
+        <div className="flex min-w-0 flex-1 border-r border-border">
           <FolderBrowser selectedPath={selected?.path ?? null} onSelect={setSelected} />
         </div>
         {selected ? (
