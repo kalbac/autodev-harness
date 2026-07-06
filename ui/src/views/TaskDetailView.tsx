@@ -98,7 +98,7 @@ function Header({
         board
       </Link>
       <div className="flex items-center gap-3">
-        <h1 className="font-display text-lg font-semibold leading-tight text-text min-w-0 truncate">
+        <h1 className="font-sans text-lg font-semibold leading-tight text-text min-w-0 truncate">
           {title}
         </h1>
         <div className="flex items-center gap-2 shrink-0">{children}</div>

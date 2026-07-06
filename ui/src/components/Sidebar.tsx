@@ -38,7 +38,7 @@ export function Sidebar() {
           <Terminal className="size-4" />
         </div>
         <div className="min-w-0">
-          <div className="font-display text-sm font-semibold leading-tight text-text">Autodev</div>
+          <div className="font-sans text-sm font-semibold leading-tight text-text">Autodev</div>
           <div className="font-mono text-[10px] uppercase tracking-wider text-subtle leading-tight">
             harness
           </div>

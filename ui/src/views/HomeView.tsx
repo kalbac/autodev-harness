@@ -48,7 +48,7 @@ export function HomeView() {
       <div className="flex-1 overflow-auto">
         {/* Hero — composer-first: the one control that starts work. */}
         <div className="mx-auto w-full max-w-3xl px-6 pb-8 pt-14">
-          <h1 className="mb-2 text-center font-display text-[26px] font-semibold leading-tight text-text">
+          <h1 className="mb-2 text-center font-sans text-[26px] font-semibold leading-tight text-text">
             What are we building in {projectName}?
           </h1>
           <p className="mx-auto mb-6 max-w-xl text-center text-sm text-muted">

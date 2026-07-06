@@ -61,7 +61,7 @@ export function RegisterForm({
 
   return (
     <div className="w-full max-w-md shrink-0 overflow-auto p-4 sm:w-96">
-      <h2 className="mb-1 font-display text-base font-semibold text-text">Register project</h2>
+      <h2 className="mb-1 font-sans text-base font-semibold text-text">Register project</h2>
       <p className="mb-3.5 break-all font-mono text-[11px] text-subtle">{entry.path} · git repo</p>
 
       <form

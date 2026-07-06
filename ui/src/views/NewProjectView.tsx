@@ -27,7 +27,7 @@ export function NewProjectView() {
           <ArrowLeft className="size-3.5" />
           back
         </Link>
-        <span className="font-display text-[15px] font-semibold text-text">New Project</span>
+        <span className="font-sans text-[15px] font-semibold text-text">New Project</span>
         <span className="font-mono text-[11px] text-subtle">
           register a git repo the daemon will orchestrate
         </span>

@@ -247,7 +247,7 @@ function QCell({ n, label, att = false }: { n?: number; label: string; att?: boo
         flagged ? "border-[color-mix(in_srgb,var(--color-uncertain)_45%,transparent)]" : "border-line",
       )}
     >
-      <div className={cn("font-display text-base font-semibold", flagged ? "text-uncertain" : "text-text")}>
+      <div className={cn("font-sans text-base font-semibold", flagged ? "text-uncertain" : "text-text")}>
         {n ?? "—"}
       </div>
       <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-subtle">{label}</div>

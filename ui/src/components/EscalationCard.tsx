@@ -46,7 +46,7 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
     >
       <div className="flex items-center gap-2 mb-3">
         <ShieldAlert className="size-4" style={{ color: toneVar[tone] }} />
-        <span className="font-display text-sm font-semibold text-text">The gate needs you</span>
+        <span className="font-sans text-sm font-semibold text-text">The gate needs you</span>
         <StatusPill tone={verdictTone(e.type === "disagreement" ? "broken" : "uncertain")} label={e.type} className="ml-1" />
         <span className="ml-auto font-mono text-[11px] text-subtle">{e.reason}</span>
       </div>

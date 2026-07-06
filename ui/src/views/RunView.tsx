@@ -121,7 +121,7 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
           }}
           maxLength={200}
           placeholder={manifest.intent}
-          className="flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-display text-lg text-text outline-none focus:border-accent"
+          className="flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-sans text-lg text-text outline-none focus:border-accent"
         />
         <IconBtn title="Save" onClick={saveRename}>
           <Check className="size-4 text-clean" />
@@ -135,7 +135,7 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
 
   return (
     <div className="group flex items-start gap-2 max-w-3xl">
-      <h1 className="flex-1 font-display text-xl font-semibold leading-snug text-text">{label}</h1>
+      <h1 className="flex-1 font-sans text-xl font-semibold leading-snug text-text">{label}</h1>
       <div className="flex shrink-0 items-center gap-0.5 pt-0.5 opacity-60 transition-opacity group-hover:opacity-100">
         <IconBtn title="Rename run" onClick={startRename} disabled={patch.isPending}>
           <Pencil className="size-3.5 text-muted" />

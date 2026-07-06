@@ -28,7 +28,7 @@ export function BoardView() {
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-line px-6 h-14 shrink-0">
         <LayoutGrid className="size-4 text-subtle" />
-        <h1 className="font-display text-base font-semibold">Board</h1>
+        <h1 className="font-sans text-base font-semibold">Board</h1>
         <span className="font-mono text-xs text-subtle">
           {COLUMNS.reduce((n, s) => n + queues[s].length, 0)} open
         </span>

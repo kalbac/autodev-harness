@@ -24,7 +24,7 @@ export function ProjectTopBar({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex items-center gap-2.5 border-b border-line px-[18px] py-3">
-      <span className="font-display text-[15px] font-semibold text-text">{name}</span>
+      <span className="font-sans text-[15px] font-semibold text-text">{name}</span>
       {path && <span className="font-mono text-[11px] text-subtle">{path}</span>}
       <span className={CHIP}>
         <GitBranch className="size-3" />

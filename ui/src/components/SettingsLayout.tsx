@@ -22,7 +22,7 @@ export function SettingsPage({
     <div className="flex h-full flex-col overflow-hidden">
       <div className="flex items-center gap-3 border-b border-line px-4 h-14">
         {back}
-        <span className="font-display text-[15px] font-semibold text-text">{title}</span>
+        <span className="font-sans text-[15px] font-semibold text-text">{title}</span>
         {subtitle && <span className="font-mono text-[11px] text-subtle">{subtitle}</span>}
       </div>
       <div className="flex-1 overflow-auto">
