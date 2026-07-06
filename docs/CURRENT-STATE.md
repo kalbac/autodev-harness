@@ -11,8 +11,10 @@
 >   (IBM Plex + literal status vocab + legacy-token alias layer), `.dark` convention, 17 primitives, signature-
 >   preserving Button/Card/TabBar/StatusPill/Dot/Feedback. Critic found+fixed 1 high (muted/accent token-alias
 >   collision) + 1 medium (TabBar accent underline); re-critic clean. Build+typecheck green.
-> - **Next:** PR1 app-shell → PR2 board → PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task
->   detail → PR5 settings → final cleanup (drop the legacy-token alias layer). Resume from the plan's unchecked boxes.
+> - **PR1 App shell + navigation — ✅ MERGED** (`fcacece..65744f2`): AppShell/Sidebar/ProjectTopBar/SessionRail on
+>   canonical shadcn tokens; ProjectSwitcherMenu → shadcn DropdownMenu; chip→Badge; ScrollArea in rail. Critic: all PASS, 0 findings.
+> - **Next:** PR2 board → PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task detail → PR5 settings
+>   → final cleanup (drop the legacy-token alias layer). Resume from the plan's unchecked boxes.
 >
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on

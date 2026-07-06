@@ -354,7 +354,7 @@ Each screen task follows the **same recipe**. It is repeated here once; every ta
 - [ ] **Step 3:** `npm run typecheck` → PASS.
 - [ ] **Step 4:** `git add ui/src/components/TaskCard.tsx && git commit -m "refactor(ui): TaskCard on shadcn tokens + primitives"`.
 
-### PR1 — App shell + navigation
+### PR1 — App shell + navigation  ✅ DONE — merged to main (s29). Critic: all PASS, 0 findings.
 
 Apply the recipe to, one commit each: `AppShell.tsx`, `Sidebar.tsx`, `ProjectTopBar.tsx`, `ProjectSwitcherMenu.tsx`, `SessionRail.tsx`.
 - `ProjectSwitcherMenu` → shadcn `DropdownMenu`. `SettingsPopover` (if touched here) → shadcn `Popover`.
