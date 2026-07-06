@@ -596,7 +596,13 @@ function ToggleRow({
   return (
     <label
       className={cn(
-        "flex items-start gap-2.5 py-1.5",
+        // `relative` confines the `sr-only` checkbox below (position:absolute) to
+        // this label's box. Without a positioned ancestor its containing block is
+        // the viewport, and — since `overflow` does NOT establish a containing
+        // block for absolute descendants — its static position deep in the tall
+        // settings scroll column extends the DOCUMENT height, spawning a second
+        // (document-level) scrollbar in edit mode + a scroll-anchor jump on toggle.
+        "relative flex items-start gap-2.5 py-1.5",
         disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
       )}
     >
