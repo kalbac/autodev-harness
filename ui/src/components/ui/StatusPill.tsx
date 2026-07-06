@@ -1,11 +1,13 @@
 import { cn } from "@/lib/utils";
 import { toneVar, type Tone } from "@/lib/status";
+import { Badge } from "./badge";
 import { Dot } from "./Dot";
 
 /**
  * A tinted bordered pill built from ONE tone via color-mix — feed it a tone and
  * a label and it themes itself (AO's status-pill technique). The one shared
- * status primitive across board, sidebar, and inspector.
+ * status primitive across board, sidebar, and inspector. Now a shadcn `Badge`
+ * composition (variant="outline") rather than a hand-rolled span.
  */
 export function StatusPill({
   tone,
@@ -20,9 +22,10 @@ export function StatusPill({
 }) {
   const c = toneVar[tone];
   return (
-    <span
+    <Badge
+      variant="outline"
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-medium uppercase tracking-wide leading-none",
+        "gap-1.5 rounded-full font-mono text-[11px] font-medium uppercase tracking-wide leading-none",
         className,
       )}
       style={{
@@ -33,6 +36,6 @@ export function StatusPill({
     >
       <Dot tone={tone} pulse={pulse} />
       {label}
-    </span>
+    </Badge>
   );
 }

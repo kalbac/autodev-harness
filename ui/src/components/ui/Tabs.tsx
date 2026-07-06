@@ -78,3 +78,53 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
 }
 
 export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+
+export interface TabDef {
+  id: string;
+  label: string;
+  /** Optional tone accent for the active underline (e.g. the Verdict tab). */
+  accent?: string;
+}
+
+/**
+ * Legacy `TabBar` API, now a thin controlled adapter over the shadcn
+ * Tabs/TabsList/TabsTrigger primitives above (shadcn-first — not custom).
+ * Callers keep passing `value`/`onChange`; we wire that to Tabs'
+ * `value`/`onValueChange`. `TabDef.accent` is applied as an inline color on
+ * the active trigger so per-tab tone accents (e.g. the Verdict tab) survive.
+ */
+export function TabBar({
+  tabs,
+  value,
+  onChange,
+  className,
+}: {
+  tabs: TabDef[];
+  value: string;
+  onChange: (id: string) => void;
+  className?: string;
+}) {
+  return (
+    <Tabs
+      value={value}
+      onValueChange={(id) => onChange(id as string)}
+      className={cn("block", className)}
+    >
+      <TabsList variant="line" className="h-auto w-full justify-start bg-transparent p-0">
+        {tabs.map((t) => {
+          const active = t.id === value;
+          return (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              className="text-xs"
+              style={active && t.accent ? { color: t.accent } : undefined}
+            >
+              {t.label}
+            </TabsTrigger>
+          );
+        })}
+      </TabsList>
+    </Tabs>
+  );
+}
