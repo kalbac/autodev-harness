@@ -147,6 +147,35 @@ describe("ScaffoldFormSchema — planner (R3)", () => {
   });
 });
 
+describe("isolation write path (M1a)", () => {
+  it("buildConfigYaml round-trips isolation.worker.cleanRoom:true through the strict schema", async () => {
+    const text = buildConfigYaml(ScaffoldFormSchema.parse({ isolation: { worker: { cleanRoom: true } } }));
+    const parsed = parseYaml(text) as { isolation: { worker: { cleanRoom: boolean } } };
+    expect(parsed.isolation.worker.cleanRoom).toBe(true);
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), text);
+    const cfg = await loadConfig(repo);
+    expect(cfg.isolation.worker.cleanRoom).toBe(true);
+    expect(cfg.isolation.worker.mcp).toBe(false); // unset sub-fields default false
+  });
+
+  it("mergeConfigYaml merges isolation into an existing config without dropping other fields", () => {
+    const existing = "antiDrift:\n  model: custom-model\nisolation:\n  worker:\n    mcp: true\n";
+    const text = mergeConfigYaml(existing, ScaffoldFormSchema.parse({ isolation: { worker: { cleanRoom: true } } }));
+    const parsed = parseYaml(text) as {
+      antiDrift: { model: string };
+      isolation: { worker: { cleanRoom: boolean; mcp: boolean } };
+    };
+    expect(parsed.antiDrift.model).toBe("custom-model"); // survives untouched
+    expect(parsed.isolation.worker.mcp).toBe(true); // hand-set sub-field preserved
+    expect(parsed.isolation.worker.cleanRoom).toBe(true); // updated by the form
+  });
+
+  it("ScaffoldFormSchema REJECTS an unknown isolation.worker key via .strict()", () => {
+    expect(ScaffoldFormSchema.safeParse({ isolation: { worker: { bogus: true } } }).success).toBe(false);
+  });
+});
+
 describe("scaffoldProject", () => {
   it("creates the full skeleton on a fresh repo: queue dirs, runtime, escalations, runs, worktrees, stubs, config", async () => {
     const res = await scaffoldProject(repo, ScaffoldFormSchema.parse({}));

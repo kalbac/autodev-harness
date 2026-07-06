@@ -4,6 +4,33 @@
 
 ---
 
+## s28 — 2026-07-06 — Agent extensions: worker isolation + always-on critic NO-TOOLS preamble + live visibility scan (PR #51)
+
+**Web-UI item (4) rescoped from "attach skills/plugins/MCP" to "visibility + isolation" after an empirical investigation,
+then built in 3 modules (both backend ones independently codex GPT-5.5-gated).**
+
+- **Opener = INVESTIGATION (operator's s27 steer), not a build.** Explore recon + **two live `claude -p` probes** proved
+  the spawned worker + critic child CLIs already INHERIT the operator's full ambient extensions (global `~/.claude`/
+  `~/.codex` + project config): env passthrough, worker cwd = git worktree, `-p`/`exec` load MCP+skills+plugins+subagents+
+  hooks at runtime (bare cwd → 9 MCP / 46 skills / 78 slash / 17 plugins / 11 agents + hook). So "attach" is redundant.
+  **Reported → decided WITH operator:** build visibility + isolation. Flag-semantics probe (C) found the flags are NOT
+  orthogonal (`--bare` = clean-room, subsumes MCP+skills; init `plugins` count = installed-not-active).
+- **M1a (codex merge-clean, `34c83f4`):** config `isolation.worker.{cleanRoom,mcp,skills}` (OFF by default → byte-identical
+  spawn); `workerIsolationFlags` (cleanRoom→`--bare`, mcp→`--strict-mcp-config`, skills→`--disable-slash-commands`) appended
+  to worker args; **always-on NO-TOOLS preamble in `buildCriticPrompt`** (closes docs-vs-code gap); projection + write path.
+- **M1b (codex 1 Medium + 1 Low fixed → re-critic clean, `62307c7`):** `GET /projects/:id/agent-extensions` streams the
+  real worker CLI, captures `system/init`, kills before any model turn (zero token cost); thin `onScanExtensions?`
+  capability. Fixes: `MAX_REMAINDER_BYTES` buffer cap; streaming-spawner try/catch (never-reject). Low endpoint-guard
+  DECLINED (consistent w/ `handleDetectAgents`; global `.catch` backstop).
+- **M2 (review-only, `7b7e773`):** Isolation toggles (Clean-room master greys MCP/Skills) + live-scan panel (MCP status
+  pills / skills / slash / agents). Wired into `buildDiff` send-only-changed.
+- **Verification:** 766 tests / 3 skip, root+ui typecheck + build green. **LIVE-PROVEN** (Playwright + curl): scan returned
+  9/46/78/11; PATCH cleanRoom=true → re-scan **0/14/33/3** (matches the `--bare` probe); UI states + Clean-room greying
+  proven; screenshots to operator. 2 new gotchas (40 `[agents/inherit-ambient-extensions]`, 41
+  `[detect/isolation-flags-not-orthogonal]`). Spec `docs/superpowers/specs/2026-07-06-agent-extensions-isolation.md`.
+
+---
+
 ## s27 (B) — 2026-07-06 — Plan checklist in the session rail (operator ask) (PR #49 `e485c36`)
 
 **Second s27 module — an operator ask raised mid-session:** after a plan is written, show the plan todo list in the right

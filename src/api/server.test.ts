@@ -12,6 +12,7 @@ import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDep
 import type { RegisterResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
+import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
@@ -23,6 +24,7 @@ function projectDeps(
     stateDir: string;
     onOrchestrate?: (intent: string) => Promise<unknown>;
     config?: ProjectConfigView;
+    onScanExtensions?: () => Promise<AgentExtensions | null>;
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -37,6 +39,7 @@ function projectDeps(
                 stateDir: one.stateDir,
                 ...(one.onOrchestrate !== undefined ? { onOrchestrate: one.onOrchestrate } : {}),
                 ...(one.config !== undefined ? { config: one.config } : {}),
+                ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
               },
             }
           : null,
@@ -1088,6 +1091,43 @@ describe("createApiServer / GET /runs/:id/usage", () => {
     expect(body.tokens).toBe(10 + 20 + 30 + 40 + 5);
     expect(body).not.toHaveProperty("cost");
     expect(body).toMatchObject({ taskCount: 1, tasksWithUsage: 1 });
+  });
+});
+
+describe("createApiServer / GET /projects/:id/agent-extensions", () => {
+  const fixture: AgentExtensions = {
+    model: "claude-haiku-4",
+    cwd: "/repo/root",
+    mcp: [{ name: "serena", status: "connected" }],
+    skills: ["deep-research"],
+    slashCommands: ["review"],
+    agents: ["Explore"],
+  };
+
+  it("returns 200 { extensions: <fixture> } when the view exposes onScanExtensions", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, onScanExtensions: async () => fixture }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/agent-extensions")}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ extensions: fixture });
+  });
+
+  it("returns 200 { extensions: null } when the best-effort scan captured no init", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, onScanExtensions: async () => null }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/agent-extensions")}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ extensions: null });
+  });
+
+  it("404s when the view does not expose onScanExtensions (read-only deployment)", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/agent-extensions")}`);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -2481,6 +2521,7 @@ describe("GET /projects/:id/config", () => {
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
       planner: { adapter: "codex", model: "o3", effort: "high" },
     },
+    isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
@@ -2540,6 +2581,7 @@ describe("PATCH /projects/:id/config", () => {
       worker: { adapter: "claude", ladder: ["opus", "sonnet", "haiku"] },
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
     },
+    isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };

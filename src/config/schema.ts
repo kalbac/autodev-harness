@@ -131,6 +131,27 @@ export const HarnessConfigSchema = z.object({
     })
     .default({}),
 
+  // Ambient-extension isolation for the spawned worker CLI. OFF by default =
+  // byte-identical current behavior (the worker inherits the operator's full
+  // ~/.claude + project extension set). Each flag maps to a `claude -p` lever
+  // (see workerIsolationFlags): `cleanRoom`→`--bare` (master — drops MCP, most
+  // skills, most agents; SUBSUMES mcp/skills, so their flags are not also
+  // emitted when it is on), `mcp`→`--strict-mcp-config` (drop project/global
+  // MCP servers), `skills`→`--disable-slash-commands` (drop skills/slash
+  // commands). Critic isolation needs no toggle — its NO-TOOLS preamble is
+  // always-on in the prompt.
+  isolation: z
+    .object({
+      worker: z
+        .object({
+          cleanRoom: z.boolean().default(false),
+          mcp: z.boolean().default(false),
+          skills: z.boolean().default(false),
+        })
+        .default({}),
+    })
+    .default({}),
+
   commit: z
     .object({ typeMap: z.record(z.string()).default({ guard: "test" }), defaultKind: z.string().default("refactor") })
     .default({ typeMap: { guard: "test" }, defaultKind: "refactor" }),

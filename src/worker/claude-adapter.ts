@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { WorkerAdapter, WorkerResult, WorkerRunInput } from "./adapter.js";
 import { buildWorkerPrompt } from "./prompt.js";
 import type { HarnessConfig } from "../config/schema.js";
-import { resolveWorkerExe } from "../config/roles.js";
+import { resolveWorkerExe, workerIsolationFlags } from "../config/roles.js";
 import type { WatchedProcessRunner, WatchedRunResult } from "../watchdog/runner.js";
 import { parseClaudeUsage } from "../usage/usage.js";
 
@@ -61,6 +61,10 @@ export class ClaudeWorkerAdapter implements WorkerAdapter {
           "--verbose",
           "--output-format",
           "stream-json",
+          // Ambient-extension isolation (OFF by default → empty → unchanged
+          // spawn). cleanRoom→--bare, mcp→--strict-mcp-config,
+          // skills→--disable-slash-commands. See workerIsolationFlags.
+          ...workerIsolationFlags(this.cfg),
         ],
         stdin,
         cwd: input.worktreePath,

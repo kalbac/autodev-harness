@@ -17,6 +17,8 @@ import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
 import { detectAgents } from "./detect/detect-agents.js";
+import { probeAgentExtensions } from "./detect/agent-extensions.js";
+import { resolveWorkerExe, workerIsolationFlags } from "./config/roles.js";
 import { createProjectHub } from "./hub/hub.js";
 import { createLogger } from "./util/log.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
@@ -153,6 +155,17 @@ async function main(): Promise<void> {
               stateDir: root.stateDirAbs,
               onOrchestrate: (intent: string) => root.orchestrator.handleIntent(intent),
               config: buildProjectConfigView(c, root.plannerConfigured),
+              // Best-effort extension-visibility scan under the project's CURRENT saved
+              // isolation. Thin closure over repoRoot + cfg so the HTTP layer never sees
+              // the repoRoot/spawn. model is irrelevant to WHICH extensions load (we kill
+              // before any turn); ladder[0] is a safe, cheap pick.
+              onScanExtensions: () =>
+                probeAgentExtensions({
+                  exe: resolveWorkerExe(c),
+                  cwd: root.repoRoot,
+                  model: c.roles.worker.ladder[0] ?? "haiku",
+                  isolationFlags: workerIsolationFlags(c),
+                }),
             },
           };
         },

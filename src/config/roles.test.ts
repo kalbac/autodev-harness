@@ -7,6 +7,7 @@ import {
   resolveOrchestratorExe,
   heterogeneityWarnings,
   assertKnownAdapters,
+  workerIsolationFlags,
 } from "./roles.js";
 
 describe("adapterMeta", () => {
@@ -83,6 +84,40 @@ describe("heterogeneityWarnings", () => {
       policy: { heterogeneity: "off" },
     });
     expect(heterogeneityWarnings(cfg)).toEqual([]);
+  });
+});
+
+describe("workerIsolationFlags", () => {
+  it("returns [] for the default config (all isolation OFF — byte-identical spawn)", () => {
+    const cfg = HarnessConfigSchema.parse({});
+    expect(workerIsolationFlags(cfg)).toEqual([]);
+  });
+
+  it("returns only ['--bare'] for cleanRoom alone", () => {
+    const cfg = HarnessConfigSchema.parse({ isolation: { worker: { cleanRoom: true } } });
+    expect(workerIsolationFlags(cfg)).toEqual(["--bare"]);
+  });
+
+  it("returns only ['--bare'] when cleanRoom is set with mcp+skills (cleanRoom subsumes them)", () => {
+    const cfg = HarnessConfigSchema.parse({
+      isolation: { worker: { cleanRoom: true, mcp: true, skills: true } },
+    });
+    expect(workerIsolationFlags(cfg)).toEqual(["--bare"]);
+  });
+
+  it("returns ['--strict-mcp-config'] for mcp only", () => {
+    const cfg = HarnessConfigSchema.parse({ isolation: { worker: { mcp: true } } });
+    expect(workerIsolationFlags(cfg)).toEqual(["--strict-mcp-config"]);
+  });
+
+  it("returns ['--disable-slash-commands'] for skills only", () => {
+    const cfg = HarnessConfigSchema.parse({ isolation: { worker: { skills: true } } });
+    expect(workerIsolationFlags(cfg)).toEqual(["--disable-slash-commands"]);
+  });
+
+  it("returns both flags (mcp then skills) when both are set without cleanRoom", () => {
+    const cfg = HarnessConfigSchema.parse({ isolation: { worker: { mcp: true, skills: true } } });
+    expect(workerIsolationFlags(cfg)).toEqual(["--strict-mcp-config", "--disable-slash-commands"]);
   });
 });
 

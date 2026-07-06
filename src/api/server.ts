@@ -30,6 +30,7 @@ import { parseEscalation } from "../escalate/escalate.js";
 import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
+import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
@@ -157,6 +158,10 @@ export interface ProjectConfigView {
      *  the resolved/defaulted ones, mirroring orchestrator. */
     planner?: { adapter: string; model: string; effort?: string };
   };
+  /** Worker ambient-extension isolation, always projected as plain booleans
+   *  (all false = current inherit-everything behavior). The UI renders these as
+   *  the clean-room / MCP / skills toggles. */
+  isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
   /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
   policy: { heterogeneity: "warn" | "off" };
   /** The heterogeneity warnings the daemon computes at wire-time (empty when
@@ -180,6 +185,16 @@ export interface ProjectView {
   onOrchestrate?: (intent: string) => Promise<unknown>;
   /** OPTIONAL curated config for `GET /projects/:id/config`. Absent → that route 404s. */
   config?: ProjectConfigView;
+  /**
+   * OPTIONAL best-effort extension-visibility scan for `GET
+   * /projects/:id/agent-extensions`. When unset, that route → 404 (mirrors
+   * `onOrchestrate`/`config`). A thin closure over the project's repoRoot + cfg
+   * so the server never sees a spawn handle or the repoRoot; it spawns the real
+   * worker CLI, captures the `system/init` event, kills it before any model turn,
+   * and resolves the inherited set (or `null` if no init was seen — best-effort,
+   * never throws by contract).
+   */
+  onScanExtensions?: () => Promise<AgentExtensions | null>;
 }
 
 export interface ApiServerDeps {
@@ -930,6 +945,19 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, { agents: await deps.admin.detectAgents() });
   }
 
+  /** GET /projects/:id/agent-extensions — best-effort visibility scan of what the
+   *  worker CLI inherits under this project's CURRENT saved isolation config. The
+   *  capability is best-effort/never-throws by contract, so a `null` result (no
+   *  init captured) is a valid 200 body; no typed failure union is needed here --
+   *  only the per-project capability gate. */
+  async function handleScanExtensions(p: ProjectView, res: ServerResponse): Promise<void> {
+    if (p.onScanExtensions === undefined) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendJson(res, 200, { extensions: await p.onScanExtensions() });
+  }
+
   /** POST /projects — register (+ optional scaffold). Validation beyond request
    *  SHAPE lives in the admin port; this handler only maps typed codes to HTTP. */
   async function handleRegisterProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1627,6 +1655,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       if (req.method === "GET" && escGetMatch) return void (await handleGetEscalation(p, escGetMatch[1]!, res));
       const replyMatch = /^\/escalations\/([^/]+)\/reply\/?$/.exec(sub);
       if (req.method === "POST" && replyMatch) return void (await handleReply(p, replyMatch[1]!, req, res));
+      if (req.method === "GET" && (sub === "/agent-extensions" || sub === "/agent-extensions/"))
+        return void (await handleScanExtensions(p, res));
       if (req.method === "POST" && (sub === "/orchestrate" || sub === "/orchestrate/"))
         return void (await handleOrchestrate(rawPid, p, req, res));
 

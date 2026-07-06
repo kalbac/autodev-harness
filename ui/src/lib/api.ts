@@ -116,6 +116,11 @@ export interface ProjectConfigView {
      *  unset the orchestrator handles planning). Mirrors orchestrator's shape. */
     planner?: { adapter: string; model: string; effort?: string };
   };
+  /** Worker ambient-extension isolation (M2), always projected as plain
+   *  booleans — all default `false` (the worker inherits the full ambient
+   *  ~/.claude + project extension set unless the operator opts in). Mirrors
+   *  `src/api/config-view.ts`'s `buildProjectConfigView` projection. */
+  isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
   /** Read-only policy toggle the UI shows but never writes. */
   policy: { heterogeneity: "warn" | "off" };
   /** Server-computed warnings (rendered verbatim) — non-empty when worker &
@@ -137,6 +142,10 @@ export interface ProjectConfigForm {
     critic?: { adapter?: string; model?: string; effort?: string };
     planner?: { adapter?: string; model?: string; effort?: string };
   };
+  /** Only present sub-fields are changed server-side (see `ScaffoldFormSchema`
+   *  in `src/registry/scaffold.ts`); omitted fields — including the whole
+   *  `isolation` key — are left untouched. */
+  isolation?: { worker?: { cleanRoom?: boolean; mcp?: boolean; skills?: boolean } };
 }
 
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
@@ -229,6 +238,26 @@ export interface CriticVerdictDoc {
   broken_contracts: { zone: string; file: string; line: number; evidence: string }[];
   diff_sha256?: string;
   updated_at: number;
+}
+
+/** Mirrors `src/detect/agent-extensions.ts` McpServerStatus. */
+export interface McpServerStatus {
+  name: string;
+  status: string;
+}
+
+/** Mirrors `src/detect/agent-extensions.ts` AgentExtensions — the payload of
+ *  `GET /projects/:id/agent-extensions` (M2), a best-effort, streaming visibility
+ *  probe of what the worker `claude -p` child inherits under the project's
+ *  CURRENTLY SAVED isolation config. `model` is present only when the probe's
+ *  `init` event carried one. */
+export interface AgentExtensions {
+  model?: string;
+  cwd: string;
+  mcp: McpServerStatus[];
+  skills: string[];
+  slashCommands: string[];
+  agents: string[];
 }
 
 export class ApiError extends Error {
@@ -341,6 +370,15 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(form),
     }),
+
+  /** Best-effort visibility scan of what the worker CLI inherits under this
+   *  project's CURRENT saved isolation config (M2). Spawns the real `claude`
+   *  and can take a few seconds; `extensions` is `null` when the probe found
+   *  nothing (never throws for that reason — only a genuine HTTP/network
+   *  failure or a project with no scan capability, which 404s). See
+   *  GET /projects/:id/agent-extensions. */
+  getAgentExtensions: (projectId: string) =>
+    req<{ extensions: AgentExtensions | null }>(projectPath(projectId, "/agent-extensions")),
 
   /** Runtime files are raw text/json, not a JSON envelope — fetched as text. */
   async getRuntimeFile(

@@ -69,6 +69,18 @@ describe("buildProjectConfigView", () => {
     expect(buildProjectConfigView(cfg, false).heterogeneityWarnings).toEqual([]);
   });
 
+  it("projects worker isolation as all-false for the default (inherit-everything) config", () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const view = buildProjectConfigView(cfg, false);
+    expect(view.isolation).toEqual({ worker: { cleanRoom: false, mcp: false, skills: false } });
+  });
+
+  it("projects a non-default worker isolation config verbatim", () => {
+    const cfg = HarnessConfigSchema.parse({ isolation: { worker: { cleanRoom: true, mcp: true } } });
+    const view = buildProjectConfigView(cfg, false);
+    expect(view.isolation).toEqual({ worker: { cleanRoom: true, mcp: true, skills: false } });
+  });
+
   it("faithfully projects the base roles/gate/worktree slice", () => {
     const cfg = HarnessConfigSchema.parse({
       gate: { checkCommand: "npm test" },

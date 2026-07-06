@@ -52,6 +52,22 @@ export const ScaffoldFormSchema = z
       })
       .strict()
       .optional(),
+    // Worker ambient-extension isolation (all optional; strict). Mirrors the
+    // roles write path — the form carries only the sub-fields the UI toggles,
+    // hand-set fields survive via mergeConfigYaml.
+    isolation: z
+      .object({
+        worker: z
+          .object({
+            cleanRoom: z.boolean().optional(),
+            mcp: z.boolean().optional(),
+            skills: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -119,6 +135,10 @@ export function buildConfigYaml(form: ScaffoldForm): string {
   }
   if (Object.keys(roles).length > 0) cfg["roles"] = roles;
 
+  if (form.isolation?.worker !== undefined) {
+    cfg["isolation"] = { worker: pruneUndefined(form.isolation.worker) };
+  }
+
   const text = CONFIG_HEADER + stringifyYaml(cfg);
 
   const parsed = HarnessConfigSchema.safeParse(parseYaml(text));
@@ -171,6 +191,14 @@ export function mergeConfigYaml(existingRawText: string, form: ScaffoldForm): st
       }
     }
     merged["roles"] = mergedRoles;
+  }
+  if (form.isolation?.worker !== undefined) {
+    const rawIso = (raw["isolation"] as Record<string, unknown> | undefined) ?? {};
+    const rawWorker = (rawIso["worker"] as Record<string, unknown> | undefined) ?? {};
+    merged["isolation"] = {
+      ...rawIso,
+      worker: { ...rawWorker, ...pruneUndefined(form.isolation.worker) },
+    };
   }
 
   const text = CONFIG_HEADER + stringifyYaml(merged);

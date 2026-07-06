@@ -1,12 +1,26 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, FileWarning, Pencil, Plus, X } from "lucide-react";
-import { useConfig, useProjects, useUpdateProjectConfig, useDetectedAgents } from "@/lib/queries";
+import { ArrowLeft, Check, FileWarning, Pencil, Plus, RefreshCw, ScanEye, X } from "lucide-react";
+import {
+  useConfig,
+  useProjects,
+  useUpdateProjectConfig,
+  useDetectedAgents,
+  useAgentExtensions,
+} from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
-import { ApiError, type ProjectConfigForm, type ProjectConfigView, type DetectedAgent } from "@/lib/api";
+import {
+  ApiError,
+  type ProjectConfigForm,
+  type ProjectConfigView,
+  type DetectedAgent,
+  type AgentExtensions,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { Tone } from "@/lib/status";
 import { Button } from "@/components/ui/Button";
 import { Loading, EmptyState, Spinner } from "@/components/ui/Feedback";
+import { StatusPill } from "@/components/ui/StatusPill";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
 
 /** Local edit-draft shape — exactly the fields `PATCH /projects/:id/config`
@@ -32,6 +46,10 @@ interface EditDraft {
    *  "+ Configure planner". While false, `buildDiff` NEVER emits planner, so an
    *  unconfigured planner stays unset. */
   addPlanner: boolean;
+  /** Worker ambient-extension isolation (M2) — all default `false`. */
+  isolationCleanRoom: boolean;
+  isolationMcp: boolean;
+  isolationSkills: boolean;
 }
 
 function draftFrom(config: ProjectConfigView): EditDraft {
@@ -51,6 +69,9 @@ function draftFrom(config: ProjectConfigView): EditDraft {
     plannerModel: config.roles.planner?.model ?? "",
     plannerEffort: config.roles.planner?.effort ?? "",
     addPlanner: config.roles.planner !== undefined,
+    isolationCleanRoom: config.isolation.worker.cleanRoom,
+    isolationMcp: config.isolation.worker.mcp,
+    isolationSkills: config.isolation.worker.skills,
   };
 }
 
@@ -122,6 +143,18 @@ function buildDiff(config: ProjectConfigView, draft: EditDraft): ProjectConfigFo
   }
 
   if (Object.keys(roles).length > 0) diff.roles = roles;
+
+  // Isolation (M2): same send-only-changed contract, one sub-field per
+  // toggle. Emitted ONLY when at least one sub-field actually changed vs the
+  // loaded config — an untouched isolation panel sends no `isolation` key at
+  // all, so the backend never rewrites it.
+  const isolationWorker: { cleanRoom?: boolean; mcp?: boolean; skills?: boolean } = {};
+  if (draft.isolationCleanRoom !== config.isolation.worker.cleanRoom) {
+    isolationWorker.cleanRoom = draft.isolationCleanRoom;
+  }
+  if (draft.isolationMcp !== config.isolation.worker.mcp) isolationWorker.mcp = draft.isolationMcp;
+  if (draft.isolationSkills !== config.isolation.worker.skills) isolationWorker.skills = draft.isolationSkills;
+  if (Object.keys(isolationWorker).length > 0) diff.isolation = { worker: isolationWorker };
 
   return diff;
 }
@@ -245,6 +278,8 @@ export function ProjectSettingsView() {
             onDraftChange={patchDraft}
             detectedAgents={detectedAgents}
           />
+
+          <AgentExtensionsPanel projectId={projectId} />
         </>
       ) : null}
 
@@ -275,7 +310,7 @@ function ConfigSections({
    *  text fields. Non-null = a successfully loaded catalog to build selects from. */
   detectedAgents: DetectedAgent[] | null;
 }) {
-  const { gate, allowedBranchPattern, stateDir, worktree, roles } = config;
+  const { gate, allowedBranchPattern, stateDir, worktree, roles, isolation } = config;
   const editable = editing && draft;
 
   const supportedOptions = detectedAgents ? supportedAgentOptions(detectedAgents) : [];
@@ -487,7 +522,110 @@ function ConfigSections({
           </div>
         )}
       </SettingsSection>
+
+      <SettingsSection title="Isolation">
+        <p className="pb-2 text-[11px] leading-relaxed text-subtle">
+          By default the worker inherits your full <span className="font-mono">~/.claude</span> + project extension
+          set. Isolation runs it cleaner / more reproducibly.
+        </p>
+        {editable ? (
+          <>
+            <ToggleRow
+              label="Clean-room"
+              description="Drop ALL ambient extensions — MCP, skills, plugins, hooks. Maps to claude --bare."
+              checked={draft.isolationCleanRoom}
+              onChange={(v) => onDraftChange({ isolationCleanRoom: v })}
+            />
+            <ToggleRow
+              label="Strip MCP servers"
+              description="claude --strict-mcp-config"
+              checked={draft.isolationMcp}
+              onChange={(v) => onDraftChange({ isolationMcp: v })}
+              disabled={draft.isolationCleanRoom}
+              disabledHint="included in Clean-room"
+            />
+            <ToggleRow
+              label="Strip skills / slash-commands"
+              description="claude --disable-slash-commands"
+              checked={draft.isolationSkills}
+              onChange={(v) => onDraftChange({ isolationSkills: v })}
+              disabled={draft.isolationCleanRoom}
+              disabledHint="included in Clean-room"
+            />
+          </>
+        ) : (
+          <>
+            <SettingsRow label="Clean-room" value={isolation.worker.cleanRoom ? "on" : "off"} />
+            <SettingsRow
+              label="Strip MCP servers"
+              value={isolation.worker.cleanRoom ? "on (via Clean-room)" : isolation.worker.mcp ? "on" : "off"}
+            />
+            <SettingsRow
+              label="Strip skills / slash-commands"
+              value={isolation.worker.cleanRoom ? "on (via Clean-room)" : isolation.worker.skills ? "on" : "off"}
+            />
+          </>
+        )}
+      </SettingsSection>
     </>
+  );
+}
+
+/** One toggle-row control for the "Isolation" section: a checkbox-styled box
+ *  (same visual idiom as `RegisterForm`'s scaffold checkbox) with a label and
+ *  optional description. `disabled` greys the row and shows `disabledHint`
+ *  instead of the normal description — used when Clean-room subsumes an
+ *  individual MCP/Skills toggle; the underlying draft value is left untouched
+ *  (still sent if it happens to differ from the saved config) so turning
+ *  Clean-room back off restores whatever the toggle was set to. */
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onChange,
+  disabled,
+  disabledHint,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  disabledHint?: string;
+}) {
+  return (
+    <label
+      className={cn(
+        "flex items-start gap-2.5 py-1.5",
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+      )}
+    >
+      <span
+        className={cn(
+          "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border transition-colors",
+          checked
+            ? "border-accent bg-[color-mix(in_srgb,var(--color-accent)_25%,transparent)] text-accent"
+            : "border-line-strong",
+        )}
+      >
+        {checked && <Check className="size-3" />}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+        className="sr-only"
+      />
+      <span className="flex-1">
+        <span className="block text-[13px] text-text">{label}</span>
+        {disabled && disabledHint ? (
+          <span className="mt-0.5 block font-mono text-[11px] italic text-subtle">{disabledHint}</span>
+        ) : (
+          description && <span className="mt-0.5 block font-mono text-[11px] text-muted">{description}</span>
+        )}
+      </span>
+    </label>
   );
 }
 
@@ -851,6 +989,127 @@ function EditableList({
 /** `adapter · model · effort` — effort omitted when unset. */
 function roleLine(adapter: string, model: string, effort?: string): string {
   return [adapter, model, effort].filter(Boolean).join(" · ");
+}
+
+/**
+ * Read-only visibility panel (M2): what does the worker CLI ACTUALLY inherit
+ * right now, under the project's currently SAVED isolation config? "Scan"
+ * spawns the real `claude`, streams its `system/init` event, and kills it
+ * before any model turn fires — no token cost, but it can take a few seconds.
+ * Never auto-fetches (`useAgentExtensions`'s `enabled: false`) — the operator
+ * has to explicitly ask for a fresh probe, same manual-trigger idiom as the
+ * Global Settings "Installed agents" Rescan.
+ */
+function AgentExtensionsPanel({ projectId }: { projectId: string }) {
+  const scan = useAgentExtensions(projectId);
+  const scanned = scan.fetchStatus === "idle" && scan.data !== undefined;
+  const extensions: AgentExtensions | null = scan.data?.extensions ?? null;
+
+  return (
+    <SettingsSection
+      title="Agent extensions"
+      aside={
+        <Button size="sm" variant="ghost" onClick={() => void scan.refetch()} disabled={scan.isFetching}>
+          <RefreshCw className={cn("size-3", scan.isFetching && "animate-spin")} />
+          {scanned ? "Rescan" : "Scan"}
+        </Button>
+      }
+      className="p-0"
+    >
+      <p className="px-4 pt-3 text-[11px] leading-relaxed text-subtle">
+        Reflects the CURRENTLY SAVED isolation config above — if you just toggled isolation, Save first, then
+        Scan to see the effect.
+      </p>
+
+      {scan.isFetching ? (
+        <Loading label="Scanning worker extensions… (spawns claude — a few seconds)" />
+      ) : scan.isError ? (
+        <p className="px-4 py-6 text-sm text-broken">
+          {scan.error instanceof ApiError ? scan.error.message : "scan failed"}
+        </p>
+      ) : !scanned ? (
+        <EmptyState
+          icon={ScanEye}
+          title="Not yet scanned"
+          description="Click Scan to inspect what the worker CLI currently inherits — MCP servers, skills, slash-commands, and agents."
+        />
+      ) : extensions === null ? (
+        <EmptyState
+          icon={ScanEye}
+          title="Scan returned no data"
+          description="The probe ran but captured no init event — the worker CLI may have failed to start, or this environment doesn't support the probe."
+        />
+      ) : (
+        <div className="flex flex-col gap-3 px-4 pb-4 pt-1">
+          <ExtensionGroup title="MCP servers" count={extensions.mcp.length}>
+            {extensions.mcp.length === 0 ? (
+              <NoneChip />
+            ) : (
+              extensions.mcp.map((m) => (
+                <StatusPill key={m.name} tone={mcpTone(m.status)} label={`${m.name} · ${m.status}`} />
+              ))
+            )}
+          </ExtensionGroup>
+          <ExtensionGroup title="Skills" count={extensions.skills.length}>
+            {extensions.skills.length === 0 ? <NoneChip /> : extensions.skills.map((s) => <Chip key={s} label={s} />)}
+          </ExtensionGroup>
+          <ExtensionGroup title="Slash-commands" count={extensions.slashCommands.length}>
+            {extensions.slashCommands.length === 0 ? (
+              <NoneChip />
+            ) : (
+              extensions.slashCommands.map((s) => <Chip key={s} label={s} />)
+            )}
+          </ExtensionGroup>
+          <ExtensionGroup title="Agents" count={extensions.agents.length}>
+            {extensions.agents.length === 0 ? <NoneChip /> : extensions.agents.map((a) => <Chip key={a} label={a} />)}
+          </ExtensionGroup>
+        </div>
+      )}
+
+      <p className="border-t border-line px-4 py-2.5 text-[11px] leading-relaxed text-subtle">
+        The codex critic inherits your <span className="font-mono">~/.codex</span> global config + project{" "}
+        <span className="font-mono">AGENTS.md</span>; its NO-TOOLS preamble is always enforced. No live critic
+        scan — codex has no clean init JSON.
+      </p>
+    </SettingsSection>
+  );
+}
+
+/** One counted group row inside the extensions panel: a mono uppercase label
+ *  with a count, and a wrapped chip row underneath. */
+function ExtensionGroup({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  return (
+    <div>
+      <h4 className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+        {title} <span className="text-subtle">({count})</span>
+      </h4>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+/** Plain chip — same visual as the read-mode worktree-provision entries. */
+function Chip({ label }: { label: string }) {
+  return (
+    <span className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-text">
+      {label}
+    </span>
+  );
+}
+
+function NoneChip() {
+  return <span className="font-mono text-[11px] text-subtle">none</span>;
+}
+
+/** MCP server status string -> pill tone. "connected"/"ready"/"ok" reads
+ *  clean; "failed"/"error" reads broken; anything else (e.g. "needs-auth", or
+ *  an unrecognized future status string) falls back to idle rather than
+ *  guessing a verdict it can't back up. */
+function mcpTone(status: string): Tone {
+  const s = status.toLowerCase();
+  if (s === "connected" || s === "ready" || s === "ok") return "clean";
+  if (s === "failed" || s === "error") return "broken";
+  return "idle";
 }
 
 function ConfigUnavailable({ error }: { error: unknown }) {

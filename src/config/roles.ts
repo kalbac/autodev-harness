@@ -29,6 +29,21 @@ export function resolveOrchestratorExe(cfg: HarnessConfig): string {
   return cfg.roles.orchestrator.exe ?? adapterMeta(cfg.roles.orchestrator.adapter).defaultExe;
 }
 
+// isolation.worker: the effective `claude -p` isolation flags for the worker
+// spawn (spec "Effective worker flags"). `cleanRoom` (`--bare`) is the master
+// clean-room lever — it already drops MCP + skills/slash-commands, so when it
+// is on the orthogonal flags are NOT also emitted (they would be redundant).
+// Otherwise each individual lever is pushed independently. Default config →
+// all false → [] (byte-identical to the pre-isolation spawn).
+export function workerIsolationFlags(cfg: HarnessConfig): string[] {
+  const iso = cfg.isolation.worker;
+  if (iso.cleanRoom) return ["--bare"];
+  const flags: string[] = [];
+  if (iso.mcp) flags.push("--strict-mcp-config");
+  if (iso.skills) flags.push("--disable-slash-commands");
+  return flags;
+}
+
 // policy.heterogeneity: return a one-element warning array when policy is "warn"
 // AND the worker and critic resolve to the SAME adapter family; else [].
 export function heterogeneityWarnings(cfg: HarnessConfig): string[] {
