@@ -1,5 +1,19 @@
 # CURRENT STATE — Autodev Harness
 
+> ## 🔄 ACTIVE (s29) — shadcn (Base UI) UI migration — AUTONOMOUS, IN FLIGHT
+> Operator wants the whole `ui/` moved to the **default shadcn look on Base UI (zinc)**, screen by screen.
+> Spec: `docs/superpowers/specs/2026-07-06-shadcn-ui-migration-design.md` · Plan (checkboxes = progress):
+> `docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md`. Governing rule: **shadcn-first** (see AGENTS.md).
+> Mode: subagent-driven (Sonnet 5 workers) + mandatory codex GPT-5.5 critic per phase; merge to main after
+> critic-clean + green build/typecheck (operator away, autonomy granted). **Live browser-verify DEFERRED to
+> operator** (browser tools were down this session) — nothing visually confirmed in a real browser yet.
+> - **PR0 Foundation — ✅ MERGED to main** (`--no-ff`): shadcn init (Base UI/zinc/css-vars), reconciled theme
+>   (IBM Plex + literal status vocab + legacy-token alias layer), `.dark` convention, 17 primitives, signature-
+>   preserving Button/Card/TabBar/StatusPill/Dot/Feedback. Critic found+fixed 1 high (muted/accent token-alias
+>   collision) + 1 medium (TabBar accent underline); re-critic clean. Build+typecheck green.
+> - **Next:** PR1 app-shell → PR2 board → PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task
+>   detail → PR5 settings → final cleanup (drop the legacy-token alias layer). Resume from the plan's unchecked boxes.
+>
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
 > critic NO-TOOLS preamble + live visibility scan.** Web-UI item (4) was rescoped after an empirical investigation proved

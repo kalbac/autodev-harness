@@ -46,7 +46,7 @@ Legacy Tailwind class → canonical shadcn class. During PR0 the legacy classes 
 
 ---
 
-## PR0 — Foundation
+## PR0 — Foundation  ✅ DONE — merged to main (s29). Critic found+fixed token-alias collision + TabBar accent; re-critic clean. Live browser-verify deferred to operator.
 
 **Outcome:** whole app compiles, builds, and renders in the zinc default look. No screen restructured yet.
 
