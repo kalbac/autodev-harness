@@ -1,10 +1,11 @@
 import type { HTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 
-// Kept minimal and signature-preserving (Card/CardHeader/CardBody, 0 current
-// call sites) rather than adopting shadcn's own richer card.tsx (which uses
-// CardContent/CardTitle/CardAction/CardFooter) — just re-skinned onto
-// canonical shadcn tokens. See docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md §Task 0.7.
+// Kept minimal and signature-preserving (Card/CardHeader/CardBody) rather than
+// adopting shadcn's own richer card.tsx (which uses CardContent/CardTitle/
+// CardAction/CardFooter) — just re-skinned onto canonical shadcn tokens. Used by
+// SettingsLayout, TaskDetailView, EscalationCard, HomeView, board/run screens.
+// See docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md §Task 0.7.
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div

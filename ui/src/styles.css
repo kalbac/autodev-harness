@@ -36,8 +36,6 @@
 
   body {
     margin: 0;
-    background: var(--color-ink);
-    color: var(--color-text);
     font-family: var(--font-sans);
     font-feature-settings: "cv05", "ss01";
     -webkit-font-smoothing: antialiased;
@@ -48,14 +46,14 @@
   /* Dark, thin scrollbars that read as part of the chrome, not the OS. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-line-strong) transparent;
+    scrollbar-color: var(--border) transparent;
   }
   *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   *::-webkit-scrollbar-thumb {
-    background: var(--color-line-strong);
+    background: var(--border);
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 9999px;
@@ -142,29 +140,15 @@
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
 
-  /* Functional status vocabulary — meaning, not chrome. Kept literal in both themes. */
+  /* Functional status vocabulary — the ONLY non-shadcn color tokens. These
+     carry meaning (critic verdict / queue status), not chrome, so they stay
+     literal in both themes. Everything else is canonical shadcn zinc.
+     The PR0→PR5 legacy-token alias layer is fully retired — all screens now
+     use canonical shadcn classes/vars directly. */
   --color-working: #e8833a;
   --color-uncertain: #e0a324;
   --color-broken: #e5484d;
   --color-clean: #3fb68b;
-
-  /* Legacy-token alias layer → shadcn zinc tokens (lets the ~29 unconverted
-     files render zinc until PR1–PR5 rewrite them to canonical classes).
-     NOTE: `muted` and `accent` are intentionally NOT aliased here — those
-     names are owned by shadcn (--color-muted → --muted background tint,
-     --color-accent → --accent neutral hover tint) and an alias would hijack
-     them and break the primitives that rely on them. Legacy call sites that
-     wanted the old semantics were migrated off in PR0: the old `text-muted`
-     utility → `text-muted-foreground`, and legacy `*-accent` → `*-primary`
-     / `ring`. */
-  --color-ink: var(--background);
-  --color-panel: var(--card);
-  --color-surface: var(--card);
-  --color-surface-2: var(--muted);
-  --color-line: var(--border);
-  --color-line-strong: var(--border);
-  --color-text: var(--foreground);
-  --color-subtle: var(--muted-foreground);
 }
 
 :root {
