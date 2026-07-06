@@ -376,7 +376,7 @@ Apply the recipe to: `RunView.tsx`, `Inspector.tsx`, `EscalationCard.tsx`, `Dige
 - [ ] `RunView.tsx` · [ ] `Inspector.tsx` · [ ] `EscalationCard.tsx` · [ ] `DigestStrip.tsx` · [ ] `DiffView.tsx` · [ ] `VerdictSeal.tsx`
 - [ ] `npm run build` → PASS · [ ] browser-verify a run with a verdict + a diff (light+dark) · [ ] critic review · [ ] gated merge.
 
-### PR4 — Task detail
+### PR4 — Task detail  ✅ DONE — merged to main (s29). Critic: 1 Medium (dark sidebar==card rail → bg-muted/40) fixed, rest PASS.
 
 Apply the recipe to: `TaskDetailView.tsx`, `NewRunComposer.tsx`.
 - `NewRunComposer` inputs → shadcn `Input`/`Select`/`Textarea` (add `textarea` via `npx shadcn add textarea` if a multiline field exists).

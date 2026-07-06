@@ -24,8 +24,11 @@
 > - **PR3 Run screen — ✅ MERGED** (`ac267cc..` + clamp): RunView/Inspector/EscalationCard/DigestStrip/DiffView on
 >   shadcn tokens; VerdictSeal rebuilt as shadcn composition (Badge + Progress subparts tone-tinted + muted rows);
 >   new `ui/textarea.tsx`; DiffView stays custom. Critic: 1 Medium (confidence clamp) fixed, rest PASS.
-> - **Next:** PR4 task detail (TaskDetailView, NewRunComposer) → PR5 settings → final cleanup (drop the legacy-token
->   alias layer, incl. any inline `var(--color-*)`). Resume from the plan's unchecked boxes.
+> - **PR4 Task detail — ✅ MERGED** (`f951113..` + rail fix): TaskDetailView/NewRunComposer on shadcn tokens; spec/stage
+>   boxes → Card; model chips → Badge(render=Link). Critic: 1 Medium (dark `--sidebar`==`--card` rail → `bg-muted/40`) fixed, rest PASS.
+> - **Next:** PR5 settings + onboarding (GlobalSettingsView, ProjectSettingsView, SettingsLayout, SettingsPopover,
+>   NewProjectView, RegisterForm, FolderBrowser, RuntimeFileView, HomeView) → final cleanup (drop legacy-token alias
+>   layer incl. inline `var(--color-*)`; note dark `--sidebar`==`--card` — a shadcn-default). Resume from plan's unchecked boxes.
 >
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
