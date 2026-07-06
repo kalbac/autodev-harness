@@ -20,7 +20,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     !pathname.endsWith("/settings");
 
   return (
-    <div className="flex h-screen overflow-hidden bg-ink text-text">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <Sidebar />
       <main className="flex-1 min-w-0 overflow-hidden">{children}</main>
       {showRail && projectId && <SessionRail projectId={projectId} />}
