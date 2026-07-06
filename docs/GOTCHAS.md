@@ -2,10 +2,11 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 41.
+> Count: 42.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
+| `[ui/shadcn-zinc]` | zinc collapses surfaces: light `--card`==`--background`==white (& `--popover`); dark `--sidebar`==`--card`. So `bg-card` over the page needs a border, and a `bg-sidebar` rail won't separate from `bg-card` cards in dark — use `bg-muted` for tinted panels (page<muted<card reads in both themes). `text-white` hovers break in light (use `text-foreground`). Alias layers must NOT reuse shadcn names `muted`/`accent` (hijacks primitives); a class-only sed misses inline `var(--color-*)`. | `gotchas/shadcn-zinc-token-pitfalls.md` |
 | `[ts/test-hang]` | An unterminated async loop with no-op (microtask) deps starves vitest's `setTimeout` timeout → the run HANGS uncatchably (process-killed at 5 min, no per-test failure), not a timeout. Ensure `run()`-style tests terminate (`maxIterations`/advancing clock). Also: a new foreground shell command KILLS the running background one — don't `echo` while waiting. | `gotchas/vitest-microtask-starvation-hang.md` |
 | `[ts/typecheck-scope]` | An emit-scoped `tsconfig` (`rootDir: src`, `include: ["src/**"]`) silently EXCLUDES the top-level `test/**` tree from `tsc` → `npm run typecheck` is vacuously green there (vitest runs but doesn't typecheck). Add a `noEmit` `tsconfig.typecheck.json` (`rootDir: "."`, include src+test). | `gotchas/tsconfig-typecheck-skips-test-dir.md` |
 | `[api/413-teardown]` | Returning HTTP 413 for an oversized body by calling `req.destroy()` BEFORE the response flushes = client sees a socket reset, not 413. Stop appending + reject in the reader; write 413 + `connection: close` in the handler; destroy the socket on `res` `finish`. | `gotchas/http-413-destroy-before-flush-resets-client.md` |
