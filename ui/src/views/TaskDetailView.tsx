@@ -7,6 +7,7 @@ import { QUEUE_META, isGuarded } from "@/lib/status";
 import type { QueueState } from "@/lib/api";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Dot } from "@/components/ui/Dot";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { EscalationCard } from "@/components/EscalationCard";
 import { Inspector } from "@/components/Inspector";
 import { EmptyState, Loading } from "@/components/ui/Feedback";
@@ -30,7 +31,7 @@ export function TaskDetailView() {
           title="Task not in any queue"
           description="It may have been cleaned up, or never materialized. Runtime artifacts (if any) are still readable below."
         />
-        <div className="flex-1 border-t border-line overflow-hidden">
+        <div className="flex-1 border-t border-border overflow-hidden">
           <Inspector projectId={projectId} taskId={taskId} state="done" />
         </div>
       </div>
@@ -68,7 +69,7 @@ export function TaskDetailView() {
         </div>
 
         {/* Right — inspector rail */}
-        <div className="w-[420px] shrink-0 border-l border-line overflow-hidden bg-panel/30">
+        <div className="w-[420px] shrink-0 border-l border-border overflow-hidden bg-sidebar">
           <Inspector projectId={projectId} taskId={taskId} state={state} />
         </div>
       </div>
@@ -88,22 +89,22 @@ function Header({
   children?: ReactNode;
 }) {
   return (
-    <header className="border-b border-line px-6 py-3 shrink-0">
+    <header className="border-b border-border px-6 py-3 shrink-0">
       <Link
         to="/p/$projectId/board"
         params={{ projectId }}
-        className="inline-flex items-center gap-1.5 font-mono text-[11px] text-subtle hover:text-muted-foreground mb-1.5"
+        className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground mb-1.5"
       >
         <ArrowLeft className="size-3" />
         board
       </Link>
       <div className="flex items-center gap-3">
-        <h1 className="font-sans text-lg font-semibold leading-tight text-text min-w-0 truncate">
+        <h1 className="font-sans text-lg font-semibold leading-tight text-foreground min-w-0 truncate">
           {title}
         </h1>
         <div className="flex items-center gap-2 shrink-0">{children}</div>
       </div>
-      <p className="font-mono text-[11px] text-subtle mt-0.5">{taskId}</p>
+      <p className="font-mono text-[11px] text-muted-foreground mt-0.5">{taskId}</p>
     </header>
   );
 }
@@ -142,19 +143,15 @@ function Lifecycle({
   };
 
   return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+    <Card className="flex items-center gap-1.5 px-3 py-2.5">
       {STAGES.map((s, i) => (
         <div key={s} className="flex items-center gap-1.5">
           <Dot tone={tone(s)} pulse={state === "active" && s === "Worker" && !done.Diff} />
-          <span
-            className={`font-mono text-[11px] ${done[s] || tone(s) !== "idle" ? "text-muted-foreground" : "text-subtle"}`}
-          >
-            {s}
-          </span>
-          {i < STAGES.length - 1 && <span className="mx-1 text-subtle">→</span>}
+          <span className="font-mono text-[11px] text-muted-foreground">{s}</span>
+          {i < STAGES.length - 1 && <span className="mx-1 text-muted-foreground">→</span>}
         </div>
       ))}
-    </div>
+    </Card>
   );
 }
 
@@ -174,15 +171,15 @@ function TaskSpec({
   zones: string[];
 }) {
   return (
-    <div className="rounded-lg border border-line bg-surface">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
-        <span className="font-mono text-[11px] uppercase tracking-wide text-subtle">Task spec</span>
-        <span className="ml-auto flex items-center gap-2 font-mono text-[10px] text-subtle">
-          <span className="rounded border border-line px-1 py-0.5 text-muted-foreground">{type}</span>
+    <Card>
+      <CardHeader className="flex items-center gap-2">
+        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Task spec</span>
+        <span className="ml-auto flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
+          <span className="rounded border border-border px-1 py-0.5 text-muted-foreground">{type}</span>
           {model && <span>{model}</span>}
         </span>
-      </div>
-      <div className="p-4 space-y-4">
+      </CardHeader>
+      <CardBody className="p-4 space-y-4">
         {body.trim().length > 0 && (
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-muted-foreground leading-relaxed">
             {body.trim()}
@@ -206,7 +203,7 @@ function TaskSpec({
           <Section title="Files">
             <div className="flex flex-wrap gap-1.5">
               {fileSet.map((f) => (
-                <span key={f} className="rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                <span key={f} className="rounded border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                   {f}
                 </span>
               ))}
@@ -229,15 +226,15 @@ function TaskSpec({
             </div>
           </Section>
         )}
-      </div>
-    </div>
+      </CardBody>
+    </Card>
   );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
-      <p className="font-mono text-[10px] uppercase tracking-wider text-subtle mb-1.5">{title}</p>
+      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">{title}</p>
       {children}
     </div>
   );
