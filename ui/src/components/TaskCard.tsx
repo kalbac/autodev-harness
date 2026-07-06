@@ -33,7 +33,7 @@ export function TaskCard({ task, state }: { task: Task; state: QueueState }) {
             )}
           </div>
 
-          <div className="text-[13px] font-medium leading-snug text-foreground line-clamp-2 group-hover:text-white">
+          <div className="text-[13px] font-medium leading-snug text-foreground line-clamp-2 group-hover:text-foreground">
             {task.title}
           </div>
 

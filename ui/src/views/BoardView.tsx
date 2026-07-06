@@ -42,12 +42,12 @@ export function BoardView() {
               const meta = QUEUE_META[s];
               const tasks = queues[s];
               return (
-                <section key={s} className="flex flex-col rounded-lg border border-border bg-card/40">
+                <section key={s} className="flex flex-col rounded-lg border border-border bg-muted/40">
                   <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
                     <Dot tone={meta.tone} pulse={s === "active" && tasks.length > 0} />
                     <span
                       className="font-mono text-[11px] font-semibold uppercase tracking-wide"
-                      style={{ color: `var(--color-${meta.tone === "idle" ? "muted" : meta.tone})` }}
+                      style={{ color: meta.tone === "idle" ? "var(--muted-foreground)" : `var(--color-${meta.tone})` }}
                     >
                       {meta.label}
                     </span>
@@ -70,7 +70,7 @@ export function BoardView() {
           <div className="mt-3">
             <button
               onClick={() => setDoneOpen((o) => !o)}
-              className="flex w-full items-center gap-2 rounded-lg border border-border bg-card/40 px-3 py-2 text-left hover:border-border"
+              className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-left hover:border-border"
             >
               <ChevronRight className={cn("size-4 text-muted-foreground transition-transform", doneOpen && "rotate-90")} />
               <Dot tone="clean" />

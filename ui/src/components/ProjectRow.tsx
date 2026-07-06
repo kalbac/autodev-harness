@@ -53,7 +53,7 @@ function StatusDot({ tone, pulse }: { tone: "working" | "idle" | "broken"; pulse
     <span
       className="ml-auto size-[7px] shrink-0 rounded-full"
       style={{
-        background: tone === "idle" ? "var(--color-line-strong)" : toneVar[tone],
+        background: tone === "idle" ? "var(--border)" : toneVar[tone],
         boxShadow: tone === "working" ? `0 0 6px ${toneVar.working}` : undefined,
         animation: pulse ? "status-pulse 1.8s ease-in-out infinite" : undefined,
       }}

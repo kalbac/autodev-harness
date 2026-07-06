@@ -13,7 +13,7 @@ export const toneVar: Record<Tone, string> = {
   uncertain: "var(--color-uncertain)",
   broken: "var(--color-broken)",
   clean: "var(--color-clean)",
-  idle: "var(--color-subtle)",
+  idle: "var(--muted-foreground)",
   accent: "var(--primary)",
 };
 
