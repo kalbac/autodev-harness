@@ -367,7 +367,7 @@ Apply the recipe to: `TaskCard.tsx` (exemplar above), `ProjectRow.tsx`, `BoardVi
 - [ ] `TaskCard.tsx` · [ ] `ProjectRow.tsx` · [ ] `BoardView.tsx`
 - [ ] `npm run build` → PASS · [ ] browser-verify Board (light+dark) · [ ] critic review · [ ] gated merge.
 
-### PR3 — Run (includes VerdictSeal rebuild + DiffView)
+### PR3 — Run (includes VerdictSeal rebuild + DiffView)  ✅ DONE — merged to main (s29). Critic: 1 Medium (confidence clamp) fixed, rest PASS.
 
 Apply the recipe to: `RunView.tsx`, `Inspector.tsx`, `EscalationCard.tsx`, `DigestStrip.tsx`, `DiffView.tsx`, plus the `VerdictSeal.tsx` rebuild.
 

@@ -21,8 +21,11 @@
 >   `bg-card` alone over the page for a layer; (b) `text-white` hovers break in light mode → use `text-foreground`;
 >   (c) PR0's global sed only fixed `text-muted` CLASS, so inline `var(--color-muted)`/`var(--color-accent)` in JS
 >   `style=` may still lurk in unconverted screens (now resolve to shadcn bg tokens) — grep each PR's files for them.
-> - **Next:** PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task detail → PR5 settings → final
->   cleanup (drop the legacy-token alias layer, incl. any inline `var(--color-*)`). Resume from the plan's unchecked boxes.
+> - **PR3 Run screen — ✅ MERGED** (`ac267cc..` + clamp): RunView/Inspector/EscalationCard/DigestStrip/DiffView on
+>   shadcn tokens; VerdictSeal rebuilt as shadcn composition (Badge + Progress subparts tone-tinted + muted rows);
+>   new `ui/textarea.tsx`; DiffView stays custom. Critic: 1 Medium (confidence clamp) fixed, rest PASS.
+> - **Next:** PR4 task detail (TaskDetailView, NewRunComposer) → PR5 settings → final cleanup (drop the legacy-token
+>   alias layer, incl. any inline `var(--color-*)`). Resume from the plan's unchecked boxes.
 >
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
