@@ -17,7 +17,7 @@ const DEFAULT_ROLES: ReadonlyArray<[string, string]> = [
 
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-[0.1em] text-subtle";
 const INPUT =
-  "w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none transition-colors focus:border-accent placeholder:text-subtle";
+  "w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none transition-colors focus:border-ring placeholder:text-subtle";
 const HINT = "mt-1 text-[11px] text-subtle";
 
 /**
@@ -89,8 +89,8 @@ export function RegisterForm({
           <div className="grid grid-cols-[86px_1fr] items-center gap-1.5">
             {DEFAULT_ROLES.map(([role, model]) => (
               <span key={role} className="contents">
-                <span className="font-mono text-[11px] text-muted">{role}</span>
-                <span className="rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs text-muted">
+                <span className="font-mono text-[11px] text-muted-foreground">{role}</span>
+                <span className="rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
                   {model}
                 </span>
               </span>
@@ -143,12 +143,12 @@ export function RegisterForm({
         </div>
 
         {/* Scaffold */}
-        <label className="my-3.5 flex cursor-pointer items-start gap-2 text-xs text-muted">
+        <label className="my-3.5 flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
           <span
             className={cn(
               "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border transition-colors",
               scaffold
-                ? "border-accent bg-[color-mix(in_srgb,var(--color-accent)_25%,transparent)] text-accent"
+                ? "border-primary bg-[color-mix(in_srgb,var(--primary)_25%,transparent)] text-primary"
                 : "border-line-strong",
             )}
           >
@@ -179,9 +179,9 @@ export function RegisterForm({
         <button
           type="submit"
           disabled={register.isPending}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
         >
-          {register.isPending && <Spinner className="text-white" />}
+          {register.isPending && <Spinner className="text-primary-foreground" />}
           Register project
         </button>
       </form>

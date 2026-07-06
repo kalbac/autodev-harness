@@ -4,7 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { useProjects } from "@/lib/queries";
 
 const CHIP =
-  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted transition-colors hover:border-line-strong hover:text-text";
+  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted-foreground transition-colors hover:border-line-strong hover:text-text";
 
 /**
  * The composer's project chip: click to open a menu of every registered
@@ -55,7 +55,7 @@ export function ProjectSwitcherMenu({
                 className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-text transition-colors hover:bg-surface"
               >
                 <span className="w-3.5 shrink-0">
-                  {p.id === projectId && <Check className="size-3.5 text-accent" />}
+                  {p.id === projectId && <Check className="size-3.5 text-primary" />}
                 </span>
                 <span className="truncate">{p.name}</span>
               </Link>

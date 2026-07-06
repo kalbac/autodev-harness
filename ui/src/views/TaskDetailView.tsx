@@ -92,7 +92,7 @@ function Header({
       <Link
         to="/p/$projectId/board"
         params={{ projectId }}
-        className="inline-flex items-center gap-1.5 font-mono text-[11px] text-subtle hover:text-muted mb-1.5"
+        className="inline-flex items-center gap-1.5 font-mono text-[11px] text-subtle hover:text-muted-foreground mb-1.5"
       >
         <ArrowLeft className="size-3" />
         board
@@ -147,7 +147,7 @@ function Lifecycle({
         <div key={s} className="flex items-center gap-1.5">
           <Dot tone={tone(s)} pulse={state === "active" && s === "Worker" && !done.Diff} />
           <span
-            className={`font-mono text-[11px] ${done[s] || tone(s) !== "idle" ? "text-muted" : "text-subtle"}`}
+            className={`font-mono text-[11px] ${done[s] || tone(s) !== "idle" ? "text-muted-foreground" : "text-subtle"}`}
           >
             {s}
           </span>
@@ -178,13 +178,13 @@ function TaskSpec({
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
         <span className="font-mono text-[11px] uppercase tracking-wide text-subtle">Task spec</span>
         <span className="ml-auto flex items-center gap-2 font-mono text-[10px] text-subtle">
-          <span className="rounded border border-line px-1 py-0.5 text-muted">{type}</span>
+          <span className="rounded border border-line px-1 py-0.5 text-muted-foreground">{type}</span>
           {model && <span>{model}</span>}
         </span>
       </div>
       <div className="p-4 space-y-4">
         {body.trim().length > 0 && (
-          <pre className="whitespace-pre-wrap break-words font-sans text-sm text-muted leading-relaxed">
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm text-muted-foreground leading-relaxed">
             {body.trim()}
           </pre>
         )}
@@ -193,7 +193,7 @@ function TaskSpec({
           <Section title="Acceptance">
             <ul className="space-y-1">
               {acceptance.map((a, i) => (
-                <li key={i} className="flex gap-2 text-sm text-muted">
+                <li key={i} className="flex gap-2 text-sm text-muted-foreground">
                   <span className="text-clean">✓</span>
                   {a}
                 </li>
@@ -206,7 +206,7 @@ function TaskSpec({
           <Section title="Files">
             <div className="flex flex-wrap gap-1.5">
               {fileSet.map((f) => (
-                <span key={f} className="rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-muted">
+                <span key={f} className="rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                   {f}
                 </span>
               ))}

@@ -53,15 +53,15 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
 
       <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm mb-4">
         <dt className="font-mono text-[11px] uppercase tracking-wide text-subtle pt-0.5">What</dt>
-        <dd className="text-muted">{e.what}</dd>
+        <dd className="text-muted-foreground">{e.what}</dd>
         <dt className="font-mono text-[11px] uppercase tracking-wide text-subtle pt-0.5">Decide</dt>
         <dd className="text-text">{e.decision}</dd>
         <dt className="font-mono text-[11px] uppercase tracking-wide text-subtle pt-0.5">Cost</dt>
-        <dd className="text-muted">{e.costOfWrong}</dd>
+        <dd className="text-muted-foreground">{e.costOfWrong}</dd>
       </dl>
 
       {e.evidence.trim().length > 0 && (
-        <pre className="mb-4 max-h-48 overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted whitespace-pre-wrap break-words">
+        <pre className="mb-4 max-h-48 overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
           {e.evidence}
         </pre>
       )}
@@ -76,7 +76,7 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
         >
           <CheckCircle2 className="size-4" />
           Replied <span className="font-mono font-semibold">{e.reply!.choice}</span>
-          {e.reply!.note && <span className="text-muted">— {e.reply!.note}</span>}
+          {e.reply!.note && <span className="text-muted-foreground">— {e.reply!.note}</span>}
         </div>
       ) : (
         <div className="flex flex-col gap-3">
@@ -130,7 +130,7 @@ function OptionButton({
       <span className="grid size-6 shrink-0 place-items-center rounded-md border border-line bg-surface font-mono text-xs font-semibold text-text">
         {letter}
       </span>
-      <span className="text-[13px] leading-snug text-muted">{text}</span>
+      <span className="text-[13px] leading-snug text-muted-foreground">{text}</span>
     </button>
   );
 }

@@ -61,7 +61,7 @@ export function SettingsSection({
 export function SettingsRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-6 py-1.5">
-      <span className="shrink-0 text-[13px] text-muted">{label}</span>
+      <span className="shrink-0 text-[13px] text-muted-foreground">{label}</span>
       <span className="min-w-0 break-words text-right font-mono text-[11px] text-text">
         {value === "" || value === null || value === undefined ? (
           <span className="text-subtle">—</span>

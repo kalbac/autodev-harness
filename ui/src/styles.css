@@ -25,7 +25,6 @@
 
 @layer base {
   * {
-    border-color: var(--color-line);
     @apply border-border outline-ring/50;
   }
 
@@ -63,13 +62,13 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--ring);
     outline-offset: 2px;
     border-radius: 3px;
   }
 
   ::selection {
-    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    background: color-mix(in srgb, var(--primary) 35%, transparent);
   }
   html {
     @apply font-sans;
@@ -151,11 +150,13 @@
 
   /* Legacy-token alias layer → shadcn zinc tokens (lets the ~29 unconverted
      files render zinc until PR1–PR5 rewrite them to canonical classes).
-     Declared LAST in this block so these aliases win over shadcn's own
-     same-named vars above (notably --color-accent, which shadcn points at
-     the neutral hover-tint --accent; our alias repoints the legacy
-     interactive/accent semantic at --primary instead — the strong,
-     zinc-default interactive color the old design used it for). */
+     NOTE: `muted` and `accent` are intentionally NOT aliased here — those
+     names are owned by shadcn (--color-muted → --muted background tint,
+     --color-accent → --accent neutral hover tint) and an alias would hijack
+     them and break the primitives that rely on them. Legacy call sites that
+     wanted the old semantics were migrated off in PR0: the old `text-muted`
+     utility → `text-muted-foreground`, and legacy `*-accent` → `*-primary`
+     / `ring`. */
   --color-ink: var(--background);
   --color-panel: var(--card);
   --color-surface: var(--card);
@@ -163,9 +164,7 @@
   --color-line: var(--border);
   --color-line-strong: var(--border);
   --color-text: var(--foreground);
-  --color-muted: var(--muted-foreground);
   --color-subtle: var(--muted-foreground);
-  --color-accent: var(--primary);
 }
 
 :root {

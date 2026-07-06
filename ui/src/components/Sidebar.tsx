@@ -34,7 +34,7 @@ export function Sidebar() {
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
       {/* Brand */}
       <div className="flex items-center gap-2.5 px-4 h-14 border-b border-line">
-        <div className="grid size-7 place-items-center rounded-md bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-accent">
+        <div className="grid size-7 place-items-center rounded-md bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] text-primary">
           <Terminal className="size-4" />
         </div>
         <div className="min-w-0">
@@ -51,7 +51,7 @@ export function Sidebar() {
           to="/new"
           className="flex items-center gap-2 rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-text transition-colors hover:border-line-strong"
         >
-          <Plus className="size-4 text-accent" />
+          <Plus className="size-4 text-primary" />
           New Project
         </Link>
       </div>
@@ -71,7 +71,7 @@ export function Sidebar() {
       </nav>
 
       {/* Daemon status + settings gear */}
-      <div className="relative flex items-center gap-2 border-t border-line px-3 h-11 font-mono text-[11px] text-muted">
+      <div className="relative flex items-center gap-2 border-t border-line px-3 h-11 font-mono text-[11px] text-muted-foreground">
         <Dot tone={CONN_TONE[conn]} pulse={conn === "connecting"} />
         <span>{CONN_LABEL[conn]}</span>
         <button
@@ -81,7 +81,7 @@ export function Sidebar() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setSettingsOpen((v) => !v)}
           aria-label="Settings"
-          className="ml-auto rounded-md border border-line px-1.5 py-1 text-muted transition-colors hover:border-line-strong hover:text-text"
+          className="ml-auto rounded-md border border-line px-1.5 py-1 text-muted-foreground transition-colors hover:border-line-strong hover:text-text"
         >
           <Settings className="size-3.5" />
         </button>

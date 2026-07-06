@@ -51,7 +51,7 @@ export function HomeView() {
           <h1 className="mb-2 text-center font-sans text-[26px] font-semibold leading-tight text-text">
             What are we building in {projectName}?
           </h1>
-          <p className="mx-auto mb-6 max-w-xl text-center text-sm text-muted">
+          <p className="mx-auto mb-6 max-w-xl text-center text-sm text-muted-foreground">
             Describe an intent — the orchestrator decomposes it into gated tasks, an independent
             critic reviews every diff, and only clean work is committed.
           </p>
@@ -65,7 +65,7 @@ export function HomeView() {
             <h2 className="font-mono text-[11px] uppercase tracking-wider text-subtle">Recent runs</h2>
             <button
               onClick={() => setShowArchived((v) => !v)}
-              className="font-mono text-[10px] uppercase tracking-wider text-subtle transition-colors hover:text-muted"
+              className="font-mono text-[10px] uppercase tracking-wider text-subtle transition-colors hover:text-muted-foreground"
             >
               {showArchived ? "hide archived" : "show archived"}
             </button>

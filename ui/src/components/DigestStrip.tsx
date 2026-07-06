@@ -24,7 +24,7 @@ export function DigestStrip({ digest }: { digest: string }) {
 
       {open &&
         (lines.length > 0 ? (
-          <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted">
+          <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
             {lines.map((l, i) => (
               <div key={i} className="whitespace-pre-wrap break-words">
                 {l}

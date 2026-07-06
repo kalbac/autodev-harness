@@ -31,9 +31,9 @@ export function DiffView({ patch }: { patch: string }) {
                 "px-3 whitespace-pre",
                 kind === "add" && "text-clean bg-[color-mix(in_srgb,var(--color-clean)_8%,transparent)]",
                 kind === "del" && "text-broken bg-[color-mix(in_srgb,var(--color-broken)_8%,transparent)]",
-                kind === "hunk" && "text-accent",
+                kind === "hunk" && "text-primary",
                 kind === "meta" && "text-subtle",
-                kind === "ctx" && "text-muted",
+                kind === "ctx" && "text-muted-foreground",
               )}
             >
               {l || " "}

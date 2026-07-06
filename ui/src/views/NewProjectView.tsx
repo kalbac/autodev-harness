@@ -22,7 +22,7 @@ export function NewProjectView() {
       <div className="flex items-center gap-3 border-b border-line px-4 h-14">
         <Link
           to="/"
-          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-muted transition-colors hover:border-line-strong hover:text-text"
+          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:border-line-strong hover:text-text"
         >
           <ArrowLeft className="size-3.5" />
           back
@@ -45,7 +45,7 @@ export function NewProjectView() {
             }
           />
         ) : (
-          <div className="grid w-full max-w-md shrink-0 place-items-center p-8 text-center text-sm text-muted sm:w-96">
+          <div className="grid w-full max-w-md shrink-0 place-items-center p-8 text-center text-sm text-muted-foreground sm:w-96">
             Select a git repository on the left to register it.
           </div>
         )}

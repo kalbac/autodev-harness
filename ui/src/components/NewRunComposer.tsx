@@ -11,7 +11,7 @@ import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Spinner } from "./ui/Feedback";
 
 const CHIP =
-  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted";
+  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted-foreground";
 
 /**
  * The "new run" intent box — the one write surface that launches work. It only
@@ -99,9 +99,9 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           <button
             onClick={submit}
             disabled={!canSubmit}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-opacity disabled:opacity-40 hover:opacity-90"
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-40 hover:opacity-90"
           >
-            {launch.isPending ? <Spinner className="text-white" /> : <ArrowUp className="size-4" />}
+            {launch.isPending ? <Spinner className="text-primary-foreground" /> : <ArrowUp className="size-4" />}
             Launch run
           </button>
         </div>

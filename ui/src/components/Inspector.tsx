@@ -166,7 +166,7 @@ function FilesTab({
             className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
               selected === n
                 ? "border-line-strong bg-surface-2 text-text"
-                : "border-line text-muted hover:text-text"
+                : "border-line text-muted-foreground hover:text-text"
             }`}
             style={selected === n ? { color: toneVar[verdictTone("clean")] } : undefined}
           >

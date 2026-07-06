@@ -40,7 +40,7 @@ export function TaskCard({ task, state }: { task: Task; state: QueueState }) {
       <div className="mt-2 flex items-center gap-2 font-mono text-[10px] text-subtle">
         <span className="truncate">{task.id}</span>
         <span className="ml-auto flex items-center gap-2 shrink-0">
-          <span className="rounded border border-line px-1 py-0.5 text-muted">{task.type}</span>
+          <span className="rounded border border-line px-1 py-0.5 text-muted-foreground">{task.type}</span>
           {task.model && <span className="text-subtle">{task.model}</span>}
         </span>
       </div>

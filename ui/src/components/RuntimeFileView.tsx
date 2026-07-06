@@ -35,7 +35,7 @@ export function RuntimeFileView({
       {name.endsWith(".patch") ? (
         <DiffView patch={text} />
       ) : (
-        <pre className="overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted whitespace-pre-wrap break-words">
+        <pre className="overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
           {text || "(empty)"}
         </pre>
       )}

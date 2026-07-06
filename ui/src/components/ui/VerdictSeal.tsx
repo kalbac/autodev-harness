@@ -69,7 +69,7 @@ export function VerdictSeal({
         {stamp}
         {typeof confidence === "number" && (
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between text-[11px] text-muted mb-1">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-1">
               <span className="font-mono uppercase tracking-wide">confidence</span>
               <span className="font-mono tabular-nums" style={{ color: c }}>
                 {confidence.toFixed(2)}
@@ -86,7 +86,7 @@ export function VerdictSeal({
       </div>
 
       {notes && (
-        <p className="text-sm text-muted leading-relaxed whitespace-pre-wrap break-words">{notes}</p>
+        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap break-words">{notes}</p>
       )}
 
       {brokenContracts && brokenContracts.length > 0 && (
@@ -102,7 +102,7 @@ export function VerdictSeal({
                   {bc.file}:{bc.line}
                 </span>
               </div>
-              <div className="text-muted mt-1 whitespace-pre-wrap break-words">{bc.evidence}</div>
+              <div className="text-muted-foreground mt-1 whitespace-pre-wrap break-words">{bc.evidence}</div>
             </li>
           ))}
         </ul>

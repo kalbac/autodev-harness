@@ -36,7 +36,7 @@ function ProjectHead({
       params={{ projectId: project.id }}
       className={cn(
         "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-semibold transition-colors",
-        active ? "bg-surface-2 text-text" : "text-muted hover:bg-surface",
+        active ? "bg-surface-2 text-text" : "text-muted-foreground hover:bg-surface",
         isError && !active && "bg-[color-mix(in_srgb,var(--color-broken)_10%,transparent)]",
       )}
     >
@@ -77,7 +77,7 @@ function ActiveProject({ project }: { project: ProjectSummary }) {
             key={run.runId}
             to="/p/$projectId/runs/$runId"
             params={{ projectId: project.id, runId: run.runId }}
-            className="flex items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:bg-surface hover:text-text"
+            className="flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-surface hover:text-text"
           >
             <span
               className="size-[6px] shrink-0 rounded-[2px]"
@@ -91,7 +91,7 @@ function ActiveProject({ project }: { project: ProjectSummary }) {
           <Link
             to="/p/$projectId/board"
             params={{ projectId: project.id }}
-            className="block px-2 py-0.5 text-[11px] text-subtle transition-colors hover:text-muted"
+            className="block px-2 py-0.5 text-[11px] text-subtle transition-colors hover:text-muted-foreground"
           >
             show more…
           </Link>

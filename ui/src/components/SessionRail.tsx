@@ -94,7 +94,7 @@ export function SessionRail({ projectId }: { projectId: string }) {
         title="Plan"
         badge={
           planTaskIds.length > 0 ? (
-            <span className="ml-auto font-mono text-[10px] normal-case tracking-normal text-muted">
+            <span className="ml-auto font-mono text-[10px] normal-case tracking-normal text-muted-foreground">
               {planDone}/{planTaskIds.length}
             </span>
           ) : undefined
@@ -105,7 +105,7 @@ export function SessionRail({ projectId }: { projectId: string }) {
         ) : (
           <>
             {plan && (
-              <div className="mb-2 truncate text-[11px] text-muted" title={plan.name ?? plan.intent}>
+              <div className="mb-2 truncate text-[11px] text-muted-foreground" title={plan.name ?? plan.intent}>
                 {plan.name ?? plan.intent}
               </div>
             )}
@@ -188,7 +188,7 @@ function PlanRow({ state, label, resolved }: { state?: QueueState; label: string
       <span className="grid size-3.5 shrink-0 place-items-center">
         <PlanGlyph state={state} resolved={resolved} />
       </span>
-      <span className={cn("truncate", done ? "text-muted" : dimmed ? "text-subtle" : "text-text")} title={label}>
+      <span className={cn("truncate", done ? "text-muted-foreground" : dimmed ? "text-subtle" : "text-text")} title={label}>
         {label}
       </span>
     </li>
@@ -212,7 +212,7 @@ function PlanGlyph({ state, resolved }: { state?: QueueState; resolved: boolean 
 function Kv({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex justify-between gap-2.5 py-[3px] text-[12px]">
-      <span className="text-muted">{k}</span>
+      <span className="text-muted-foreground">{k}</span>
       <span className="break-all text-right font-mono text-[11px]" title={v}>
         {v}
       </span>
@@ -225,7 +225,7 @@ function Step({ state, label }: { state: "done" | "now" | "idle"; label: string 
     <div
       className={cn(
         "flex items-center gap-2 font-mono text-[11px]",
-        state === "idle" ? "text-subtle" : state === "done" ? "text-muted" : "text-text",
+        state === "idle" ? "text-subtle" : state === "done" ? "text-muted-foreground" : "text-text",
       )}
     >
       {state === "idle" ? (

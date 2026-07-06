@@ -29,7 +29,7 @@ export function RunView() {
         <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-subtle mb-2">
           <Layers className="size-3.5" />
           <span>run</span>
-          <span className="text-muted normal-case tracking-normal">{manifest.runId}</span>
+          <span className="text-muted-foreground normal-case tracking-normal">{manifest.runId}</span>
           <span>·</span>
           <span>{timeAgo(manifest.at)}</span>
           {manifest.archived_at !== undefined && (
@@ -50,7 +50,7 @@ export function RunView() {
               return (
                 <li key={id} className="flex gap-3">
                   <div className="flex flex-col items-center pt-1">
-                    <span className="grid size-6 place-items-center rounded-full border border-line bg-surface font-mono text-[10px] text-muted">
+                    <span className="grid size-6 place-items-center rounded-full border border-line bg-surface font-mono text-[10px] text-muted-foreground">
                       {i + 1}
                     </span>
                     {i < manifest.taskIds.length - 1 && (
@@ -121,7 +121,7 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
           }}
           maxLength={200}
           placeholder={manifest.intent}
-          className="flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-sans text-lg text-text outline-none focus:border-accent"
+          className="flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-sans text-lg text-text outline-none focus:border-ring"
         />
         <IconBtn title="Save" onClick={saveRename}>
           <Check className="size-4 text-clean" />
@@ -138,17 +138,17 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
       <h1 className="flex-1 font-sans text-xl font-semibold leading-snug text-text">{label}</h1>
       <div className="flex shrink-0 items-center gap-0.5 pt-0.5 opacity-60 transition-opacity group-hover:opacity-100">
         <IconBtn title="Rename run" onClick={startRename} disabled={patch.isPending}>
-          <Pencil className="size-3.5 text-muted" />
+          <Pencil className="size-3.5 text-muted-foreground" />
         </IconBtn>
         <IconBtn
           title={isArchived ? "Unarchive run" : "Archive run"}
           onClick={() => patch.mutate({ runId: manifest.runId, patch: { archived: !isArchived } })}
           disabled={patch.isPending}
         >
-          {isArchived ? <ArchiveRestore className="size-3.5 text-muted" /> : <Archive className="size-3.5 text-muted" />}
+          {isArchived ? <ArchiveRestore className="size-3.5 text-muted-foreground" /> : <Archive className="size-3.5 text-muted-foreground" />}
         </IconBtn>
         <IconBtn title="Re-run this intent" onClick={reRun}>
-          <RotateCcw className="size-3.5 text-muted" />
+          <RotateCcw className="size-3.5 text-muted-foreground" />
         </IconBtn>
       </div>
     </div>

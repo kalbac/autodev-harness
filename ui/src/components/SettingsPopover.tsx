@@ -78,8 +78,8 @@ export function SettingsPopover({
               className={cn(
                 "flex-1 rounded-md border px-0 py-1 text-center text-[11px] transition-colors",
                 on
-                  ? "border-accent bg-surface text-text"
-                  : "border-line text-muted hover:text-text",
+                  ? "border-primary bg-surface text-text"
+                  : "border-line text-muted-foreground hover:text-text",
               )}
             >
               {seg.label}

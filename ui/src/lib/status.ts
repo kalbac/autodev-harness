@@ -14,7 +14,7 @@ export const toneVar: Record<Tone, string> = {
   broken: "var(--color-broken)",
   clean: "var(--color-clean)",
   idle: "var(--color-subtle)",
-  accent: "var(--color-accent)",
+  accent: "var(--primary)",
 };
 
 export interface QueueMeta {

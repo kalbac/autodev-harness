@@ -32,7 +32,7 @@ export function FolderBrowser({
   return (
     <div className="min-w-0 flex-1 overflow-auto p-4">
       {/* Breadcrumb — the current directory (or the roots label). */}
-      <div className="mb-2.5 truncate font-mono text-xs text-muted">
+      <div className="mb-2.5 truncate font-mono text-xs text-muted-foreground">
         📁 <b className="text-text">{here ?? "This PC"}</b>
       </div>
 
@@ -81,7 +81,7 @@ export function FolderBrowser({
                       e.stopPropagation();
                       onSelect(entry);
                     }}
-                    className="ml-auto shrink-0 rounded-md border border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] px-2 py-0.5 font-mono text-[10px] text-accent transition-colors hover:bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
+                    className="ml-auto shrink-0 rounded-md border border-[color-mix(in_srgb,var(--primary)_45%,transparent)] px-2 py-0.5 font-mono text-[10px] text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]"
                   >
                     select
                   </button>
