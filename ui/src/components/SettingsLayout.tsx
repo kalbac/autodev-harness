@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 
 /**
  * Shared chrome for the two settings screens (Global + Project). A settings
@@ -20,10 +20,10 @@ export function SettingsPage({
 }) {
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-3 border-b border-line px-4 h-14">
+      <div className="flex items-center gap-3 border-b border-border px-4 h-14">
         {back}
-        <span className="font-sans text-[15px] font-semibold text-text">{title}</span>
-        {subtitle && <span className="font-mono text-[11px] text-subtle">{subtitle}</span>}
+        <span className="font-sans text-[15px] font-semibold text-foreground">{title}</span>
+        {subtitle && <span className="font-mono text-[11px] text-muted-foreground">{subtitle}</span>}
       </div>
       <div className="flex-1 overflow-auto">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 py-8">{children}</div>
@@ -46,13 +46,13 @@ export function SettingsSection({
   className?: string;
 }) {
   return (
-    <section className="rounded-lg border border-line bg-surface">
-      <header className="flex items-center gap-2 border-b border-line px-4 py-2.5">
-        <h2 className="font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">{title}</h2>
+    <Card>
+      <CardHeader className="flex items-center gap-2 py-2.5">
+        <h2 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{title}</h2>
         {aside && <div className="ml-auto">{aside}</div>}
-      </header>
-      <div className={cn("px-4 py-3", className)}>{children}</div>
-    </section>
+      </CardHeader>
+      <CardBody className={className}>{children}</CardBody>
+    </Card>
   );
 }
 
@@ -62,9 +62,9 @@ export function SettingsRow({ label, value }: { label: string; value: ReactNode 
   return (
     <div className="flex items-baseline justify-between gap-6 py-1.5">
       <span className="shrink-0 text-[13px] text-muted-foreground">{label}</span>
-      <span className="min-w-0 break-words text-right font-mono text-[11px] text-text">
+      <span className="min-w-0 break-words text-right font-mono text-[11px] text-foreground">
         {value === "" || value === null || value === undefined ? (
-          <span className="text-subtle">—</span>
+          <span className="text-muted-foreground">—</span>
         ) : (
           value
         )}
