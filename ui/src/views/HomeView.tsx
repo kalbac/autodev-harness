@@ -48,7 +48,7 @@ export function HomeView() {
       <div className="flex-1 overflow-auto">
         {/* Hero — composer-first: the one control that starts work. */}
         <div className="mx-auto w-full max-w-3xl px-6 pb-8 pt-14">
-          <h1 className="mb-2 text-center font-sans text-[26px] font-semibold leading-tight text-text">
+          <h1 className="mb-2 text-center font-sans text-[26px] font-semibold leading-tight text-foreground">
             What are we building in {projectName}?
           </h1>
           <p className="mx-auto mb-6 max-w-xl text-center text-sm text-muted-foreground">
@@ -62,10 +62,10 @@ export function HomeView() {
         {/* Recent runs — cards with a verdict seal. */}
         <div className="mx-auto w-full max-w-3xl px-6 pb-16">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-mono text-[11px] uppercase tracking-wider text-subtle">Recent runs</h2>
+            <h2 className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">Recent runs</h2>
             <button
               onClick={() => setShowArchived((v) => !v)}
-              className="font-mono text-[10px] uppercase tracking-wider text-subtle transition-colors hover:text-muted-foreground"
+              className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
             >
               {showArchived ? "hide archived" : "show archived"}
             </button>
@@ -108,7 +108,7 @@ function RunCard({
     <Link
       to="/p/$projectId/runs/$runId"
       params={{ projectId, runId: run.runId }}
-      className="flex items-center gap-3 rounded-[10px] border border-line bg-surface px-3 py-2.5 transition-colors hover:border-line-strong"
+      className="flex items-center gap-3 rounded-[10px] border border-border bg-card px-3 py-2.5 transition-colors hover:bg-muted"
     >
       <span
         className="shrink-0 rounded-md border px-2 py-[3px] font-mono text-[10px] tracking-[0.08em]"
@@ -122,19 +122,19 @@ function RunCard({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-semibold text-text">{run.name ?? run.intent}</span>
+          <span className="truncate text-sm font-semibold text-foreground">{run.name ?? run.intent}</span>
           {run.archived_at !== undefined && (
-            <span className="shrink-0 rounded border border-line px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-subtle">
+            <span className="shrink-0 rounded border border-border px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
               archived
             </span>
           )}
         </div>
-        <div className="truncate font-mono text-[11px] text-subtle">
+        <div className="truncate font-mono text-[11px] text-muted-foreground">
           {run.taskIds.length} task{run.taskIds.length === 1 ? "" : "s"}
           {SEAL_SUB[tone] ? ` · ${SEAL_SUB[tone]}` : ""}
         </div>
       </div>
-      <span className="ml-auto shrink-0 font-mono text-[11px] text-subtle">{timeAgo(run.at)}</span>
+      <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground">{timeAgo(run.at)}</span>
     </Link>
   );
 }
