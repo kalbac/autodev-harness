@@ -46,6 +46,19 @@ Substantial work follows: sonnet-5 implementer (TDD) → controller spec-check �
 Self-critique is never the gate. Re-critic in-place fixes; a mechanical
 critic-advised fix is gated by its regression test. See `CLAUDE.md`.
 
+## UI: shadcn-first
+
+- The `ui/` dashboard is built on shadcn's Base UI foundation (see
+  `docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md`). Default to
+  shadcn/Base UI primitives and blocks for any new UI — a **composition** of
+  shadcn primitives is NOT custom.
+- Before hand-rolling any widget, verify shadcn has no equivalent; state in the
+  PR/commit which primitive/block was checked and why it doesn't fit.
+- Genuinely novel widgets (e.g. `DiffView`, which has no shadcn diff viewer)
+  stay custom — but only after that verification, and only for the part that
+  is actually novel; wrap its chrome in shadcn primitives (`Card`,
+  `ScrollArea`, ...) where they fit.
+
 ## Related
 
 - `CLAUDE.md` — session start/end protocol, coding conventions, MCP tools.
