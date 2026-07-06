@@ -90,8 +90,10 @@ export interface TabDef {
  * Legacy `TabBar` API, now a thin controlled adapter over the shadcn
  * Tabs/TabsList/TabsTrigger primitives above (shadcn-first — not custom).
  * Callers keep passing `value`/`onChange`; we wire that to Tabs'
- * `value`/`onValueChange`. `TabDef.accent` is applied as an inline color on
- * the active trigger so per-tab tone accents (e.g. the Verdict tab) survive.
+ * `value`/`onValueChange`. `TabDef.accent` is applied as an inline `color` on
+ * the active trigger; the active underline uses `after:bg-current` so it
+ * inherits that color (the accent when set, else the `data-active:text-foreground`
+ * default), preserving the per-tab tone underline (e.g. the Verdict tab).
  */
 export function TabBar({
   tabs,
@@ -117,7 +119,7 @@ export function TabBar({
             <TabsTrigger
               key={t.id}
               value={t.id}
-              className="text-xs"
+              className={cn("text-xs", active && "after:bg-current")}
               style={active && t.accent ? { color: t.accent } : undefined}
             >
               {t.label}
