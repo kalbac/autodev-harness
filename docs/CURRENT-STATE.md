@@ -1,7 +1,20 @@
 # CURRENT STATE — Autodev Harness
 
 > Update every session. Phase status, known issues, next actions.
-> Last updated: 2026-07-06 (s27 — **TWO web-UI modules LANDED.** (A) **role-matrix editor** (PR #48 `b8ebce6`): Project
+> Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
+> critic NO-TOOLS preamble + live visibility scan.** Web-UI item (4) was rescoped after an empirical investigation proved
+> the spawned worker (`claude -p`) + critic (`codex exec`) already INHERIT the operator's FULL ambient extensions (global
+> `~/.claude`/`~/.codex` + project `.claude`/`.mcp.json`/`AGENTS.md`) — so an "attach" UI is redundant; the real need is
+> visibility + isolation. **M1a** (codex merge-clean): `isolation.worker.{cleanRoom,mcp,skills}` (OFF by default →
+> byte-identical spawn) → `workerIsolationFlags` (cleanRoom→`--bare`, mcp→`--strict-mcp-config`, skills→`--disable-slash-commands`,
+> semantics probe-validated) appended to worker args; always-on NO-TOOLS preamble in `buildCriticPrompt` (closes docs-vs-code
+> gap for `[critic/codex]`); projection + write path. **M1b** (codex 1 Medium + 1 Low fixed → re-critic clean): `GET
+> /projects/:id/agent-extensions` streams the real worker CLI, captures `system/init`, kills before any model turn (zero
+> model cost); thin `onScanExtensions?` ProjectView capability; MAX_REMAINDER_BYTES cap + never-reject spawner. **M2**
+> (review-only): Isolation toggles (Clean-room master greys MCP/Skills) + live-scan panel. **766 tests / 3 skip**,
+> typecheck+build green. **LIVE-PROVEN** (Playwright+curl): scan returned live 9/46/78/11; PATCH cleanRoom=true → re-scan
+> 0/14/33/3 (matches `--bare` probe). 2 new gotchas (`[agents/inherit-ambient-extensions]` 40, `[detect/isolation-flags-not-orthogonal]`
+> 41). Prior: s27 — **TWO web-UI modules LANDED.** (A) **role-matrix editor** (PR #48 `b8ebce6`): Project
 > Settings roles section rewritten from a flat list into a 4-card matrix (orchestrator/worker/critic/planner), the
 > operator-chosen cards layout. Backend (codex-gated **clean**, 0 findings): `ProjectConfigView` now exposes `roles.planner`
 > (optional — projected ONLY when explicitly set in raw config via new `loadConfigWithRaw`+`isPlannerExplicitlyConfigured`),
@@ -95,6 +108,55 @@ single source of truth**, assembling the verified best-of from four donors. Skel
 4. **Isolation:** per-task `git worktree` (AO pattern), non-destructive teardown.
 5. **Gate:** independent diff-critic + machine gate; **self-critique rejected**; `GateExtension` seam → action-level risk.
 6. **Routing:** declarative per-task `model:` (no donor does complexity routing); `Router` seam → BYOK.
+
+## Last session (s28, 2026-07-06)
+
+**Agent extensions LANDED (PR #51) — worker ambient-extension isolation + always-on critic NO-TOOLS preamble + live
+visibility scan. Web-UI item (4) was rescoped from "attach skills/plugins/MCP" to "visibility + isolation" after an
+empirical investigation. 3 modules, both backend ones independently codex-gated.**
+
+### The s28 opener — INVESTIGATION, not a build (operator's s27 steer)
+- Explore recon + **two live `claude -p` probes** proved the spawned worker (`claude -p`) and critic (`codex exec`) child
+  CLIs **INHERIT the operator's full ambient extension set** (global `~/.claude`/`~/.codex` + project config): env
+  passthrough (`watchdog`/`native` use `env: process.env`, no HOME/CONFIG_DIR override), worker cwd = the git worktree
+  (carries tracked `.claude`/`.mcp.json`/`AGENTS.md`), and `-p`/`exec` load MCP+skills+plugins+subagents+hooks at runtime
+  (bare cwd → 9 MCP / 46 skills / 78 slash / 17 plugins / 11 agents + SessionStart hook). → gotcha
+  `[agents/inherit-ambient-extensions]` (40).
+- **Reported to operator → decided WITH him:** item (4) "attach" is redundant; build **visibility + isolation** instead.
+  Operator picks: (1) isolation = configurable set + a Clean-room preset; (2) live visibility panel YES; (3) NO-TOOLS
+  preamble always-on. A probe of the isolation flags (probe C) found they are NOT orthogonal → gotcha
+  `[detect/isolation-flags-not-orthogonal]` (41): `--bare` IS clean-room (drops MCP+skills too), only
+  `--strict-mcp-config`/`--disable-slash-commands` are clean levers; init `plugins` count lists installed-not-active.
+
+### M1a — isolation mechanism (backend, codex merge-clean, commit `34c83f4`)
+- `isolation.worker.{cleanRoom,mcp,skills}` (all default `false` → byte-identical current spawn). `workerIsolationFlags(cfg)`:
+  cleanRoom→`["--bare"]` (subsumes the orthogonal flags), else `--strict-mcp-config` (mcp) / `--disable-slash-commands`
+  (skills), appended to the worker `claude -p` args. **Always-on NO-TOOLS preamble** built into `buildCriticPrompt`
+  (complementary to the existing fencing; closes the docs-vs-code gap — we relied on it manually, it was never in code).
+  Projection (`ProjectConfigView.isolation`) + write path (`ScaffoldFormSchema`+`buildConfigYaml`+`mergeConfigYaml`) mirror
+  the roles pattern. codex GPT-5.5 gate: merge-clean, 0 blockers (2 Low/UX notes → the M2 UI).
+
+### M1b — visibility scan endpoint (backend, codex 1 Medium + 1 Low fixed → re-critic clean, commit `62307c7`)
+- `GET /projects/:id/agent-extensions`: spawns the real worker CLI with the effective isolation flags, STREAMS stream-json
+  stdout, captures the first `system/init`, KILLS the child before any model turn (zero model cost). Pure `extractExtensions`
+  (defensive; echoes input cwd, never trusts init.cwd) behind an injectable `SpawnInit`; the default streaming spawner
+  mirrors `util/native.ts` (SIGTERM→grace→SIGKILL, EPIPE guard, settled-once) + a partial-line remainder buffer. Thin
+  `onScanExtensions?` ProjectView capability (mirrors `onOrchestrate?`; unset→404). codex: Medium (unbounded remainder →
+  `MAX_REMAINDER_BYTES` cap + kill) + Low (spawner sync-throw → try/catch, honors never-reject; `spawnFn` injected for
+  tests) FIXED; Low (endpoint-guard) DECLINED (consistent with `handleDetectAgents`; global `.catch` backstop; a local
+  `{extensions:null}` would mask a bug) → re-critic accepted both + the decline.
+
+### M2 — UI (review-only, commit `7b7e773`)
+- Project Settings "Isolation" section: Clean-room master toggle + Strip-MCP + Strip-skills, wired into `buildDiff`
+  send-only-changed; **Clean-room ON greys the MCP/Skills toggles** ("included in Clean-room" — closes the M1a Low UX
+  note). "Agent extensions" section: Scan/Rescan button (s26 idiom) → renders the worker's inherited MCP (name+status
+  pill) / skills / slash-commands / agents; honest not-scanned/loading/null/error states; a static critic note.
+
+### Verification
+- 766 tests / 3 skipped, root+ui typecheck clean, `build`+`build:ui` green, CI (PR #51). **LIVE-PROVEN** on a real serve
+  (Playwright + curl): config projection carries isolation; scan returned the live ambient set (9/46/78/11); PATCH
+  `cleanRoom=true` → re-scan **0/14/33/3** (matches the `--bare` probe table); UI rendered read/scan/edit states and the
+  Clean-room greying. Screenshots to operator. Seed + daemon torn down; throwaway pngs deleted (not committed).
 
 ## Last session (s27, 2026-07-06)
 
@@ -531,16 +593,24 @@ pilot→product slice (agent auto-detect, PR #47).**
   - **R4 orchestrator session/window model — deferred to P2** (window-shaped, over the read-only `api` seam).
 - No code this session by design (design gate, not a build sprint). `VISION.md` role-model banner + this file updated.
 
-## NEXT ACTIONS (s28)
+## NEXT ACTIONS (s29)
 
-**s27 landed TWO web-UI modules — role-matrix editor (item 3, PR #48) + plan checklist in the session rail (operator
-ask, PR #49).** Both self-merged (backend codex-gated where applicable, green CI 4/4, live-proven). origin/main =
-`e485c36`. **s28 opener candidate = web-UI item (4): skills/plugins/MCP surface** (expose the extensibility trio in the
-UI — Open Design pattern — instead of file-only config; recon the OD donor first, discuss layout with the operator).
-Then (5) general polish, into which the two parked operator asks fold: **per-field help tooltips/modals (do EARLY)** and
-**i18n Russian UI (do LATE)**. A cheap early-polish item worth pulling forward: the s27 heterogeneity-badge follow-up
-(active & escalated both render amber — add distinct escalated/quarantine glyphs or a per-row status label). Desktop wrap
-stays DEFERRED. Below: the older post-P3 backlog, mostly done.
+**s28 LANDED web-UI item (4), rescoped: Agent extensions — worker isolation + always-on critic NO-TOOLS preamble + live
+visibility scan (PR #51, 3 modules, both backend ones codex-gated, live-proven).** The extensibility trio is NOW handled
+honestly (agents already inherit ambient extensions; the UI shows + isolates them, not "attaches"). **The web-UI
+pilot→product track items 1–4 are all DONE.** What remains is **(5) general polish**:
+- **Per-field help — tooltips / option-description modals (do EARLY).** Many settings options aren't self-explanatory even
+  to the operator; parked in `FUTURE-BACKLOG.md` "Web UI: pilot → product". Best cheap next pull-forward.
+- **Heterogeneity-badge / status-glyph follow-up (cheap early polish).** s27 note: active & escalated both render amber —
+  add distinct escalated/quarantine glyphs or a per-row status label (also applies to the s27 plan checklist).
+- **i18n / Russian UI (do LATE).** Cross-cutting string refactor once copy stabilises.
+- **Desktop wrap — DEFERRED** (Electron/Tauri; own IA/UX discussion, not until the web UI is a polished product).
+
+**Possible s28 follow-ups (only if asked):** critic-side live scan (codex has no clean init JSON — would need a bespoke
+probe); a New-Project registration-time isolation default; per-worktree scan cwd (today the scan runs in the project
+repoRoot, not a task worktree — a committed `.mcp.json` in a feature branch wouldn't show until merged); reconcile the
+scan's cheap `ladder[0]` model pick if a project pins an expensive first-ladder model (model is irrelevant to WHICH
+extensions load, but the arg is passed).
 
 ## Prior NEXT ACTIONS (s27 — mostly closed)
 
