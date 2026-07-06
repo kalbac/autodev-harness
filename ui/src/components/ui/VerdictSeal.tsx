@@ -56,7 +56,10 @@ export function VerdictSeal({
 
   if (compact) return <span className={className}>{badge}</span>;
 
-  const pct = typeof confidence === "number" ? Math.round(confidence * 100) : null;
+  const pct =
+    typeof confidence === "number"
+      ? Math.min(100, Math.max(0, Math.round(confidence * 100)))
+      : null;
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
