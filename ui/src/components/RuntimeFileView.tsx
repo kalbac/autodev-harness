@@ -16,11 +16,11 @@ export function RuntimeFileView({
   const file = useRuntimeFile(projectId, taskId, name);
 
   if (name === null) {
-    return <p className="px-3 py-6 text-center text-xs text-subtle">Select a file.</p>;
+    return <p className="px-3 py-6 text-center text-xs text-muted-foreground">Select a file.</p>;
   }
   if (file.isLoading) return <Loading />;
   if (file.isError) {
-    return <p className="px-3 py-6 text-center text-xs text-subtle">Could not read {name}.</p>;
+    return <p className="px-3 py-6 text-center text-xs text-muted-foreground">Could not read {name}.</p>;
   }
 
   const { text, truncated } = file.data!;
@@ -35,7 +35,7 @@ export function RuntimeFileView({
       {name.endsWith(".patch") ? (
         <DiffView patch={text} />
       ) : (
-        <pre className="overflow-auto rounded-lg border border-line bg-panel/60 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
+        <pre className="overflow-auto rounded-lg border border-border bg-muted/60 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
           {text || "(empty)"}
         </pre>
       )}
