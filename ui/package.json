@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
-    "@fontsource-variable/ibm-plex-sans": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.1.0",
     "@fontsource/ibm-plex-sans": "^5.1.0",
     "@fontsource/space-grotesk": "^5.1.0",
