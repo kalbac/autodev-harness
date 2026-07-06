@@ -1,9 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { GitBranch } from "lucide-react";
 import { useConfig, useProjects } from "@/lib/queries";
+import { Badge } from "./ui/badge";
 
-const CHIP =
-  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted-foreground";
+const CHIP = "h-auto gap-1.5 rounded-full px-2.5 py-[3px] font-mono text-[11px] font-normal text-muted-foreground";
 
 /**
  * The project home top bar (s16 mockup `.top`): project name + path on the left,
@@ -23,24 +23,24 @@ export function ProjectTopBar({ projectId }: { projectId: string }) {
   const gate = config.data ? (config.data.gate.checkCommand ?? "—") : "—";
 
   return (
-    <div className="flex items-center gap-2.5 border-b border-line px-[18px] py-3">
-      <span className="font-sans text-[15px] font-semibold text-text">{name}</span>
-      {path && <span className="font-mono text-[11px] text-subtle">{path}</span>}
-      <span className={CHIP}>
+    <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-3">
+      <span className="font-sans text-[15px] font-semibold text-foreground">{name}</span>
+      {path && <span className="font-mono text-[11px] text-muted-foreground">{path}</span>}
+      <Badge variant="outline" className={CHIP}>
         <GitBranch className="size-3" />
-        <b className="font-medium text-text">{branch}</b>
-      </span>
+        <b className="font-medium text-foreground">{branch}</b>
+      </Badge>
       <div className="ml-auto flex gap-2">
-        <span className={CHIP}>
-          gate <b className="font-medium text-text">{gate}</b>
-        </span>
-        <Link
-          to="/p/$projectId/board"
-          params={{ projectId }}
-          className={CHIP + " transition-colors hover:border-line-strong hover:text-text"}
+        <Badge variant="outline" className={CHIP}>
+          gate <b className="font-medium text-foreground">{gate}</b>
+        </Badge>
+        <Badge
+          variant="outline"
+          render={<Link to="/p/$projectId/board" params={{ projectId }} />}
+          className={CHIP + " transition-colors hover:text-foreground"}
         >
           Board
-        </Link>
+        </Badge>
       </div>
     </div>
   );
