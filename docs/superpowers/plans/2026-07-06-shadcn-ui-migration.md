@@ -361,7 +361,7 @@ Apply the recipe to, one commit each: `AppShell.tsx`, `Sidebar.tsx`, `ProjectTop
 - [ ] Convert `AppShell.tsx` (recipe) · [ ] `Sidebar.tsx` · [ ] `ProjectTopBar.tsx` · [ ] `ProjectSwitcherMenu.tsx` (DropdownMenu) · [ ] `SessionRail.tsx`
 - [ ] `npm run build` → PASS · [ ] browser-verify shell (light+dark) · [ ] critic review · [ ] gated merge.
 
-### PR2 — Board
+### PR2 — Board  ✅ DONE — merged to main (s29). Critic: 2 High + 3 Medium fixed (light-mode layers/hover, legacy inline vars), re-critic PASS.
 
 Apply the recipe to: `TaskCard.tsx` (exemplar above), `ProjectRow.tsx`, `BoardView.tsx`.
 - [ ] `TaskCard.tsx` · [ ] `ProjectRow.tsx` · [ ] `BoardView.tsx`

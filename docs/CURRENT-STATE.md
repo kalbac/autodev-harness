@@ -13,8 +13,16 @@
 >   collision) + 1 medium (TabBar accent underline); re-critic clean. Build+typecheck green.
 > - **PR1 App shell + navigation — ✅ MERGED** (`fcacece..65744f2`): AppShell/Sidebar/ProjectTopBar/SessionRail on
 >   canonical shadcn tokens; ProjectSwitcherMenu → shadcn DropdownMenu; chip→Badge; ScrollArea in rail. Critic: all PASS, 0 findings.
-> - **Next:** PR2 board → PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task detail → PR5 settings
->   → final cleanup (drop the legacy-token alias layer). Resume from the plan's unchecked boxes.
+> - **PR2 Board — ✅ MERGED** (`3bbd382..d186369`): TaskCard/ProjectRow/BoardView on shadcn tokens + ScrollArea.
+>   Critic caught 2 High + 3 Medium (light-mode `bg-card/40` layer collapse since zinc `--card`==`--background`==white;
+>   `group-hover:text-white`=white-on-white; inline `var(--color-muted)` used as text — a regression from PR0's alias
+>   removal; leftover `var(--color-line-strong)`; `toneVar.idle` off legacy var) → fixed → re-critic all PASS.
+> - **⚠️ Recurring gotchas for remaining PRs:** (a) zinc light theme `--card`==`--background`==white → never rely on
+>   `bg-card` alone over the page for a layer; (b) `text-white` hovers break in light mode → use `text-foreground`;
+>   (c) PR0's global sed only fixed `text-muted` CLASS, so inline `var(--color-muted)`/`var(--color-accent)` in JS
+>   `style=` may still lurk in unconverted screens (now resolve to shadcn bg tokens) — grep each PR's files for them.
+> - **Next:** PR3 run (VerdictSeal→composition, DiffView stays custom) → PR4 task detail → PR5 settings → final
+>   cleanup (drop the legacy-token alias layer, incl. any inline `var(--color-*)`). Resume from the plan's unchecked boxes.
 >
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
