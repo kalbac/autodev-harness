@@ -5,6 +5,8 @@ import { ApiError } from "@/lib/api";
 import { useRegisterProject } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { Spinner } from "./ui/Feedback";
+import { Input } from "./ui/input";
+import { Button } from "./ui/Button";
 
 /** Read-only default role chips (mockup `.rolegrid`). These are NOT submitted —
  *  the scaffold applies the schema defaults; roles are edited in project settings
@@ -15,10 +17,9 @@ const DEFAULT_ROLES: ReadonlyArray<[string, string]> = [
   ["critic", "codex · gpt-5.5 · high"],
 ];
 
-const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-[0.1em] text-subtle";
-const INPUT =
-  "w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none transition-colors focus:border-ring placeholder:text-subtle";
-const HINT = "mt-1 text-[11px] text-subtle";
+const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground";
+const INPUT_CLASS = "font-mono text-xs";
+const HINT = "mt-1 text-[11px] text-muted-foreground";
 
 /**
  * Project register form (mockup Frame 2 `.form`). Seeded from the selected git
@@ -61,8 +62,8 @@ export function RegisterForm({
 
   return (
     <div className="w-full max-w-md shrink-0 overflow-auto p-4 sm:w-96">
-      <h2 className="mb-1 font-sans text-base font-semibold text-text">Register project</h2>
-      <p className="mb-3.5 break-all font-mono text-[11px] text-subtle">{entry.path} · git repo</p>
+      <h2 className="mb-1 font-sans text-base font-semibold text-foreground">Register project</h2>
+      <p className="mb-3.5 break-all font-mono text-[11px] text-muted-foreground">{entry.path} · git repo</p>
 
       <form
         onSubmit={(e) => {
@@ -75,11 +76,11 @@ export function RegisterForm({
           <label htmlFor="rf-name" className={LABEL}>
             Display name
           </label>
-          <input
+          <Input
             id="rf-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className={INPUT}
+            className={INPUT_CLASS}
           />
         </div>
 
@@ -90,7 +91,7 @@ export function RegisterForm({
             {DEFAULT_ROLES.map(([role, model]) => (
               <span key={role} className="contents">
                 <span className="font-mono text-[11px] text-muted-foreground">{role}</span>
-                <span className="rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
+                <span className="rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
                   {model}
                 </span>
               </span>
@@ -104,12 +105,12 @@ export function RegisterForm({
           <label htmlFor="rf-gate" className={LABEL}>
             Gate check command
           </label>
-          <input
+          <Input
             id="rf-gate"
             value={checkCommand}
             onChange={(e) => setCheckCommand(e.target.value)}
             placeholder="e.g. npm test"
-            className={INPUT}
+            className={INPUT_CLASS}
           />
           <p className={HINT}>the un-bypassable machine gate, runs in the task worktree</p>
         </div>
@@ -119,12 +120,12 @@ export function RegisterForm({
           <label htmlFor="rf-provision" className={LABEL}>
             Worktree provision
           </label>
-          <input
+          <Input
             id="rf-provision"
             value={provision}
             onChange={(e) => setProvision(e.target.value)}
             placeholder="e.g. node_modules, vendor"
-            className={INPUT}
+            className={INPUT_CLASS}
           />
           <p className={HINT}>gitignored dep dirs linked into each worktree, comma-separated</p>
         </div>
@@ -134,11 +135,11 @@ export function RegisterForm({
           <label htmlFor="rf-branch" className={LABEL}>
             Branch pattern
           </label>
-          <input
+          <Input
             id="rf-branch"
             value={branchPattern}
             onChange={(e) => setBranchPattern(e.target.value)}
-            className={INPUT}
+            className={INPUT_CLASS}
           />
         </div>
 
@@ -149,7 +150,7 @@ export function RegisterForm({
               "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border transition-colors",
               scaffold
                 ? "border-primary bg-[color-mix(in_srgb,var(--primary)_25%,transparent)] text-primary"
-                : "border-line-strong",
+                : "border-border",
             )}
           >
             {scaffold && <Check className="size-3" />}
@@ -161,9 +162,9 @@ export function RegisterForm({
             className="sr-only"
           />
           <span>
-            Scaffold <b className="font-medium text-text">.autodev/</b> (config.yaml, GOAL.md,
+            Scaffold <b className="font-medium text-foreground">.autodev/</b> (config.yaml, GOAL.md,
             INVARIANTS.md, queue/) and add it to{" "}
-            <span className="font-mono text-subtle">.git/info/exclude</span>
+            <span className="font-mono text-muted-foreground">.git/info/exclude</span>
           </span>
         </label>
 
@@ -176,14 +177,15 @@ export function RegisterForm({
           </p>
         )}
 
-        <button
+        <Button
           type="submit"
+          variant="primary"
           disabled={register.isPending}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="w-full rounded-lg py-2 font-semibold"
         >
           {register.isPending && <Spinner className="text-primary-foreground" />}
           Register project
-        </button>
+        </Button>
       </form>
     </div>
   );
