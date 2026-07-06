@@ -69,7 +69,7 @@ export function TaskDetailView() {
         </div>
 
         {/* Right — inspector rail */}
-        <div className="w-[420px] shrink-0 border-l border-border overflow-hidden bg-sidebar">
+        <div className="w-[420px] shrink-0 border-l border-border overflow-hidden bg-muted/40">
           <Inspector projectId={projectId} taskId={taskId} state={state} />
         </div>
       </div>
