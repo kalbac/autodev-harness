@@ -36,11 +36,11 @@ function ProjectHead({
       params={{ projectId: project.id }}
       className={cn(
         "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-semibold transition-colors",
-        active ? "bg-surface-2 text-text" : "text-muted-foreground hover:bg-surface",
+        active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-card",
         isError && !active && "bg-[color-mix(in_srgb,var(--color-broken)_10%,transparent)]",
       )}
     >
-      <span className="w-2.5 shrink-0 text-[10px] text-subtle">{active ? "▾" : "▸"}</span>
+      <span className="w-2.5 shrink-0 text-[10px] text-muted-foreground">{active ? "▾" : "▸"}</span>
       <span className="min-w-0 truncate">{project.name}</span>
       <StatusDot tone={isError ? "broken" : hasActiveRun ? "working" : "idle"} pulse={hasActiveRun} />
     </Link>
@@ -77,21 +77,21 @@ function ActiveProject({ project }: { project: ProjectSummary }) {
             key={run.runId}
             to="/p/$projectId/runs/$runId"
             params={{ projectId: project.id, runId: run.runId }}
-            className="flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-surface hover:text-text"
+            className="flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
           >
             <span
               className="size-[6px] shrink-0 rounded-[2px]"
               style={{ background: toneVar[runSeal(run, state.data)] }}
             />
             <span className="min-w-0 flex-1 truncate text-xs">{run.name ?? run.intent}</span>
-            <span className="ml-auto shrink-0 font-mono text-[10px] text-subtle">{timeAgo(run.at)}</span>
+            <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{timeAgo(run.at)}</span>
           </Link>
         ))}
         {runs.data && runs.data.length > 0 && (
           <Link
             to="/p/$projectId/board"
             params={{ projectId: project.id }}
-            className="block px-2 py-0.5 text-[11px] text-subtle transition-colors hover:text-muted-foreground"
+            className="block px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
           >
             show more…
           </Link>
