@@ -130,7 +130,7 @@ function VerdictTab({
         brokenContracts={doc?.broken_contracts}
       />
       {escalated && (
-        <p className="rounded-md border border-line bg-panel/40 px-3 py-2 text-xs text-subtle">
+        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           The gate refused to merge this. Resolve it with the A/B decision on the left.
         </p>
       )}
@@ -165,8 +165,8 @@ function FilesTab({
             onClick={() => setSelected(n)}
             className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
               selected === n
-                ? "border-line-strong bg-surface-2 text-text"
-                : "border-line text-muted-foreground hover:text-text"
+                ? "border-border bg-muted text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground"
             }`}
             style={selected === n ? { color: toneVar[verdictTone("clean")] } : undefined}
           >
