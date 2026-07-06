@@ -31,15 +31,15 @@ export function Sidebar() {
   const activeProject = projects.data?.projects.find((p) => p.id === activeProjectId);
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
+    <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-sidebar">
       {/* Brand */}
-      <div className="flex items-center gap-2.5 px-4 h-14 border-b border-line">
+      <div className="flex items-center gap-2.5 px-4 h-14 border-b border-border">
         <div className="grid size-7 place-items-center rounded-md bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] text-primary">
           <Terminal className="size-4" />
         </div>
         <div className="min-w-0">
-          <div className="font-sans text-sm font-semibold leading-tight text-text">Autodev</div>
-          <div className="font-mono text-[10px] uppercase tracking-wider text-subtle leading-tight">
+          <div className="font-sans text-sm font-semibold leading-tight text-sidebar-foreground">Autodev</div>
+          <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground leading-tight">
             harness
           </div>
         </div>
@@ -49,7 +49,7 @@ export function Sidebar() {
       <div className="p-3">
         <Link
           to="/new"
-          className="flex items-center gap-2 rounded-md border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-text transition-colors hover:border-line-strong"
+          className="flex items-center gap-2 rounded-md border border-border bg-sidebar-accent px-3 py-2 font-mono text-xs text-sidebar-foreground transition-colors hover:bg-sidebar-accent/70"
         >
           <Plus className="size-4 text-primary" />
           New Project
@@ -57,7 +57,7 @@ export function Sidebar() {
       </div>
 
       {/* Projects */}
-      <div className="px-4 pt-1 pb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">
+      <div className="px-4 pt-1 pb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
         Projects
       </div>
       <nav className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-0.5">
@@ -71,7 +71,7 @@ export function Sidebar() {
       </nav>
 
       {/* Daemon status + settings gear */}
-      <div className="relative flex items-center gap-2 border-t border-line px-3 h-11 font-mono text-[11px] text-muted-foreground">
+      <div className="relative flex items-center gap-2 border-t border-border px-3 h-11 font-mono text-[11px] text-muted-foreground">
         <Dot tone={CONN_TONE[conn]} pulse={conn === "connecting"} />
         <span>{CONN_LABEL[conn]}</span>
         <button
@@ -81,7 +81,7 @@ export function Sidebar() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setSettingsOpen((v) => !v)}
           aria-label="Settings"
-          className="ml-auto rounded-md border border-line px-1.5 py-1 text-muted-foreground transition-colors hover:border-line-strong hover:text-text"
+          className="ml-auto rounded-md border border-border px-1.5 py-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
         >
           <Settings className="size-3.5" />
         </button>
