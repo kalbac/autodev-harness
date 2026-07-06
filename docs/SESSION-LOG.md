@@ -4,6 +4,28 @@
 
 ---
 
+## s29 — 2026-07-06 — Full UI migration to shadcn (Base UI, zinc) — brainstorm → spec → plan → build (autonomous)
+
+**Trigger:** operator noticed our UI only used shadcn's *foundation idiom* (Tailwind+CVA+cn+lucide), not shadcn
+components — no `components.json`, no Radix/Base UI. Decision (brainstormed + AskUserQuestion): move the whole `ui/`
+to the **default shadcn look on Base UI (zinc), IBM Plex fonts kept, incremental per-screen gated PRs.** New durable
+rule recorded: **shadcn-first** (verify shadcn has no equivalent before writing/keeping custom UI) → `AGENTS.md` + memory.
+
+- **Spec + plan** written to `docs/superpowers/{specs,plans}/2026-07-06-shadcn-ui-migration*.md`, committed.
+- **Execution:** subagent-driven (Sonnet 5 workers) + **mandatory codex GPT-5.5 critic every phase** (operator granted
+  overnight autonomy; merged after critic-clean + green build/typecheck, no per-merge approval).
+- **PR0 foundation** (`shadcn init` Base UI/zinc, reconciled theme, `.dark`, 17 primitives, signature-preserving
+  Button/Card/TabBar/StatusPill/Dot/Feedback). Critic caught the **muted/accent token-alias collision** (legacy aliases
+  hijacked shadcn's reserved names with inverted meaning) + TabBar accent — fixed, re-critic clean.
+- **PR1 shell** (DropdownMenu), **PR2 board**, **PR3 run** (VerdictSeal→Badge+Progress+muted composition, new
+  `textarea.tsx`, DiffView stays custom), **PR4 task detail**, **PR5 settings+onboarding** (SettingsPopover→Popover,
+  gear rewired as the real trigger to fix a toggle regression) — each codex-gated; findings fixed + re-critic each time.
+- **Final cleanup:** legacy-token alias layer retired; only status vars (`--color-working/uncertain/broken/clean`) stay.
+- **Recurring critic finds (→ gotchas):** zinc light `--card`==`--background`==white & dark `--sidebar`==`--card`
+  (layers need borders or `bg-muted`); `text-white` hovers break in light; PR0's `text-muted` sed missed inline
+  `var(--color-muted)`-as-text. **Verified: 766 tests / 3 skip, root+ui typecheck + build green.**
+- **NOT done:** live browser visual proof (browser tooling was down all session) — left for the operator.
+
 ## s28 — 2026-07-06 — Agent extensions: worker isolation + always-on critic NO-TOOLS preamble + live visibility scan (PR #51)
 
 **Web-UI item (4) rescoped from "attach skills/plugins/MCP" to "visibility + isolation" after an empirical investigation,

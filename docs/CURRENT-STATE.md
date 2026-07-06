@@ -1,6 +1,6 @@
 # CURRENT STATE — Autodev Harness
 
-> ## 🔄 ACTIVE (s29) — shadcn (Base UI) UI migration — AUTONOMOUS, IN FLIGHT
+> ## ✅ DONE (s29) — shadcn (Base UI) UI migration — COMPLETE (merged to main)
 > Operator wants the whole `ui/` moved to the **default shadcn look on Base UI (zinc)**, screen by screen.
 > Spec: `docs/superpowers/specs/2026-07-06-shadcn-ui-migration-design.md` · Plan (checkboxes = progress):
 > `docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md`. Governing rule: **shadcn-first** (see AGENTS.md).
@@ -26,9 +26,19 @@
 >   new `ui/textarea.tsx`; DiffView stays custom. Critic: 1 Medium (confidence clamp) fixed, rest PASS.
 > - **PR4 Task detail — ✅ MERGED** (`f951113..` + rail fix): TaskDetailView/NewRunComposer on shadcn tokens; spec/stage
 >   boxes → Card; model chips → Badge(render=Link). Critic: 1 Medium (dark `--sidebar`==`--card` rail → `bg-muted/40`) fixed, rest PASS.
-> - **Next:** PR5 settings + onboarding (GlobalSettingsView, ProjectSettingsView, SettingsLayout, SettingsPopover,
->   NewProjectView, RegisterForm, FolderBrowser, RuntimeFileView, HomeView) → final cleanup (drop legacy-token alias
->   layer incl. inline `var(--color-*)`; note dark `--sidebar`==`--card` — a shadcn-default). Resume from plan's unchecked boxes.
+> - **PR5 Settings + onboarding — ✅ MERGED** (9 files): all settings/onboarding on shadcn tokens; SettingsPopover
+>   rebuilt on shadcn Popover with the gear as the REAL trigger (fixed a toggle regression the naive split caused,
+>   also touched Sidebar); form controls → Input/Select/Button. Critic: all PASS, 0 blocking.
+> - **Final cleanup — ✅ MERGED:** legacy-token alias layer fully retired; `styles.css` body/scrollbar refs → shadcn
+>   vars; only `--color-working/uncertain/broken/clean` status vars stay literal.
+> - **Verification:** all 5 screen PRs + foundation + cleanup merged to `main`; every phase codex-GPT-5.5-gated
+>   (findings fixed + re-critic); **766 tests pass / 3 skip, root+ui typecheck + build green.**
+> - **⚠️ ONE open item — NOT verified in a live browser** (browser tooling was down all session). Live per-screen
+>   visual proof in light+dark is left for the operator: `cd ui && npm run dev` (needs the daemon on :4319 for data).
+> - **Gotchas to fold into `docs/gotchas/` next session:** zinc light `--card`==`--background`==white AND dark
+>   `--sidebar`==`--card` → layer distinction needs a border or `bg-muted`; `text-white` hovers break in light (use
+>   `text-foreground`); PR0's `text-muted`→`text-muted-foreground` sed didn't touch inline `var(--color-muted)` (a
+>   shadcn BG token) used as a text color — a source of two critic findings.
 >
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on

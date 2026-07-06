@@ -383,7 +383,7 @@ Apply the recipe to: `TaskDetailView.tsx`, `NewRunComposer.tsx`.
 - [ ] `TaskDetailView.tsx` · [ ] `NewRunComposer.tsx`
 - [ ] `npm run build` → PASS · [ ] browser-verify (light+dark) · [ ] critic review · [ ] gated merge.
 
-### PR5 — Settings + onboarding
+### PR5 — Settings + onboarding  ✅ DONE — merged to main (s29, split into Pass A settings + Pass B onboarding). SettingsPopover→Popover gear-trigger fix (also Sidebar). Critic: all PASS.
 
 Apply the recipe to: `GlobalSettingsView.tsx`, `ProjectSettingsView.tsx`, `SettingsLayout.tsx`, `SettingsPopover.tsx`, `NewProjectView.tsx`, `RegisterForm.tsx`, `FolderBrowser.tsx`, `RuntimeFileView.tsx`, `HomeView.tsx`.
 - `SettingsPopover` → `Popover`; form fields → `Input`/`Select`; `FolderBrowser`/`RuntimeFileView` chrome → `ScrollArea`/`Card`.
@@ -392,7 +392,7 @@ Apply the recipe to: `GlobalSettingsView.tsx`, `ProjectSettingsView.tsx`, `Setti
 
 ---
 
-## Final cleanup (end of PR5)
+## Final cleanup (end of PR5)  ✅ DONE — merged to main (s29). Alias layer retired; styles.css internal refs migrated; verified zero legacy refs; 766 tests + build + typecheck green.
 
 - [ ] **Remove the legacy-token alias layer** from `styles.css` (the `--color-ink/panel/surface/...` → shadcn-var block from Task 0.2). Run `grep -rnE "bg-ink|bg-panel|bg-surface|bg-surface-2|border-line|text-text|text-muted\b|text-subtle" ui/src` → must be empty; fix any stragglers, then delete the alias block.
 - [ ] Keep the status vocabulary vars (`--color-working/uncertain/broken/clean`) and the pulse keyframe.
