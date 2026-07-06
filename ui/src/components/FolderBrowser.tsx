@@ -33,11 +33,11 @@ export function FolderBrowser({
     <div className="min-w-0 flex-1 overflow-auto p-4">
       {/* Breadcrumb — the current directory (or the roots label). */}
       <div className="mb-2.5 truncate font-mono text-xs text-muted-foreground">
-        📁 <b className="text-text">{here ?? "This PC"}</b>
+        📁 <b className="text-foreground">{here ?? "This PC"}</b>
       </div>
 
       {entries.length === 0 && (
-        <p className="px-2.5 py-2 text-xs text-subtle">No sub-directories.</p>
+        <p className="px-2.5 py-2 text-xs text-muted-foreground">No sub-directories.</p>
       )}
 
       <ul className="flex flex-col gap-0.5">
@@ -58,19 +58,19 @@ export function FolderBrowser({
                   }
                 }}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-surface",
-                  selected && "border border-line-strong bg-surface-2 hover:bg-surface-2",
+                  "flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-muted",
+                  selected && "border border-border bg-muted hover:bg-muted",
                 )}
               >
-                <Icon className="size-4 shrink-0 text-subtle" />
-                <span className="truncate text-text">{entry.name}</span>
+                <Icon className="size-4 shrink-0 text-muted-foreground" />
+                <span className="truncate text-foreground">{entry.name}</span>
                 {entry.isGitRepo && (
                   <span className="shrink-0 rounded-[5px] border border-[color-mix(in_srgb,var(--color-clean)_40%,transparent)] px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] text-clean">
                     git
                   </span>
                 )}
                 {entry.isRegistered && (
-                  <span className="shrink-0 rounded-[5px] border border-line px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] text-subtle">
+                  <span className="shrink-0 rounded-[5px] border border-border px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] text-muted-foreground">
                     registered
                   </span>
                 )}
@@ -103,7 +103,7 @@ export function FolderBrowser({
               setPath(parent ?? undefined);
             }
           }}
-          className="mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-subtle transition-colors hover:bg-surface"
+          className="mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted"
         >
           <ArrowUp className="size-4 shrink-0" />
           up one level
