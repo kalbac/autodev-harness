@@ -9,9 +9,8 @@ import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Spinner } from "./ui/Feedback";
-
-const CHIP =
-  "inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-[3px] font-mono text-[11px] text-muted-foreground";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/Button";
 
 /**
  * The "new run" intent box — the one write surface that launches work. It only
@@ -63,8 +62,8 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
     <div className="flex flex-col gap-2">
       <div
         className={cn(
-          "rounded-xl border bg-surface transition-colors focus-within:border-line-strong",
-          launch.isError ? "border-broken/40" : "border-line",
+          "rounded-xl border bg-card transition-colors focus-within:border-ring",
+          launch.isError ? "border-broken/40" : "border-border",
         )}
       >
         <textarea
@@ -76,34 +75,32 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           }}
           placeholder="Describe a change to make — the orchestrator decomposes it into gated tasks…"
           rows={3}
-          className="w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-text placeholder:text-subtle outline-none"
+          className="w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-foreground placeholder:text-muted-foreground outline-none"
         />
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
           <ProjectSwitcherMenu projectId={projectId} projectName={projectName} />
-          {/* Roles are read-only; clicking opens project settings. */}
-          <Link
-            to="/p/$projectId/settings"
-            params={{ projectId }}
-            className={CHIP + " transition-colors hover:border-line-strong hover:text-text"}
+          {/* Roles are read-only; clicking opens project settings. Badge (not
+              Button) — these are display tags for the configured model that
+              happen to link out, not in-place actions. */}
+          <Badge
+            variant="outline"
+            render={<Link to="/p/$projectId/settings" params={{ projectId }} />}
+            className="h-auto gap-1.5 rounded-full px-2.5 py-[3px] font-mono text-[11px] font-normal text-muted-foreground"
           >
-            worker <b className="font-medium text-text">{workerModel}</b>
-          </Link>
-          <Link
-            to="/p/$projectId/settings"
-            params={{ projectId }}
-            className={CHIP + " transition-colors hover:border-line-strong hover:text-text"}
+            worker <b className="font-medium text-foreground">{workerModel}</b>
+          </Badge>
+          <Badge
+            variant="outline"
+            render={<Link to="/p/$projectId/settings" params={{ projectId }} />}
+            className="h-auto gap-1.5 rounded-full px-2.5 py-[3px] font-mono text-[11px] font-normal text-muted-foreground"
           >
-            critic <b className="font-medium text-text">{criticModel}</b>
-          </Link>
-          <span className="ml-auto font-mono text-[11px] text-subtle">⌘⏎ to launch</span>
-          <button
-            onClick={submit}
-            disabled={!canSubmit}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-40 hover:opacity-90"
-          >
+            critic <b className="font-medium text-foreground">{criticModel}</b>
+          </Badge>
+          <span className="ml-auto font-mono text-[11px] text-muted-foreground">⌘⏎ to launch</span>
+          <Button onClick={submit} disabled={!canSubmit} variant="primary">
             {launch.isPending ? <Spinner className="text-primary-foreground" /> : <ArrowUp className="size-4" />}
             Launch run
-          </button>
+          </Button>
         </div>
       </div>
 
