@@ -5,6 +5,8 @@ import { useTaskIndex } from "@/lib/useTaskIndex";
 import { toneVar } from "@/lib/status";
 import type { QueueState } from "@/lib/api";
 import { Dot } from "./ui/Dot";
+import { Badge } from "./ui/badge";
+import { ScrollArea } from "./ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 /** Compact token count: 12345 -> "12.3k", 2_100_000 -> "2.1M", <1000 -> as-is. */
@@ -69,102 +71,109 @@ export function SessionRail({ projectId }: { projectId: string }) {
     : dash;
 
   return (
-    <aside className="w-[300px] shrink-0 overflow-auto border-l border-line bg-panel p-3.5">
-      <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">
-        Session inspector
-      </h3>
+    <aside className="w-[300px] shrink-0 border-l border-border bg-sidebar">
+      <ScrollArea className="h-full">
+        <div className="p-3.5">
+          <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            Session inspector
+          </h3>
 
-      {/* Now — pipeline inferred from queue state */}
-      <Block title="Now">
-        <div className="flex flex-col gap-1.5">
-          {activeTask ? (
-            <>
-              <Step state="done" label="decompose" />
-              <Step state="now" label={`${activeTask.id} worker`} />
-              <Step state="idle" label={`${activeTask.id} gate → critic → commit`} />
-            </>
-          ) : (
-            <Step state="idle" label="no active run" />
-          )}
-        </div>
-      </Block>
+          {/* Now — pipeline inferred from queue state */}
+          <Block title="Now">
+            <div className="flex flex-col gap-1.5">
+              {activeTask ? (
+                <>
+                  <Step state="done" label="decompose" />
+                  <Step state="now" label={`${activeTask.id} worker`} />
+                  <Step state="idle" label={`${activeTask.id} gate → critic → commit`} />
+                </>
+              ) : (
+                <Step state="idle" label="no active run" />
+              )}
+            </div>
+          </Block>
 
-      {/* Plan — the newest run's ordered tasks as a live status checklist */}
-      <Block
-        title="Plan"
-        badge={
-          planTaskIds.length > 0 ? (
-            <span className="ml-auto font-mono text-[10px] normal-case tracking-normal text-muted-foreground">
-              {planDone}/{planTaskIds.length}
-            </span>
-          ) : undefined
-        }
-      >
-        {planTaskIds.length === 0 ? (
-          <div className="font-mono text-[11px] text-subtle">no plan yet</div>
-        ) : (
-          <>
-            {plan && (
-              <div className="mb-2 truncate text-[11px] text-muted-foreground" title={plan.name ?? plan.intent}>
-                {plan.name ?? plan.intent}
-              </div>
+          {/* Plan — the newest run's ordered tasks as a live status checklist */}
+          <Block
+            title="Plan"
+            badge={
+              planTaskIds.length > 0 ? (
+                <Badge
+                  variant="secondary"
+                  className="ml-auto h-auto rounded-full px-1.5 py-0 font-mono text-[10px] normal-case tracking-normal text-muted-foreground"
+                >
+                  {planDone}/{planTaskIds.length}
+                </Badge>
+              ) : undefined
+            }
+          >
+            {planTaskIds.length === 0 ? (
+              <div className="font-mono text-[11px] text-muted-foreground">no plan yet</div>
+            ) : (
+              <>
+                {plan && (
+                  <div className="mb-2 truncate text-[11px] text-muted-foreground" title={plan.name ?? plan.intent}>
+                    {plan.name ?? plan.intent}
+                  </div>
+                )}
+                <ol className="flex flex-col gap-1.5">
+                  {planTaskIds.map((id) => {
+                    const located = index.get(id);
+                    return (
+                      <PlanRow
+                        key={id}
+                        state={located?.state}
+                        label={located?.task.title ?? id}
+                        resolved={located !== undefined}
+                      />
+                    );
+                  })}
+                </ol>
+              </>
             )}
-            <ol className="flex flex-col gap-1.5">
-              {planTaskIds.map((id) => {
-                const located = index.get(id);
-                return (
-                  <PlanRow
-                    key={id}
-                    state={located?.state}
-                    label={located?.task.title ?? id}
-                    resolved={located !== undefined}
-                  />
-                );
-              })}
-            </ol>
-          </>
-        )}
-      </Block>
+          </Block>
 
-      {/* Queue — counters from the live blackboard */}
-      <Block title="Queue">
-        <div className="flex gap-1.5">
-          <QCell n={queues?.pending.length} label="pending" />
-          <QCell n={queues?.active.length} label="active" />
-          <QCell n={queues?.escalated.length} label="escalated" att />
-          <QCell n={queues?.done.length} label="done" />
+          {/* Queue — counters from the live blackboard */}
+          <Block title="Queue">
+            <div className="flex gap-1.5">
+              <QCell n={queues?.pending.length} label="pending" />
+              <QCell n={queues?.active.length} label="active" />
+              <QCell n={queues?.escalated.length} label="escalated" att />
+              <QCell n={queues?.done.length} label="done" />
+            </div>
+          </Block>
+
+          {/* Session — facts from config */}
+          <Block title="Session">
+            <Kv k="branch" v={cfg?.allowedBranchPattern ?? dash} />
+            <Kv k="gate" v={cfg ? (cfg.gate.checkCommand ?? dash) : dash} />
+            <Kv k="worktree" v={cfg ? `${cfg.stateDir}/worktrees` : dash} />
+            <Kv k="provision" v={provision} />
+          </Block>
+
+          {/* Roles — REAL data from the config endpoint */}
+          <Block title="Roles">
+            <Kv k="orchestrator" v={roleOrch} />
+            <Kv k="worker" v={roleWorker} />
+            <Kv k="critic" v={roleCritic} />
+          </Block>
+
+          {/* Tokens — cross-run totals via the server-side per-run aggregate (s25) */}
+          <Block title="Tokens">
+            <Kv k="this run" v={usage.data?.thisRun.any ? formatTokens(usage.data.thisRun.tokens) : dash} />
+            <Kv k="today" v={usage.data?.today.any ? formatTokens(usage.data.today.tokens) : dash} />
+            <Kv k="all-time" v={usage.data?.allTime.any ? formatTokens(usage.data.allTime.tokens) : dash} />
+          </Block>
         </div>
-      </Block>
-
-      {/* Session — facts from config */}
-      <Block title="Session">
-        <Kv k="branch" v={cfg?.allowedBranchPattern ?? dash} />
-        <Kv k="gate" v={cfg ? (cfg.gate.checkCommand ?? dash) : dash} />
-        <Kv k="worktree" v={cfg ? `${cfg.stateDir}/worktrees` : dash} />
-        <Kv k="provision" v={provision} />
-      </Block>
-
-      {/* Roles — REAL data from the config endpoint */}
-      <Block title="Roles">
-        <Kv k="orchestrator" v={roleOrch} />
-        <Kv k="worker" v={roleWorker} />
-        <Kv k="critic" v={roleCritic} />
-      </Block>
-
-      {/* Tokens — cross-run totals via the server-side per-run aggregate (s25) */}
-      <Block title="Tokens">
-        <Kv k="this run" v={usage.data?.thisRun.any ? formatTokens(usage.data.thisRun.tokens) : dash} />
-        <Kv k="today" v={usage.data?.today.any ? formatTokens(usage.data.today.tokens) : dash} />
-        <Kv k="all-time" v={usage.data?.allTime.any ? formatTokens(usage.data.allTime.tokens) : dash} />
-      </Block>
+      </ScrollArea>
     </aside>
   );
 }
 
 function Block({ title, badge, children }: { title: string; badge?: ReactNode; children: ReactNode }) {
   return (
-    <div className="mb-2.5 rounded-[10px] border border-line bg-surface px-3 py-2.5">
-      <div className="mb-2 flex items-center font-mono text-[10px] uppercase tracking-[0.1em] text-subtle">
+    <div className="mb-2.5 rounded-[10px] border border-border bg-card px-3 py-2.5">
+      <div className="mb-2 flex items-center font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
         {title}
         {badge}
       </div>
@@ -188,7 +197,10 @@ function PlanRow({ state, label, resolved }: { state?: QueueState; label: string
       <span className="grid size-3.5 shrink-0 place-items-center">
         <PlanGlyph state={state} resolved={resolved} />
       </span>
-      <span className={cn("truncate", done ? "text-muted-foreground" : dimmed ? "text-subtle" : "text-text")} title={label}>
+      <span
+        className={cn("truncate", done ? "text-muted-foreground" : dimmed ? "text-muted-foreground" : "text-foreground")}
+        title={label}
+      >
         {label}
       </span>
     </li>
@@ -206,7 +218,7 @@ function PlanGlyph({ state, resolved }: { state?: QueueState; resolved: boolean 
   if (state === "escalated")
     return <AlertTriangle className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.uncertain }} />;
   if (state === "quarantine") return <Ban className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.broken }} />;
-  return <Square className="size-3 text-subtle" strokeWidth={2} />; // pending — empty checkbox
+  return <Square className="size-3 text-muted-foreground" strokeWidth={2} />; // pending — empty checkbox
 }
 
 function Kv({ k, v }: { k: string; v: string }) {
@@ -225,11 +237,11 @@ function Step({ state, label }: { state: "done" | "now" | "idle"; label: string 
     <div
       className={cn(
         "flex items-center gap-2 font-mono text-[11px]",
-        state === "idle" ? "text-subtle" : state === "done" ? "text-muted-foreground" : "text-text",
+        state === "idle" ? "text-muted-foreground" : state === "done" ? "text-muted-foreground" : "text-foreground",
       )}
     >
       {state === "idle" ? (
-        <span className="size-2 shrink-0 rounded-full bg-line-strong" />
+        <span className="size-2 shrink-0 rounded-full bg-border" />
       ) : (
         <Dot tone={state === "done" ? "clean" : "working"} pulse={state === "now"} className="size-2" />
       )}
@@ -244,13 +256,13 @@ function QCell({ n, label, att = false }: { n?: number; label: string; att?: boo
     <div
       className={cn(
         "flex-1 rounded-lg border py-1.5 text-center",
-        flagged ? "border-[color-mix(in_srgb,var(--color-uncertain)_45%,transparent)]" : "border-line",
+        flagged ? "border-[color-mix(in_srgb,var(--color-uncertain)_45%,transparent)]" : "border-border",
       )}
     >
-      <div className={cn("font-sans text-base font-semibold", flagged ? "text-uncertain" : "text-text")}>
+      <div className={cn("font-sans text-base font-semibold", flagged ? "text-uncertain" : "text-foreground")}>
         {n ?? "—"}
       </div>
-      <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-subtle">{label}</div>
+      <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-muted-foreground">{label}</div>
     </div>
   );
 }
