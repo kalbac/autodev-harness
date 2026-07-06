@@ -1,10 +1,10 @@
 import { useState } from "react";
 
 /**
- * Theme plumbing. Both token sets exist: `dark` is the `@theme` default and
- * `light` is the `[data-theme="light"]` override block (both in `styles.css`,
- * added in M5). This wires persistence + applies a `data-theme` attribute (and a
- * `dark` class) on <html>. `system` resolves via `matchMedia`.
+ * Theme plumbing. Follows shadcn's convention: `:root` is the light theme and
+ * `.dark` is the dark-theme override block (both in `styles.css`). This wires
+ * persistence + toggles the `dark` class on <html>; the `[data-theme]`
+ * attribute is no longer used. `system` resolves via `matchMedia`.
  */
 export type Theme = "system" | "dark" | "light";
 
@@ -25,13 +25,9 @@ export function getTheme(): Theme {
 export function applyTheme(theme: Theme): void {
   const resolved =
     theme === "system"
-      ? window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
       : theme;
-  const el = document.documentElement;
-  el.setAttribute("data-theme", resolved);
-  el.classList.toggle("dark", resolved === "dark");
+  document.documentElement.classList.toggle("dark", resolved === "dark");
 }
 
 export function setTheme(theme: Theme): void {

@@ -14,7 +14,7 @@ import { router } from "./router";
 import { connectWs } from "./lib/ws";
 import { applyTheme, getTheme } from "./lib/theme";
 
-// Apply the persisted theme before first paint so the correct data-theme is set.
+// Apply the persisted theme before first paint so the correct .dark class is set.
 applyTheme(getTheme());
 
 const queryClient = new QueryClient({
