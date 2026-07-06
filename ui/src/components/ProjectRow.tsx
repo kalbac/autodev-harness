@@ -47,7 +47,7 @@ function ProjectHead({
   );
 }
 
-/** 7px head dot — working glows/pulses, idle is a flat line-strong pip. */
+/** 7px head dot — working glows/pulses, idle is a flat border-toned pip. */
 function StatusDot({ tone, pulse }: { tone: "working" | "idle" | "broken"; pulse: boolean }) {
   return (
     <span
