@@ -1,7 +1,9 @@
+import { useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { Settings } from "lucide-react";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Link } from "@tanstack/react-router";
 
 const THEME_SEGMENTS: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -11,50 +13,37 @@ const THEME_SEGMENTS: { value: Theme; label: string }[] = [
 
 /**
  * Footer gear popover: global settings, per-project settings (disabled off a
- * project), and the theme segmented control. Closes on outside-click,
- * Escape, or an item click.
+ * project), and the theme segmented control.
  *
- * The real trigger (the gear icon) lives in `Sidebar.tsx`, outside this
- * component — it toggles `Sidebar`'s own `settingsOpen` state, which mounts
- * this component only while open. Base UI's `Popover` still needs a
- * `PopoverTrigger` to anchor the floating content to a point, so this
- * renders one invisible/zero-size at the same corner the old manually-
- * positioned panel used. It is never clicked (`open` is hardcoded `true` —
- * this component only exists while `Sidebar` wants it open); it's purely an
- * anchor. Known consequence of the split: Base UI's outside-press dismiss
- * treats a click on the REAL gear button as an outside press (it only
- * special-cases clicks on its own trigger/content), so re-clicking the gear
- * while open now closes-then-immediately-reopens via `Sidebar`'s toggle,
- * instead of cleanly toggling closed. Fixing that fully needs the gear
- * button itself wired as this popover's trigger, which is out of scope here.
+ * The gear button IS the `PopoverTrigger`, so Base UI owns open/close/toggle
+ * and dismiss (outside-press, Escape) entirely — clicking the gear cleanly
+ * toggles the popover, with no manual open-state or outside-click wiring in
+ * the sidebar. The Global/Project links close the popover on navigate; the
+ * theme segment buttons deliberately leave it open so you can preview themes
+ * without it dismissing.
  */
 export function SettingsPopover({
   projectId,
   projectName,
-  onClose,
 }: {
   projectId: string | null;
   projectName?: string;
-  onClose: () => void;
 }) {
   const [theme, setTheme] = useTheme();
+  const [open, setOpen] = useState(false);
 
   return (
-    <Popover
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-    >
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        aria-hidden
-        tabIndex={-1}
-        className="pointer-events-none absolute right-2 top-0 h-0 w-0"
-      />
+        aria-label="Settings"
+        className="ml-auto rounded-md border border-border px-1.5 py-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      >
+        <Settings className="size-3.5" />
+      </PopoverTrigger>
       <PopoverContent side="top" align="end" className="w-56 gap-0 bg-muted p-1.5">
         <Link
           to="/settings"
-          onClick={onClose}
+          onClick={() => setOpen(false)}
           className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-foreground transition-colors hover:bg-card"
         >
           Global settings
@@ -64,7 +53,7 @@ export function SettingsPopover({
           <Link
             to="/p/$projectId/settings"
             params={{ projectId }}
-            onClick={onClose}
+            onClick={() => setOpen(false)}
             className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-foreground transition-colors hover:bg-card"
           >
             Project settings

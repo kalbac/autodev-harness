@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Plus, Settings, Terminal } from "lucide-react";
+import { Plus, Terminal } from "lucide-react";
 import { useProjects } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { useAppStore, type ConnState } from "@/lib/store";
@@ -26,7 +25,6 @@ export function Sidebar() {
   const projects = useProjects();
   const activeProjectId = useProjectId();
   const conn = useAppStore((s) => s.conn);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const activeProject = projects.data?.projects.find((p) => p.id === activeProjectId);
 
@@ -70,28 +68,11 @@ export function Sidebar() {
         )}
       </nav>
 
-      {/* Daemon status + settings gear */}
+      {/* Daemon status + settings gear (the gear is SettingsPopover's own trigger) */}
       <div className="relative flex items-center gap-2 border-t border-border px-3 h-11 font-mono text-[11px] text-muted-foreground">
         <Dot tone={CONN_TONE[conn]} pulse={conn === "connecting"} />
         <span>{CONN_LABEL[conn]}</span>
-        <button
-          type="button"
-          // Stop the mousedown from reaching the popover's outside-click handler,
-          // so the gear is a clean toggle (open → close) instead of re-opening.
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setSettingsOpen((v) => !v)}
-          aria-label="Settings"
-          className="ml-auto rounded-md border border-border px-1.5 py-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-        >
-          <Settings className="size-3.5" />
-        </button>
-        {settingsOpen && (
-          <SettingsPopover
-            projectId={activeProjectId}
-            projectName={activeProject?.name}
-            onClose={() => setSettingsOpen(false)}
-          />
-        )}
+        <SettingsPopover projectId={activeProjectId} projectName={activeProject?.name} />
       </div>
     </aside>
   );
