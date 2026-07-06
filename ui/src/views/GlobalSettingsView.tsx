@@ -8,6 +8,7 @@ import { ApiError, type ProjectSummary, type DetectedAgent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Dot } from "@/components/ui/Dot";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/input";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Spinner, Loading, EmptyState } from "@/components/ui/Feedback";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
@@ -47,7 +48,7 @@ export function GlobalSettingsView() {
       back={
         <Link
           to="/"
-          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:border-line-strong hover:text-text"
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
           back
@@ -58,7 +59,7 @@ export function GlobalSettingsView() {
       <SettingsSection title="Appearance">
         <div className="flex items-center justify-between gap-6 py-1">
           <div>
-            <div className="text-[13px] text-text">Theme</div>
+            <div className="text-[13px] text-foreground">Theme</div>
             <div className="text-[11px] text-muted-foreground">Applies instantly and is remembered on this device.</div>
           </div>
           <div className="flex gap-1">
@@ -72,8 +73,8 @@ export function GlobalSettingsView() {
                   className={cn(
                     "rounded-md border px-3 py-1 text-[12px] transition-colors",
                     on
-                      ? "border-primary bg-surface-2 text-text"
-                      : "border-line text-muted-foreground hover:text-text",
+                      ? "border-primary bg-muted text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {seg.label}
@@ -90,7 +91,7 @@ export function GlobalSettingsView() {
         aside={
           <Link
             to="/new"
-            className="flex items-center gap-1.5 rounded-md border border-line-strong bg-surface-2 px-2 py-1 font-mono text-[11px] text-text transition-colors hover:border-line-strong"
+            className="flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-[11px] text-foreground transition-colors"
           >
             <Plus className="size-3 text-primary" />
             New
@@ -107,7 +108,7 @@ export function GlobalSettingsView() {
             description="Register a git repository and the daemon will orchestrate it."
           />
         ) : (
-          <ul className="divide-y divide-line">
+          <ul className="divide-y divide-border">
             {list.map((p) => (
               <RegistryRow key={p.id} project={p} />
             ))}
@@ -138,7 +139,7 @@ export function GlobalSettingsView() {
         ) : agentList.length === 0 ? (
           <EmptyState icon={Bot} title="No agents found" description="No known CLI coding agents were detected on PATH." />
         ) : (
-          <ul className="divide-y divide-line">
+          <ul className="divide-y divide-border">
             {agentList.map((a) => (
               <AgentRow key={a.id} agent={a} />
             ))}
@@ -196,7 +197,7 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           {editing ? (
-            <input
+            <Input
               autoFocus
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -204,10 +205,10 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
                 if (e.key === "Enter") save();
                 else if (e.key === "Escape") cancelEditing();
               }}
-              className="w-full rounded-md border border-line-strong bg-surface px-2 py-1 text-[13px] text-text outline-none transition-colors focus:border-ring"
+              className="text-[13px]"
             />
           ) : (
-            <span className="truncate text-[13px] font-semibold text-text">{project.name}</span>
+            <span className="truncate text-[13px] font-semibold text-foreground">{project.name}</span>
           )}
           {isError && (
             <span className="shrink-0 rounded border border-[color-mix(in_srgb,var(--color-broken)_35%,transparent)] px-1.5 py-px font-mono text-[9px] uppercase tracking-wide text-broken">
@@ -215,7 +216,7 @@ function RegistryRow({ project }: { project: ProjectSummary }) {
             </span>
           )}
         </div>
-        <div className="truncate font-mono text-[11px] text-subtle">{project.path}</div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">{project.path}</div>
         {del.error && confirming && (
           <div className="mt-1 font-mono text-[11px] text-broken">
             {del.error instanceof ApiError ? del.error.message : "unregister failed"}
@@ -294,20 +295,20 @@ function AgentRow({ agent }: { agent: DetectedAgent }) {
     <li className="flex items-center gap-3 px-4 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-semibold text-text">{agent.name}</span>
+          <span className="truncate text-[13px] font-semibold text-foreground">{agent.name}</span>
           <span
             className={cn(
               "shrink-0 rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide",
               agent.supported
                 ? "border-[color-mix(in_srgb,var(--primary)_35%,transparent)] text-primary"
-                : "border-line text-subtle",
+                : "border-border text-muted-foreground",
             )}
           >
             {agent.supported ? "supported" : "not yet supported"}
           </span>
         </div>
         {agent.available && agent.path ? (
-          <div className="truncate font-mono text-[11px] text-subtle">{agent.path}</div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground">{agent.path}</div>
         ) : (
           !agent.available &&
           agent.installUrl && (
