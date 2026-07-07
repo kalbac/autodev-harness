@@ -20,6 +20,8 @@ import {
   type RegistryEntry,
 } from "./registry.js";
 import { scaffoldProject, mergeConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
+import { createGit } from "../util/git.js";
+import { ensureAutodevBranch, initAutodevRepo, isInsideWorkTree } from "../util/ensure-branch.js";
 
 type Log = (level: string, message: string) => void;
 
@@ -33,7 +35,12 @@ export interface RegisterInput {
   config?: unknown;
 }
 
-export type RegisterErrorCode = "invalid_path" | "not_a_git_repo" | "already_registered" | "invalid_config";
+export type RegisterErrorCode =
+  | "invalid_path"
+  | "not_a_git_repo"
+  | "already_registered"
+  | "invalid_config"
+  | "branch_ensure_failed";
 
 export type RegisterResult =
   | { ok: true; entry: RegistryEntry }
@@ -48,6 +55,23 @@ export type RenameResult =
 export type ConfigUpdateErrorCode = "not_found" | "invalid_config";
 
 export type ConfigUpdateResult = { ok: true } | { ok: false; code: ConfigUpdateErrorCode; message: string };
+
+export type GitInitErrorCode = "invalid_path" | "already_git_repo" | "git_unavailable";
+
+export type GitInitResult =
+  | { ok: true; branch: string; untrackedCount: number }
+  | { ok: false; code: GitInitErrorCode; message: string };
+
+/** Injectable git bootstrap ops (default: real, via `createGit`). Tests override
+ *  so registry unit tests never shell out to git on a fake `.git` dir. */
+export interface AdminGitOps {
+  ensureAutodevBranch(repoRoot: string): Promise<{ branch: string; switched: boolean }>;
+  initAutodevRepo(repoRoot: string): Promise<{ branch: string; untrackedCount: number }>;
+  /** True iff `repoRoot` is already inside a git work tree (own repo or a
+   *  subdirectory of one with no nested `.git`). Guards `initGit` against
+   *  creating a nested repo. */
+  isInsideWorkTree(repoRoot: string): Promise<boolean>;
+}
 
 export interface ProjectAdmin {
   register(input: RegisterInput): Promise<RegisterResult>;
@@ -65,9 +89,19 @@ export interface ProjectAdmin {
   updateConfig(id: string, rawForm: unknown): Promise<ConfigUpdateResult>;
   /** Registry membership by canonical path (folder-browser badge). */
   isRegistered(absPath: string): Promise<boolean>;
+  /** Turn a NON-git folder into a git repo on an `^autodev/` branch (empty
+   *  bootstrap commit; existing files stay untracked). Rejects a path already
+   *  under git. Registry-independent (does NOT register). */
+  initGit(path: string): Promise<GitInitResult>;
 }
 
-export function createProjectAdmin(deps: { registryFile: string; log?: Log }): ProjectAdmin {
+export function createProjectAdmin(deps: { registryFile: string; log?: Log; gitOps?: AdminGitOps }): ProjectAdmin {
+  const ensureBranchOpts = deps.log !== undefined ? { log: deps.log } : {};
+  const gitOps: AdminGitOps = deps.gitOps ?? {
+    ensureAutodevBranch: (root) => ensureAutodevBranch(createGit(root), ensureBranchOpts),
+    initAutodevRepo: (root) => initAutodevRepo(createGit(root), ensureBranchOpts),
+    isInsideWorkTree: (root) => isInsideWorkTree(root),
+  };
   // Promise-chain mutex. `chain` is always a settled-or-pending SWALLOWED promise
   // (never rejected), so one failed operation can never wedge the queue.
   let chain: Promise<void> = Promise.resolve();
@@ -101,15 +135,33 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
           return { ok: false, code: "invalid_path", message: `not a directory: ${input.path}` };
         }
 
-        // 2. Is a git repo (a `.git` dir OR file — worktrees/submodules use a file).
-        if (!existsSync(join(real, ".git"))) {
-          return { ok: false, code: "not_a_git_repo", message: `not a git repository (no .git): ${real}` };
-        }
-
-        // 3. Not already registered (canonical-path compare, win32 case-fold).
+        // 2. Not already registered (canonical-path compare, win32 case-fold).
         const registry = await loadRegistry(deps.registryFile, deps.log);
         if (isPathRegistered(registry, real)) {
           return { ok: false, code: "already_registered", message: `path already registered: ${real}` };
+        }
+
+        // 3. Put an existing git repo on an `^autodev/` branch so its first run
+        //    clears the conductor guard (s30 Task 1). A non-git folder registers
+        //    as-is (it can't run until `initGit`); we only ensure-branch when a
+        //    repo is present. This must run BEFORE scaffold/registry-append and
+        //    must NOT be swallowed: a repo we failed to move onto an `^autodev/`
+        //    branch would otherwise get registered anyway and then die on the
+        //    conductor guard on its first run, defeating the point of this
+        //    step. This is also where a zero-commit ("unborn HEAD") repo surfaces
+        //    — `Git.currentBranch()` exits 128 on unborn HEAD, so
+        //    `ensureAutodevBranch` throws here rather than being silently
+        //    persisted into the registry.
+        if (existsSync(join(real, ".git"))) {
+          try {
+            await gitOps.ensureAutodevBranch(real);
+          } catch (err) {
+            return {
+              ok: false,
+              code: "branch_ensure_failed",
+              message: `could not put ${real} on an ^autodev/ branch: ${String(err)} (does the repo have at least one commit?)`,
+            };
+          }
         }
 
         // 4. Scaffold BEFORE the registry append: a failed scaffold must never
@@ -140,6 +192,48 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
         await saveRegistry(deps.registryFile, updated);
         deps.log?.("INFO", `admin: registered project '${entry.id}' at ${entry.path}`);
         return { ok: true, entry };
+      });
+    },
+
+    initGit(path) {
+      return withLock(async (): Promise<GitInitResult> => {
+        let real: string;
+        try {
+          real = await realpath(path);
+        } catch {
+          return { ok: false, code: "invalid_path", message: `path does not exist: ${path}` };
+        }
+        let st;
+        try {
+          st = await stat(real);
+        } catch {
+          return { ok: false, code: "invalid_path", message: `path is not accessible: ${path}` };
+        }
+        if (!st.isDirectory()) {
+          return { ok: false, code: "invalid_path", message: `not a directory: ${path}` };
+        }
+        if (existsSync(join(real, ".git"))) {
+          return { ok: false, code: "already_git_repo", message: `already a git repository: ${real}` };
+        }
+        try {
+          // A path with no direct `.git` can still be INSIDE an existing work
+          // tree (a subdirectory of a repo) — `git init` there would silently
+          // create a nested repo, which violates "rejects a path already under
+          // git". Both this check and `initAutodevRepo` below share one
+          // ENOENT->git_unavailable mapping (a missing git binary can surface
+          // from either call).
+          if (await gitOps.isInsideWorkTree(real)) {
+            return { ok: false, code: "already_git_repo", message: `path is inside an existing git work tree: ${real}` };
+          }
+          const { branch, untrackedCount } = await gitOps.initAutodevRepo(real);
+          deps.log?.("INFO", `admin: git-init ${real} -> ${branch} (${untrackedCount} untracked)`);
+          return { ok: true, branch, untrackedCount };
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            return { ok: false, code: "git_unavailable", message: "git is not installed or not on PATH" };
+          }
+          throw err; // real git/fs failure -> route's top-level catch -> 500
+        }
       });
     },
 

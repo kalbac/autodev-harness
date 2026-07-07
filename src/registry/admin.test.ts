@@ -16,6 +16,16 @@ function makeRepo(name: string): string {
   return p;
 }
 
+/** Spy `gitOps` that never shells out — register/initGit only fake `.git` dirs
+ *  in this file, so the REAL default gitOps (real `git`) must never run against them. */
+function fakeGitOps() {
+  return {
+    ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
+    initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+    isInsideWorkTree: async () => false,
+  };
+}
+
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "adh-admin-"));
   registryFile = join(base, "registry", "projects.json");
@@ -25,7 +35,7 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 describe("createProjectAdmin / register", () => {
   it("registers a valid git repo: entry saved, .autodev scaffolded by default", async () => {
     const repo = makeRepo("app");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
 
     const res = await admin.register({ path: repo });
     expect(res.ok).toBe(true);
@@ -39,7 +49,7 @@ describe("createProjectAdmin / register", () => {
 
   it("scaffold: false registers without touching the repo", async () => {
     const repo = makeRepo("bare");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: repo, scaffold: false });
     expect(res.ok).toBe(true);
     expect(existsSync(join(repo, ".autodev"))).toBe(false);
@@ -47,29 +57,78 @@ describe("createProjectAdmin / register", () => {
 
   it("passes the config form through to the scaffolded config.yaml", async () => {
     const repo = makeRepo("cfg");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: repo, config: { gate: { checkCommand: "npm test" } } });
     expect(res.ok).toBe(true);
     expect(readFileSync(join(repo, ".autodev", "config.yaml"), "utf8")).toContain("npm test");
   });
 
   it("rejects a nonexistent path with invalid_path", async () => {
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: join(base, "nope") });
     expect(res).toMatchObject({ ok: false, code: "invalid_path" });
   });
 
-  it("rejects a non-git dir with not_a_git_repo", async () => {
-    const p = join(base, "plain");
-    mkdirSync(p);
-    const admin = createProjectAdmin({ registryFile });
+  it("registers a NON-git folder (git gate dropped); no ensure-branch runs", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-nogit-"));
+    let ensureCalls = 0;
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => {
+          ensureCalls++;
+          return { branch: "autodev/main", switched: true };
+        },
+        initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
+      },
+    });
+    const r = await admin.register({ path: p, scaffold: false });
+    expect(r.ok).toBe(true);
+    expect(ensureCalls).toBe(0); // no .git -> no branch ensure
+  });
+
+  it("ensures the autodev branch when registering an existing git repo", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-git-"));
+    mkdirSync(join(p, ".git"));
+    let ensured = "";
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => {
+          ensured = "autodev/main";
+          return { branch: "autodev/main", switched: true };
+        },
+        initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
+      },
+    });
+    const r = await admin.register({ path: p, scaffold: false });
+    expect(r.ok).toBe(true);
+    expect(ensured).toBe("autodev/main");
+  });
+
+  it("surfaces an ensure-branch failure as branch_ensure_failed and does NOT register (unborn HEAD etc.)", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-git-fail-"));
+    mkdirSync(join(p, ".git"));
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => {
+          throw new Error("boom");
+        },
+        initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
+      },
+    });
     const res = await admin.register({ path: p });
-    expect(res).toMatchObject({ ok: false, code: "not_a_git_repo" });
+    expect(res).toMatchObject({ ok: false, code: "branch_ensure_failed" });
+    expect((await loadRegistry(registryFile)).projects).toEqual([]);
   });
 
   it("rejects a duplicate path with already_registered (second call, same canonical path)", async () => {
     const repo = makeRepo("dup");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     expect((await admin.register({ path: repo })).ok).toBe(true);
     const res = await admin.register({ path: repo });
     expect(res).toMatchObject({ ok: false, code: "already_registered" });
@@ -77,7 +136,7 @@ describe("createProjectAdmin / register", () => {
 
   it("rejects an invalid config form with invalid_config and does NOT register", async () => {
     const repo = makeRepo("badcfg");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: repo, config: { roles: { worker: { ladder: [] } } } });
     expect(res).toMatchObject({ ok: false, code: "invalid_config" });
     expect((await loadRegistry(registryFile)).projects).toEqual([]);
@@ -86,7 +145,7 @@ describe("createProjectAdmin / register", () => {
 
   it("rejects an unknown config key with invalid_config (strict form)", async () => {
     const repo = makeRepo("unknownkey");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: repo, config: { totallyUnknown: 1 } });
     expect(res).toMatchObject({ ok: false, code: "invalid_config" });
   });
@@ -95,7 +154,7 @@ describe("createProjectAdmin / register", () => {
     const repo = makeRepo("existing");
     mkdirSync(join(repo, ".autodev"), { recursive: true });
     writeFileSync(join(repo, ".autodev", "config.yaml"), "# mine\n");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const res = await admin.register({ path: repo });
     expect(res.ok).toBe(true);
     expect(readFileSync(join(repo, ".autodev", "config.yaml"), "utf8")).toBe("# mine\n");
@@ -104,7 +163,7 @@ describe("createProjectAdmin / register", () => {
   it("two CONCURRENT registers of different repos both land (mutex — no lost write)", async () => {
     const r1 = makeRepo("one");
     const r2 = makeRepo("two");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const [a, b] = await Promise.all([admin.register({ path: r1 }), admin.register({ path: r2 })]);
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
@@ -114,7 +173,7 @@ describe("createProjectAdmin / register", () => {
 
   it("two CONCURRENT registers of the SAME repo: exactly one wins", async () => {
     const repo = makeRepo("race");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const results = await Promise.all([admin.register({ path: repo }), admin.register({ path: repo })]);
     expect(results.filter((r) => r.ok).length).toBe(1);
     expect(results.filter((r) => !r.ok && r.code === "already_registered").length).toBe(1);
@@ -122,10 +181,53 @@ describe("createProjectAdmin / register", () => {
   });
 });
 
+describe("createProjectAdmin / initGit", () => {
+  it("rejects a path that is already a git repo", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-already-"));
+    mkdirSync(join(p, ".git"));
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
+    const r = await admin.initGit(p);
+    expect(r).toEqual({ ok: false, code: "already_git_repo", message: expect.any(String) });
+  });
+
+  it("turns a non-git folder into a git repo (via injected gitOps)", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-init-"));
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
+        initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 2 }),
+        isInsideWorkTree: async () => false,
+      },
+    });
+    const r = await admin.initGit(p);
+    expect(r).toEqual({ ok: true, branch: "autodev/main", untrackedCount: 2 });
+  });
+
+  it("rejects a path with no direct .git that is INSIDE an existing work tree (subdirectory of a repo)", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-subdir-"));
+    let initCalls = 0;
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
+        initAutodevRepo: async () => {
+          initCalls++;
+          return { branch: "autodev/main", untrackedCount: 0 };
+        },
+        isInsideWorkTree: async () => true,
+      },
+    });
+    const r = await admin.initGit(p);
+    expect(r).toEqual({ ok: false, code: "already_git_repo", message: expect.any(String) });
+    expect(initCalls).toBe(0);
+  });
+});
+
 describe("createProjectAdmin / unregister", () => {
   it("removes the entry and returns true; the project folder is untouched", async () => {
     const repo = makeRepo("gone");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
 
@@ -135,7 +237,7 @@ describe("createProjectAdmin / unregister", () => {
   });
 
   it("returns false for an unknown id", async () => {
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     expect(await admin.unregister("nope")).toBe(false);
   });
 });
@@ -143,7 +245,7 @@ describe("createProjectAdmin / unregister", () => {
 describe("createProjectAdmin / rename", () => {
   it("renames a registered project: ok+entry, on-disk name updated, id/path preserved", async () => {
     const repo = makeRepo("ren");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
 
@@ -158,7 +260,7 @@ describe("createProjectAdmin / rename", () => {
 
   it("trims surrounding whitespace before storing", async () => {
     const repo = makeRepo("trim");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
 
@@ -171,7 +273,7 @@ describe("createProjectAdmin / rename", () => {
 
   it("empty/whitespace-only name -> invalid_name, on-disk name unchanged", async () => {
     const repo = makeRepo("empty");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
     const before = (await loadRegistry(registryFile)).projects[0]!.name;
@@ -183,7 +285,7 @@ describe("createProjectAdmin / rename", () => {
 
   it("unknown id -> not_found, registry unchanged", async () => {
     const repo = makeRepo("known");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
     const before = await loadRegistry(registryFile);
@@ -195,7 +297,7 @@ describe("createProjectAdmin / rename", () => {
 
   it("a name over 200 chars -> invalid_name", async () => {
     const repo = makeRepo("toolong");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo });
     if (!reg.ok) throw new Error("register failed");
 
@@ -207,7 +309,7 @@ describe("createProjectAdmin / rename", () => {
 describe("createProjectAdmin / isRegistered", () => {
   it("reflects registry membership by canonical path", async () => {
     const repo = makeRepo("member");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     expect(await admin.isRegistered(repo)).toBe(false);
     await admin.register({ path: repo });
     expect(await admin.isRegistered(repo)).toBe(true);
@@ -217,7 +319,7 @@ describe("createProjectAdmin / isRegistered", () => {
 describe("createProjectAdmin / updateConfig", () => {
   it("writes a valid partial update: on-disk config.yaml shows the new field, defaults elsewhere", async () => {
     const repo = makeRepo("cfg-write");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
 
@@ -231,7 +333,7 @@ describe("createProjectAdmin / updateConfig", () => {
 
   it("a SECOND update touching only worktree.provision preserves the first update's gate.checkCommand", async () => {
     const repo = makeRepo("cfg-merge");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
 
@@ -245,7 +347,7 @@ describe("createProjectAdmin / updateConfig", () => {
 
   it("unknown id -> not_found, no file written (project has no .autodev at all)", async () => {
     const repo = makeRepo("cfg-unknown");
-    const admin = createProjectAdmin({ registryFile }); // repo exists but is never registered
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() }); // repo exists but is never registered
     const res = await admin.updateConfig("ghost", { gate: { checkCommand: "npm test" } });
     expect(res).toMatchObject({ ok: false, code: "not_found" });
     expect(existsSync(join(repo, ".autodev"))).toBe(false);
@@ -253,7 +355,7 @@ describe("createProjectAdmin / updateConfig", () => {
 
   it("invalid form (unknown top-level key) -> invalid_config, on-disk file unchanged", async () => {
     const repo = makeRepo("cfg-badform");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
     await admin.updateConfig(reg.entry.id, { gate: { checkCommand: "npm test" } });
@@ -266,7 +368,7 @@ describe("createProjectAdmin / updateConfig", () => {
 
   it("a merged result the real schema rejects (worktree.provision separator) -> invalid_config, on-disk unchanged", async () => {
     const repo = makeRepo("cfg-badmerge");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
     await admin.updateConfig(reg.entry.id, { gate: { checkCommand: "npm test" } });
@@ -280,7 +382,7 @@ describe("createProjectAdmin / updateConfig", () => {
   it("a project whose .autodev is a symlink -> invalid_config mentioning 'symlink', target untouched", async () => {
     const repo = makeRepo("cfg-symlink");
     const target = mkdtempSync(join(tmpdir(), "adh-admin-out-"));
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
     // 'junction' works without admin rights on Windows; plain dir symlink on POSIX.
@@ -299,7 +401,7 @@ describe("createProjectAdmin / updateConfig", () => {
     const repo = makeRepo("cfg-file-symlink");
     const outsideFile = join(mkdtempSync(join(tmpdir(), "adh-admin-out-")), "secret.yaml");
     writeFileSync(outsideFile, "untouched: true\n", "utf8");
-    const admin = createProjectAdmin({ registryFile });
+    const admin = createProjectAdmin({ registryFile, gitOps: fakeGitOps() });
     const reg = await admin.register({ path: repo, scaffold: false });
     if (!reg.ok) throw new Error("register failed");
     mkdirSync(join(repo, ".autodev"), { recursive: true });

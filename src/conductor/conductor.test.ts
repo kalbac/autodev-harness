@@ -196,6 +196,24 @@ function makeGit(branch: string): { git: Git; setBranch: (b: string) => void; cu
       currentBranchCalls.count++;
       return current;
     },
+    async init(): Promise<void> {
+      /* unused */
+    },
+    async listBranches(): Promise<string[]> {
+      return [current];
+    },
+    async checkoutBranch(): Promise<void> {
+      /* unused */
+    },
+    async createBranch(): Promise<void> {
+      /* unused */
+    },
+    async commitEmpty(): Promise<string> {
+      throw new Error("commitEmpty should not be called on main git");
+    },
+    async countUntracked(): Promise<number> {
+      return 0;
+    },
     async changedFiles(): Promise<string[]> {
       return [];
     },
@@ -235,6 +253,18 @@ function makeSequencedGit(branches: string[]): { git: Git; commitCalls: { count:
       i++;
       return b;
     },
+    async init(): Promise<void> {},
+    async listBranches(): Promise<string[]> {
+      return branches;
+    },
+    async checkoutBranch(): Promise<void> {},
+    async createBranch(): Promise<void> {},
+    async commitEmpty(): Promise<string> {
+      throw new Error("commitEmpty should not be called on main git");
+    },
+    async countUntracked(): Promise<number> {
+      return 0;
+    },
     async changedFiles(): Promise<string[]> {
       return [];
     },
@@ -265,6 +295,24 @@ function makeWorktreeGitFactory(): { worktreeGit: (wt: Worktree) => Git; spy: Wo
   const worktreeGit = (wt: Worktree): Git => ({
     async currentBranch(): Promise<string> {
       return wt.branch;
+    },
+    async init(): Promise<void> {
+      /* unused */
+    },
+    async listBranches(): Promise<string[]> {
+      return [wt.branch];
+    },
+    async checkoutBranch(): Promise<void> {
+      /* unused */
+    },
+    async createBranch(): Promise<void> {
+      /* unused */
+    },
+    async commitEmpty(): Promise<string> {
+      throw new Error("commitEmpty should not be called on worktree git");
+    },
+    async countUntracked(): Promise<number> {
+      return 0;
     },
     async changedFiles(): Promise<string[]> {
       return [];

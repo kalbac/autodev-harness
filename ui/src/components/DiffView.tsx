@@ -5,11 +5,11 @@ import { cn } from "@/lib/utils";
 export function DiffView({ patch }: { patch: string }) {
   const lines = patch.split(/\r?\n/);
   if (patch.trim().length === 0) {
-    return <p className="px-3 py-6 text-center text-xs text-subtle">Empty diff.</p>;
+    return <p className="px-3 py-6 text-center text-xs text-muted-foreground">Empty diff.</p>;
   }
 
   return (
-    <pre className="overflow-auto rounded-lg border border-line bg-panel/60 font-mono text-[11px] leading-relaxed">
+    <pre className="overflow-auto rounded-lg border border-border bg-muted/60 font-mono text-[11px] leading-relaxed">
       <code className="block min-w-max">
         {lines.map((l, i) => {
           const kind =
@@ -31,9 +31,9 @@ export function DiffView({ patch }: { patch: string }) {
                 "px-3 whitespace-pre",
                 kind === "add" && "text-clean bg-[color-mix(in_srgb,var(--color-clean)_8%,transparent)]",
                 kind === "del" && "text-broken bg-[color-mix(in_srgb,var(--color-broken)_8%,transparent)]",
-                kind === "hunk" && "text-accent",
-                kind === "meta" && "text-subtle",
-                kind === "ctx" && "text-muted",
+                kind === "hunk" && "text-primary",
+                kind === "meta" && "text-muted-foreground",
+                kind === "ctx" && "text-muted-foreground",
               )}
             >
               {l || " "}

@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
 
 /* Fonts are bundled via @fontsource (see main.tsx) — no CDN dependency, works
    fully offline on a localhost daemon. */
@@ -7,61 +11,21 @@
  * Design direction — "the checkpoint / control room".
  * The harness's whole thesis is an independent critic gate that refuses to
  * merge bad code. So COLOR IS RARE AND MEANINGFUL: the chrome is a calm,
- * desaturated ink; the only saturated color on screen is a status/verdict tone.
- * Type is mono-forward — the subject's world is diffs, task ids, digest lines.
+ * desaturated ink (now shadcn's zinc scale); the only saturated color on
+ * screen is a status/verdict tone. Type is mono-forward — the subject's
+ * world is diffs, task ids, digest lines.
+ *
+ * shadcn (Base UI, zinc) is the canonical token source (`:root`/`.dark`/
+ * `@theme inline` below). Fonts, the status vocabulary, and a legacy-token
+ * alias layer (`--color-ink/panel/surface/...` → shadcn vars) are layered on
+ * top so the ~29 not-yet-converted files keep rendering zinc until PR1–PR5
+ * rewrite them to canonical shadcn classes (see docs/superpowers/plans/
+ * 2026-07-06-shadcn-ui-migration.md).
  */
-@theme {
-  /* Chrome — desaturated slate ink, not pure black. */
-  --color-ink: #0d1017; /* app background */
-  --color-panel: #12161f; /* sidebar / rails */
-  --color-surface: #161c27; /* cards */
-  --color-surface-2: #1c2432; /* raised / hover */
-  --color-line: #262e3b; /* hairline borders */
-  --color-line-strong: #333d4d; /* hover / focused borders */
-
-  --color-text: #e7ebf2; /* primary text */
-  --color-muted: #97a1b2; /* secondary text */
-  --color-subtle: #6b7484; /* tertiary / captions */
-
-  /* Status + verdict vocabulary — the ONLY saturated hues. */
-  --color-working: #e8833a; /* active / in-progress (orange, pulses) */
-  --color-uncertain: #e0a324; /* needs-you / escalated (amber) */
-  --color-broken: #e5484d; /* broken / quarantine (red) */
-  --color-clean: #3fb68b; /* clean / done / ready (jade) */
-  --color-accent: #5b6cff; /* interactive / focus (iris), used sparingly */
-
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
-
-  --radius: 0.5rem;
-}
-
-/*
- * Light theme — the switcher (`lib/theme.ts`) sets `data-theme="light"` on
- * <html> (and drops the `.dark` class). Only the CHROME is remapped here
- * (ink/panel/surface/line/text); the status + verdict hues are deliberately NOT
- * overridden, so the "color is rare and meaningful" vocabulary reads identically
- * in both themes. Elevation is inverted correctly: the main area is a calm light
- * slate, cards are white (brightest = raised), the sidebar sits just above the
- * base, and hover tints DARKEN (surface → surface-2) the mirror of dark mode.
- */
-[data-theme="light"] {
-  --color-ink: #eef1f5; /* app background — light cool slate */
-  --color-panel: #f6f8fa; /* sidebar / rails — just above the base */
-  --color-surface: #ffffff; /* cards — brightest, reads as raised */
-  --color-surface-2: #e7ecf2; /* raised / hover — darker tint on white */
-  --color-line: #dde3ea; /* hairline borders */
-  --color-line-strong: #c4ccd8; /* hover / focused borders */
-
-  --color-text: #171b23; /* primary text — near-black slate, not pure black */
-  --color-muted: #566072; /* secondary text */
-  --color-subtle: #838d9d; /* tertiary / captions */
-}
 
 @layer base {
   * {
-    border-color: var(--color-line);
+    @apply border-border outline-ring/50;
   }
 
   html,
@@ -72,38 +36,40 @@
 
   body {
     margin: 0;
-    background: var(--color-ink);
-    color: var(--color-text);
     font-family: var(--font-sans);
     font-feature-settings: "cv05", "ss01";
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizelegibility;
+    @apply bg-background text-foreground;
   }
 
   /* Dark, thin scrollbars that read as part of the chrome, not the OS. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-line-strong) transparent;
+    scrollbar-color: var(--border) transparent;
   }
   *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   *::-webkit-scrollbar-thumb {
-    background: var(--color-line-strong);
+    background: var(--border);
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 9999px;
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--ring);
     outline-offset: 2px;
     border-radius: 3px;
   }
 
   ::selection {
-    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    background: color-mix(in srgb, var(--primary) 35%, transparent);
+  }
+  html {
+    @apply font-sans;
   }
 }
 
@@ -127,4 +93,129 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Fonts — IBM Plex (bundled offline via @fontsource; Space Grotesk dropped). */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* Functional status vocabulary — the ONLY non-shadcn color tokens. These
+     carry meaning (critic verdict / queue status), not chrome, so they stay
+     literal in both themes. Everything else is canonical shadcn zinc.
+     The PR0→PR5 legacy-token alias layer is fully retired — all screens now
+     use canonical shadcn classes/vars directly. */
+  --color-working: #e8833a;
+  --color-uncertain: #e0a324;
+  --color-broken: #e5484d;
+  --color-clean: #3fb68b;
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.21 0.006 285.885);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+  --chart-1: oklch(0.871 0.006 286.286);
+  --chart-2: oklch(0.552 0.016 285.938);
+  --chart-3: oklch(0.442 0.017 285.786);
+  --chart-4: oklch(0.37 0.013 285.805);
+  --chart-5: oklch(0.274 0.006 286.033);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-primary: oklch(0.21 0.006 285.885);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.967 0.001 286.375);
+  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-ring: oklch(0.705 0.015 286.067);
+}
+
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.92 0.004 286.32);
+  --primary-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.552 0.016 285.938);
+  --chart-1: oklch(0.871 0.006 286.286);
+  --chart-2: oklch(0.552 0.016 285.938);
+  --chart-3: oklch(0.442 0.017 285.786);
+  --chart-4: oklch(0.37 0.013 285.805);
+  --chart-5: oklch(0.274 0.006 286.033);
+  --sidebar: oklch(0.21 0.006 285.885);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.006 286.033);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.552 0.016 285.938);
 }

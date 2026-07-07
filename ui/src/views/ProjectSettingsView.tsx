@@ -19,6 +19,8 @@ import {
 import { cn } from "@/lib/utils";
 import type { Tone } from "@/lib/status";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loading, EmptyState, Spinner } from "@/components/ui/Feedback";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { SettingsPage, SettingsSection, SettingsRow } from "@/components/SettingsLayout";
@@ -226,7 +228,7 @@ export function ProjectSettingsView() {
     <Link
       to="/p/$projectId"
       params={{ projectId }}
-      className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 font-mono text-[11px] text-muted transition-colors hover:border-line-strong hover:text-text"
+      className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
     >
       <ArrowLeft className="size-3.5" />
       back
@@ -284,7 +286,7 @@ export function ProjectSettingsView() {
       ) : null}
 
       {!editing && (
-        <p className="px-1 text-[11px] leading-relaxed text-subtle">
+        <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
           Repository path and state directory are fixed at registration; only the fields above are
           editable here.
         </p>
@@ -360,13 +362,13 @@ function ConfigSections({
             validate={validateProvisionEntry}
           />
         ) : worktree.provision.length === 0 ? (
-          <SettingsRow label="Provision" value={<span className="text-subtle">none</span>} />
+          <SettingsRow label="Provision" value={<span className="text-muted-foreground">none</span>} />
         ) : (
           <div className="flex flex-wrap justify-end gap-1.5 py-1">
             {worktree.provision.map((entry) => (
               <span
                 key={entry}
-                className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-text"
+                className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground"
               >
                 {entry}
               </span>
@@ -479,7 +481,7 @@ function ConfigSections({
             ) : (
               <RoleCard title="Planner" dimmed>
                 <div className="flex flex-col items-start gap-2 py-1">
-                  <span className="font-mono text-[11px] text-subtle">
+                  <span className="font-mono text-[11px] text-muted-foreground">
                     not set · orchestrator handles planning
                   </span>
                   <Button
@@ -524,7 +526,7 @@ function ConfigSections({
       </SettingsSection>
 
       <SettingsSection title="Isolation">
-        <p className="pb-2 text-[11px] leading-relaxed text-subtle">
+        <p className="pb-2 text-[11px] leading-relaxed text-muted-foreground">
           By default the worker inherits your full <span className="font-mono">~/.claude</span> + project extension
           set. Isolation runs it cleaner / more reproducibly.
         </p>
@@ -610,8 +612,8 @@ function ToggleRow({
         className={cn(
           "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border transition-colors",
           checked
-            ? "border-accent bg-[color-mix(in_srgb,var(--color-accent)_25%,transparent)] text-accent"
-            : "border-line-strong",
+            ? "border-primary bg-[color-mix(in_srgb,var(--primary)_25%,transparent)] text-primary"
+            : "border-border",
         )}
       >
         {checked && <Check className="size-3" />}
@@ -624,11 +626,11 @@ function ToggleRow({
         className="sr-only"
       />
       <span className="flex-1">
-        <span className="block text-[13px] text-text">{label}</span>
+        <span className="block text-[13px] text-foreground">{label}</span>
         {disabled && disabledHint ? (
-          <span className="mt-0.5 block font-mono text-[11px] italic text-subtle">{disabledHint}</span>
+          <span className="mt-0.5 block font-mono text-[11px] italic text-muted-foreground">{disabledHint}</span>
         ) : (
-          description && <span className="mt-0.5 block font-mono text-[11px] text-muted">{description}</span>
+          description && <span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{description}</span>
         )}
       </span>
     </label>
@@ -651,9 +653,9 @@ function RoleCard({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("rounded-md border border-line bg-surface-2/40 px-3 py-2.5", dimmed && "opacity-70")}>
-      <div className="mb-1.5 flex items-center gap-2 border-b border-line pb-1.5">
-        <h3 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{title}</h3>
+    <div className={cn("rounded-md border border-border bg-muted/40 px-3 py-2.5", dimmed && "opacity-70")}>
+      <div className="mb-1.5 flex items-center gap-2 border-b border-border pb-1.5">
+        <h3 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{title}</h3>
         {badge && <div className="ml-auto">{badge}</div>}
       </div>
       <div className="flex flex-col">{children}</div>
@@ -731,7 +733,7 @@ function RoleReadValue({ value, muted }: { value: string; muted?: boolean }) {
     <div
       className={cn(
         "min-w-0 break-words py-1 text-right font-mono text-[11px]",
-        muted || value === "" ? "text-subtle" : "text-text",
+        muted || value === "" ? "text-muted-foreground" : "text-foreground",
       )}
     >
       {value === "" ? "—" : value}
@@ -769,12 +771,12 @@ function TextFieldRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-6 py-1.5">
-      <span className="shrink-0 text-[13px] text-muted">{label}</span>
-      <input
+      <span className="shrink-0 text-[13px] text-muted-foreground">{label}</span>
+      <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
+        className="min-w-0 flex-1 text-right font-mono text-[12px]"
       />
     </div>
   );
@@ -849,13 +851,13 @@ function SelectOrCustomRow({
   if (custom) {
     return (
       <div className="flex items-center justify-between gap-6 py-1.5">
-        <span className="shrink-0 text-[13px] text-muted">{label}</span>
+        <span className="shrink-0 text-[13px] text-muted-foreground">{label}</span>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
-          <input
+          <Input
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
-            className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
+            className="min-w-0 flex-1 text-right font-mono text-[12px]"
           />
           {options.length > 0 && (
             <Button size="sm" variant="ghost" onClick={() => setCustom(false)}>
@@ -869,22 +871,26 @@ function SelectOrCustomRow({
 
   return (
     <div className="flex items-center justify-between gap-6 py-1.5">
-      <span className="shrink-0 text-[13px] text-muted">{label}</span>
-      <select
+      <span className="shrink-0 text-[13px] text-muted-foreground">{label}</span>
+      <Select
         value={value}
-        onChange={(e) => {
-          if (e.target.value === CUSTOM_OPTION) setCustom(true);
-          else onChange(e.target.value);
+        onValueChange={(v) => {
+          if (v === CUSTOM_OPTION) setCustom(true);
+          else if (v !== null) onChange(v);
         }}
-        className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
       >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-        <option value={CUSTOM_OPTION}>Custom…</option>
-      </select>
+        <SelectTrigger className="min-w-0 flex-1 font-mono text-[12px]">
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              {o.label}
+            </SelectItem>
+          ))}
+          <SelectItem value={CUSTOM_OPTION}>Custom…</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 }
@@ -930,20 +936,20 @@ function EditableList({
   return (
     <div className="py-1">
       {items.length === 0 ? (
-        <div className="flex justify-end py-0.5 font-mono text-[11px] text-subtle">none</div>
+        <div className="flex justify-end py-0.5 font-mono text-[11px] text-muted-foreground">none</div>
       ) : (
         <div className="flex flex-wrap justify-end gap-1.5">
           {items.map((item) => (
             <span
               key={item}
-              className="flex items-center gap-1 rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-text"
+              className="flex items-center gap-1 rounded border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground"
             >
               {item}
               <button
                 type="button"
                 onClick={() => remove(item)}
                 aria-label={`Remove ${item}`}
-                className="text-subtle transition-colors hover:text-broken"
+                className="text-muted-foreground transition-colors hover:text-broken"
               >
                 <X className="size-3" />
               </button>
@@ -952,7 +958,7 @@ function EditableList({
         </div>
       )}
       <div className="mt-1.5 flex items-center justify-end gap-1.5">
-        <input
+        <Input
           value={pending}
           onChange={(e) => setPending(e.target.value)}
           onKeyDown={(e) => {
@@ -962,7 +968,7 @@ function EditableList({
             }
           }}
           placeholder={placeholder}
-          className="w-40 rounded-md border border-line-strong bg-surface px-2 py-1 text-right font-mono text-[12px] text-text outline-none transition-colors focus:border-accent"
+          className="w-40 text-right font-mono text-[12px]"
         />
         <Button size="sm" variant="ghost" onClick={add} disabled={!canAdd}>
           <Plus className="size-3" />
@@ -975,7 +981,7 @@ function EditableList({
               key={s}
               type="button"
               onClick={() => onChange([...items, s])}
-              className="rounded border border-dashed border-line px-1.5 py-0.5 font-mono text-[10px] text-subtle transition-colors hover:border-accent hover:text-accent"
+              className="rounded border border-dashed border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary hover:text-primary"
             >
               + {s}
             </button>
@@ -1022,7 +1028,7 @@ function AgentExtensionsPanel({ projectId }: { projectId: string }) {
       }
       className="p-0"
     >
-      <p className="px-4 pt-3 text-[11px] leading-relaxed text-subtle">
+      <p className="px-4 pt-3 text-[11px] leading-relaxed text-muted-foreground">
         Reflects the CURRENTLY SAVED isolation config above — if you just toggled isolation, Save first, then
         Scan to see the effect.
       </p>
@@ -1072,7 +1078,7 @@ function AgentExtensionsPanel({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <p className="border-t border-line px-4 py-2.5 text-[11px] leading-relaxed text-subtle">
+      <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
         The codex critic inherits your <span className="font-mono">~/.codex</span> global config + project{" "}
         <span className="font-mono">AGENTS.md</span>; its NO-TOOLS preamble is always enforced. No live critic
         scan — codex has no clean init JSON.
@@ -1086,8 +1092,8 @@ function AgentExtensionsPanel({ projectId }: { projectId: string }) {
 function ExtensionGroup({ title, count, children }: { title: string; count: number; children: ReactNode }) {
   return (
     <div>
-      <h4 className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-        {title} <span className="text-subtle">({count})</span>
+      <h4 className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+        {title} <span className="text-muted-foreground">({count})</span>
       </h4>
       <div className="flex flex-wrap gap-1.5">{children}</div>
     </div>
@@ -1097,14 +1103,14 @@ function ExtensionGroup({ title, count, children }: { title: string; count: numb
 /** Plain chip — same visual as the read-mode worktree-provision entries. */
 function Chip({ label }: { label: string }) {
   return (
-    <span className="rounded border border-line bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-text">
+    <span className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground">
       {label}
     </span>
   );
 }
 
 function NoneChip() {
-  return <span className="font-mono text-[11px] text-subtle">none</span>;
+  return <span className="font-mono text-[11px] text-muted-foreground">none</span>;
 }
 
 /** MCP server status string -> pill tone. "connected"/"ready"/"ok" reads

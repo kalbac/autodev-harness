@@ -176,6 +176,19 @@ export const usePatchRun = (projectId: string) => {
 export const useFsDirs = (path?: string) =>
   useQuery({ queryKey: ["fs-dirs", path ?? "__roots__"], queryFn: () => api.getFsDirs(path) });
 
+/** Is git installed (daemon-global). Short staleTime; the New Project screen reads it once on load. */
+export const useSystemGit = () =>
+  useQuery({ queryKey: ["system-git"], queryFn: api.getSystemGit, staleTime: 30_000 });
+
+/** `git init` a non-git folder; invalidates the folder listing so the row re-renders as a git repo. */
+export const useGitInit = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => api.gitInit(path),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["fs-dirs"] }),
+  });
+};
+
 /** PATH-scan auto-detect of installed CLI agents (M2), daemon-global. A short
  *  `staleTime` (the PATH doesn't change often) and NO `refetchInterval` — this
  *  is a manual "Rescan" action (see the Global Settings panel), not a poll.

@@ -1,5 +1,64 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ DONE (s30) — onboarding redesign (any-folder + auto git-init/branch + git-not-installed guard) — backend codex-clean + live-proven; UI awaits operator visual verify
+> Operator-designed (brainstorm→spec→plan→subagent-driven build, Sonnet workers + codex GPT-5.5 gate). Replaces the
+> git-only New Project flow. **Spec** `docs/superpowers/specs/2026-07-07-onboarding-redesign-design.md`; **plan**
+> `docs/superpowers/plans/2026-07-07-onboarding-redesign.md`. Native OS folder dialog was REJECTED for now (browser
+> can't get a native path; daemon-spawned GUI is fragile on Windows + still needs the in-browser fallback) → deferred
+> to the desktop wrap. Three features: (1) folder browser now selects ANY folder + hides system/hidden dirs; (2) inline
+> **init git** for non-git folders (`git init` → empty commit → `autodev/main`; existing files stay UNTRACKED); (3)
+> git-not-installed banner + "Install it now". **The s30 Task 1 branch-guard fix is delivered here** as the shared
+> `ensureAutodevBranch` (`src/util/ensure-branch.ts`) — called on register AND defensively at daemon startup over every
+> registered project (fixes pre-existing projects like `woodev-shipping-plugin-test` on `master`). Branch
+> `autodev/s30-onboarding-redesign` (11 tasks, 790 tests / 3 skip, root+ui typecheck+build green). **codex gate:**
+> CHANGES-REQUIRED (3 Medium + 2 Low) → fixed (`register` surfaces `branch_ensure_failed` instead of swallowing;
+> `initGit` rejects paths INSIDE a work tree; 2 test fixes) → **re-critic CLEAN**. **Backend LIVE-PROVEN via curl**
+> (`/system/git` git 2.49; git-init non-git→autodev/main+2 untracked+empty commit; 409 on re-init & on subdir-inside-worktree;
+> hidden-dir filter; register; **startup ensure switched a project main→autodev/main, not recreated**). **NOT merged yet**
+> — operator to visually verify the New Project UI (serve → :4319 → New Project), then self-merge the batch.
+> **Still open (operator-flagged in s29, OUT of scope this batch):** (B) orphaned PENDING tasks (enqueue-before-guard;
+> make enqueue+trigger transactional / roll back on preflight fail) and (C) no dedup of a relaunched equivalent intent.
+>
+> ## ✅ DONE (s29) — shadcn (Base UI) UI migration — COMPLETE (merged to main), UI live-verified by operator
+> Operator wants the whole `ui/` moved to the **default shadcn look on Base UI (zinc)**, screen by screen.
+> Spec: `docs/superpowers/specs/2026-07-06-shadcn-ui-migration-design.md` · Plan (checkboxes = progress):
+> `docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md`. Governing rule: **shadcn-first** (see AGENTS.md).
+> Mode: subagent-driven (Sonnet 5 workers) + mandatory codex GPT-5.5 critic per phase; merge to main after
+> critic-clean + green build/typecheck (operator away, autonomy granted). **Live browser-verify DEFERRED to
+> operator** (browser tools were down this session) — nothing visually confirmed in a real browser yet.
+> - **PR0 Foundation — ✅ MERGED to main** (`--no-ff`): shadcn init (Base UI/zinc/css-vars), reconciled theme
+>   (IBM Plex + literal status vocab + legacy-token alias layer), `.dark` convention, 17 primitives, signature-
+>   preserving Button/Card/TabBar/StatusPill/Dot/Feedback. Critic found+fixed 1 high (muted/accent token-alias
+>   collision) + 1 medium (TabBar accent underline); re-critic clean. Build+typecheck green.
+> - **PR1 App shell + navigation — ✅ MERGED** (`fcacece..65744f2`): AppShell/Sidebar/ProjectTopBar/SessionRail on
+>   canonical shadcn tokens; ProjectSwitcherMenu → shadcn DropdownMenu; chip→Badge; ScrollArea in rail. Critic: all PASS, 0 findings.
+> - **PR2 Board — ✅ MERGED** (`3bbd382..d186369`): TaskCard/ProjectRow/BoardView on shadcn tokens + ScrollArea.
+>   Critic caught 2 High + 3 Medium (light-mode `bg-card/40` layer collapse since zinc `--card`==`--background`==white;
+>   `group-hover:text-white`=white-on-white; inline `var(--color-muted)` used as text — a regression from PR0's alias
+>   removal; leftover `var(--color-line-strong)`; `toneVar.idle` off legacy var) → fixed → re-critic all PASS.
+> - **⚠️ Recurring gotchas for remaining PRs:** (a) zinc light theme `--card`==`--background`==white → never rely on
+>   `bg-card` alone over the page for a layer; (b) `text-white` hovers break in light mode → use `text-foreground`;
+>   (c) PR0's global sed only fixed `text-muted` CLASS, so inline `var(--color-muted)`/`var(--color-accent)` in JS
+>   `style=` may still lurk in unconverted screens (now resolve to shadcn bg tokens) — grep each PR's files for them.
+> - **PR3 Run screen — ✅ MERGED** (`ac267cc..` + clamp): RunView/Inspector/EscalationCard/DigestStrip/DiffView on
+>   shadcn tokens; VerdictSeal rebuilt as shadcn composition (Badge + Progress subparts tone-tinted + muted rows);
+>   new `ui/textarea.tsx`; DiffView stays custom. Critic: 1 Medium (confidence clamp) fixed, rest PASS.
+> - **PR4 Task detail — ✅ MERGED** (`f951113..` + rail fix): TaskDetailView/NewRunComposer on shadcn tokens; spec/stage
+>   boxes → Card; model chips → Badge(render=Link). Critic: 1 Medium (dark `--sidebar`==`--card` rail → `bg-muted/40`) fixed, rest PASS.
+> - **PR5 Settings + onboarding — ✅ MERGED** (9 files): all settings/onboarding on shadcn tokens; SettingsPopover
+>   rebuilt on shadcn Popover with the gear as the REAL trigger (fixed a toggle regression the naive split caused,
+>   also touched Sidebar); form controls → Input/Select/Button. Critic: all PASS, 0 blocking.
+> - **Final cleanup — ✅ MERGED:** legacy-token alias layer fully retired; `styles.css` body/scrollbar refs → shadcn
+>   vars; only `--color-working/uncertain/broken/clean` status vars stay literal.
+> - **Verification:** all 5 screen PRs + foundation + cleanup merged to `main`; every phase codex-GPT-5.5-gated
+>   (findings fixed + re-critic); **766 tests pass / 3 skip, root+ui typecheck + build green.**
+> - **⚠️ ONE open item — NOT verified in a live browser** (browser tooling was down all session). Live per-screen
+>   visual proof in light+dark is left for the operator: `cd ui && npm run dev` (needs the daemon on :4319 for data).
+> - **Gotchas to fold into `docs/gotchas/` next session:** zinc light `--card`==`--background`==white AND dark
+>   `--sidebar`==`--card` → layer distinction needs a border or `bg-muted`; `text-white` hovers break in light (use
+>   `text-foreground`); PR0's `text-muted`→`text-muted-foreground` sed didn't touch inline `var(--color-muted)` (a
+>   shadcn BG token) used as a text color — a source of two critic findings.
+>
 > Update every session. Phase status, known issues, next actions.
 > Last updated: 2026-07-06 (s28 — **Agent extensions LANDED (PR #51): worker ambient-extension isolation + always-on
 > critic NO-TOOLS preamble + live visibility scan.** Web-UI item (4) was rescoped after an empirical investigation proved

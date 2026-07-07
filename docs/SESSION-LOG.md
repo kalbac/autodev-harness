@@ -4,6 +4,77 @@
 
 ---
 
+## s30 — 2026-07-07 — Onboarding redesign (any-folder + auto git-init/branch + git-not-installed) — brainstorm → spec → plan → subagent build
+
+**Trigger:** operator flagged the New Project flow: it only lets you pick folders that are already git repos (the browser
+scans for `.git`, non-git folders unpickable). He wanted a standard OS folder dialog + auto `git init` + a git-not-installed
+notice. **Brainstormed:** a browser web UI CANNOT get a native folder path (sandbox); a daemon-spawned native dialog is
+fragile on Windows and still needs the in-browser fallback → operator agreed to KEEP the in-browser browser and instead
+drop the git-only filter, add an inline **init git**, hide system/hidden dirs, and add a git-not-installed banner. Native
+dialog deferred to the desktop wrap. Spec + plan written & committed (`docs/superpowers/{specs,plans}/2026-07-07-onboarding-redesign*`).
+
+- **Execution:** subagent-driven, Sonnet 5 workers in coherent units (util/git verbs+ensure-branch → fsbrowse+detect-git →
+  admin+server+index) → **codex GPT-5.5 gate over the whole backend** → UI (review-only). 11 tasks, TDD.
+- **The s30 Task 1 branch-guard bug is FIXED here** as the shared `ensureAutodevBranch`/`initAutodevRepo`
+  (`src/util/ensure-branch.ts`): put a repo on `^autodev/` (no-op if matching / switch to existing / else create the fixed
+  `autodev/main`). Wired on register AND a defensive best-effort daemon-startup pass over every registered project.
+- **New:** `Git` verbs (`init`/`listBranches`/`checkout`/`createBranch`/`commitEmpty`/`countUntracked`); `admin.initGit`
+  (`git init` → empty bootstrap commit → autodev branch; existing files stay UNTRACKED, returns `untrackedCount`); dropped
+  the `not_a_git_repo` register gate; `POST /fs/git-init` + `GET /system/git`; fsbrowse hides dot/`$`/system dirs;
+  `detectGit` PATH probe. UI: any-folder select + inline init git + git-not-installed banner ("Install it now" → git-scm.com).
+- **codex gate:** CHANGES-REQUIRED — 3 Medium + 2 Low. Fixed: (M1) `register` now SURFACES a branch-ensure failure as a
+  typed `branch_ensure_failed` (no swallow, no registry append) instead of persisting a broken registration — also resolves
+  (M2) the unborn-HEAD case (`git rev-parse --abbrev-ref HEAD` exits 128 on a zero-commit repo → `currentBranch` throws →
+  surfaced); (M3) `initGit` rejects a path INSIDE an existing work tree (`git rev-parse --is-inside-work-tree`), not just a
+  direct `.git`; (L) 2 test-quality fixes. **Re-critic: CLEAN.**
+- **Verification:** 790 tests / 3 skip, root+ui typecheck+build green. **Backend LIVE-PROVEN via curl** on a scratch
+  registry: `/system/git` (git 2.49), git-init a non-git folder → `autodev/main` + 2 untracked + empty commit, 409 on
+  re-init and on a subdir-inside-worktree, hidden-dir filter, register, and **startup ensure switched a project
+  `main`→`autodev/main` (switched to existing, not recreated)**. UI builds; operator to visually verify the New Project
+  screen before merge. Env wrinkle: root `build:ui` runs `npm --prefix ui ci` which hit a locked native `lightningcss.node`
+  (antivirus/handle) → use `cd ui && npm run build` (or `npm install` to reconcile) — not a code defect.
+- Branch `autodev/s30-onboarding-redesign`, NOT merged yet (awaiting operator UI proof). 1 new gotcha (init-leaves-untracked).
+- **Still open (out of scope):** (B) orphaned PENDING tasks (enqueue-before-guard) and (C) intent dedup.
+
+---
+
+## s29 — 2026-07-06 — Full UI migration to shadcn (Base UI, zinc) — brainstorm → spec → plan → build (autonomous)
+
+**Trigger:** operator noticed our UI only used shadcn's *foundation idiom* (Tailwind+CVA+cn+lucide), not shadcn
+components — no `components.json`, no Radix/Base UI. Decision (brainstormed + AskUserQuestion): move the whole `ui/`
+to the **default shadcn look on Base UI (zinc), IBM Plex fonts kept, incremental per-screen gated PRs.** New durable
+rule recorded: **shadcn-first** (verify shadcn has no equivalent before writing/keeping custom UI) → `AGENTS.md` + memory.
+
+- **Spec + plan** written to `docs/superpowers/{specs,plans}/2026-07-06-shadcn-ui-migration*.md`, committed.
+- **Execution:** subagent-driven (Sonnet 5 workers) + **mandatory codex GPT-5.5 critic every phase** (operator granted
+  overnight autonomy; merged after critic-clean + green build/typecheck, no per-merge approval).
+- **PR0 foundation** (`shadcn init` Base UI/zinc, reconciled theme, `.dark`, 17 primitives, signature-preserving
+  Button/Card/TabBar/StatusPill/Dot/Feedback). Critic caught the **muted/accent token-alias collision** (legacy aliases
+  hijacked shadcn's reserved names with inverted meaning) + TabBar accent — fixed, re-critic clean.
+- **PR1 shell** (DropdownMenu), **PR2 board**, **PR3 run** (VerdictSeal→Badge+Progress+muted composition, new
+  `textarea.tsx`, DiffView stays custom), **PR4 task detail**, **PR5 settings+onboarding** (SettingsPopover→Popover,
+  gear rewired as the real trigger to fix a toggle regression) — each codex-gated; findings fixed + re-critic each time.
+- **Final cleanup:** legacy-token alias layer retired; only status vars (`--color-working/uncertain/broken/clean`) stay.
+- **Recurring critic finds (→ gotchas):** zinc light `--card`==`--background`==white & dark `--sidebar`==`--card`
+  (layers need borders or `bg-muted`); `text-white` hovers break in light; PR0's `text-muted` sed missed inline
+  `var(--color-muted)`-as-text. **Verified: 766 tests / 3 skip, root+ui typecheck + build green.**
+- **NOT done during build:** live browser visual proof (browser tooling was down) — left for the operator.
+
+**Post-migration live check (same session, operator at the machine):**
+- **UI visually live-verified** by the operator on a real `serve` (`node dist/index.js serve` → `:4319/`, which serves
+  the built `dist/ui` directly — no vite needed). Browser-verify item CLOSED. Also diagnosed the operator's "daemon
+  won't start" — they ran the bare binary (defaults to conductor `run`, guarded off `main`); the fix is the `serve` verb.
+- **Found 3 onboarding/runner bugs (→ s30):** (A) **branch guard** — a fresh project's first run enqueues then dies on
+  `conductor: refusing to run on branch 'master'` because the New Project scaffold (`src/registry/scaffold.ts`) never
+  switches the repo to an `^autodev/` branch (guard at `conductor.ts:517`, default pattern `^autodev/` `schema.ts:45`).
+  Operator wants the scaffold/startup to auto-create+switch to `autodev/*`. (B) **orphaned tasks** — enqueue happens
+  before the guard, so a guard-failed run leaves the task stuck in PENDING. (C) **no dedup** — relaunching the same
+  intent stacks duplicate tasks; want an equivalent-task-already-pending guard. Cleaned the 2 orphaned smoke tasks from
+  the test project's queue. **s30 plan: fix A first (codex-gated) → operator live-verifies → then B/C, then resume.**
+- **UX note (operator):** the composer is fire-and-forget ("Run accepted" → silence); operator expects more
+  transcript-forward feedback (matches the earlier desktop-IA discussion) — candidate: auto-open Run view on launch /
+  inline status stream. Parked in the deferred UI-polish bucket.
+
 ## s28 — 2026-07-06 — Agent extensions: worker isolation + always-on critic NO-TOOLS preamble + live visibility scan (PR #51)
 
 **Web-UI item (4) rescoped from "attach skills/plugins/MCP" to "visibility + isolation" after an empirical investigation,

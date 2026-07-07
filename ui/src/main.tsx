@@ -4,9 +4,6 @@ import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
-import "@fontsource/space-grotesk/500.css";
-import "@fontsource/space-grotesk/600.css";
-import "@fontsource/space-grotesk/700.css";
 import "./styles.css";
 
 import { StrictMode } from "react";
@@ -17,7 +14,7 @@ import { router } from "./router";
 import { connectWs } from "./lib/ws";
 import { applyTheme, getTheme } from "./lib/theme";
 
-// Apply the persisted theme before first paint so the correct data-theme is set.
+// Apply the persisted theme before first paint so the correct .dark class is set.
 applyTheme(getTheme());
 
 const queryClient = new QueryClient({

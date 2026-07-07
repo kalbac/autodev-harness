@@ -17,10 +17,13 @@ import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
 import { detectAgents } from "./detect/detect-agents.js";
+import { detectGit } from "./detect/detect-git.js";
 import { probeAgentExtensions } from "./detect/agent-extensions.js";
 import { resolveWorkerExe, workerIsolationFlags } from "./config/roles.js";
 import { createProjectHub } from "./hub/hub.js";
 import { createLogger } from "./util/log.js";
+import { createGit } from "./util/git.js";
+import { ensureAutodevBranch } from "./util/ensure-branch.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
@@ -135,6 +138,24 @@ async function main(): Promise<void> {
     // registration is visible to hub.list()/get() on the next call.
     const admin = createProjectAdmin({ registryFile, log });
 
+    // Defensive branch-ensure for ALREADY-registered projects (s30 Task 1): a
+    // project left on master/main can't run (conductor guard). Best-effort /
+    // never-throws — one broken project must not abort the whole daemon start.
+    try {
+      const { projects } = await loadRegistry(registryFile, log);
+      for (const entry of projects) {
+        try {
+          if (!existsSync(join(entry.path, ".git"))) continue;
+          const r = await ensureAutodevBranch(createGit(entry.path), { log });
+          if (r.switched) log("INFO", `serve: ${entry.path} -> branch ${r.branch}`);
+        } catch (err) {
+          log("WARN", `serve: ensure-branch failed for ${entry.path}: ${String(err)}`);
+        }
+      }
+    } catch (err) {
+      log("WARN", `serve: branch-ensure startup pass skipped: ${String(err)}`);
+    }
+
     // UI bundle lives with the INSTALL, not any project (closes [ui/serve-uidir-reporoot]):
     // compiled layout is dist/index.js + dist/ui. AUTODEV_UI_DIR overrides (dev runs vite anyway).
     const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -184,6 +205,8 @@ async function main(): Promise<void> {
         },
         listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),
         detectAgents: () => detectAgents({}),
+        initGit: (path) => admin.initGit(path),
+        detectGit: () => detectGit({}),
       },
       ...(uiDir !== undefined ? { uiDir } : {}),
       log,

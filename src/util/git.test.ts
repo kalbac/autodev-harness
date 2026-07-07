@@ -129,4 +129,44 @@ describe("createGit", () => {
     const status = await runNative("git", ["status", "--porcelain=v1"], { cwd: repoRoot });
     expect(status.stdout.trim()).toBe("");
   });
+
+  it("init creates a repo in an empty dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "adh-init-"));
+    try {
+      const g = createGit(dir);
+      await g.init();
+      expect(existsSync(join(dir, ".git"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("commitEmpty establishes HEAD even with no configured user (baked identity)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "adh-empty-"));
+    try {
+      const g = createGit(dir);
+      await g.init();
+      const sha = await g.commitEmpty("chore: initialize autodev project");
+      expect(sha).toMatch(/^[0-9a-f]{7,40}$/);
+      // No user.email/user.name configured in this repo — commit must still succeed.
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("listBranches lists local branches; createBranch + checkoutBranch switch", async () => {
+    // Harness repo starts on `main` with one commit.
+    await git.createBranch("autodev/main");
+    expect(await git.currentBranch()).toBe("autodev/main");
+    const branches = await git.listBranches();
+    expect(branches).toEqual(expect.arrayContaining(["main", "autodev/main"]));
+    await git.checkoutBranch("main");
+    expect(await git.currentBranch()).toBe("main");
+  });
+
+  it("countUntracked counts only untracked (??) entries", async () => {
+    expect(await git.countUntracked()).toBe(0);
+    writeFileSync(join(repoRoot, "new-untracked.txt"), "x\n");
+    expect(await git.countUntracked()).toBe(1);
+  });
 });

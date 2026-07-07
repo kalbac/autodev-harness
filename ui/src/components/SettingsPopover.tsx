@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { cn } from "@/lib/utils";
+import { Settings } from "lucide-react";
 import { useTheme, type Theme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 const THEME_SEGMENTS: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -11,82 +13,83 @@ const THEME_SEGMENTS: { value: Theme; label: string }[] = [
 
 /**
  * Footer gear popover: global settings, per-project settings (disabled off a
- * project), and the theme segmented control. Closes on outside-click or item
- * click.
+ * project), and the theme segmented control.
+ *
+ * The gear button IS the `PopoverTrigger`, so Base UI owns open/close/toggle
+ * and dismiss (outside-press, Escape) entirely — clicking the gear cleanly
+ * toggles the popover, with no manual open-state or outside-click wiring in
+ * the sidebar. The Global/Project links close the popover on navigate; the
+ * theme segment buttons deliberately leave it open so you can preview themes
+ * without it dismissing.
  */
 export function SettingsPopover({
   projectId,
   projectName,
-  onClose,
 }: {
   projectId: string | null;
   projectName?: string;
-  onClose: () => void;
 }) {
   const [theme, setTheme] = useTheme();
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [onClose]);
+  const [open, setOpen] = useState(false);
 
   return (
-    <div
-      ref={ref}
-      className="absolute bottom-11 right-2 z-20 w-56 rounded-[10px] border border-line-strong bg-surface-2 p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
-    >
-      <Link
-        to="/settings"
-        onClick={onClose}
-        className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-text transition-colors hover:bg-surface"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        aria-label="Settings"
+        className="ml-auto rounded-md border border-border px-1.5 py-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
       >
-        Global settings
-      </Link>
-
-      {projectId ? (
+        <Settings className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" className="w-56 gap-0 bg-muted p-1.5">
         <Link
-          to="/p/$projectId/settings"
-          params={{ projectId }}
-          onClick={onClose}
-          className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-text transition-colors hover:bg-surface"
+          to="/settings"
+          onClick={() => setOpen(false)}
+          className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-foreground transition-colors hover:bg-card"
         >
-          Project settings
-          {projectName && (
-            <span className="ml-auto truncate font-mono text-[10px] text-subtle">{projectName}</span>
-          )}
+          Global settings
         </Link>
-      ) : (
-        <div className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-subtle">
-          Project settings
+
+        {projectId ? (
+          <Link
+            to="/p/$projectId/settings"
+            params={{ projectId }}
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-foreground transition-colors hover:bg-card"
+          >
+            Project settings
+            {projectName && (
+              <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground">{projectName}</span>
+            )}
+          </Link>
+        ) : (
+          <div className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-muted-foreground">
+            Project settings
+          </div>
+        )}
+
+        <div className="my-1.5 mx-1 h-px bg-border" />
+
+        <div className="flex gap-1 px-2 py-1.5">
+          {THEME_SEGMENTS.map((seg) => {
+            const on = theme === seg.value;
+            return (
+              <button
+                key={seg.value}
+                type="button"
+                onClick={() => setTheme(seg.value)}
+                className={cn(
+                  "flex-1 rounded-md border px-0 py-1 text-center text-[11px] transition-colors",
+                  on
+                    ? "border-primary bg-card text-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {seg.label}
+              </button>
+            );
+          })}
         </div>
-      )}
-
-      <div className="my-1.5 mx-1 h-px bg-line" />
-
-      <div className="flex gap-1 px-2 py-1.5">
-        {THEME_SEGMENTS.map((seg) => {
-          const on = theme === seg.value;
-          return (
-            <button
-              key={seg.value}
-              type="button"
-              onClick={() => setTheme(seg.value)}
-              className={cn(
-                "flex-1 rounded-md border px-0 py-1 text-center text-[11px] transition-colors",
-                on
-                  ? "border-accent bg-surface text-text"
-                  : "border-line text-muted hover:text-text",
-              )}
-            >
-              {seg.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -7,9 +7,22 @@ import { listDirs, type FsBrowseDeps } from "./fsbrowse.js";
 
 let base: string;
 
-const deps = (registered: string[] = []): FsBrowseDeps => ({
-  isRegistered: async (p) => registered.some((r) => r.toLowerCase() === p.toLowerCase()),
-});
+// Accepts either the legacy `registered` array (existing call sites) or an
+// overrides object `{ registered?, platform? }` (new `platform` override) —
+// extended minimally from the plan's `deps({ platform })` shape so both forms
+// keep working without touching every existing call site.
+type DepsOverrides = { registered?: string[]; platform?: NodeJS.Platform };
+
+const deps = (registeredOrOverrides: string[] | DepsOverrides = []): FsBrowseDeps => {
+  const opts: DepsOverrides = Array.isArray(registeredOrOverrides)
+    ? { registered: registeredOrOverrides }
+    : registeredOrOverrides;
+  const registered = opts.registered ?? [];
+  return {
+    isRegistered: async (p) => registered.some((r) => r.toLowerCase() === p.toLowerCase()),
+    ...(opts.platform !== undefined ? { platform: opts.platform } : {}),
+  };
+};
 
 beforeEach(() => {
   // realpathSync.native: on macOS/Windows tmpdir itself may be a symlink/8.3 alias.
@@ -116,5 +129,22 @@ describe("listDirs", () => {
     expect(res.path).toBeNull();
     expect(res.parent).toBeNull();
     expect(res.entries.map((e) => e.path)).toEqual([base]);
+  });
+
+  it("hides dot-dirs on all platforms and $/system dirs on win32", async () => {
+    mkdirSync(join(base, "Normal"));
+    mkdirSync(join(base, ".hidden"));
+    mkdirSync(join(base, "$sys"));
+    mkdirSync(join(base, "System Volume Information"));
+    const win = await listDirs(base, deps({ platform: "win32" }));
+    if (!win.ok) throw new Error("expected ok");
+    expect(win.entries.map((e) => e.name)).toEqual(["Normal"]);
+
+    const posix = await listDirs(base, deps({ platform: "linux" }));
+    if (!posix.ok) throw new Error("expected ok");
+    // On POSIX only dot-dirs are hidden; `$sys` / the spaced name are visible.
+    expect(posix.entries.map((e) => e.name).sort()).toEqual(
+      ["$sys", "Normal", "System Volume Information"].sort(),
+    );
   });
 });
