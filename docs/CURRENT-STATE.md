@@ -1,6 +1,24 @@
 # CURRENT STATE — Autodev Harness
 
-> ## ✅ DONE (s29) — shadcn (Base UI) UI migration — COMPLETE (merged to main)
+> ## 🔴 NEXT-SESSION PRIORITY (s30) — fix conductor branch-guard onboarding bug (operator-requested, do FIRST)
+> **Symptom:** a fresh project's first run decomposes + enqueues fine but the bounded trigger dies with
+> `conductor: refusing to run on branch 'master' (must match ^autodev/, never main)` — tasks hang in PENDING,
+> composer goes silent. **Root cause:** `POST /projects` scaffold (`src/registry/scaffold.ts`) writes `.autodev/`
+> but never puts the repo on an `^autodev/` branch; the conductor preflight guard (`src/conductor/conductor.ts:517`,
+> pattern from `cfg.allowedBranchPattern`, default `^autodev/` in `src/config/schema.ts:45`) then refuses on
+> `master`/`main`. **Fix (operator's words):** on scaffold/startup, check the project's current branch; if it doesn't
+> match `^autodev/`, switch to an existing matching branch or **create one** (canonical default e.g. `autodev/main`).
+> Handle: non-git dir, dirty tree (carry over), an existing `autodev/*` branch (switch, don't recreate). This is DAEMON
+> code → **must go through the codex GPT-5.5 critic gate**. Then operator live-verifies a real run before continuing.
+> **Related findings (operator-flagged, same run):** (B) **orphaned tasks** — decompose+enqueue happen BEFORE the
+> trigger/guard, so a guard-failed run leaves its task stuck in PENDING with nothing consuming it (re-launching stacks
+> more). (C) **no dedup** — relaunching the same intent enqueues a near-duplicate task; want a guard that skips
+> enqueue when an equivalent task (same `file_set`/goal) is already pending. B is partly subsumed by fixing A (the
+> orphans this session were guard-failure residue) but consider making enqueue+trigger transactional / rolling back on
+> guard failure. C is a separate dedup feature. Scope for s30: **do A first** (operator live-verifies), then B/C as follow-ups.
+> Full brief + pointers: `next-session-promt.md` (gitignored). Manual unblock meanwhile: `git checkout -b autodev/work` in the project.
+>
+> ## ✅ DONE (s29) — shadcn (Base UI) UI migration — COMPLETE (merged to main), UI live-verified by operator
 > Operator wants the whole `ui/` moved to the **default shadcn look on Base UI (zinc)**, screen by screen.
 > Spec: `docs/superpowers/specs/2026-07-06-shadcn-ui-migration-design.md` · Plan (checkboxes = progress):
 > `docs/superpowers/plans/2026-07-06-shadcn-ui-migration.md`. Governing rule: **shadcn-first** (see AGENTS.md).

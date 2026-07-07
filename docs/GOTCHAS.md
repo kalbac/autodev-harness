@@ -2,10 +2,11 @@
 
 > Index of mistakes-to-avoid. Each entry → atomic detail file in `gotchas/{slug}.md`.
 > Scan the relevant tags before starting related work.
-> Count: 42.
+> Count: 43.
 
 | Tag | Gotcha | Detail |
 |-----|--------|--------|
+| `[ops/daemon-run]` | Run the daemon with the **`serve`** verb (`node dist/index.js serve` → binds :4319 + serves `dist/ui` at `/`); the BARE binary defaults to conductor `run`, which dies `refusing to run on branch 'main'`. The conductor only runs when the project repo is on an `^autodev/` branch (guard `conductor.ts:517`, default pattern `schema.ts:45`) — New Project scaffold doesn't switch to it (s30 fix), so the first run trips the guard; and enqueue happens before the guard → orphaned PENDING tasks. | `gotchas/daemon-serve-verb-and-autodev-branch-guard.md` |
 | `[ui/shadcn-zinc]` | zinc collapses surfaces: light `--card`==`--background`==white (& `--popover`); dark `--sidebar`==`--card`. So `bg-card` over the page needs a border, and a `bg-sidebar` rail won't separate from `bg-card` cards in dark — use `bg-muted` for tinted panels (page<muted<card reads in both themes). `text-white` hovers break in light (use `text-foreground`). Alias layers must NOT reuse shadcn names `muted`/`accent` (hijacks primitives); a class-only sed misses inline `var(--color-*)`. | `gotchas/shadcn-zinc-token-pitfalls.md` |
 | `[ts/test-hang]` | An unterminated async loop with no-op (microtask) deps starves vitest's `setTimeout` timeout → the run HANGS uncatchably (process-killed at 5 min, no per-test failure), not a timeout. Ensure `run()`-style tests terminate (`maxIterations`/advancing clock). Also: a new foreground shell command KILLS the running background one — don't `echo` while waiting. | `gotchas/vitest-microtask-starvation-hang.md` |
 | `[ts/typecheck-scope]` | An emit-scoped `tsconfig` (`rootDir: src`, `include: ["src/**"]`) silently EXCLUDES the top-level `test/**` tree from `tsc` → `npm run typecheck` is vacuously green there (vitest runs but doesn't typecheck). Add a `noEmit` `tsconfig.typecheck.json` (`rootDir: "."`, include src+test). | `gotchas/tsconfig-typecheck-skips-test-dir.md` |

@@ -24,7 +24,22 @@ rule recorded: **shadcn-first** (verify shadcn has no equivalent before writing/
 - **Recurring critic finds (→ gotchas):** zinc light `--card`==`--background`==white & dark `--sidebar`==`--card`
   (layers need borders or `bg-muted`); `text-white` hovers break in light; PR0's `text-muted` sed missed inline
   `var(--color-muted)`-as-text. **Verified: 766 tests / 3 skip, root+ui typecheck + build green.**
-- **NOT done:** live browser visual proof (browser tooling was down all session) — left for the operator.
+- **NOT done during build:** live browser visual proof (browser tooling was down) — left for the operator.
+
+**Post-migration live check (same session, operator at the machine):**
+- **UI visually live-verified** by the operator on a real `serve` (`node dist/index.js serve` → `:4319/`, which serves
+  the built `dist/ui` directly — no vite needed). Browser-verify item CLOSED. Also diagnosed the operator's "daemon
+  won't start" — they ran the bare binary (defaults to conductor `run`, guarded off `main`); the fix is the `serve` verb.
+- **Found 3 onboarding/runner bugs (→ s30):** (A) **branch guard** — a fresh project's first run enqueues then dies on
+  `conductor: refusing to run on branch 'master'` because the New Project scaffold (`src/registry/scaffold.ts`) never
+  switches the repo to an `^autodev/` branch (guard at `conductor.ts:517`, default pattern `^autodev/` `schema.ts:45`).
+  Operator wants the scaffold/startup to auto-create+switch to `autodev/*`. (B) **orphaned tasks** — enqueue happens
+  before the guard, so a guard-failed run leaves the task stuck in PENDING. (C) **no dedup** — relaunching the same
+  intent stacks duplicate tasks; want an equivalent-task-already-pending guard. Cleaned the 2 orphaned smoke tasks from
+  the test project's queue. **s30 plan: fix A first (codex-gated) → operator live-verifies → then B/C, then resume.**
+- **UX note (operator):** the composer is fire-and-forget ("Run accepted" → silence); operator expects more
+  transcript-forward feedback (matches the earlier desktop-IA discussion) — candidate: auto-open Run view on launch /
+  inline status stream. Parked in the deferred UI-polish bucket.
 
 ## s28 — 2026-07-06 — Agent extensions: worker isolation + always-on critic NO-TOOLS preamble + live visibility scan (PR #51)
 
