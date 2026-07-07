@@ -3,6 +3,10 @@ import { runNative } from "./native.js";
 export interface MergeResult {
   ok: boolean;
   conflict: boolean;
+  /** Present on a NON-conflict refusal (a failed precondition, e.g. a dirty
+   * main working tree or a failed checkout) so the caller can escalate with an
+   * accurate, actionable reason instead of a phantom "merge conflict". */
+  reason?: string;
 }
 
 export interface Git {

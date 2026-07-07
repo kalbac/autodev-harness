@@ -104,7 +104,7 @@ describe("createWorktreeManager", () => {
     expect(status.stdout.trim()).toBe("");
   });
 
-  it("mergeAfterGate refuses to merge when the main working tree is dirty", async () => {
+  it("mergeAfterGate refuses to merge when the main working tree is dirty (returns ok:false, does not throw)", async () => {
     const wt = await manager.create("task-dirty", "main");
     writeFileSync(join(wt.path, "merged.txt"), "merged content\n");
     const wtGit = (await import("../util/git.js")).createGit(wt.path);
@@ -114,9 +114,13 @@ describe("createWorktreeManager", () => {
     // Dirty the main working tree with an uncommitted change.
     writeFileSync(join(repoRoot, "a.txt"), "a1\nUNCOMMITTED-CHANGE\n");
 
-    await expect(manager.mergeAfterGate(wt, "main")).rejects.toThrow(
-      /main working tree is not clean/i,
-    );
+    // Must NOT throw: a thrown precondition bypasses the conductor's graceful
+    // `if (!mr.ok)` handling and orphans the task in active/ (the live bug).
+    // It is a refusal, not a merge conflict -> ok:false, conflict:false, reason set.
+    const result = await manager.mergeAfterGate(wt, "main");
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(false);
+    expect(result.reason ?? "").toMatch(/not clean/i);
     // The dirty change is untouched, and no merge happened.
     expect(existsSync(join(repoRoot, "merged.txt"))).toBe(false);
   });

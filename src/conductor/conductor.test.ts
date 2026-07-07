@@ -709,6 +709,93 @@ describe("runIteration -- decision routing", () => {
     expect(escalateCalls.length).toBe(1);
     expect(escalateCalls[0]!.type).toBe("blocked");
   });
+
+  it("merge precondition failure (ok:false, not a conflict) after COMMIT gate -> escalated, no done, accurate reason", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // mergeAfterGate refused a precondition (e.g. dirty main tree) -- NOT a
+    // conflict. The escalation must reflect the real precondition, never a
+    // phantom "merge conflict".
+    const { worktree } = makeWorktree({
+      mergeResult: { ok: false, conflict: false, reason: "main working tree is not clean; refusing to merge" },
+    });
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, worktree, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(state.doneMarks.has(task.id)).toBe(false);
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    const esc = escalateCalls[0]!;
+    expect(`${esc.reason} ${esc.what} ${esc.evidence}`).toMatch(/not clean/i);
+    expect(esc.reason.toLowerCase()).not.toContain("conflict");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unexpected-error backstop: an unhandled throw must never orphan a task in
+// active/ (the live failure mode when mergeAfterGate threw on a dirty tree).
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- unexpected-error backstop", () => {
+  it("fails closed to escalated (not orphaned in active) when an unhandled error is thrown mid-iteration", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktree, spy: wtSpy } = makeWorktree();
+    // A worktree-git whose commit throws an UNEXPECTED error with no dedicated
+    // handler in the conductor. Before the backstop this unwound out of
+    // runIteration and stranded the task in active/, silently locking its
+    // file_set against every future same-file run.
+    const worktreeGit = (wt: Worktree): Git => ({
+      ...makeWorktreeGitFactory().worktreeGit(wt),
+      async commit(): Promise<string> {
+        throw new Error("git commit exploded");
+      },
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, worktree, worktreeGit });
+    const conductor = createConductor(deps);
+
+    // Must RESOLVE (not reject) so the bounded run ends gracefully.
+    const res = await conductor.runIteration();
+
+    expect(res).toEqual({ claimedTaskId: task.id, committed: false, rateLimited: false });
+    expect(state.locations.get(task.id)).toBe("escalated"); // NOT still "active"
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    expect(wtSpy.teardown.length).toBe(1); // finally still tore the worktree down
+  });
+
+  it("post-commit bookkeeping failure does not undo the commit or trip the backstop", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit } = makeWorktreeGitFactory();
+    // markDone throws AFTER the decisive move to done/ (commit + merge already
+    // landed). This must NOT reach the backstop and get re-escalated into the
+    // contradictory "done/ + unexpected-error escalation" state (codex Sev 1).
+    repo.markDone = async (): Promise<void> => {
+      throw new Error("markDone exploded");
+    };
+
+    const deps = buildDeps({ repo, scheduler, escalate, worktreeGit });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res).toEqual({ claimedTaskId: task.id, committed: true, rateLimited: false });
+    expect(state.locations.get(task.id)).toBe("done"); // NOT re-moved to escalated
+    expect(escalateCalls.length).toBe(0); // backstop not tripped
+  });
 });
 
 describe("runIteration -- commit-time branch drift (divergence #10)", () => {

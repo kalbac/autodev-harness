@@ -360,16 +360,23 @@ export function createWorktreeManager(
     },
 
     async mergeAfterGate(wt: Worktree, intoBranch: string): Promise<MergeResult> {
+      // Contract: `mergeAfterGate` is a `MergeResult`-returning operation, NOT a
+      // throwing one. The conductor's COMMIT path relies on `if (!mr.ok)` to
+      // escalate a task whose already-committed work cannot be merged back. A
+      // THROWN precondition would bypass that graceful path, unwind out of the
+      // conductor, and orphan the task in active/ with no operator signal (the
+      // live "stuck in ACTIVE" bug). So refusals return `{ ok:false }` with an
+      // accurate `reason`; only genuine, unexpected git faults may still throw.
       const status = await runNative("git", ["status", "--porcelain"], { cwd: mainRepoRoot });
       if (status.stdout.trim().length > 0) {
-        throw new Error("mergeAfterGate: main working tree is not clean; refusing to merge");
+        return { ok: false, conflict: false, reason: "main working tree is not clean; refusing to merge" };
       }
 
       const current = await mainGit.currentBranch();
       if (current !== intoBranch) {
         const r = await runNative("git", ["checkout", intoBranch], { cwd: mainRepoRoot });
         if (r.exitCode !== 0) {
-          throw new Error(`git checkout ${intoBranch} failed (exit ${r.exitCode}): ${r.stderr.trim()}`);
+          return { ok: false, conflict: false, reason: `git checkout ${intoBranch} failed (exit ${r.exitCode}): ${r.stderr.trim()}` };
         }
       }
       return mainGit.merge(wt.branch);
