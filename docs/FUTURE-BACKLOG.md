@@ -74,6 +74,16 @@ heavier package. Polish the product surface first; wrap it once it's real.
   intent enqueues a near-duplicate task (no guard). Add a skip/warn when an equivalent task is already
   pending/active (heuristic: overlapping `file_set` + maybe title/goal). NB: **backlog B (orphaned PENDING)
   is now CLOSED** — s31 `9e3157d` drain mode; C remains open.
+- **Worker-persona catalog (operator ask, s32 2026-07-07 — from the agency-agents review)** — let a task
+  or a project select a specialist **persona prompt** to prime the worker (e.g. a WordPress/WooCommerce
+  persona for the woodev projects, a payments persona for billing work). Seeded by
+  `github.com/msitarzewski/agency-agents` (MIT, ~280 persona `.md` files across 17 divisions —
+  `engineering/engineering-wordpress-shopping-cart.md` and `-drupal-shopping-cart.md` map directly onto the
+  operator's stack). The library is a **content source**, harvested/adapted, NOT a runtime dependency —
+  agency-agents only *installs* prompt files, it doesn't run agents (full analysis:
+  `wiki/agency-agents-analysis.md`). Scope when picked up: a `persona:` field per task/project that is
+  prepended to the worker prompt (composes with, does not replace, the role matrix). Low priority — our
+  differentiator is the gate, not persona breadth; this is a cheap quality lever, not a blocker.
 
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 
