@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ShieldAlert } from "lucide-react";
+import { CheckCircle2, ShieldAlert, GitCommitHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import { qk, useEscalation } from "@/lib/queries";
 import { verdictTone, toneVar } from "@/lib/status";
@@ -9,6 +9,15 @@ import { Badge } from "./ui/badge";
 import { Card } from "./ui/Card";
 import { Textarea } from "./ui/textarea";
 import { Loading } from "./ui/Feedback";
+import { Button } from "./ui/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 /**
  * The A/B decision surface — this IS "never merge bullshit" in the moment the
@@ -19,11 +28,13 @@ import { Loading } from "./ui/Feedback";
 export function EscalationCard({ projectId, taskId }: { projectId: string; taskId: string }) {
   const esc = useEscalation(projectId, taskId);
   const [note, setNote] = useState("");
+  const [confirmC, setConfirmC] = useState(false);
   const qc = useQueryClient();
 
   const reply = useMutation({
-    mutationFn: (choice: "A" | "B") => api.postReply(projectId, taskId, choice, note),
+    mutationFn: (choice: "A" | "B" | "C") => api.postReply(projectId, taskId, choice, note),
     onSuccess: () => {
+      setConfirmC(false);
       void qc.invalidateQueries({ queryKey: qk.escalation(projectId, taskId) });
       void qc.invalidateQueries({ queryKey: qk.state(projectId) });
     },
@@ -81,6 +92,11 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
         >
           <CheckCircle2 className="size-4" />
           Replied <span className="font-mono font-semibold">{e.reply!.choice}</span>
+          {e.reply!.choice === "C" && e.reply!.commit && (
+            <span className="text-muted-foreground">
+              — committed <span className="font-mono">{e.reply!.commit.slice(0, 8)}</span>
+            </span>
+          )}
           {e.reply!.note && <span className="text-muted-foreground">— {e.reply!.note}</span>}
         </div>
       ) : (
@@ -106,11 +122,64 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
               onClick={() => reply.mutate("B")}
             />
           </div>
+
+          {/* Gate OVERRIDE — commits the reviewed diff the critic did NOT bless.
+              Deliberately separate from A/B and gated behind a confirmation. */}
+          <button
+            onClick={() => setConfirmC(true)}
+            disabled={reply.isPending}
+            className="flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
+            style={{
+              borderColor: `color-mix(in srgb, ${toneVar.broken} 45%, transparent)`,
+              color: toneVar.broken,
+            }}
+          >
+            <GitCommitHorizontal className="size-4" />
+            Commit anyway — override the gate
+          </button>
+
           {reply.isError && (
             <p className="text-xs text-broken">Could not record reply: {(reply.error as Error).message}</p>
           )}
         </div>
       )}
+
+      <Dialog open={confirmC} onOpenChange={(o) => !reply.isPending && setConfirmC(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="size-4" style={{ color: toneVar.broken }} />
+              Commit over the critic&apos;s objection?
+            </DialogTitle>
+            <DialogDescription>
+              This commits the worker&apos;s reviewed change to the loop branch even though the
+              independent critic did <span className="font-semibold text-foreground">not</span> bless it.
+              It is a deliberate human override of the gate — the change becomes part of the repo and
+              satisfies any dependent task. It only applies if the diff still cleanly applies; otherwise
+              it is refused and the task stays escalated.
+            </DialogDescription>
+          </DialogHeader>
+          {reply.isError && (
+            <p className="rounded-md border border-broken/40 bg-muted/60 px-3 py-2 text-xs text-broken">
+              Refused: {(reply.error as Error).message}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmC(false)} disabled={reply.isPending}>
+              Cancel
+            </Button>
+            <button
+              onClick={() => reply.mutate("C")}
+              disabled={reply.isPending}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3.5 text-sm font-medium text-primary-foreground transition-colors disabled:opacity-50"
+              style={{ backgroundColor: toneVar.broken }}
+            >
+              <GitCommitHorizontal className="size-4" />
+              {reply.isPending ? "Committing…" : "Commit anyway"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
