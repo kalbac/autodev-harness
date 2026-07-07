@@ -883,6 +883,23 @@ describe("createApiServer / GET /runs", () => {
     expect(body.map((r) => r.runId)).toEqual(["run-good"]);
   });
 
+  it("lists a run whose id contains a dot (intent-derived slug like 'overview.md') -- regression for 'No runs yet'", async () => {
+    // slugifyIntent deliberately keeps '.', so an intent that mentions a filename
+    // produces a run id like `run-<ts>-...-overview.md-...`. The read-side validator
+    // must accept it (matching the write side); the stricter dot-free check silently
+    // dropped EVERY filename-derived run from the list, so the UI showed "No runs yet".
+    seedRun("run-123-create-docs-overview.md-file", 500, "Create docs/OVERVIEW.md", ["docs-overview-md"]);
+    seedRun("run-plain", 400);
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string }[];
+    expect(body.map((r) => r.runId)).toEqual(["run-123-create-docs-overview.md-file", "run-plain"]);
+  });
+
   it("returns [] (never 500s) when runs/ exists but is a plain file, not a directory", async () => {
     // runs/ occupied by a file -> readdir throws ENOTDIR; best-effort must degrade to [].
     mkdirSync(stateDir, { recursive: true });
@@ -908,6 +925,17 @@ describe("createApiServer / GET /runs/:id", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { runId: string; intent: string; taskIds: string[]; at: number };
     expect(body).toEqual({ runId: "run-abc", intent: "build the thing", taskIds: ["t1", "t2"], at: 42 });
+  });
+
+  it("opens a run whose id contains a dot (intent-derived slug) -- regression", async () => {
+    seedRun("run-9-docs-overview.md-x", 7, "Create docs/OVERVIEW.md", ["docs-overview-md"]);
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs")}/run-9-docs-overview.md-x`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { runId: string }).runId).toBe("run-9-docs-overview.md-x");
   });
 
   it("404s for a missing run id", async () => {
