@@ -1,27 +1,36 @@
 import { useState } from "react";
 import { ArrowUp, Folder, FolderGit2 } from "lucide-react";
-import type { FsDirEntry } from "@/lib/api";
-import { useFsDirs } from "@/lib/queries";
+import type { FsDirEntry, GitInitResponse } from "@/lib/api";
+import { useFsDirs, useGitInit } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { Loading, ErrorState } from "./ui/Feedback";
 
 /**
  * Server-side folder browser (mockup Frame 2 `.browser`). Lists directories only
  * (the daemon's `GET /fs/dirs`), badges git repos + already-registered ones, and
- * exposes a `select` pill on git-repos that are not yet registered. Clicking a
- * row navigates into that directory; the up-one-level row walks back out. Roots
- * view (drives / `/`) is shown when no path is set. The daemon is the single
- * source of truth for what is a git repo / registered — this only renders it.
+ * exposes a `select` pill on git-repos that are not yet registered. A non-git,
+ * unregistered folder instead gets a muted "no git" label + an inline "init git"
+ * action (s30) that `git init`s it onto an `autodev/` branch via `POST
+ * /fs/git-init`, so ANY folder can become a project, not just existing repos.
+ * Clicking a row navigates into that directory; the up-one-level row walks back
+ * out. Roots view (drives / `/`) is shown when no path is set. The daemon is the
+ * single source of truth for what is a git repo / registered — this only
+ * renders it.
  */
 export function FolderBrowser({
   selectedPath,
   onSelect,
+  gitInstalled,
+  onInitialized,
 }: {
   selectedPath: string | null;
   onSelect: (entry: FsDirEntry) => void;
+  gitInstalled: boolean;
+  onInitialized?: (result: GitInitResponse) => void;
 }) {
   const [path, setPath] = useState<string | undefined>(undefined);
   const dirs = useFsDirs(path);
+  const gitInit = useGitInit();
 
   if (dirs.isLoading) return <Loading label="Reading directory…" />;
   if (dirs.isError) return <ErrorState message={(dirs.error as Error).message} />;
@@ -43,7 +52,7 @@ export function FolderBrowser({
       <ul className="flex flex-col gap-0.5">
         {entries.map((entry) => {
           const Icon = entry.isGitRepo ? FolderGit2 : Folder;
-          const selectable = entry.isGitRepo && !entry.isRegistered;
+          const selectable = !entry.isRegistered && entry.isGitRepo;
           const selected = selectedPath !== null && entry.path === selectedPath;
           return (
             <li key={entry.path}>
@@ -86,11 +95,32 @@ export function FolderBrowser({
                     select
                   </button>
                 )}
+                {!entry.isRegistered && !entry.isGitRepo && (
+                  <span className="ml-auto flex shrink-0 items-center gap-2">
+                    <span className="font-mono text-[10px] text-muted-foreground">no git</span>
+                    <button
+                      type="button"
+                      disabled={!gitInstalled || gitInit.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        gitInit.mutate(entry.path, { onSuccess: (r) => onInitialized?.(r) });
+                      }}
+                      title={gitInstalled ? "git init + create an autodev/ branch" : "git is not installed"}
+                      className="rounded-md border border-border px-2 py-0.5 font-mono text-[10px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                      {gitInit.isPending ? "initializing…" : "init git"}
+                    </button>
+                  </span>
+                )}
               </div>
             </li>
           );
         })}
       </ul>
+
+      {gitInit.isError && (
+        <p className="mt-2 px-2.5 text-xs text-broken">init git failed: {(gitInit.error as Error).message}</p>
+      )}
 
       {parent !== null && (
         <div
