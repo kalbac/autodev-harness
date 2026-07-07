@@ -20,6 +20,8 @@ import {
   type RegistryEntry,
 } from "./registry.js";
 import { scaffoldProject, mergeConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
+import { createGit } from "../util/git.js";
+import { ensureAutodevBranch, initAutodevRepo } from "../util/ensure-branch.js";
 
 type Log = (level: string, message: string) => void;
 
@@ -49,6 +51,19 @@ export type ConfigUpdateErrorCode = "not_found" | "invalid_config";
 
 export type ConfigUpdateResult = { ok: true } | { ok: false; code: ConfigUpdateErrorCode; message: string };
 
+export type GitInitErrorCode = "invalid_path" | "already_git_repo" | "git_unavailable";
+
+export type GitInitResult =
+  | { ok: true; branch: string; untrackedCount: number }
+  | { ok: false; code: GitInitErrorCode; message: string };
+
+/** Injectable git bootstrap ops (default: real, via `createGit`). Tests override
+ *  so registry unit tests never shell out to git on a fake `.git` dir. */
+export interface AdminGitOps {
+  ensureAutodevBranch(repoRoot: string): Promise<{ branch: string; switched: boolean }>;
+  initAutodevRepo(repoRoot: string): Promise<{ branch: string; untrackedCount: number }>;
+}
+
 export interface ProjectAdmin {
   register(input: RegisterInput): Promise<RegisterResult>;
   /** True when removed; false for an unknown id. Registry entry only. */
@@ -65,9 +80,17 @@ export interface ProjectAdmin {
   updateConfig(id: string, rawForm: unknown): Promise<ConfigUpdateResult>;
   /** Registry membership by canonical path (folder-browser badge). */
   isRegistered(absPath: string): Promise<boolean>;
+  /** Turn a NON-git folder into a git repo on an `^autodev/` branch (empty
+   *  bootstrap commit; existing files stay untracked). Rejects a path already
+   *  under git. Registry-independent (does NOT register). */
+  initGit(path: string): Promise<GitInitResult>;
 }
 
-export function createProjectAdmin(deps: { registryFile: string; log?: Log }): ProjectAdmin {
+export function createProjectAdmin(deps: { registryFile: string; log?: Log; gitOps?: AdminGitOps }): ProjectAdmin {
+  const gitOps: AdminGitOps = deps.gitOps ?? {
+    ensureAutodevBranch: (root) => ensureAutodevBranch(createGit(root), { log: deps.log }),
+    initAutodevRepo: (root) => initAutodevRepo(createGit(root), { log: deps.log }),
+  };
   // Promise-chain mutex. `chain` is always a settled-or-pending SWALLOWED promise
   // (never rejected), so one failed operation can never wedge the queue.
   let chain: Promise<void> = Promise.resolve();
@@ -101,18 +124,13 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
           return { ok: false, code: "invalid_path", message: `not a directory: ${input.path}` };
         }
 
-        // 2. Is a git repo (a `.git` dir OR file — worktrees/submodules use a file).
-        if (!existsSync(join(real, ".git"))) {
-          return { ok: false, code: "not_a_git_repo", message: `not a git repository (no .git): ${real}` };
-        }
-
-        // 3. Not already registered (canonical-path compare, win32 case-fold).
+        // 2. Not already registered (canonical-path compare, win32 case-fold).
         const registry = await loadRegistry(deps.registryFile, deps.log);
         if (isPathRegistered(registry, real)) {
           return { ok: false, code: "already_registered", message: `path already registered: ${real}` };
         }
 
-        // 4. Scaffold BEFORE the registry append: a failed scaffold must never
+        // 3. Scaffold BEFORE the registry append: a failed scaffold must never
         //    leave a registered project pointing at a half-initialized repo.
         if (input.scaffold !== false) {
           const form = ScaffoldFormSchema.safeParse(input.config ?? {});
@@ -132,6 +150,18 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
           }
         }
 
+        // Put an existing git repo on an `^autodev/` branch so its first run
+        // clears the conductor guard (s30 Task 1). A non-git folder registers
+        // as-is (it can't run until `initGit`); we only ensure-branch when a
+        // repo is present. Best-effort must NOT block registration — log + carry on.
+        if (existsSync(join(real, ".git"))) {
+          try {
+            await gitOps.ensureAutodevBranch(real);
+          } catch (err) {
+            deps.log?.("WARN", `admin: ensure-branch failed for ${real}: ${String(err)}`);
+          }
+        }
+
         // 5. Registry append + save (inside the same lock as the load above).
         const { registry: updated, entry } = addProject(registry, {
           path: real,
@@ -140,6 +170,39 @@ export function createProjectAdmin(deps: { registryFile: string; log?: Log }): P
         await saveRegistry(deps.registryFile, updated);
         deps.log?.("INFO", `admin: registered project '${entry.id}' at ${entry.path}`);
         return { ok: true, entry };
+      });
+    },
+
+    initGit(path) {
+      return withLock(async (): Promise<GitInitResult> => {
+        let real: string;
+        try {
+          real = await realpath(path);
+        } catch {
+          return { ok: false, code: "invalid_path", message: `path does not exist: ${path}` };
+        }
+        let st;
+        try {
+          st = await stat(real);
+        } catch {
+          return { ok: false, code: "invalid_path", message: `path is not accessible: ${path}` };
+        }
+        if (!st.isDirectory()) {
+          return { ok: false, code: "invalid_path", message: `not a directory: ${path}` };
+        }
+        if (existsSync(join(real, ".git"))) {
+          return { ok: false, code: "already_git_repo", message: `already a git repository: ${real}` };
+        }
+        try {
+          const { branch, untrackedCount } = await gitOps.initAutodevRepo(real);
+          deps.log?.("INFO", `admin: git-init ${real} -> ${branch} (${untrackedCount} untracked)`);
+          return { ok: true, branch, untrackedCount };
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            return { ok: false, code: "git_unavailable", message: "git is not installed or not on PATH" };
+          }
+          throw err; // real git/fs failure -> route's top-level catch -> 500
+        }
       });
     },
 
