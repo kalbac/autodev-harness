@@ -4,6 +4,35 @@
 
 ---
 
+## s32 — 2026-07-08 — agency-agents pivot + 3 backlog features (PRs #55/#56) + live proofs
+
+**Pivot:** studied `github.com/msitarzewski/agency-agents` (MIT) vs the operator's 5-way frame → **#4 Not for us** — a
+~280-file persona-prompt library + multi-tool installer, not an orchestrator (installs prompt files, doesn't run agents;
+no gate/isolation/blackboard/merge). Wrote `docs/wiki/agency-agents-analysis.md` + a worker-persona-catalog FUTURE-BACKLOG
+item (its wordpress/drupal personas fit the woodev stack). Operator: "record the catalog idea" — done.
+**Then built the operator's first-three-in-order, each TDD + independent codex-GPT-5.5 gate, subagent-recon-first:**
+- **#1 onboarding-exclude** (`0c8a3de`): generalized `ensureGitExclude` → `.autodev/`+`.serena/` (per-entry idempotent);
+  new standalone `mainTreeStatus` (git.ts) + optional conductor dep → best-effort dirty-tree **preflight** WARN at
+  `run()` start with a skip-worktree hint for TRACKED churn files (exclude only fixes UNtracked). codex: shell-footgun +
+  rename-parse → re-critic CLEAN.
+- **#2 relaunch dedup / backlog C** (`61ad0cb`): `isDuplicateTask` = file_set overlap (reuse `fileSetsDisjoint`) AND
+  normalized-title, vs pending/active/escalated. Full dup → skip enqueue + re-trigger; partial → enqueue all + WARN
+  (never drop a subset → depends_on-safe; fail-open on title drift). codex CLEAN 0 findings. **Backlog C CLOSED.**
+- **#3 apply-on-accept** (`d0f9551` + UI `df149ca`): reply **choice "C"** (gate-override; A/B unchanged). Worktree is
+  gone at escalation, so it replays `runtime/<id>/diff.patch` (conductor now also pins `runtime/<id>/loop-branch`) via
+  `git apply` → add file_set → commit → escalated/→done/ + markDone (legitimate: file_set IS in the repo). Fails CLOSED:
+  `--numstat` subset-validation (strict allowlist — `.env`≠`env`; abs/`..` rejected), exact loop-branch pin, clean tree,
+  rollback-on-post-apply-failure, loud override commit msg. UI "Commit anyway" + confirmation modal (409 reason in-modal).
+  codex found 4 real bugs across 2 rounds (dirty-tree-on-commit-fail, patch-not-scoped, weak branch check, reply-before-move;
+  then leading-dot bypass + rollback exit codes) → re-critic CLEAN — the gate earned its keep on a gate-bypass feature.
+**Merged** PR #55 (backend, `f26e86a`) + PR #56 (UI, `794ed2d`), CI 4/4 both. 830 tests / 3 skip, root+ui typecheck+build green.
+**LIVE-PROVEN (real daemon on `woodev-shipping-plugin-test`, evidence-first):** choice C → real commit `c62a5f4` with the
+override marker, task escalated→done; no-diff task → 409 + stays escalated (fail-closed); fresh serena repo → `.serena/`
+excluded + tree clean; dirty tree → preflight WARN fired. **#2 dedup left NOT live-proven** (needs 2 expensive opus runs —
+deferred to a supervised morning run). Seed cleanup done; test repo left clean on `autodev/main` (HEAD = the proof commit).
+
+---
+
 ## s31 — 2026-07-07 — Three stuck-task / runs-UI bug fixes (PR #54) + harness PROVEN end-to-end (first green DONE)
 
 **Trigger:** operator's live SMOKE run "stuck in ACTIVE ~30 min", not escalating/quarantining. Systematic-debugging.

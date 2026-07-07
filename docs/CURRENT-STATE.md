@@ -1,14 +1,30 @@
 # CURRENT STATE — Autodev Harness
 
-> ## ✅ DONE (s32) — agency-agents PIVOT resolved: "not for us" (not a competitor/donor); one content-source footnote
-> Studied `github.com/msitarzewski/agency-agents` (MIT) against the operator's 5-way frame. **Verdict: #4 Not for us**
-> — it's a **library of ~280 persona prompt `.md` files** (17 divisions) + a multi-tool installer, NOT an orchestrator:
-> zero critic gate / worktree isolation / blackboard / merge discipline; it *installs* prompt files, doesn't *run*
-> agents (a layer above us). **Not redundant** with autodev. One small **#2 footnote**: it's a free MIT content source
-> of specialist personas — several map onto the operator's stack (`engineering-wordpress-shopping-cart.md`,
-> `-drupal-shopping-cart.md`). → wrote `docs/wiki/agency-agents-analysis.md` + seeded a **worker-persona-catalog**
-> item in `FUTURE-BACKLOG.md` (low-priority quality lever, content harvested not depended-on). **Pivot closed —
-> back to the autodev backlog:** (C) relaunch-intent dedup / apply-on-accept / onboarding git-exclude / web-UI polish.
+> ## ✅ DONE + MERGED (s32) — agency-agents pivot resolved + THREE backlog features (PRs #55/#56) + LIVE-PROVEN
+> **Pivot first:** studied `github.com/msitarzewski/agency-agents` (MIT) vs the operator's 5-way frame → **#4 Not for us**
+> (a ~280-file persona-prompt library + multi-tool installer, NOT an orchestrator; it *installs* prompt files, doesn't
+> *run* agents — a layer above us; not redundant). Wrote `docs/wiki/agency-agents-analysis.md` + a **worker-persona-catalog**
+> FUTURE-BACKLOG item (the wordpress/drupal personas map onto the woodev stack). **Then built the first three backlog
+> items, each TDD + codex-GPT-5.5-gated to CLEAN, merged (PR #55 backend `f26e86a`, PR #56 UI `794ed2d`, CI 4/4):**
+> 1. **onboarding-exclude** (`0c8a3de`): `ensureGitExclude` writes `.autodev/`+`.serena/` (per-entry idempotent) + a
+>    best-effort **dirty-tree preflight** WARN at conductor `run()` start (skip-worktree hint for TRACKED churn files).
+>    codex 2 findings → CLEAN.
+> 2. **relaunch dedup / backlog C** (`61ad0cb`): `handleIntent` guard — `isDuplicateTask` (file_set overlap via
+>    `fileSetsDisjoint` AND normalized-title match) vs pending/active/escalated. Full dup → enqueue nothing + re-trigger
+>    the pool; partial → enqueue all + WARN (dependency-safe, fail-open). codex CLEAN 0 findings. **Backlog C CLOSED.**
+> 3. **apply-on-accept** (`d0f9551` backend + `df149ca` UI): new reply **choice "C"** (operator gate-override, A/B
+>    unchanged) replays `runtime/<id>/diff.patch` onto the loop branch → commit → done+markDone. Fails CLOSED: patch
+>    validated (`git apply --numstat`) to touch only file_set (strict allowlist: `.env`≠`env`; abs/`..` rejected); branch
+>    pinned to the captured loop-branch; clean-tree required; post-apply failure restores clean; LOUD override commit msg.
+>    UI: "Commit anyway" button + confirmation modal (409 reason shown in-modal). codex 2 Sev-1+Sev-2+Sev-3 → +2 more
+>    (leading-dot bypass, rollback exit codes) → **re-critic CLEAN**.
+> **830 tests / 3 skip**, root+ui typecheck+build green. **LIVE-PROVEN on `woodev-shipping-plugin-test` (real daemon):**
+> #3 choice C committed a real diff → HEAD `c62a5f4` with the override marker, task escalated→done (+ fail-closed: no-diff
+> task → 409, stays escalated, no reply); #1 exclude on a fresh serena repo → `.serena/` excluded, tree stays clean; #1
+> preflight WARN fired on a dirtied tree. **#2 dedup NOT live-proven** (needs 2 expensive opus-decompose runs — deferred
+> to a supervised morning run; covered by 6 integration tests). **Next:** live-prove #2 with the operator; web-UI polish
+> track; worker-persona-catalog. NB: existing pre-s32 projects don't retroactively get `.serena/` excluded (startup
+> re-apply was scoped out) — they still need a one-time `git update-index --skip-worktree` (the preflight now hints it).
 >
 > ## ✅ DONE + MERGED (s31) — three stuck-task / runs-UI bug fixes + harness PROVEN end-to-end (green DONE)
 > Started as a debug of a live SMOKE run "stuck in ACTIVE ~30 min" (no escalation/quarantine). Root-caused + fixed
