@@ -22,6 +22,7 @@ function fakeGitOps() {
   return {
     ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
     initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+    isInsideWorkTree: async () => false,
   };
 }
 
@@ -79,6 +80,7 @@ describe("createProjectAdmin / register", () => {
           return { branch: "autodev/main", switched: true };
         },
         initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
       },
     });
     const r = await admin.register({ path: p, scaffold: false });
@@ -98,11 +100,30 @@ describe("createProjectAdmin / register", () => {
           return { branch: "autodev/main", switched: true };
         },
         initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
       },
     });
     const r = await admin.register({ path: p, scaffold: false });
     expect(r.ok).toBe(true);
     expect(ensured).toBe("autodev/main");
+  });
+
+  it("surfaces an ensure-branch failure as branch_ensure_failed and does NOT register (unborn HEAD etc.)", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-git-fail-"));
+    mkdirSync(join(p, ".git"));
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => {
+          throw new Error("boom");
+        },
+        initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 0 }),
+        isInsideWorkTree: async () => false,
+      },
+    });
+    const res = await admin.register({ path: p });
+    expect(res).toMatchObject({ ok: false, code: "branch_ensure_failed" });
+    expect((await loadRegistry(registryFile)).projects).toEqual([]);
   });
 
   it("rejects a duplicate path with already_registered (second call, same canonical path)", async () => {
@@ -176,10 +197,30 @@ describe("createProjectAdmin / initGit", () => {
       gitOps: {
         ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
         initAutodevRepo: async () => ({ branch: "autodev/main", untrackedCount: 2 }),
+        isInsideWorkTree: async () => false,
       },
     });
     const r = await admin.initGit(p);
     expect(r).toEqual({ ok: true, branch: "autodev/main", untrackedCount: 2 });
+  });
+
+  it("rejects a path with no direct .git that is INSIDE an existing work tree (subdirectory of a repo)", async () => {
+    const p = mkdtempSync(join(tmpdir(), "adh-subdir-"));
+    let initCalls = 0;
+    const admin = createProjectAdmin({
+      registryFile,
+      gitOps: {
+        ensureAutodevBranch: async () => ({ branch: "autodev/main", switched: true }),
+        initAutodevRepo: async () => {
+          initCalls++;
+          return { branch: "autodev/main", untrackedCount: 0 };
+        },
+        isInsideWorkTree: async () => true,
+      },
+    });
+    const r = await admin.initGit(p);
+    expect(r).toEqual({ ok: false, code: "already_git_repo", message: expect.any(String) });
+    expect(initCalls).toBe(0);
   });
 });
 

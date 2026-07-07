@@ -12,6 +12,7 @@
  * the guard regex to synthesize a name (Task 1 brief).
  */
 import type { Git } from "./git.js";
+import { runNative } from "./native.js";
 
 type Log = (level: string, message: string) => void;
 
@@ -73,4 +74,18 @@ export async function initAutodevRepo(
   const { branch } = await ensureAutodevBranch(git, opts);
   const untrackedCount = await git.countUntracked();
   return { branch, untrackedCount };
+}
+
+/**
+ * True iff `repoRoot` is inside an existing git work tree (its own repo OR a
+ * subdirectory of one with no nested `.git` of its own) — the case
+ * `existsSync(join(root, ".git"))` alone misses. Used by `initGit`'s
+ * already-a-repo guard so selecting a subfolder of a repo doesn't `git init` a
+ * nested repo. A missing `git` binary makes the underlying spawn REJECT
+ * (ENOENT) rather than resolving `false` — callers that need to distinguish
+ * "not a repo" from "git unavailable" must let that rejection propagate.
+ */
+export async function isInsideWorkTree(repoRoot: string): Promise<boolean> {
+  const r = await runNative("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoRoot });
+  return r.exitCode === 0 && r.stdout.trim() === "true";
 }

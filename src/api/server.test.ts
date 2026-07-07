@@ -2280,6 +2280,21 @@ describe("POST /fs/git-init", () => {
     expect(((await res.json()) as { code: string }).code).toBe("already_git_repo");
   });
 
+  it("400s for other typed codes (e.g. invalid_path)", async () => {
+    const { admin } = fakeAdmin({
+      initGit: async () => ({ ok: false, code: "invalid_path", message: "not a directory" }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/git-init`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:\\x" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("invalid_path");
+  });
+
   it("400s on a missing path", async () => {
     const { admin } = fakeAdmin();
     handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));

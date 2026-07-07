@@ -21,12 +21,20 @@ describe("detectGit", () => {
       const exe = join(bin, "git");
       writeFileSync(exe, "#!/bin/sh\necho 'git version 2.99.0'\n");
       chmodSync(exe, 0o755);
+      const probeCalls: { exePath: string; args: string[] }[] = [];
       const r = await detectGit({
         platform: "linux",
         pathDirs: [bin],
-        probeVersion: async () => "git version 2.99.0",
+        probeVersion: async (exePath, args) => {
+          probeCalls.push({ exePath, args });
+          return "git version 2.99.0";
+        },
       });
       expect(r).toEqual({ installed: true, version: "git version 2.99.0" });
+      // The default probe must actually be wired up to the resolved binary —
+      // asserting only the injected version string (as before) also passes if
+      // `probeVersion` were never called with the right executable/args.
+      expect(probeCalls).toEqual([{ exePath: exe, args: ["--version"] }]);
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
