@@ -16,7 +16,7 @@ import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 import { createWorktreeManager, type Worktree } from "../worktree/worktree.js";
 import { createRouter } from "../router/router.js";
-import { createGit } from "../util/git.js";
+import { createGit, mainTreeStatus } from "../util/git.js";
 import { runNative } from "../util/native.js";
 import { ClaudeWorkerAdapter } from "../worker/claude-adapter.js";
 import type { WorkerAdapter } from "../worker/adapter.js";
@@ -300,6 +300,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     router,
     git,
     worktreeGit,
+    mainTreeStatus: () => mainTreeStatus(repoRoot),
     runGate,
     escalate,
     runAntiDrift,

@@ -228,6 +228,24 @@ describe("scaffoldProject", () => {
     expect(exclude.split(/\r?\n/).map((l) => l.trim())).toContain(".autodev/");
   });
 
+  it("also excludes .serena/ (tooling-churn dir) alongside .autodev/ (s32)", async () => {
+    await scaffoldProject(repo, ScaffoldFormSchema.parse({}));
+    const lines = readFileSync(join(repo, ".git", "info", "exclude"), "utf8").split(/\r?\n/).map((l) => l.trim());
+    expect(lines).toContain(".autodev/");
+    expect(lines).toContain(".serena/");
+  });
+
+  it("adds only the MISSING churn entry when .autodev/ is already excluded (per-entry idempotent, no dup)", async () => {
+    // Pre-existing exclude already carries .autodev/ but NOT .serena/, and no config.yaml
+    // yet so the scaffold proceeds and ensureGitExclude runs.
+    mkdirSync(join(repo, ".git", "info"), { recursive: true });
+    writeFileSync(join(repo, ".git", "info", "exclude"), ".autodev/\n");
+    await scaffoldProject(repo, ScaffoldFormSchema.parse({}));
+    const lines = readFileSync(join(repo, ".git", "info", "exclude"), "utf8").split(/\r?\n/).map((l) => l.trim());
+    expect(lines.filter((l) => l === ".autodev/").length).toBe(1); // not duplicated
+    expect(lines.filter((l) => l === ".serena/").length).toBe(1); // added once
+  });
+
   it("skips entirely (config.yaml untouched) when .autodev/config.yaml already exists", async () => {
     mkdirSync(join(repo, ".autodev"), { recursive: true });
     writeFileSync(join(repo, ".autodev", "config.yaml"), "# operator's own config\n");

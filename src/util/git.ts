@@ -30,6 +30,40 @@ function fail(cmd: string, args: string[], result: { exitCode: number; stderr: s
   throw new Error(`git ${cmd} failed (exit ${result.exitCode}): ${result.stderr.trim()}\n(args: ${args.join(" ")})`);
 }
 
+/** One `git status --porcelain` line: the 2-char XY status and the path. `??` = untracked
+ *  (a `.git/info/exclude` entry can neutralize it); anything else = tracked dirt (exclude
+ *  cannot help — needs a commit/stash or `update-index --skip-worktree`). */
+export interface PorcelainEntry {
+  /** The 2-char XY status field, e.g. "??", " M", "M ", "A ". */
+  code: string;
+  path: string;
+}
+
+/**
+ * Read the MAIN working tree's dirty entries (`git status --porcelain`), parsed.
+ * A standalone helper (not on the `Git` interface) so the dirty-tree preflight can
+ * be wired without touching every `Git` fake — mirrors the direct `runNative` status
+ * check in `worktree.mergeAfterGate`. Throws on a non-zero git exit; callers that must
+ * never fail a run (the conductor preflight) wrap it best-effort.
+ */
+export async function mainTreeStatus(repoRoot: string): Promise<PorcelainEntry[]> {
+  // core.quotepath=false → literal UTF-8 paths (no octal-escaped "\303\251" wrapping),
+  // so a non-ASCII/spaced churn path is classified and printed verbatim in the WARNING.
+  const r = await runNative("git", ["-c", "core.quotepath=false", "status", "--porcelain"], { cwd: repoRoot });
+  if (r.exitCode !== 0) fail("status --porcelain", [], r);
+  // Rename/copy records render as "old -> new" (warning-only): we take the NEW path (what's
+  // now on disk) for classification/hints. This is a heuristic sufficient for a warning — the
+  // real churn case (Serena rewriting its own tracked files) is a plain modification, not a rename.
+  return r.stdout
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => {
+      const rest = l.slice(3);
+      const arrow = rest.lastIndexOf(" -> "); // last arrow = porcelain's separator (dest is what's on disk)
+      return { code: l.slice(0, 2), path: arrow >= 0 ? rest.slice(arrow + 4) : rest };
+    });
+}
+
 /** Create a `Git` helper bound to a repo (or worktree) root, shelling out to the real `git` CLI. */
 export function createGit(repoRoot: string): Git {
   async function run(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
