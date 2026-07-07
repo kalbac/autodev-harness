@@ -87,9 +87,10 @@ export interface ProjectAdmin {
 }
 
 export function createProjectAdmin(deps: { registryFile: string; log?: Log; gitOps?: AdminGitOps }): ProjectAdmin {
+  const ensureBranchOpts = deps.log !== undefined ? { log: deps.log } : {};
   const gitOps: AdminGitOps = deps.gitOps ?? {
-    ensureAutodevBranch: (root) => ensureAutodevBranch(createGit(root), { log: deps.log }),
-    initAutodevRepo: (root) => initAutodevRepo(createGit(root), { log: deps.log }),
+    ensureAutodevBranch: (root) => ensureAutodevBranch(createGit(root), ensureBranchOpts),
+    initAutodevRepo: (root) => initAutodevRepo(createGit(root), ensureBranchOpts),
   };
   // Promise-chain mutex. `chain` is always a settled-or-pending SWALLOWED promise
   // (never rejected), so one failed operation can never wedge the queue.

@@ -9,9 +9,10 @@ import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
 import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
-import type { RegisterResult } from "../registry/admin.js";
+import type { RegisterResult, GitInitResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
+import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 
@@ -2159,6 +2160,8 @@ function fakeAdmin(overrides: Partial<NonNullable<ApiServerDeps["admin"]>> = {})
       calls.detectAgents++;
       return [] satisfies DetectedAgent[];
     },
+    initGit: async () => ({ ok: true, branch: "autodev/main", untrackedCount: 0 }) satisfies GitInitResult,
+    detectGit: async () => ({ installed: true }) satisfies DetectGitResult,
     ...overrides,
   };
   return { admin, calls };
@@ -2232,6 +2235,78 @@ describe("createApiServer / GET /agents/detect", () => {
     expect(res.status).toBe(200);
     expect(detectCalls).toBe(1);
     expect((await res.json()) as { agents: DetectedAgent[] }).toEqual({ agents: stub });
+  });
+});
+
+describe("POST /fs/git-init", () => {
+  it("404s when no admin port is configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/git-init`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:\\x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("200s with { branch, untrackedCount } on success", async () => {
+    const { admin } = fakeAdmin({
+      initGit: async () => ({ ok: true, branch: "autodev/main", untrackedCount: 3 }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/git-init`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:\\x" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ branch: "autodev/main", untrackedCount: 3 });
+  });
+
+  it("409s for an already-git repo, 400 for other typed codes", async () => {
+    const { admin } = fakeAdmin({
+      initGit: async () => ({ ok: false, code: "already_git_repo", message: "already a git repository" }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/git-init`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "D:\\x" }),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("already_git_repo");
+  });
+
+  it("400s on a missing path", async () => {
+    const { admin } = fakeAdmin();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/fs/git-init`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /system/git", () => {
+  it("404s without an admin port", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    expect((await fetch(`http://127.0.0.1:${port}/system/git`)).status).toBe(404);
+  });
+
+  it("200s with the detect result", async () => {
+    const { admin } = fakeAdmin({ detectGit: async () => ({ installed: true, version: "git version 2.44.0" }) });
+    handle = createApiServer(projectDeps({ repo, stateDir }, { admin }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/system/git`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ installed: true, version: "git version 2.44.0" });
   });
 });
 

@@ -27,9 +27,10 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
-import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult } from "../registry/admin.js";
+import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult, GitInitResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
+import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 
@@ -229,6 +230,10 @@ export interface ApiServerDeps {
     listDirs(path?: string): Promise<FsDirsResult>;
     /** PATH-scan auto-detect of installed CLI agents (read-only, best-effort, never throws). */
     detectAgents(): Promise<DetectedAgent[]>;
+    /** Turn a non-git folder into a git repo on an `^autodev/` branch (New Project init). */
+    initGit(path: string): Promise<GitInitResult>;
+    /** Is `git` installed / on PATH (best-effort, never throws). */
+    detectGit(): Promise<DetectGitResult>;
   };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching a project's `stateDir`. Must be swappable. */
@@ -945,6 +950,48 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, { agents: await deps.admin.detectAgents() });
   }
 
+  /** POST /fs/git-init — `git init` + `^autodev/` branch for a non-git folder.
+   *  Body shape only here; the admin port owns path validation + typed codes. */
+  async function handleGitInit(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+    const parsed = body as { path?: unknown } | null;
+    if (typeof parsed?.path !== "string" || parsed.path.trim() === "") {
+      sendJson(res, 400, { error: "path must be a non-empty string" });
+      return;
+    }
+    const result = await deps.admin.initGit(parsed.path);
+    if (result.ok) {
+      sendJson(res, 200, { branch: result.branch, untrackedCount: result.untrackedCount });
+      return;
+    }
+    sendJson(res, result.code === "already_git_repo" ? 409 : 400, { error: result.message, code: result.code });
+  }
+
+  /** GET /system/git — is git installed. Best-effort/never-throws (admin gate only). */
+  async function handleSystemGit(res: ServerResponse): Promise<void> {
+    if (!deps.admin) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendJson(res, 200, await deps.admin.detectGit());
+  }
+
   /** GET /projects/:id/agent-extensions — best-effort visibility scan of what the
    *  worker CLI inherits under this project's CURRENT saved isolation config. The
    *  capability is best-effort/never-throws by contract, so a `null` result (no
@@ -1562,6 +1609,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
     if (req.method === "GET" && (url.pathname === "/agents/detect" || url.pathname === "/agents/detect/")) {
       return void (await handleDetectAgents(res));
+    }
+    if (req.method === "POST" && (url.pathname === "/fs/git-init" || url.pathname === "/fs/git-init/")) {
+      return void (await handleGitInit(req, res));
+    }
+    if (req.method === "GET" && (url.pathname === "/system/git" || url.pathname === "/system/git/")) {
+      return void (await handleSystemGit(res));
     }
 
     // Every project-scoped route lives under `/projects/:id/...`. Resolve the
