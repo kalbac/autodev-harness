@@ -155,14 +155,14 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
 
 /** PATHEXT-aware extension list: real extensions on win32, a single empty
  *  extension (bare name) elsewhere. */
-function computeExts(platform: NodeJS.Platform, pathext: string | undefined): string[] {
+export function computeExts(platform: NodeJS.Platform, pathext: string | undefined): string[] {
   if (platform !== "win32") return [""];
   const raw = pathext ?? process.env["PATHEXT"] ?? ".EXE;.CMD;.BAT";
   const exts = raw.split(";").filter((e) => e.length > 0);
   return exts.length > 0 ? exts : [".EXE", ".CMD", ".BAT"];
 }
 
-function defaultPathDirs(platform: NodeJS.Platform): string[] {
+export function defaultPathDirs(platform: NodeJS.Platform): string[] {
   const delimiter = platform === "win32" ? ";" : ":";
   return (process.env["PATH"] ?? "").split(delimiter).filter((d) => d.length > 0);
 }
@@ -199,7 +199,7 @@ function resolveOnPath(bin: string, dirs: string[], exts: string[], platform: No
 }
 
 /** Resolve the first of `names` (primary bin, then fallbacks, in order) found on PATH. */
-function resolveBinary(names: string[], dirs: string[], exts: string[], platform: NodeJS.Platform): string | null {
+export function resolveBinary(names: string[], dirs: string[], exts: string[], platform: NodeJS.Platform): string | null {
   for (const name of names) {
     const found = resolveOnPath(name, dirs, exts, platform);
     if (found !== null) return found;
@@ -210,7 +210,7 @@ function resolveBinary(names: string[], dirs: string[], exts: string[], platform
 /** Default version probe: `runNative` under a 3s kill deadline (the child is
  *  reaped on timeout, not leaked — see `NativeOptions.timeoutMs`). `runNative`
  *  rejects on spawn ENOENT, caught here. MUST never reject. */
-async function defaultProbeVersion(exePath: string, args: string[]): Promise<string | null> {
+export async function defaultProbeVersion(exePath: string, args: string[]): Promise<string | null> {
   try {
     const result = await runNative(exePath, args, { timeoutMs: 3000 });
     const firstLine = result.stdout.trim().split(/\r?\n/)[0];
