@@ -1,6 +1,8 @@
 import { unlink as fsUnlink } from "node:fs/promises";
 import type { QueueState } from "../blackboard/repository.js";
+import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
+import { fileSetsDisjoint } from "../scheduler/scheduler.js";
 import type { OrchestratorAdapter, ReadSnapshot } from "./adapter.js";
 import type { OrchestratorCapabilities } from "./capabilities.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
@@ -30,6 +32,30 @@ export interface CreateOrchestratorDeps {
 }
 
 const ALL_QUEUE_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
+
+/** Queue states whose tasks represent live, not-yet-resolved work that a relaunch
+ *  of the same intent would duplicate. Mirrors the scheduler's file-lock set
+ *  (`active`+`escalated`) plus `pending` (queued but unclaimed). `done`/`quarantine`
+ *  are excluded: a file-overlap with completed or abandoned work is legitimate (a
+ *  re-run / retry), not a duplicate. */
+const DEDUP_STATES: QueueState[] = ["pending", "active", "escalated"];
+
+function normalizeTitle(t: string): string {
+  return t.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * A new spec DUPLICATES an in-flight task when their `file_set`s OVERLAP (share a
+ * normalized path — the scheduler would serialize them behind a file-lock anyway)
+ * AND their titles match after normalization (case/whitespace-folded). Requiring
+ * BOTH signals keeps false positives low: legitimate sequential work that merely
+ * shares a file has a different title and is NOT flagged. When titles drift enough
+ * to miss a real duplicate, we fail OPEN (enqueue) — a missed dup is just today's
+ * behavior, whereas wrongly DROPPING distinct work would be strictly worse.
+ */
+export function isDuplicateTask(spec: TaskSpec, task: Pick<Task, "title" | "file_set">): boolean {
+  return !fileSetsDisjoint(spec.file_set, task.file_set) && normalizeTitle(spec.title) === normalizeTitle(task.title);
+}
 
 /**
  * Validate every spec AND check id-uniqueness (within the batch AND against
@@ -132,6 +158,35 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
         log("INFO", message);
         await caps.report({ level: "INFO", message });
         return { intent, enqueued: [], triggered: false };
+      }
+
+      // Relaunch-intent dedup (backlog C): match each new spec against live in-flight
+      // work (pending/active/escalated). A FULL duplicate (every spec matches) is a
+      // relaunch of an already-queued intent -> enqueue nothing (no duplicates) but
+      // still re-trigger the existing pool so a stalled relaunch re-drives its own
+      // pending tasks. A PARTIAL overlap is ambiguous (could be legitimately expanded
+      // work) -> enqueue everything and only WARN: dropping a subset could break a
+      // kept spec's `depends_on` or silently lose genuinely-new work.
+      const inFlight = DEDUP_STATES.flatMap((s) => queues[s]);
+      const dupMatch = specs.map((spec) => inFlight.find((t) => isDuplicateTask(spec, t)));
+      const overlapCount = dupMatch.filter((m) => m !== undefined).length;
+      if (overlapCount === specs.length) {
+        const pairs = specs.map((spec, i) => `'${spec.id}'~'${dupMatch[i]!.id}'`).join(", ");
+        const message = `orchestrator: all ${specs.length} decomposed task(s) duplicate existing pending/active/escalated work (${pairs}); nothing enqueued — re-triggering the existing pending pool instead of duplicating`;
+        log("INFO", message);
+        const triggerOutcome = await caps.trigger({ drain: true });
+        await caps.report({ level: "WARN", message });
+        return { intent, enqueued: [], triggered: true, triggerOutcome };
+      }
+      if (overlapCount > 0) {
+        const pairs = specs
+          .map((spec, i) => (dupMatch[i] ? `'${spec.id}'~'${dupMatch[i]!.id}'` : undefined))
+          .filter((p): p is string => p !== undefined)
+          .join(", ");
+        await caps.report({
+          level: "WARN",
+          message: `orchestrator: ${overlapCount} of ${specs.length} decomposed task(s) overlap existing in-flight work (${pairs}); enqueuing anyway (partial batch, not treated as a full relaunch)`,
+        });
       }
 
       log("INFO", `orchestrator: enqueueing ${specs.length} task(s)`);

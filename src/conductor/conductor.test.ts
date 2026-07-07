@@ -407,6 +407,7 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     router: partial.router ?? ({ resolveLadder: () => ({ ladder: cfg.roles.worker.ladder, warnings: [] }) } as Router),
     git: partial.git ?? makeGit("autodev/loop-main").git,
     worktreeGit: partial.worktreeGit ?? makeWorktreeGitFactory().worktreeGit,
+    ...(partial.mainTreeStatus !== undefined ? { mainTreeStatus: partial.mainTreeStatus } : {}),
     runGate: partial.runGate ?? (async () => defaultGateVerdict()),
     escalate: partial.escalate ?? makeEscalate().escalate,
     runAntiDrift: partial.runAntiDrift ?? (async () => "ON-TRACK: fine"),
@@ -565,6 +566,91 @@ describe("run -- branch preflight", () => {
 
     await expect(conductor.run()).rejects.toThrow(/branch|refus/i);
     expect(claimCalls.count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Dirty-tree preflight (run start) -- warn early; skip-worktree hint for
+//     tracked churn files that .git/info/exclude cannot neutralize.
+// ---------------------------------------------------------------------------
+
+describe("run -- dirty-tree preflight", () => {
+  it("warns that the main tree is dirty AND hints skip-worktree for a TRACKED churn file", async () => {
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([], repo);
+    const logs: string[] = [];
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      log: (lvl, msg) => logs.push(`${lvl}:${msg}`),
+      mainTreeStatus: async () => [{ code: " M", path: ".serena/project.yml" }],
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ once: true });
+
+    expect(logs.some((l) => l.startsWith("WARN:") && /not clean/i.test(l))).toBe(true);
+    const hint = logs.find((l) => /skip-worktree/.test(l));
+    expect(hint).toBeDefined();
+    expect(hint).toContain(".serena/project.yml");
+  });
+
+  it("warns on a dirty tree but gives NO skip-worktree hint when the dirt is untracked / non-churn", async () => {
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([], repo);
+    const logs: string[] = [];
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      log: (lvl, msg) => logs.push(`${lvl}:${msg}`),
+      // Untracked (??) file, and an untracked churn dir (?? is neutralized by exclude, so no hint).
+      mainTreeStatus: async () => [
+        { code: "??", path: "scratch.txt" },
+        { code: "??", path: ".serena/cache/x" },
+      ],
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ once: true });
+
+    expect(logs.some((l) => l.startsWith("WARN:") && /not clean/i.test(l))).toBe(true);
+    expect(logs.some((l) => /skip-worktree/.test(l))).toBe(false);
+  });
+
+  it("stays silent on a clean tree", async () => {
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([], repo);
+    const logs: string[] = [];
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      log: (lvl, msg) => logs.push(`${lvl}:${msg}`),
+      mainTreeStatus: async () => [],
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ once: true });
+
+    expect(logs.some((l) => /not clean/i.test(l))).toBe(false);
+  });
+
+  it("never aborts the run when the preflight status check throws (best-effort)", async () => {
+    const { repo } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([], repo);
+    const logs: string[] = [];
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      log: (lvl, msg) => logs.push(`${lvl}:${msg}`),
+      mainTreeStatus: async () => {
+        throw new Error("git blew up");
+      },
+    });
+    const conductor = createConductor(deps);
+
+    await expect(conductor.run({ once: true })).resolves.toBeUndefined();
+    expect(claimCalls.count).toBe(1); // the loop still ran its one iteration
+    expect(logs.some((l) => /preflight skipped/i.test(l))).toBe(true);
   });
 });
 
@@ -1401,6 +1487,20 @@ describe("runIteration -- token-usage persistence", () => {
     expect(res.committed).toBe(true);
     expect(state.locations.get(task.id)).toBe("done");
     expect(state.runtimeFiles.get(task.id)?.has("token-usage.json")).toBe(false);
+  });
+
+  it("persists loop-branch alongside diff.patch (pins the branch for a later apply-on-accept)", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // Default makeGit branch is "autodev/loop-main"; loopBranch is captured from it.
+    const deps = buildDeps({ repo, scheduler, git: makeGit("autodev/loop-main").git });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.get("diff.patch")).toBeDefined();
+    expect(state.runtimeFiles.get(task.id)?.get("loop-branch")).toBe("autodev/loop-main");
   });
 });
 

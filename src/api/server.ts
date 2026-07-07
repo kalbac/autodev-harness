@@ -34,6 +34,7 @@ import type { DetectedAgent } from "../detect/detect-agents.js";
 import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
+import type { ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -197,6 +198,16 @@ export interface ProjectView {
    * never throws by contract).
    */
   onScanExtensions?: () => Promise<AgentExtensions | null>;
+  /**
+   * OPTIONAL apply-on-accept (operator gate-override) for `POST
+   * /escalations/:id/reply` choice "C". When unset, choice "C" → 404 (mirrors
+   * `onOrchestrate`). A thin closure over the project's git/repo/cfg (the server
+   * never sees a raw git handle): it replays the escalated task's persisted
+   * `diff.patch` onto the loop branch and commits it, returning the commit hash
+   * or a typed refusal reason. This deliberately commits a change the critic did
+   * NOT bless — a human override that A/B (release-only) never performs.
+   */
+  onApplyOnAccept?: (taskId: string) => Promise<ApplyOnAcceptResult>;
 }
 
 export interface ApiServerDeps {
@@ -256,10 +267,14 @@ export interface ApiServerHandle {
 
 interface EscalationReply {
   id: string;
-  choice: "A" | "B";
+  /** A = accept/release → quarantine; B = rework → pending; C = commit-on-accept
+   *  (operator gate-override) → done. See handleReply. */
+  choice: "A" | "B" | "C";
   /** Free-form operator context -- NEVER an executable instruction. See module header. */
   note: string;
   at: number;
+  /** Present ONLY on a successful choice "C": the override commit hash. */
+  commit?: string;
 }
 
 /** Shape written by `createRecordRunCapability` (`src/orchestrator/capabilities.ts`) to
@@ -430,10 +445,11 @@ function isEscalationReply(value: unknown): value is EscalationReply {
   const v = value as Record<string, unknown>;
   return (
     typeof v.id === "string" &&
-    (v.choice === "A" || v.choice === "B") &&
+    (v.choice === "A" || v.choice === "B" || v.choice === "C") &&
     typeof v.note === "string" &&
     typeof v.at === "number" &&
-    Number.isFinite(v.at)
+    Number.isFinite(v.at) &&
+    (v.commit === undefined || typeof v.commit === "string")
   );
 }
 
@@ -822,12 +838,24 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
     const parsed = body as { choice?: unknown; note?: unknown } | null;
     const choice = parsed?.choice;
-    if (choice !== "A" && choice !== "B") {
-      // The ONLY executable signal this endpoint accepts. See module header (parity spec §8).
-      sendJson(res, 400, { error: 'choice must be "A" or "B"' });
+    if (choice !== "A" && choice !== "B" && choice !== "C") {
+      // The ONLY executable signals this endpoint accepts. See module header (parity spec §8).
+      sendJson(res, 400, { error: 'choice must be "A", "B", or "C"' });
       return;
     }
     const note = typeof parsed?.note === "string" ? parsed.note : "";
+
+    // Choice C — commit-on-accept (operator gate-override): apply the escalated
+    // task's reviewed diff onto the loop branch and commit it, then legitimately
+    // move escalated/ -> done/ (the file_set now IS in the repo, so a dependent's
+    // depends_on/doneIds is truthfully satisfied — unlike A→quarantine). A distinct,
+    // deliberate action: it commits a change the critic did NOT bless. On refusal the
+    // task stays escalated (nothing committed, lock still held) so the operator can
+    // retry A/B or fix the cause — never a silent half-apply.
+    if (choice === "C") {
+      await handleCommitOnAccept(p, id, note, res);
+      return;
+    }
 
     const reply: EscalationReply = { id, choice, note, at: now() };
     const escalationsDir = join(p.stateDir, "escalations");
@@ -863,6 +891,72 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       }
     }
 
+    sendJson(res, 200, reply);
+  }
+
+  /**
+   * Choice "C" — commit-on-accept (operator gate-override). Attempts the commit
+   * FIRST (it can legitimately refuse: no reviewed diff, dirty tree, moved branch,
+   * patch conflict); only on success is the reply recorded and the task moved
+   * escalated/ -> done/. On refusal the task is LEFT escalated (nothing committed,
+   * lock still held, no resolving reply written) and a 409 surfaces the reason.
+   */
+  async function handleCommitOnAccept(
+    p: ProjectView,
+    id: string,
+    note: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!p.onApplyOnAccept) {
+      sendJson(res, 404, { error: "apply-on-accept is not available for this project" });
+      return;
+    }
+
+    const outcome = await p.onApplyOnAccept(id);
+    if (!outcome.ok) {
+      // Not resolved: keep the task escalated so the operator can retry A/B or fix
+      // the cause. No reply file is written (the escalation is still open).
+      log("WARN", `api: commit-on-accept for ${id} refused: ${outcome.reason}`);
+      sendJson(res, 409, { error: `commit-on-accept refused: ${outcome.reason}`, id, choice: "C" });
+      return;
+    }
+
+    // The change is committed. Release the lock FIRST (escalated/ -> done/); only then
+    // record the resolving reply -- so a move failure never leaves a durable reply that
+    // claims resolution while the task is still escalated (codex Sev-3).
+    let moved = true;
+    try {
+      await p.repo.moveTask(id, "escalated", "done");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        // Committed, but there is no escalated queue file to move (drift-* escalation,
+        // or a double-reply already moved it). Benign -- still record the reply.
+        moved = false;
+        log("INFO", `api: commit-on-accept ${id} committed; no escalated queue task to move`);
+      } else {
+        // Committed in git but the queue move failed -- surface it, write NO reply.
+        log("ERROR", `api: commit-on-accept ${id} committed ${outcome.hash} but move escalated/->done/ failed: ${String(err)}`);
+        sendJson(res, 500, { error: "change committed but failed to move the task to done", id, commit: outcome.hash });
+        return;
+      }
+    }
+
+    const reply: EscalationReply = { id, choice: "C", note, at: now(), commit: outcome.hash };
+    const escalationsDir = join(p.stateDir, "escalations");
+    await mkdir(escalationsDir, { recursive: true });
+    await writeFile(join(escalationsDir, `${id}.reply.json`), JSON.stringify(reply, null, 2), "utf8");
+    log("INFO", `api: commit-on-accept ${id} committed ${outcome.hash} (operator override)`);
+
+    // Mirror the conductor's clean-commit bookkeeping (markDone stamps the hash on
+    // the done task so a dependent's depends_on is truthfully satisfied). Best-effort;
+    // skipped when there was no queue task to move.
+    if (moved) {
+      try {
+        await p.repo.markDone(id, outcome.hash);
+      } catch (err) {
+        log("WARN", `api: commit-on-accept ${id} markDone bookkeeping failed (ignored): ${String(err)}`);
+      }
+    }
     sendJson(res, 200, reply);
   }
 
@@ -904,7 +998,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
-    let reply: { choice: "A" | "B"; note: string; at: number } | null = null;
+    let reply: { choice: "A" | "B" | "C"; note: string; at: number; commit?: string } | null = null;
     const replyText = await readBoundedFileText(join(escalationsDir, `${id}.reply.json`), MAX_ESCALATION_READ_BYTES);
     if (replyText !== null) {
       try {
@@ -912,7 +1006,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         // Same filename/internal-id agreement as above, but best-effort: a mismatch
         // here degrades only the reply to null, it never fails the whole request.
         if (isEscalationReply(parsedReply) && parsedReply.id === id) {
-          reply = { choice: parsedReply.choice, note: parsedReply.note, at: parsedReply.at };
+          reply = {
+            choice: parsedReply.choice,
+            note: parsedReply.note,
+            at: parsedReply.at,
+            ...(parsedReply.commit !== undefined ? { commit: parsedReply.commit } : {}),
+          };
         }
       } catch {
         // Malformed reply JSON -- degrade to null, never fail the endpoint.

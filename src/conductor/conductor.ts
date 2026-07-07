@@ -12,7 +12,7 @@ import type { Worktree, WorktreeManager } from "../worktree/worktree.js";
 import type { WorkerAdapter } from "../worker/adapter.js";
 import type { CriticAdapter } from "../critic/adapter.js";
 import type { Router } from "../router/router.js";
-import type { Git } from "../util/git.js";
+import type { Git, PorcelainEntry } from "../util/git.js";
 import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
@@ -33,6 +33,11 @@ export interface ConductorDeps {
   git: Git;
   /** Git bound to a worktree (used to `add` file_set + `commit` there). */
   worktreeGit: (wt: Worktree) => Git;
+  /** Optional dirty-tree preflight: the MAIN tree's porcelain entries (empty =
+   *  clean). Wired at the composition root to `() => mainTreeStatus(mainRepoRoot)`.
+   *  When omitted the warning is skipped (keeps the fake-driven tests untouched).
+   *  Best-effort — a throw here must never abort a run. */
+  mainTreeStatus?: () => Promise<PorcelainEntry[]>;
   /** May THROW on a broken operator config; the conductor treats a throw as fail-closed ESCALATE. */
   runGate: (input: GateInput, wt: Worktree) => Promise<GateVerdict>;
   /** Never-throws contract; still called defensively. */
@@ -129,6 +134,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     router,
     git,
     worktreeGit,
+    mainTreeStatus,
     runGate,
     escalate,
     runAntiDrift,
@@ -152,6 +158,56 @@ export function createConductor(deps: ConductorDeps): Conductor {
       // a broken logger must never break the loop's control flow
     }
   };
+
+  // Tooling-churn dirs the New Project scaffold git-excludes; a TRACKED file under
+  // one of these (e.g. a committed .serena/project.yml) can't be neutralized by
+  // .git/info/exclude and needs `update-index --skip-worktree` instead.
+  const CHURN_PREFIXES = [".serena/", ".autodev/"];
+  const MAX_DIRTY_SHOWN = 10;
+
+  /** Best-effort dirty-tree preflight (run start): a dirty MAIN tree makes
+   *  `mergeAfterGate` refuse, so every gated commit escalates `blocked` instead of
+   *  merging (gotchas `[conductor/real-repo-run]`, `[env/serena-churn-blocks-merge]`).
+   *  Warn EARLY (before the loop) and, for TRACKED churn files that an exclude can't
+   *  fix, point at the skip-worktree remedy. Never throws — a status failure must
+   *  not abort the run. */
+  async function warnIfMainTreeDirty(): Promise<void> {
+    if (!mainTreeStatus) return;
+    let entries: PorcelainEntry[];
+    try {
+      entries = await mainTreeStatus();
+    } catch (err) {
+      safeLog("WARN", `conductor: dirty-tree preflight skipped (git status failed): ${String(err)}`);
+      return;
+    }
+    if (entries.length === 0) return;
+    const shown = entries
+      .slice(0, MAX_DIRTY_SHOWN)
+      .map((e) => `${e.code} ${e.path}`)
+      .join(", ");
+    const more = entries.length > MAX_DIRTY_SHOWN ? `, +${entries.length - MAX_DIRTY_SHOWN} more` : "";
+    safeLog(
+      "WARN",
+      `conductor: main working tree is not clean (${entries.length} path(s)): ${shown}${more}. ` +
+        `A dirty main tree makes the worktree merge-back refuse, so gated commits will escalate 'blocked' instead of merging.`,
+    );
+    const trackedChurn = entries.filter(
+      (e) => e.code !== "??" && CHURN_PREFIXES.some((p) => e.path.startsWith(p)),
+    );
+    if (trackedChurn.length > 0) {
+      // Present the remedy as a TEMPLATE + the paths as a DATA list, NOT a single
+      // ready-to-paste command with untrusted paths interpolated: no cross-shell
+      // quoting is fully safe (double quotes still allow $()/backtick expansion in
+      // POSIX & PowerShell), so a hostile filename in a copy-pasted one-liner would
+      // be a footgun (codex Sev-2). The operator applies the template per path.
+      const paths = trackedChurn.map((e) => e.path).join(", ");
+      safeLog(
+        "WARN",
+        `conductor: ${trackedChurn.length} of these are TRACKED tooling-churn file(s) that .git/info/exclude cannot neutralize. ` +
+          `Neutralize each with:  git update-index --skip-worktree -- <path>  (tracked churn paths: ${paths})`,
+      );
+    }
+  }
 
   async function runIteration(): Promise<IterationResult> {
     // 1. CLAIM
@@ -349,6 +405,9 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // DIFF + CRITIC
         const diff = await worktree.diff(wt, task.file_set);
         await repo.writeRuntimeFile(task.id, "diff.patch", diff);
+        // Pin the loop branch this diff was captured on, so a later apply-on-accept
+        // (operator override) can refuse to replay it onto a DIFFERENT branch.
+        await repo.writeRuntimeFile(task.id, "loop-branch", loopBranch);
         const cr = await critic.run({ diff, runtimeDir, workerReportPath });
 
         if (cr.usage) {
@@ -587,6 +646,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
       log("ERROR", `conductor: refusing to run on branch '${branch}' (must match ${cfg.allowedBranchPattern}, never main)`);
       throw new Error(`conductor: refusing to run on branch '${branch}' (must match ${cfg.allowedBranchPattern}, never main)`);
     }
+
+    await warnIfMainTreeDirty();
 
     const startMs = clock.now();
     let iterations = 0;

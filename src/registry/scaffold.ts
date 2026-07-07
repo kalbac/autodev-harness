@@ -224,8 +224,20 @@ async function writeIfAbsent(path: string, content: string): Promise<boolean> {
   }
 }
 
-/** Append `.autodev/` to `.git/info/exclude` once. A `.git` FILE (worktree/
- *  submodule) skips with a WARN — never fails registration over it. */
+/** Tooling-churn dirs the harness (and Serena) write to during a run. Left visible
+ *  to git, their background churn dirties the main tree → `mergeAfterGate` refuses →
+ *  every gated commit escalates `blocked` and nothing reaches DONE (gotchas
+ *  `[conductor/real-repo-run]`, `[env/serena-churn-blocks-merge]`). Excluding them
+ *  keeps the tree clean for merges. NB: `.git/info/exclude` only affects UNTRACKED
+ *  paths — an already-tracked `.serena/project.yml` (the s31 case) still dirties the
+ *  tree; the conductor's dirty-tree preflight warns and points at
+ *  `git update-index --skip-worktree` for that. */
+const CHURN_EXCLUDE_ENTRIES = [".autodev/", ".serena/"] as const;
+
+/** Append the tooling-churn exclude entries to `.git/info/exclude`, once each
+ *  (per-entry idempotent, so a repo already carrying `.autodev/` from a pre-s32
+ *  scaffold just gains `.serena/`). A `.git` FILE (worktree/submodule) skips with a
+ *  WARN — never fails registration over it. */
 async function ensureGitExclude(repoRoot: string, log?: Log): Promise<void> {
   const gitDir = join(repoRoot, ".git");
   let st;
@@ -237,7 +249,7 @@ async function ensureGitExclude(repoRoot: string, log?: Log): Promise<void> {
   if (!st.isDirectory()) {
     log?.(
       "WARN",
-      `scaffold: ${gitDir} is not a directory (worktree/submodule?) — add .autodev/ to its exclude file manually`,
+      `scaffold: ${gitDir} is not a directory (worktree/submodule?) — add ${CHURN_EXCLUDE_ENTRIES.join(", ")} to its exclude file manually`,
     );
     return;
   }
@@ -250,9 +262,15 @@ async function ensureGitExclude(repoRoot: string, log?: Log): Promise<void> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  if (existing.split(/\r?\n/).some((l) => l.trim() === ".autodev/")) return;
+  const present = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const missing = CHURN_EXCLUDE_ENTRIES.filter((e) => !present.has(e));
+  if (missing.length === 0) return;
   const prefix = existing === "" || existing.endsWith("\n") ? "" : "\n";
-  await appendFile(excludePath, `${prefix}# autodev harness state (added by the New Project scaffold)\n.autodev/\n`, "utf8");
+  await appendFile(
+    excludePath,
+    `${prefix}# autodev harness tooling-churn state (added by the New Project scaffold)\n${missing.join("\n")}\n`,
+    "utf8",
+  );
 }
 
 export interface ScaffoldResult {

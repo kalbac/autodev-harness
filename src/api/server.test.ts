@@ -26,6 +26,7 @@ function projectDeps(
     onOrchestrate?: (intent: string) => Promise<unknown>;
     config?: ProjectConfigView;
     onScanExtensions?: () => Promise<AgentExtensions | null>;
+    onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -41,6 +42,7 @@ function projectDeps(
                 ...(one.onOrchestrate !== undefined ? { onOrchestrate: one.onOrchestrate } : {}),
                 ...(one.config !== undefined ? { config: one.config } : {}),
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
+                ...(one.onApplyOnAccept !== undefined ? { onApplyOnAccept: one.onApplyOnAccept } : {}),
               },
             }
           : null,
@@ -358,14 +360,14 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     expect(body.note).toBe("");
   });
 
-  it("rejects a choice other than A/B with 400 and writes no reply file", async () => {
+  it("rejects a choice other than A/B/C with 400 and writes no reply file", async () => {
     handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-3/reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ choice: "C" }),
+      body: JSON.stringify({ choice: "Z" }),
     });
     expect(res.status).toBe(400);
     expect(existsSync(join(stateDir, "escalations", "esc-3.reply.json"))).toBe(false);
@@ -518,6 +520,101 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     // Still blocked: esc-dep is quarantined, not done, so p-dependent must not claim.
     expect(await scheduler.claimNextTask()).toBeNull();
   });
+
+  // --- choice C: commit-on-accept (operator gate-override) ------------------
+
+  it("choice C on success commits, moves escalated/ -> done/ (NOT quarantine), records the reply with the hash", async () => {
+    seedTask("escalated", "esc-c");
+    const calls: string[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onApplyOnAccept: async (taskId) => {
+          calls.push(taskId);
+          return { ok: true, hash: "abc1234" };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-c/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "C" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ choice: "C", commit: "abc1234" });
+    expect(calls).toEqual(["esc-c"]);
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-c.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "queue", "done", "esc-c.md"))).toBe(true);
+    expect(existsSync(join(stateDir, "queue", "quarantine", "esc-c.md"))).toBe(false);
+    const replyJson = JSON.parse(readFileSync(join(stateDir, "escalations", "esc-c.reply.json"), "utf8"));
+    expect(replyJson.commit).toBe("abc1234");
+  });
+
+  it("choice C on refusal returns 409, LEAVES the task escalated, and writes NO reply file", async () => {
+    seedTask("escalated", "esc-cfail");
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onApplyOnAccept: async () => ({ ok: false, reason: "git apply failed (branch moved)" }),
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-cfail/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "C" }),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/git apply failed/);
+    // Task stays escalated (nothing committed, lock still held); no resolving reply.
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-cfail.md"))).toBe(true);
+    expect(existsSync(join(stateDir, "queue", "done", "esc-cfail.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "escalations", "esc-cfail.reply.json"))).toBe(false);
+  });
+
+  it("choice C returns 404 when apply-on-accept is not wired for the project", async () => {
+    seedTask("escalated", "esc-cno");
+    handle = createApiServer(projectDeps({ repo, stateDir })); // no onApplyOnAccept
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-cno/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "C" }),
+    });
+    expect(res.status).toBe(404);
+    // Untouched: still escalated, no reply.
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-cno.md"))).toBe(true);
+    expect(existsSync(join(stateDir, "escalations", "esc-cno.reply.json"))).toBe(false);
+  });
+
+  it("choice C -> done DOES satisfy a dependent's depends_on (unlike A->quarantine): the committed work is now in the repo", async () => {
+    seedTask("escalated", "esc-dep2", { fileSet: ["src/a.ts"] });
+    seedTask("pending", "p-dependent2", { fileSet: ["src/b.ts"], dependsOn: ["esc-dep2"] });
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onApplyOnAccept: async () => ({ ok: true, hash: "deadbee" }) }),
+    );
+    const port = await handle.listen(0);
+
+    const scheduler = createScheduler(repo);
+    expect(await scheduler.claimNextTask()).toBeNull(); // blocked before the accept
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-dep2/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "C" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "done", "esc-dep2.md"))).toBe(true);
+
+    // Now claimable: esc-dep2 is in done (committed), so depends_on is truthfully met.
+    expect((await scheduler.claimNextTask())?.id).toBe("p-dependent2");
+  });
 });
 
 /** A representative `EscalationInput`, overridable per test. */
@@ -614,7 +711,7 @@ describe("createApiServer / GET /escalations/:id", () => {
     await seedEscalation(makeEscalationInput());
     writeFileSync(
       join(stateDir, "escalations", "esc-1.reply.json"),
-      JSON.stringify({ id: "esc-1", choice: "C", note: "", at: 1 }),
+      JSON.stringify({ id: "esc-1", choice: "Z", note: "", at: 1 }),
     );
 
     handle = createApiServer(projectDeps({ repo, stateDir }));

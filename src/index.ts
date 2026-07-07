@@ -187,6 +187,7 @@ async function main(): Promise<void> {
                   model: c.roles.worker.ladder[0] ?? "haiku",
                   isolationFlags: workerIsolationFlags(c),
                 }),
+              onApplyOnAccept: (taskId: string) => root.applyOnAccept(taskId),
             },
           };
         },

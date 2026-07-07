@@ -1,5 +1,15 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ DONE (s32) — agency-agents PIVOT resolved: "not for us" (not a competitor/donor); one content-source footnote
+> Studied `github.com/msitarzewski/agency-agents` (MIT) against the operator's 5-way frame. **Verdict: #4 Not for us**
+> — it's a **library of ~280 persona prompt `.md` files** (17 divisions) + a multi-tool installer, NOT an orchestrator:
+> zero critic gate / worktree isolation / blackboard / merge discipline; it *installs* prompt files, doesn't *run*
+> agents (a layer above us). **Not redundant** with autodev. One small **#2 footnote**: it's a free MIT content source
+> of specialist personas — several map onto the operator's stack (`engineering-wordpress-shopping-cart.md`,
+> `-drupal-shopping-cart.md`). → wrote `docs/wiki/agency-agents-analysis.md` + seeded a **worker-persona-catalog**
+> item in `FUTURE-BACKLOG.md` (low-priority quality lever, content harvested not depended-on). **Pivot closed —
+> back to the autodev backlog:** (C) relaunch-intent dedup / apply-on-accept / onboarding git-exclude / web-UI polish.
+>
 > ## ✅ DONE + MERGED (s31) — three stuck-task / runs-UI bug fixes + harness PROVEN end-to-end (green DONE)
 > Started as a debug of a live SMOKE run "stuck in ACTIVE ~30 min" (no escalation/quarantine). Root-caused + fixed
 > **three independent bugs**, all TDD + codex-GPT-5.5-gated + live-proven, merged as **PR #54 (merge-commit `3a0c641`,

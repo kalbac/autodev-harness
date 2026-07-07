@@ -6,6 +6,7 @@ import type { QueueState } from "../blackboard/repository.js";
 import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
+import { isDuplicateTask } from "./orchestrator.js";
 
 const ALL_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -67,6 +68,11 @@ function makeFakeCaps(
   };
 
   return { caps, recorder };
+}
+
+/** An in-flight Task (parsed on-disk form: a spec plus a queue path). */
+function makeTask(id: string, overrides: Partial<Task> = {}): Task {
+  return { ...makeSpec(id), path: `queue/pending/${id}.md`, ...overrides } as Task;
 }
 
 function makeFakeAdapter(specs: TaskSpec[]): OrchestratorAdapter {
@@ -174,6 +180,96 @@ describe("createOrchestrator / handleIntent", () => {
       /decomposition produced 0 tasks; nothing enqueued, trigger skipped/,
     );
     expect(recorder.recordRunCalls).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Relaunch-intent dedup (backlog C)
+  // -------------------------------------------------------------------------
+
+  it("full relaunch: every spec duplicates in-flight work -> nothing enqueued/recorded, but re-triggers the existing pool", async () => {
+    const queues = emptyQueues();
+    // Two in-flight tasks matching the relaunch (same title + overlapping file_set).
+    queues.pending = [makeTask("old-t1", { title: "Add A", file_set: ["src/a.ts"] })];
+    queues.active = [makeTask("old-t2", { title: "Add B", file_set: ["src/b.ts"] })];
+    const { caps, recorder } = makeFakeCaps({ queues });
+    const specs = [
+      makeSpec("new-t1", { title: "Add A", file_set: ["src/a.ts"] }),
+      makeSpec("new-t2", { title: "Add B", file_set: ["src/b.ts"] }),
+    ];
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter(specs), log: noopLog });
+
+    const result = await orchestrator.handleIntent("do A and B");
+
+    expect(recorder.enqueueCalls).toEqual([]); // nothing duplicated
+    expect(recorder.recordRunCalls).toEqual([]); // no new run manifest
+    expect(recorder.triggerCalls).toEqual([{ drain: true }]); // still re-drives existing pending
+    expect(result.enqueued).toEqual([]);
+    expect(result.triggered).toBe(true);
+    expect(recorder.reportCalls.at(-1)?.level).toBe("WARN");
+    expect(recorder.reportCalls.at(-1)?.message).toMatch(/duplicate existing/i);
+  });
+
+  it("partial overlap: some specs match in-flight work -> ALL enqueued (never drop a subset), with a WARN", async () => {
+    const queues = emptyQueues();
+    queues.active = [makeTask("old-t1", { title: "Add A", file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({ queues });
+    const specs = [
+      makeSpec("new-t1", { title: "Add A", file_set: ["src/a.ts"] }), // dup
+      makeSpec("new-t2", { title: "Add C", file_set: ["src/c.ts"] }), // genuinely new
+    ];
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter(specs), log: noopLog });
+
+    const result = await orchestrator.handleIntent("do A and C");
+
+    // Both enqueued — dropping the overlapping one could break a depends_on and lose new work.
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["new-t1", "new-t2"]);
+    expect(result.enqueued.map((e) => e.id)).toEqual(["new-t1", "new-t2"]);
+    expect(recorder.triggerCalls).toEqual([{ drain: true }]);
+    expect(recorder.reportCalls.some((r) => r.level === "WARN" && /overlap existing in-flight/i.test(r.message))).toBe(true);
+  });
+
+  it("file overlap WITHOUT a title match is NOT a duplicate (fail-open) -> enqueued", async () => {
+    const queues = emptyQueues();
+    queues.active = [makeTask("old-t1", { title: "Refactor the parser", file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({ queues });
+    const specs = [makeSpec("new-t1", { title: "Add a totally different feature", file_set: ["src/a.ts"] })];
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter(specs), log: noopLog });
+
+    await orchestrator.handleIntent("different work touching a shared file");
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["new-t1"]);
+  });
+
+  it("a title match with a DISJOINT file_set is NOT a duplicate -> enqueued", async () => {
+    const queues = emptyQueues();
+    queues.pending = [makeTask("old-t1", { title: "Add A", file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({ queues });
+    const specs = [makeSpec("new-t1", { title: "Add A", file_set: ["src/z.ts"] })];
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter(specs), log: noopLog });
+
+    await orchestrator.handleIntent("intent");
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["new-t1"]);
+  });
+
+  it("a match against DONE/QUARANTINE work is NOT a duplicate (only pending/active/escalated count) -> enqueued", async () => {
+    const queues = emptyQueues();
+    queues.done = [makeTask("old-done", { title: "Add A", file_set: ["src/a.ts"] })];
+    queues.quarantine = [makeTask("old-quar", { title: "Add A", file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({ queues });
+    const specs = [makeSpec("new-t1", { title: "Add A", file_set: ["src/a.ts"] })];
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter(specs), log: noopLog });
+
+    await orchestrator.handleIntent("re-do A after it finished/was parked");
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["new-t1"]);
+  });
+
+  it("isDuplicateTask: requires BOTH file overlap AND a normalized title match", () => {
+    const spec = makeSpec("x", { title: "  Add   THE  Thing ", file_set: ["src/a.ts", "src/b.ts"] });
+    // overlap + title-equivalent-modulo-whitespace/case -> duplicate
+    expect(isDuplicateTask(spec, { title: "add the thing", file_set: ["src/b.ts"] })).toBe(true);
+    // same title, disjoint files -> not a duplicate
+    expect(isDuplicateTask(spec, { title: "add the thing", file_set: ["src/z.ts"] })).toBe(false);
+    // overlapping files, different title -> not a duplicate
+    expect(isDuplicateTask(spec, { title: "something else", file_set: ["src/a.ts"] })).toBe(false);
   });
 
   it("recordRun best-effort failure (returns null) does NOT fail handleIntent — normal success result still returned", async () => {

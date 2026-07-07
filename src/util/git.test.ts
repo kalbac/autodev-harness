@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "./native.js";
-import { createGit, type Git } from "./git.js";
+import { createGit, mainTreeStatus, type Git } from "./git.js";
 
 let repoRoot: string;
 let git: Git;
@@ -168,5 +168,41 @@ describe("createGit", () => {
     expect(await git.countUntracked()).toBe(0);
     writeFileSync(join(repoRoot, "new-untracked.txt"), "x\n");
     expect(await git.countUntracked()).toBe(1);
+  });
+});
+
+describe("mainTreeStatus", () => {
+  it("returns [] on a clean tree", async () => {
+    expect(await mainTreeStatus(repoRoot)).toEqual([]);
+  });
+
+  it("reports a tracked-but-modified file (code contains M) and an untracked file (code ??), with paths", async () => {
+    writeFileSync(join(repoRoot, "a.txt"), "a1\nCHANGED\n"); // tracked, worktree-modified
+    writeFileSync(join(repoRoot, "u.txt"), "u\n"); // untracked
+    const entries = await mainTreeStatus(repoRoot);
+    const byPath = new Map(entries.map((e) => [e.path, e.code]));
+    expect(byPath.get("a.txt")).toMatch(/M/);
+    expect(byPath.get("u.txt")).toBe("??");
+    expect(entries).toHaveLength(2);
+  });
+
+  it("uses the NEW path for a rename record (old -> new), for churn classification/hints", async () => {
+    await runNative("git", ["mv", "a.txt", "renamed.txt"], { cwd: repoRoot });
+    const entries = await mainTreeStatus(repoRoot);
+    const renamed = entries.find((e) => e.path === "renamed.txt");
+    expect(renamed).toBeDefined(); // parsed the destination, not "a.txt -> renamed.txt"
+    expect(renamed!.code).toMatch(/R/);
+    expect(entries.some((e) => e.path.includes(" -> "))).toBe(false);
+  });
+
+  it("classifies a tracked churn file as NOT untracked (drives the skip-worktree hint)", async () => {
+    // A committed .serena/project.yml is the s31 case: tracked, so .git/info/exclude
+    // cannot neutralize it — it must be reported with a non-?? code.
+    writeFileSync(join(repoRoot, "a.txt"), "a1\nedit\n");
+    await runNative("git", ["add", "a.txt"], { cwd: repoRoot });
+    const entries = await mainTreeStatus(repoRoot);
+    const a = entries.find((e) => e.path === "a.txt");
+    expect(a).toBeDefined();
+    expect(a!.code).not.toBe("??");
   });
 });
