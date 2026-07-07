@@ -70,9 +70,13 @@ export interface RunPatch {
 
 export interface EscalationReply {
   id: string;
-  choice: "A" | "B";
+  /** A = accept/release → quarantine; B = rework → pending; C = commit-on-accept
+   *  (operator gate-override) → done. */
+  choice: "A" | "B" | "C";
   note: string;
   at: number;
+  /** Present only on a successful choice "C": the override commit hash. */
+  commit?: string;
 }
 
 /** Mirrors `GET /escalations/:id` (parsed from the on-disk `<id>.md`). */
@@ -416,8 +420,10 @@ export const api = {
     return { text: await res.text(), truncated: res.headers.get("x-truncated") === "true" };
   },
 
-  /** Structured A/B reply. `note` is context-only and NEVER executed (server-enforced). */
-  postReply: (projectId: string, id: string, choice: "A" | "B", note: string) =>
+  /** Structured A/B/C reply. `note` is context-only and NEVER executed (server-enforced).
+   *  Choice "C" (commit-on-accept override) may 409 with a refusal reason — surfaced as
+   *  the thrown ApiError message. */
+  postReply: (projectId: string, id: string, choice: "A" | "B" | "C", note: string) =>
     req<EscalationReply>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}/reply`), {
       method: "POST",
       headers: { "content-type": "application/json" },
