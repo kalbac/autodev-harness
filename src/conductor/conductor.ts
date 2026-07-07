@@ -53,6 +53,14 @@ export interface ConductorDeps {
 export interface ConductorRunOptions {
   once?: boolean;
   maxIterations?: number;
+  /** Drain mode: keep processing while the queue yields claimable work and stop
+   * the moment an iteration finds nothing to claim OR hits a rate limit. Used by
+   * the orchestrator's trigger so ONE launch clears the whole pending pool (its
+   * own batch + any pre-existing leftovers) instead of a fixed batch-count -- a
+   * batch-sized bound can spend its iterations on other pending tasks and strand
+   * its own (backlog B: orphaned PENDING). Stopping on rate-limit keeps the drain
+   * bounded (a persistent 429 can't hold it open to maxSessionHours). */
+  drain?: boolean;
 }
 
 export interface IterationResult {
@@ -462,25 +470,50 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
         const mr = await worktree.mergeAfterGate(wt, loopBranch);
         if (!mr.ok) {
+          // A merge-back fails two ways: a genuine content CONFLICT, or a
+          // refused PRECONDITION (dirty main tree / failed checkout) that
+          // carries a `reason`. Escalate each with its own accurate wording so
+          // the operator fixes the right thing -- never a phantom conflict.
           await repo.moveTask(task.id, "active", "escalated");
-          await escalate(
-            buildEscalation(task, {
-              reason: "worktree merge conflict",
-              type: "blocked",
-              what: `Task ${task.id} merge back into '${loopBranch}' conflicted.`,
-              decision: "Resolve the conflict manually.",
-              optionA: "Resolve and re-queue.",
-              optionB: "Abandon the task.",
-              costOfWrong: "An unresolved conflict blocks all tasks touching these files.",
-              evidence: `branch=${wt.branch} into=${loopBranch}`,
-            }),
-          );
+          const fields: EscalationFields = mr.conflict
+            ? {
+                reason: "worktree merge conflict",
+                type: "blocked",
+                what: `Task ${task.id} merge back into '${loopBranch}' conflicted.`,
+                decision: "Resolve the conflict manually.",
+                optionA: "Resolve and re-queue.",
+                optionB: "Abandon the task.",
+                costOfWrong: "An unresolved conflict blocks all tasks touching these files.",
+                evidence: `branch=${wt.branch} into=${loopBranch}`,
+              }
+            : {
+                reason: `worktree merge blocked: ${mr.reason ?? "precondition not met"}`,
+                type: "blocked",
+                what: `Task ${task.id} committed but its merge back into '${loopBranch}' was refused: ${mr.reason ?? "precondition not met"}.`,
+                decision: "Clear the blocking precondition (e.g. commit/stash the dirty main tree), then re-queue.",
+                optionA: "Resolve and re-queue.",
+                optionB: "Abandon the task.",
+                costOfWrong: "An unmerged committed task blocks all tasks touching these files and never lands.",
+                evidence: `branch=${wt.branch} into=${loopBranch} reason=${mr.reason ?? "(none)"}`,
+              };
+          await escalate(buildEscalation(task, fields));
           return { claimedTaskId: task.id, committed: false, rateLimited: false };
         }
 
+        // Decisive: the change is committed AND merged; moving the task to
+        // done/ commits the outcome. markDone/appendDigest are non-critical
+        // bookkeeping -- a throw here must NOT fall through to the backstop and
+        // get mis-reported as a failed iteration, which would leave the
+        // contradictory state "task in done/ + an 'unexpected error'
+        // escalation". Best-effort, same [ts/fail-closed] discipline as
+        // persistTokenUsage / teardown.
         await repo.moveTask(task.id, "active", "done");
-        await repo.markDone(task.id, hash);
-        await repo.appendDigest(`[conductor] committed ${task.id} -> ${hash} (${msg})`);
+        try {
+          await repo.markDone(task.id, hash);
+          await repo.appendDigest(`[conductor] committed ${task.id} -> ${hash} (${msg})`);
+        } catch (err) {
+          safeLog("WARN", `conductor: post-commit bookkeeping for ${task.id} failed (ignored): ${String(err)}`);
+        }
         return { claimedTaskId: task.id, committed: true, rateLimited: false };
       }
 
@@ -499,6 +532,42 @@ export function createConductor(deps: ConductorDeps): Conductor {
           evidence: gv.reasons.join("\n"),
         }),
       );
+      return { claimedTaskId: task.id, committed: false, rateLimited: false };
+    } catch (err) {
+      // Defense-in-depth backstop. Every EXPECTED outcome above moves the task
+      // out of active/ and returns; only an UNEXPECTED throw (a git/fs/adapter
+      // fault with no dedicated handler) reaches here. Without this catch such a
+      // throw unwinds past the caller -- which merely logs it (server.ts
+      // orchestrate `.catch`) -- and strands the task in active/ forever: no
+      // escalation, no quarantine, no operator signal, and its file_set silently
+      // locks every future same-file run. That is exactly how a thrown
+      // mergeAfterGate precondition once left a task "stuck in ACTIVE". Fail
+      // closed: surface the task to the operator (escalated/ + an escalation)
+      // and resolve the iteration so the bounded run ends cleanly. Both steps
+      // are wrapped so nothing here can re-throw out of the loop.
+      const detail = err instanceof Error ? err.message : String(err);
+      try {
+        await repo.moveTask(task.id, "active", "escalated");
+      } catch (moveErr) {
+        safeLog("WARN", `conductor: backstop move for ${task.id} failed (ignored): ${String(moveErr)}`);
+      }
+      try {
+        await escalate(
+          buildEscalation(task, {
+            reason: "conductor hit an unexpected error",
+            type: "blocked",
+            what: `Task ${task.id} processing threw before reaching a decision: ${detail}.`,
+            decision: "Investigate the conductor error, fix the underlying cause, then re-queue.",
+            optionA: "Fix the cause and re-queue.",
+            optionB: "Abandon the task.",
+            costOfWrong: "An orphaned task silently locks its file_set and blocks every future same-file run.",
+            evidence: err instanceof Error && err.stack ? err.stack : detail,
+          }),
+        );
+      } catch (escErr) {
+        safeLog("WARN", `conductor: backstop escalate for ${task.id} failed (ignored): ${String(escErr)}`);
+      }
+      safeLog("ERROR", `conductor: unexpected error processing ${task.id} (fail-closed to escalated): ${detail}`);
       return { claimedTaskId: task.id, committed: false, rateLimited: false };
     } finally {
       // Teardown is best-effort cleanup: a throw here must NEVER override the
@@ -545,6 +614,20 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
       iterations++;
       if (opts?.once || (opts?.maxIterations !== undefined && iterations >= opts.maxIterations)) {
+        break;
+      }
+
+      // Drain mode: stop as soon as the queue can't yield further progress --
+      // either nothing is claimable (idle) OR the run hit a rate limit. A
+      // dep-blocked task is not claimable, so it correctly stays pending without
+      // spinning. A rate limit means the API is throttled: rate-limited tasks
+      // refund their attempt (the circuit breaker never advances), so continuing
+      // to retry would just hammer the throttled API and could hold a drain open
+      // to maxSessionHours -- instead we stop and leave the rate-limited/remaining
+      // tasks pending for a follow-up trigger. This keeps a drain BOUNDED while
+      // still clearing the whole claimable pool in one pass (prevents orphaned
+      // PENDING, backlog B).
+      if (opts?.drain && (res.claimedTaskId === null || res.rateLimited)) {
         break;
       }
 

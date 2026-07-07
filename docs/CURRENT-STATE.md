@@ -1,6 +1,6 @@
 # CURRENT STATE — Autodev Harness
 
-> ## ✅ DONE (s30) — onboarding redesign (any-folder + auto git-init/branch + git-not-installed guard) — backend codex-clean + live-proven; UI awaits operator visual verify
+> ## ✅ DONE + MERGED (s30) — onboarding redesign (any-folder + auto git-init/branch + git-not-installed guard) — PR #53, CI green, live-proven
 > Operator-designed (brainstorm→spec→plan→subagent-driven build, Sonnet workers + codex GPT-5.5 gate). Replaces the
 > git-only New Project flow. **Spec** `docs/superpowers/specs/2026-07-07-onboarding-redesign-design.md`; **plan**
 > `docs/superpowers/plans/2026-07-07-onboarding-redesign.md`. Native OS folder dialog was REJECTED for now (browser
@@ -14,10 +14,17 @@
 > CHANGES-REQUIRED (3 Medium + 2 Low) → fixed (`register` surfaces `branch_ensure_failed` instead of swallowing;
 > `initGit` rejects paths INSIDE a work tree; 2 test fixes) → **re-critic CLEAN**. **Backend LIVE-PROVEN via curl**
 > (`/system/git` git 2.49; git-init non-git→autodev/main+2 untracked+empty commit; 409 on re-init & on subdir-inside-worktree;
-> hidden-dir filter; register; **startup ensure switched a project main→autodev/main, not recreated**). **NOT merged yet**
-> — operator to visually verify the New Project UI (serve → :4319 → New Project), then self-merge the batch.
+> hidden-dir filter; register; **startup ensure switched a project main→autodev/main, not recreated**). **MERGED via PR #53**
+> (merge-commit, NOT squash — it also carried the whole s29 shadcn migration, which had only been merged LOCALLY in s29
+> and rode this PR per the s29 handoff). **CI green 4/4** (ubuntu+windows × node 20/22). main tip = `f51d5d9`.
+> **Operator LIVE-RAN a real orchestrate** on `woodev-shipping-plugin-test`: pipeline launched cleanly off `autodev/main`
+> (branch fix CONFIRMED end-to-end), worker wrote the file, but the codex critic returned `broken` (0.62) because the
+> SMOKE INTENT TEXT contained a non-ASCII em-dash — correct gate behavior, not a code bug. Operator hit A(accept) → task
+> went to **quarantine (NOT committed)**: accept has no apply-on-commit machinery (s26 `[escalate/replied-holds-filelock]`),
+> so an escalated smoke never lands a commit. A clean ASCII-only intent would commit. → new FUTURE-BACKLOG item "apply-on-accept".
 > **Still open (operator-flagged in s29, OUT of scope this batch):** (B) orphaned PENDING tasks (enqueue-before-guard;
 > make enqueue+trigger transactional / roll back on preflight fail) and (C) no dedup of a relaunched equivalent intent.
+> Also: 3 corrupt run-manifest json files spam `WARN skipping unreadable/invalid run manifest` in daemon.log (harmless, cleanable).
 >
 > ## ✅ DONE (s29) — shadcn (Base UI) UI migration — COMPLETE (merged to main), UI live-verified by operator
 > Operator wants the whole `ui/` moved to the **default shadcn look on Base UI (zinc)**, screen by screen.

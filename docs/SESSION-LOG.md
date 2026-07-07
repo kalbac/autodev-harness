@@ -33,8 +33,18 @@ dialog deferred to the desktop wrap. Spec + plan written & committed (`docs/supe
   `main`→`autodev/main` (switched to existing, not recreated)**. UI builds; operator to visually verify the New Project
   screen before merge. Env wrinkle: root `build:ui` runs `npm --prefix ui ci` which hit a locked native `lightningcss.node`
   (antivirus/handle) → use `cd ui && npm run build` (or `npm install` to reconcile) — not a code defect.
-- Branch `autodev/s30-onboarding-redesign`, NOT merged yet (awaiting operator UI proof). 1 new gotcha (init-leaves-untracked).
-- **Still open (out of scope):** (B) orphaned PENDING tasks (enqueue-before-guard) and (C) intent dedup.
+- **MERGED via PR #53** (merge-commit, NOT squash — it also carried the whole s29 shadcn migration, which was only merged
+  LOCALLY in s29 and rode this PR per the s29 handoff; squash would have blobbed 2 sessions). **CI green 4/4** (ubuntu+windows
+  × node 20/22). main tip `f51d5d9`. 1 new gotcha (init-leaves-untracked/branch-autoswitch).
+- **Live run-test (operator).** After fixing his 404 (STALE daemon — old process served fresh dist/ui files but old
+  in-memory routing, so `/fs/git-init` 404'd `[build/stale-dist-backend]`; kill+restart fixed it), he ran a real
+  orchestrate: pipeline launched cleanly off `autodev/main` (**branch fix CONFIRMED e2e**), worker wrote the file, but
+  codex critic returned `broken` (0.62) — the SMOKE INTENT TEXT contained a non-ASCII em-dash `—`, flagged as a
+  documentation/encoding contract concern. Correct gate behavior, not a code bug (my test wording). Operator hit A(accept)
+  → task → **quarantine, NOT committed** (accept has no apply-on-commit; s26 `[escalate/replied-holds-filelock]`). An
+  ASCII-only intent would commit cleanly. → FUTURE-BACKLOG "apply-on-accept".
+- **Still open (out of scope):** (B) orphaned PENDING tasks (enqueue-before-guard) and (C) intent dedup. Minor: 3 corrupt
+  run-manifest json spam daemon.log WARNs (harmless).
 
 ---
 

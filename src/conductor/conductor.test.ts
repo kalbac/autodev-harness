@@ -569,6 +569,65 @@ describe("run -- branch preflight", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. Drain mode -- one trigger clears the whole pending pool (backlog B)
+// ---------------------------------------------------------------------------
+
+describe("run -- drain mode", () => {
+  it("drains every claimable task then stops when the queue goes idle", async () => {
+    const tasks = [
+      makeTask({ id: "d1", file_set: ["a.ts"], path: "queue/pending/d1.md" }),
+      makeTask({ id: "d2", file_set: ["b.ts"], path: "queue/pending/d2.md" }),
+      makeTask({ id: "d3", file_set: ["c.ts"], path: "queue/pending/d3.md" }),
+    ];
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([...tasks], repo);
+
+    const deps = buildDeps({ repo, scheduler });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    // All three claimed + committed to done; a 4th claim returned null -> stop.
+    expect(claimCalls.count).toBe(4);
+    expect(state.locations.get("d1")).toBe("done");
+    expect(state.locations.get("d2")).toBe("done");
+    expect(state.locations.get("d3")).toBe("done");
+  });
+
+  it("stops after a single empty claim when the queue is already idle (no spin)", async () => {
+    const { repo } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([], repo);
+
+    const deps = buildDeps({ repo, scheduler });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    expect(claimCalls.count).toBe(1); // one claim -> null -> stop
+  });
+
+  it("stops draining on a rate limit instead of hammering a throttled API to the session cap", async () => {
+    const task = makeTask({ id: "d1", file_set: ["a.ts"], path: "queue/pending/d1.md" });
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [{ result: { status: "RATE_LIMITED", model: "opus", rateLimited: true, timedOut: false, exitCode: 1 } }],
+      repo,
+    );
+
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    // The rate-limited task is refunded + returned to pending, and the drain
+    // STOPS rather than looping the throttled API up to maxSessionHours.
+    expect(state.locations.get("d1")).toBe("pending");
+    expect(claimCalls.count).toBe(1); // claimed once -> rate-limited -> break
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. Dirty-file fence -- stray + boundary-safety ignore
 // ---------------------------------------------------------------------------
 
@@ -708,6 +767,93 @@ describe("runIteration -- decision routing", () => {
     expect(state.doneMarks.has(task.id)).toBe(false);
     expect(escalateCalls.length).toBe(1);
     expect(escalateCalls[0]!.type).toBe("blocked");
+  });
+
+  it("merge precondition failure (ok:false, not a conflict) after COMMIT gate -> escalated, no done, accurate reason", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // mergeAfterGate refused a precondition (e.g. dirty main tree) -- NOT a
+    // conflict. The escalation must reflect the real precondition, never a
+    // phantom "merge conflict".
+    const { worktree } = makeWorktree({
+      mergeResult: { ok: false, conflict: false, reason: "main working tree is not clean; refusing to merge" },
+    });
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, worktree, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(state.doneMarks.has(task.id)).toBe(false);
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    const esc = escalateCalls[0]!;
+    expect(`${esc.reason} ${esc.what} ${esc.evidence}`).toMatch(/not clean/i);
+    expect(esc.reason.toLowerCase()).not.toContain("conflict");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unexpected-error backstop: an unhandled throw must never orphan a task in
+// active/ (the live failure mode when mergeAfterGate threw on a dirty tree).
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- unexpected-error backstop", () => {
+  it("fails closed to escalated (not orphaned in active) when an unhandled error is thrown mid-iteration", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktree, spy: wtSpy } = makeWorktree();
+    // A worktree-git whose commit throws an UNEXPECTED error with no dedicated
+    // handler in the conductor. Before the backstop this unwound out of
+    // runIteration and stranded the task in active/, silently locking its
+    // file_set against every future same-file run.
+    const worktreeGit = (wt: Worktree): Git => ({
+      ...makeWorktreeGitFactory().worktreeGit(wt),
+      async commit(): Promise<string> {
+        throw new Error("git commit exploded");
+      },
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, worktree, worktreeGit });
+    const conductor = createConductor(deps);
+
+    // Must RESOLVE (not reject) so the bounded run ends gracefully.
+    const res = await conductor.runIteration();
+
+    expect(res).toEqual({ claimedTaskId: task.id, committed: false, rateLimited: false });
+    expect(state.locations.get(task.id)).toBe("escalated"); // NOT still "active"
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    expect(wtSpy.teardown.length).toBe(1); // finally still tore the worktree down
+  });
+
+  it("post-commit bookkeeping failure does not undo the commit or trip the backstop", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit } = makeWorktreeGitFactory();
+    // markDone throws AFTER the decisive move to done/ (commit + merge already
+    // landed). This must NOT reach the backstop and get re-escalated into the
+    // contradictory "done/ + unexpected-error escalation" state (codex Sev 1).
+    repo.markDone = async (): Promise<void> => {
+      throw new Error("markDone exploded");
+    };
+
+    const deps = buildDeps({ repo, scheduler, escalate, worktreeGit });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res).toEqual({ claimedTaskId: task.id, committed: true, rateLimited: false });
+    expect(state.locations.get(task.id)).toBe("done"); // NOT re-moved to escalated
+    expect(escalateCalls.length).toBe(0); // backstop not tripped
   });
 });
 

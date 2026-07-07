@@ -19,7 +19,7 @@ function makeSpec(id: string, overrides: Partial<TaskSpec> = {}): TaskSpec {
 
 interface FakeCapsRecorder {
   enqueueCalls: TaskSpec[];
-  triggerCalls: Array<{ once?: boolean; maxIterations?: number } | undefined>;
+  triggerCalls: Array<{ once?: boolean; maxIterations?: number; drain?: boolean } | undefined>;
   reportCalls: Array<{ level: string; message: string }>;
   recordRunCalls: Array<{ intent: string; taskIds: string[] }>;
 }
@@ -80,7 +80,7 @@ function makeFakeAdapter(specs: TaskSpec[]): OrchestratorAdapter {
 const noopLog: Logger = () => {};
 
 describe("createOrchestrator / handleIntent", () => {
-  it("happy path: 3 specs -> 3 enqueued -> trigger called with maxIterations 3 -> result", async () => {
+  it("happy path: 3 specs -> 3 enqueued -> trigger called in drain mode -> result", async () => {
     const specs = [makeSpec("s1-t1"), makeSpec("s1-t2"), makeSpec("s1-t3")];
     const { caps, recorder } = makeFakeCaps();
     const adapter = makeFakeAdapter(specs);
@@ -89,7 +89,7 @@ describe("createOrchestrator / handleIntent", () => {
     const result = await orchestrator.handleIntent("build the thing");
 
     expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["s1-t1", "s1-t2", "s1-t3"]);
-    expect(recorder.triggerCalls).toEqual([{ maxIterations: 3 }]);
+    expect(recorder.triggerCalls).toEqual([{ drain: true }]);
     expect(result.intent).toBe("build the thing");
     expect(result.enqueued).toEqual([
       { id: "s1-t1", path: "queue/pending/s1-t1.md" },
