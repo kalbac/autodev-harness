@@ -56,6 +56,14 @@ heavier package. Polish the product surface first; wrap it once it's real.
 - **Anti-drift critic** — periodic "intent vs diff" check (runbook §7). High value,
   but needs the basic critic gate working first.
 - **Escalation → Telegram** — reuse autodev-loop's structured escalation format.
+- **Apply-on-accept for escalations** (operator-flagged, s30 live run) — accepting an escalation
+  (`POST /escalations/:id/reply` choice `A`) currently only moves the task to `quarantine` and releases
+  the file-lock; it does **NOT** commit the worker's change (there is no apply-on-accept machinery — see
+  gotcha `[escalate/replied-holds-filelock]`). So a run that escalates NEVER lands a commit even when the
+  operator wants the change. This surprised the operator (he expected accept → commit). Design an
+  apply-on-accept path: on `A`, optionally commit the worktree diff to the loop branch (with the same
+  gate-bypass semantics an operator override implies) so accept actually merges the reviewed change,
+  rather than quarantining it. Needs care re: dependents' `depends_on`/`doneIds` (why A→quarantine today).
 
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 
