@@ -17,6 +17,7 @@ import { createScheduler } from "../scheduler/scheduler.js";
 import { createWorktreeManager, type Worktree } from "../worktree/worktree.js";
 import { createRouter } from "../router/router.js";
 import { createGit, mainTreeStatus } from "../util/git.js";
+import { applyOnAccept as runApplyOnAccept, type ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
 import { runNative } from "../util/native.js";
 import { ClaudeWorkerAdapter } from "../worker/claude-adapter.js";
 import type { WorkerAdapter } from "../worker/adapter.js";
@@ -76,6 +77,11 @@ export interface ProjectRoot {
    *  `buildOrchestrator` rejects) must still let `run` work -- the pre-extraction
    *  behavior, when only serve/orchestrate constructed the orchestrator. */
   orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> };
+  /** apply-on-accept (operator gate-override): replay an escalated task's persisted
+   *  `diff.patch` onto the loop branch and commit it. Consumed by the reply endpoint's
+   *  choice "C". Fails CLOSED with a typed reason (missing diff / dirty tree / bad
+   *  branch / apply conflict) so the caller keeps the task escalated. */
+  applyOnAccept(taskId: string): Promise<ApplyOnAcceptResult>;
   log: Logger;
   /** Absolute `<repoRoot>/<stateDir>` — what the API server needs. */
   stateDirAbs: string;
@@ -331,6 +337,18 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     repo,
     conductor,
     orchestrator: { handleIntent: (intent) => getOrchestrator().handleIntent(intent) },
+    applyOnAccept: (taskId) =>
+      runApplyOnAccept({
+        taskId,
+        repoRoot,
+        cfg,
+        git,
+        mainTreeStatus: () => mainTreeStatus(repoRoot),
+        readPatch: () => repo.readRuntimeFile(taskId, "diff.patch"),
+        readLoopBranch: async () => (await repo.readRuntimeFile(taskId, "loop-branch"))?.trim() || null,
+        readTask: async () => (await repo.listTasks("escalated")).find((t) => t.id === taskId) ?? null,
+        log,
+      }),
     log,
     stateDirAbs: join(repoRoot, cfg.stateDir),
     plannerConfigured,

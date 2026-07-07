@@ -405,6 +405,9 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // DIFF + CRITIC
         const diff = await worktree.diff(wt, task.file_set);
         await repo.writeRuntimeFile(task.id, "diff.patch", diff);
+        // Pin the loop branch this diff was captured on, so a later apply-on-accept
+        // (operator override) can refuse to replay it onto a DIFFERENT branch.
+        await repo.writeRuntimeFile(task.id, "loop-branch", loopBranch);
         const cr = await critic.run({ diff, runtimeDir, workerReportPath });
 
         if (cr.usage) {

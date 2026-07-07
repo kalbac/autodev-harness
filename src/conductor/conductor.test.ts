@@ -1488,6 +1488,20 @@ describe("runIteration -- token-usage persistence", () => {
     expect(state.locations.get(task.id)).toBe("done");
     expect(state.runtimeFiles.get(task.id)?.has("token-usage.json")).toBe(false);
   });
+
+  it("persists loop-branch alongside diff.patch (pins the branch for a later apply-on-accept)", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // Default makeGit branch is "autodev/loop-main"; loopBranch is captured from it.
+    const deps = buildDeps({ repo, scheduler, git: makeGit("autodev/loop-main").git });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.get("diff.patch")).toBeDefined();
+    expect(state.runtimeFiles.get(task.id)?.get("loop-branch")).toBe("autodev/loop-main");
+  });
 });
 
 // ---------------------------------------------------------------------------
