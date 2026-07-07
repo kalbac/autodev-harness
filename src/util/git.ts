@@ -7,6 +7,12 @@ export interface MergeResult {
 
 export interface Git {
   currentBranch(): Promise<string>;
+  init(): Promise<void>;
+  listBranches(): Promise<string[]>;
+  checkoutBranch(name: string): Promise<void>;
+  createBranch(name: string): Promise<void>;
+  commitEmpty(message: string): Promise<string>;
+  countUntracked(): Promise<number>;
   changedFiles(scope?: string[]): Promise<string[]>;
   diffText(scope?: string[]): Promise<string>;
   add(paths: string[]): Promise<void>;
@@ -31,6 +37,57 @@ export function createGit(repoRoot: string): Git {
       const r = await run(["rev-parse", "--abbrev-ref", "HEAD"]);
       if (r.exitCode !== 0) fail("rev-parse --abbrev-ref HEAD", [], r);
       return r.stdout.trim();
+    },
+
+    async init(): Promise<void> {
+      const r = await run(["init"]);
+      if (r.exitCode !== 0) fail("init", [], r);
+    },
+
+    async listBranches(): Promise<string[]> {
+      const r = await run(["branch", "--format=%(refname:short)"]);
+      if (r.exitCode !== 0) fail("branch --format", [], r);
+      return r.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    },
+
+    async checkoutBranch(name: string): Promise<void> {
+      const r = await run(["checkout", name]);
+      if (r.exitCode !== 0) fail("checkout", [name], r);
+    },
+
+    async createBranch(name: string): Promise<void> {
+      const r = await run(["checkout", "-b", name]);
+      if (r.exitCode !== 0) fail("checkout -b", [name], r);
+    },
+
+    async commitEmpty(message: string): Promise<string> {
+      // Baked identity so the bootstrap commit never fails on a machine with no
+      // global user.email/user.name. Used ONLY for this empty init commit — the
+      // operator's real commits go through their own git config elsewhere.
+      const args = [
+        "-c",
+        "user.name=Autodev Harness",
+        "-c",
+        "user.email=autodev@harness.local",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+      ];
+      const r = await run(args);
+      if (r.exitCode !== 0) fail("commit --allow-empty", args, r);
+      const h = await run(["rev-parse", "HEAD"]);
+      if (h.exitCode !== 0) fail("rev-parse HEAD", [], h);
+      return h.stdout.trim();
+    },
+
+    async countUntracked(): Promise<number> {
+      const r = await run(["status", "--porcelain"]);
+      if (r.exitCode !== 0) fail("status --porcelain", [], r);
+      return r.stdout.split("\n").filter((l) => l.startsWith("??")).length;
     },
 
     async changedFiles(scope?: string[]): Promise<string[]> {
