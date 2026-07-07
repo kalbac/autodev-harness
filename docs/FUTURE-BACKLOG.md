@@ -64,6 +64,16 @@ heavier package. Polish the product surface first; wrap it once it's real.
   apply-on-accept path: on `A`, optionally commit the worktree diff to the loop branch (with the same
   gate-bypass semantics an operator override implies) so accept actually merges the reviewed change,
   rather than quarantining it. Needs care re: dependents' `depends_on`/`doneIds` (why A→quarantine today).
+- **Onboarding: git-exclude tooling-churn dirs by default** (operator ask, s31). Background tooling
+  auto-rewrites TRACKED files and perma-dirties the tree, so `mergeAfterGate` refuses every merge and no
+  task reaches DONE — hit live with `.serena/project.yml` (gotcha `[env/serena-churn-blocks-merge]`), same
+  class as `.autodev` churn. When the New Project flow scaffolds `.autodev`, it should also add `.serena/`
+  (and `.autodev/`) to the project's `.git/info/exclude` (or a `.gitignore`), and surface a "main tree is
+  dirty" warning before the first run. Consider a preflight that lists what's dirtying the tree.
+- **Dedup of a relaunched equivalent intent (backlog C, operator-flagged s29)** — relaunching the same
+  intent enqueues a near-duplicate task (no guard). Add a skip/warn when an equivalent task is already
+  pending/active (heuristic: overlapping `file_set` + maybe title/goal). NB: **backlog B (orphaned PENDING)
+  is now CLOSED** — s31 `9e3157d` drain mode; C remains open.
 
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 

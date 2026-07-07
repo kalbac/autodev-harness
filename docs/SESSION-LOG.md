@@ -4,6 +4,46 @@
 
 ---
 
+## s31 — 2026-07-07 — Three stuck-task / runs-UI bug fixes (PR #54) + harness PROVEN end-to-end (first green DONE)
+
+**Trigger:** operator's live SMOKE run "stuck in ACTIVE ~30 min", not escalating/quarantining. Systematic-debugging.
+**Bug 1 (root cause of the report):** gate said COMMIT, worker committed to the worktree branch, but `mergeAfterGate`
+refused the merge-back into `autodev/main` because the test repo's MAIN tree was dirty — and it **threw** on that
+precondition instead of returning `{ok:false}`, so the conductor's graceful `if(!mr.ok)` escalation was bypassed, the
+throw unwound through `finally` (teardown ran → no daemon children), and the API orchestrate handler only logged it →
+task **orphaned in `active/`** forever, `file_set` silently locking future runs. Fix `ec8394c`: `mergeAfterGate` returns
+`{ok:false,reason}` on the dirty-tree + failed-checkout preconditions; conductor escalates with the accurate cause
+(conflict vs precondition); **defense-in-depth backstop** catches ANY unhandled throw in `runIteration` → `escalated/`
+(resolve-not-reject); post-commit `markDone`/`appendDigest` made best-effort. codex CHANGES-REQUIRED (Sev-1: a throw
+after `moveTask→done` would mis-escalate a committed task) → fixed → re-critic CLEAN. Live-proven.
+**Bug 2 (operator found next — "stuck in PENDING"):** relaunching left a task in PENDING with nothing consuming it =
+backlog B. Root cause: orchestrate triggers a bounded run sized to its batch (`maxIterations=specs.length`) but
+`claimNextTask` claims from the GLOBAL pending pool → a pre-existing pending task (my cleanup residue) ate the single
+iteration and the batch's own task stranded; `serve` has no continuous drain. Fix `9e3157d`: `drain` run mode (stop on
+idle OR rate-limit); orchestrator triggers `{drain:true}` → one launch clears the whole pool. codex CHANGES-REQUIRED
+(persistent-429 could hold the single-flight lock to maxSessionHours) → drain also stops on rate-limit → re-critic
+CLEAN. Live-proven: 2 pending tasks BOTH drained. **Backlog B CLOSED.**
+**"0 in DONE, everything escalates" (operator pushed hard):** proved the harness had never landed a DONE. Not a code
+bug — three stacked blockers: (a) test repo main tree perma-dirty (42 files); (b) **`.serena/project.yml` is TRACKED and
+Serena auto-rewrites it → re-dirties the tree mid-run** → merge refused (new gotcha); (c) my proof/smoke-named intents
+tripped the critic's fabricated-proof heuristic (correct). Cleaned tree (`reset --hard`+`clean`; removed Windows reserved
+`nul` via `\\?\` long-path; `--skip-worktree` on tracked `.serena`) + a LEGITIMATE doc intent → **worker → critic clean →
+gate COMMIT → merge → DONE**, real commit `a7b9f7b` on `autodev/main`. First end-to-end green DONE.
+**Bug 3 (operator found — HomeView "No runs yet" despite a DONE):** `GET /runs` returned `[]`; every manifest "skipped
+as unreadable/invalid". Root cause: run ids keep `.` from the intent slug (`slugifyIntent`/`isPathSafeId` allow it) but
+the read side (`isRunManifest` + `/runs/:id[/usage]`+PATCH) validated with the stricter dot-free `safeIdSegment` → all
+filename-derived runs dropped. Fix `a1c81d2`: reuse `isPathSafeId` as the run-id read validator (`safeRunId`); task/
+escalation ids stay strict; traversal-safe. codex CLEAN. Live-verified `/runs` returns 8 (was 0).
+**Merge:** PR #54 (merge-commit `3a0c641`, CI 4/4), all 3 commits preserved, main resynced. 798 tests / 3 skip.
+**New gotchas (2, count 44→46):** `[env/serena-churn-blocks-merge]`, `[api/run-id-dot-validation-mismatch]`.
+**Backlog captured:** onboarding should git-exclude `.serena/`+`.autodev/` by default (operator ask).
+**Process notes:** a background CI poller using `jq` silently spun forever (jq not on this Git-Bash) → use `gh pr checks`
+text parsing. The auto-mode classifier blocked `gh pr merge` until the operator's explicit in-session "домержить" (same
+mechanical gate as s24). Test repo `woodev-shipping-plugin-test` is fully disposable (operator: "do whatever").
+**Next session = PIVOT:** study `github.com/msitarzewski/agency-agents` (operator's "competitor") — see `next-session-promt.md`.
+
+---
+
 ## s30 — 2026-07-07 — Onboarding redesign (any-folder + auto git-init/branch + git-not-installed) — brainstorm → spec → plan → subagent build
 
 **Trigger:** operator flagged the New Project flow: it only lets you pick folders that are already git repos (the browser

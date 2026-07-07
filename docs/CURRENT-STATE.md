@@ -1,5 +1,38 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ DONE + MERGED (s31) — three stuck-task / runs-UI bug fixes + harness PROVEN end-to-end (green DONE)
+> Started as a debug of a live SMOKE run "stuck in ACTIVE ~30 min" (no escalation/quarantine). Root-caused + fixed
+> **three independent bugs**, all TDD + codex-GPT-5.5-gated + live-proven, merged as **PR #54 (merge-commit `3a0c641`,
+> CI 4/4 green)**. **798 tests / 3 skip**, root+ui typecheck green.
+> 1. **`ec8394c` merge-orphan (stuck-in-ACTIVE):** a gate-approved COMMIT whose worktree merge-back was refused (dirty
+>    main tree / failed checkout) hung forever — `worktree.mergeAfterGate` THREW on those preconditions instead of
+>    returning `{ok:false}`, bypassing the conductor's graceful `if(!mr.ok)` escalation → orphaned in `active/`, silently
+>    locking its `file_set`. Fix: `mergeAfterGate` returns `{ok:false,reason}`; conductor escalates with the accurate
+>    cause (conflict vs precondition); **defense-in-depth backstop** — a `catch` in `runIteration` fails ANY unhandled
+>    throw closed to `escalated/` (never orphan; resolve-not-reject). Post-commit bookkeeping made best-effort. codex
+>    CHANGES-REQUIRED (Sev-1 backstop-after-done) → re-critic CLEAN. Live-proven: same task now escalates `blocked`.
+> 2. **`9e3157d` drain (stuck-in-PENDING = backlog B):** orchestrate enqueues to the GLOBAL pool but triggered a run
+>    sized to its OWN batch (`maxIterations=specs.length`); the scheduler claims globally, so a pre-existing pending task
+>    ate the batch's iterations and the batch's own task stranded with nothing to re-trigger it. Fix: `drain` run mode —
+>    process until the queue is idle OR rate-limited, so one trigger clears the whole pool. codex CHANGES-REQUIRED
+>    (rate-limit hang) → re-critic CLEAN. Live-proven: 2 pending tasks BOTH drained. **Backlog B is now CLOSED.**
+> 3. **`a1c81d2` runs-id-dot ("No runs yet"):** run ids keep `.` from the intent slug (`slugifyIntent`/`isPathSafeId`
+>    allow it) but the READ side (`isRunManifest` + `/runs/:id[/usage]`+PATCH) validated with the stricter dot-free
+>    `safeIdSegment` → every filename-derived run dropped → HomeView "No runs yet". Fix: reuse `isPathSafeId` as the
+>    read validator (`safeRunId`); task/escalation ids stay strict. codex CLEAN. Live-verified: `/runs` returns 8 (was 0).
+> **HARNESS PROVEN END-TO-END (first real green DONE):** the operator pushed hard on "0 in DONE, everything escalates."
+> Root cause was NOT a harness bug but three blockers stacked: (a) the test repo's main tree was perma-dirty (42 files);
+> (b) **`.serena/project.yml` is TRACKED and Serena auto-rewrites it → re-dirties the tree mid-run** → `mergeAfterGate`
+> refuses (new gotcha `[env/serena-churn-blocks-merge]`); (c) my "proof/smoke"-shaped test intents tripped the critic's
+> fabricated-proof heuristic (correct gate behavior). After cleaning the tree (`reset --hard`+`clean`, removed a Windows
+> `nul` via `\\?\`, `--skip-worktree` on `.serena`) + a LEGITIMATE intent → **worker → critic clean → gate COMMIT →
+> merge → DONE**, real commit `a7b9f7b` on `autodev/main`. New gotchas (2): `[env/serena-churn-blocks-merge]`,
+> `[api/run-id-dot-validation-mismatch]` (count 44→46). **Operator ask captured:** onboarding should git-exclude
+> `.serena/`+`.autodev/` by default (FUTURE-BACKLOG). Still open: (C) no-dedup of a relaunched equivalent intent;
+> apply-on-accept for escalations (s30). **NEXT SESSION IS A PIVOT — not the autodev plan:** study the "competitor"
+> repo `github.com/msitarzewski/agency-agents` against a 5-way frame (redundant / adopt-alongside / new reference /
+> not-for-us / other). See `next-session-promt.md`.
+>
 > ## ✅ DONE + MERGED (s30) — onboarding redesign (any-folder + auto git-init/branch + git-not-installed guard) — PR #53, CI green, live-proven
 > Operator-designed (brainstorm→spec→plan→subagent-driven build, Sonnet workers + codex GPT-5.5 gate). Replaces the
 > git-only New Project flow. **Spec** `docs/superpowers/specs/2026-07-07-onboarding-redesign-design.md`; **plan**
