@@ -18,7 +18,7 @@ const ALL_QUEUE_STATES: QueueState[] = ["pending", "active", "done", "escalated"
  */
 export interface OrchestratorCapabilities {
   enqueue(spec: TaskSpec): Promise<{ id: string; path: string }>;
-  trigger(opts?: { once?: boolean; maxIterations?: number }): Promise<unknown>; // impl deferred (fork B/C) — interface only
+  trigger(opts?: { once?: boolean; maxIterations?: number; drain?: boolean }): Promise<unknown>;
   read: {
     queues(): Promise<Record<QueueState, Task[]>>;
     runtimeReport(id: string, name: string): Promise<string | null>;

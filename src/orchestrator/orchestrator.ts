@@ -91,12 +91,16 @@ function validateBatch(specs: TaskSpec[], existingIds: string[]): string[] {
  *    batch's task ids (report family, see capabilities.ts — a convenience
  *    index for the dashboard, NOT authoritative state). It never throws, so
  *    a manifest failure can never fail the run; a `null` result is ignored.
- * 7. Trigger a BOUNDED run (`maxIterations` = the number of tasks just
- *    enqueued) so the batch actually gets processed, while `handleIntent`
- *    itself still terminates. Any task that needs more rounds than the
- *    bound allows (retries, escalations) simply stays in the blackboard for
- *    a follow-up `trigger()` call — this function makes no promise that
- *    every enqueued task reaches `done` before returning.
+ * 7. Trigger a DRAIN run (`{drain:true}`) so the conductor processes the whole
+ *    pending pool until nothing is claimable, then stops — NOT a batch-sized
+ *    bound. A batch-sized bound (`maxIterations = specs.length`) could spend its
+ *    iterations on OTHER pre-existing pending tasks (the scheduler claims from
+ *    the global pool), stranding this batch's own tasks in PENDING with nothing
+ *    to consume them (backlog B: orphaned PENDING). Draining guarantees every
+ *    currently-claimable task is attempted. Tasks that are legitimately blocked
+ *    (unmet `depends_on`, or re-queued after an escalation reply) are not
+ *    claimable and correctly wait for a follow-up trigger; `handleIntent` still
+ *    makes no promise that every enqueued task reaches `done` before returning.
  * 8. Report one summary digest line.
  */
 export function createOrchestrator(deps: CreateOrchestratorDeps): {
@@ -160,9 +164,8 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
       // here, and a `null` result must not affect the rest of the flow.
       const runRecord = await caps.recordRun({ intent, taskIds: enqueued.map((e) => e.id) });
 
-      const maxIterations = Math.max(1, specs.length);
-      log("INFO", `orchestrator: triggering a bounded run (maxIterations=${maxIterations})`);
-      const triggerOutcome = await caps.trigger({ maxIterations });
+      log("INFO", `orchestrator: triggering a drain run over the pending pool`);
+      const triggerOutcome = await caps.trigger({ drain: true });
 
       await caps.report({
         level: "INFO",

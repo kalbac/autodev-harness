@@ -53,6 +53,14 @@ export interface ConductorDeps {
 export interface ConductorRunOptions {
   once?: boolean;
   maxIterations?: number;
+  /** Drain mode: keep processing while the queue yields claimable work and stop
+   * the moment an iteration finds nothing to claim OR hits a rate limit. Used by
+   * the orchestrator's trigger so ONE launch clears the whole pending pool (its
+   * own batch + any pre-existing leftovers) instead of a fixed batch-count -- a
+   * batch-sized bound can spend its iterations on other pending tasks and strand
+   * its own (backlog B: orphaned PENDING). Stopping on rate-limit keeps the drain
+   * bounded (a persistent 429 can't hold it open to maxSessionHours). */
+  drain?: boolean;
 }
 
 export interface IterationResult {
@@ -606,6 +614,20 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
       iterations++;
       if (opts?.once || (opts?.maxIterations !== undefined && iterations >= opts.maxIterations)) {
+        break;
+      }
+
+      // Drain mode: stop as soon as the queue can't yield further progress --
+      // either nothing is claimable (idle) OR the run hit a rate limit. A
+      // dep-blocked task is not claimable, so it correctly stays pending without
+      // spinning. A rate limit means the API is throttled: rate-limited tasks
+      // refund their attempt (the circuit breaker never advances), so continuing
+      // to retry would just hammer the throttled API and could hold a drain open
+      // to maxSessionHours -- instead we stop and leave the rate-limited/remaining
+      // tasks pending for a follow-up trigger. This keeps a drain BOUNDED while
+      // still clearing the whole claimable pool in one pass (prevents orphaned
+      // PENDING, backlog B).
+      if (opts?.drain && (res.claimedTaskId === null || res.rateLimited)) {
         break;
       }
 

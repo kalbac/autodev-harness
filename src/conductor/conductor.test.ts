@@ -569,6 +569,65 @@ describe("run -- branch preflight", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. Drain mode -- one trigger clears the whole pending pool (backlog B)
+// ---------------------------------------------------------------------------
+
+describe("run -- drain mode", () => {
+  it("drains every claimable task then stops when the queue goes idle", async () => {
+    const tasks = [
+      makeTask({ id: "d1", file_set: ["a.ts"], path: "queue/pending/d1.md" }),
+      makeTask({ id: "d2", file_set: ["b.ts"], path: "queue/pending/d2.md" }),
+      makeTask({ id: "d3", file_set: ["c.ts"], path: "queue/pending/d3.md" }),
+    ];
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([...tasks], repo);
+
+    const deps = buildDeps({ repo, scheduler });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    // All three claimed + committed to done; a 4th claim returned null -> stop.
+    expect(claimCalls.count).toBe(4);
+    expect(state.locations.get("d1")).toBe("done");
+    expect(state.locations.get("d2")).toBe("done");
+    expect(state.locations.get("d3")).toBe("done");
+  });
+
+  it("stops after a single empty claim when the queue is already idle (no spin)", async () => {
+    const { repo } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([], repo);
+
+    const deps = buildDeps({ repo, scheduler });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    expect(claimCalls.count).toBe(1); // one claim -> null -> stop
+  });
+
+  it("stops draining on a rate limit instead of hammering a throttled API to the session cap", async () => {
+    const task = makeTask({ id: "d1", file_set: ["a.ts"], path: "queue/pending/d1.md" });
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [{ result: { status: "RATE_LIMITED", model: "opus", rateLimited: true, timedOut: false, exitCode: 1 } }],
+      repo,
+    );
+
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true });
+
+    // The rate-limited task is refunded + returned to pending, and the drain
+    // STOPS rather than looping the throttled API up to maxSessionHours.
+    expect(state.locations.get("d1")).toBe("pending");
+    expect(claimCalls.count).toBe(1); // claimed once -> rate-limited -> break
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. Dirty-file fence -- stray + boundary-safety ignore
 // ---------------------------------------------------------------------------
 
