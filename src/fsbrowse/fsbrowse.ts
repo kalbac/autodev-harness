@@ -47,6 +47,20 @@ async function defaultListRoots(): Promise<string[]> {
   return roots;
 }
 
+/** Curated win32 system dir names that are not dot/$ prefixed. */
+const WIN32_SYSTEM_DIRS = new Set(["System Volume Information", "$Recycle.Bin", "Config.Msi", "Recovery"]);
+
+/** Protection-from-mistakes (NOT a security boundary): dot-dirs everywhere;
+ *  `$`-prefixed + curated system dirs on win32. */
+function isHiddenEntry(name: string, platform: NodeJS.Platform): boolean {
+  if (name.startsWith(".")) return true;
+  if (platform === "win32") {
+    if (name.startsWith("$")) return true;
+    if (WIN32_SYSTEM_DIRS.has(name)) return true;
+  }
+  return false;
+}
+
 async function realpathSafe(p: string): Promise<string | null> {
   try {
     return await realpath(p);
@@ -117,6 +131,7 @@ export async function listDirs(rawPath: string | undefined, deps: FsBrowseDeps):
 
   const entries: FsDirEntry[] = [];
   for (const d of dirents) {
+    if (isHiddenEntry(d.name, platform)) continue;
     try {
       if (d.isDirectory()) {
         entries.push(await annotate(d.name, join(canonical, d.name), false, deps));
