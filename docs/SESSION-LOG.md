@@ -4,6 +4,40 @@
 
 ---
 
+## s30 — 2026-07-07 — Onboarding redesign (any-folder + auto git-init/branch + git-not-installed) — brainstorm → spec → plan → subagent build
+
+**Trigger:** operator flagged the New Project flow: it only lets you pick folders that are already git repos (the browser
+scans for `.git`, non-git folders unpickable). He wanted a standard OS folder dialog + auto `git init` + a git-not-installed
+notice. **Brainstormed:** a browser web UI CANNOT get a native folder path (sandbox); a daemon-spawned native dialog is
+fragile on Windows and still needs the in-browser fallback → operator agreed to KEEP the in-browser browser and instead
+drop the git-only filter, add an inline **init git**, hide system/hidden dirs, and add a git-not-installed banner. Native
+dialog deferred to the desktop wrap. Spec + plan written & committed (`docs/superpowers/{specs,plans}/2026-07-07-onboarding-redesign*`).
+
+- **Execution:** subagent-driven, Sonnet 5 workers in coherent units (util/git verbs+ensure-branch → fsbrowse+detect-git →
+  admin+server+index) → **codex GPT-5.5 gate over the whole backend** → UI (review-only). 11 tasks, TDD.
+- **The s30 Task 1 branch-guard bug is FIXED here** as the shared `ensureAutodevBranch`/`initAutodevRepo`
+  (`src/util/ensure-branch.ts`): put a repo on `^autodev/` (no-op if matching / switch to existing / else create the fixed
+  `autodev/main`). Wired on register AND a defensive best-effort daemon-startup pass over every registered project.
+- **New:** `Git` verbs (`init`/`listBranches`/`checkout`/`createBranch`/`commitEmpty`/`countUntracked`); `admin.initGit`
+  (`git init` → empty bootstrap commit → autodev branch; existing files stay UNTRACKED, returns `untrackedCount`); dropped
+  the `not_a_git_repo` register gate; `POST /fs/git-init` + `GET /system/git`; fsbrowse hides dot/`$`/system dirs;
+  `detectGit` PATH probe. UI: any-folder select + inline init git + git-not-installed banner ("Install it now" → git-scm.com).
+- **codex gate:** CHANGES-REQUIRED — 3 Medium + 2 Low. Fixed: (M1) `register` now SURFACES a branch-ensure failure as a
+  typed `branch_ensure_failed` (no swallow, no registry append) instead of persisting a broken registration — also resolves
+  (M2) the unborn-HEAD case (`git rev-parse --abbrev-ref HEAD` exits 128 on a zero-commit repo → `currentBranch` throws →
+  surfaced); (M3) `initGit` rejects a path INSIDE an existing work tree (`git rev-parse --is-inside-work-tree`), not just a
+  direct `.git`; (L) 2 test-quality fixes. **Re-critic: CLEAN.**
+- **Verification:** 790 tests / 3 skip, root+ui typecheck+build green. **Backend LIVE-PROVEN via curl** on a scratch
+  registry: `/system/git` (git 2.49), git-init a non-git folder → `autodev/main` + 2 untracked + empty commit, 409 on
+  re-init and on a subdir-inside-worktree, hidden-dir filter, register, and **startup ensure switched a project
+  `main`→`autodev/main` (switched to existing, not recreated)**. UI builds; operator to visually verify the New Project
+  screen before merge. Env wrinkle: root `build:ui` runs `npm --prefix ui ci` which hit a locked native `lightningcss.node`
+  (antivirus/handle) → use `cd ui && npm run build` (or `npm install` to reconcile) — not a code defect.
+- Branch `autodev/s30-onboarding-redesign`, NOT merged yet (awaiting operator UI proof). 1 new gotcha (init-leaves-untracked).
+- **Still open (out of scope):** (B) orphaned PENDING tasks (enqueue-before-guard) and (C) intent dedup.
+
+---
+
 ## s29 — 2026-07-06 — Full UI migration to shadcn (Base UI, zinc) — brainstorm → spec → plan → build (autonomous)
 
 **Trigger:** operator noticed our UI only used shadcn's *foundation idiom* (Tailwind+CVA+cn+lucide), not shadcn
