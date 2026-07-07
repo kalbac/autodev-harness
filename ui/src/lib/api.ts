@@ -174,6 +174,18 @@ export interface RegisterProjectInput {
   config?: unknown;
 }
 
+/** Mirrors `GET /system/git` (s30) — daemon-global, is `git` installed. */
+export interface SystemGitStatus {
+  installed: boolean;
+  version?: string;
+}
+
+/** Mirrors the success body of `POST /fs/git-init` (s30). */
+export interface GitInitResponse {
+  branch: string;
+  untrackedCount: number;
+}
+
 /** One entry in a supported agent's static model catalog (M2 PATH-scan detect). */
 export interface AgentModelOption {
   id: string;
@@ -305,6 +317,17 @@ export const api = {
   /** Daemon-global folder browser (M3). No `path` → drive roots / `/`. */
   getFsDirs: (path?: string) =>
     req<FsDirsResponse>(`/fs/dirs${path !== undefined ? `?path=${encodeURIComponent(path)}` : ""}`),
+
+  /** Daemon-global: is git installed. 404s when the daemon has no admin port. */
+  getSystemGit: () => req<SystemGitStatus>("/system/git"),
+
+  /** `git init` + `^autodev/` branch for a non-git folder. 200 {branch,untrackedCount} / 409 / 400. */
+  gitInit: (path: string) =>
+    req<GitInitResponse>("/fs/git-init", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
 
   /** Daemon-global PATH-scan auto-detect of installed CLI agents (M2). 404s when
    *  the daemon has no admin port — the endpoint is otherwise best-effort/never-
