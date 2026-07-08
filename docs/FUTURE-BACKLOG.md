@@ -187,6 +187,20 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   of exactly this). Not a functional bug (the transcript/state is correct, verified via DOM),
   but real UX polish: auto-scroll to bottom on new message, unless the operator has scrolled up
   to read history (don't yank them back down mid-read).
+- **A chat session's live process isn't closed when its project is unregistered or its config
+  is updated while the chat is open** (found s34, full-diff codex review round 4 — deliberately
+  DEFERRED, not fixed, this session). `ChatSessionManager` is cached on the project's
+  `ProjectRoot` (`composition/root.ts`), and `hub.evict(id)` (called from `admin.unregister`
+  today only implicitly via registry removal, and explicitly from `updateConfig`) only drops the
+  cached root reference — it has no visibility into whether that root's `chat` getter was ever
+  invoked, so it can't reach in and close a live manager before dropping it. **Bounded, not
+  silent-forever:** the existing idle-timeout reaper (`ChatSessionManager`, default 10 min) still
+  eventually kills the orphaned process; a full daemon restart also clears it. Real fix needs a
+  new capability on `ProjectRoot` (e.g. `closeChatIfBuilt(): Promise<void>` that checks the
+  internal lazy-build state directly, WITHOUT triggering the lazy build itself — the tricky part)
+  wired into both `admin.unregister` and the `updateConfig` → `hub.evict` path in `src/index.ts`.
+  Deferred because the fix is cross-cutting (touches `composition/root.ts`, an already-closed
+  task) and the operational sequence (unregister/reconfigure a project mid-chat) is narrow.
 
 ## Related
 
