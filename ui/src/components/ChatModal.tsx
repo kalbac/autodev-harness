@@ -51,6 +51,15 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
   const [streamingText, setStreamingText] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const startedRef = useRef(false);
+  // Set when the modal is closed (Cancel/Escape/backdrop) while the opening
+  // `chatStart` request is still in flight (sessionId is still null at that
+  // point, so `cancelChat`'s cancel-guard has nothing to cancel yet). Checked
+  // by `chatStart`'s `onSuccess` so a session that finishes starting AFTER
+  // the modal already closed gets cancelled immediately instead of being
+  // rendered as live local state. Reset at the start of each new opening
+  // attempt (not on close) so it can't outlive its own cycle and wrongly
+  // cancel a later, legitimately open session.
+  const closedWhileStartingRef = useRef(false);
 
   const chatStart = useChatStart(projectId);
   const chatMessage = useChatMessage(projectId);
@@ -79,9 +88,21 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
   useEffect(() => {
     if (!open || startedRef.current) return;
     startedRef.current = true;
+    // A fresh attempt starts here — clear any stale flag left over from a
+    // previous open/close cycle so it can't misfire against THIS session.
+    closedWhileStartingRef.current = false;
     setTranscript([{ role: "operator", text: initialIntent }]);
     chatStart.mutate(initialIntent, {
       onSuccess: (data) => {
+        if (closedWhileStartingRef.current) {
+          // The modal was already closed by the time this landed — its local
+          // state was already reset, so don't resurrect it. Best-effort
+          // cancel the session we just created instead of leaving it live
+          // and orphaned server-side.
+          chatCancel.mutate(data.sessionId);
+          closedWhileStartingRef.current = false;
+          return;
+        }
         setSessionId(data.sessionId);
         setTranscript((prev) => [...prev, { role: "assistant", text: data.reply }]);
         setProposedSpecs(data.proposedSpecs);
@@ -153,7 +174,14 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
 
   const cancelChat = () => {
     // Best-effort — the modal closes regardless of whether this resolves.
-    if (sessionId) chatCancel.mutate(sessionId);
+    if (sessionId) {
+      chatCancel.mutate(sessionId);
+    } else {
+      // No session yet — the opening `chatStart` request may still be in
+      // flight. Record that a close happened before it landed so its
+      // `onSuccess` can cancel the session the moment it arrives.
+      closedWhileStartingRef.current = true;
+    }
     onClose();
   };
 
