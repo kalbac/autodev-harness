@@ -54,7 +54,10 @@ function turnResultFrom(outcome: { replyText: string; isError: boolean }): ChatT
 /**
  * Live claude-backed chat adapter (adr/003-safe: see `chat-adapter.ts`'s doc
  * comment — no enqueue/trigger access whatsoever). Spawns with NO tools and
- * NO MCP (`--tools ""` / `--strict-mcp-config`) — the process itself can only
+ * NO MCP (`--tools ""` / `--strict-mcp-config`), and with `--safe-mode` to
+ * disable inherited hooks, plugins, CLAUDE.md, skills, and custom commands
+ * (auth/model-selection/built-in-tools/permissions still work normally, so
+ * the adapter's own auth path is unaffected) — the process itself can only
  * converse, a defense-in-depth mirror of the interface-level restriction, and
  * avoids the ambient-extension noise/cost `gotcha [agents/inherit-ambient-extensions]`
  * describes for a call that has no legitimate use for any of it.
@@ -79,6 +82,7 @@ export class ClaudeOrchestratorChatAdapter implements OrchestratorChatAdapter {
       "--include-partial-messages",
       "--replay-user-messages",
       "--verbose",
+      "--safe-mode",
       "--strict-mcp-config",
       "--tools",
       "",
@@ -93,9 +97,20 @@ export class ClaudeOrchestratorChatAdapter implements OrchestratorChatAdapter {
       ...(this.deps.spawnFn !== undefined ? { spawnFn: this.deps.spawnFn } : {}),
     });
     const prompt = buildChatOpeningPrompt(input.intent, input.state);
-    const outcome = await proc.send(prompt);
+    let turn: ChatTurnResult;
+    try {
+      const outcome = await proc.send(prompt);
+      turn = turnResultFrom(outcome);
+    } catch (err) {
+      // The opening turn failed before any handle was ever returned to the
+      // caller — without this, the underlying claude child process (which
+      // only exits on close() or being killed) leaks, waiting on stdin
+      // forever. Close it here, then re-throw the original error unchanged.
+      proc.close();
+      throw err;
+    }
     const handle: ClaudeChatSessionHandle = { sessionId, proc };
-    return { handle, turn: turnResultFrom(outcome) };
+    return { handle, turn };
   }
 
   async send(handle: ChatSessionHandle, message: string): Promise<ChatTurnResult> {

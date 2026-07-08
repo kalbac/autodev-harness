@@ -57,7 +57,16 @@ describe("ClaudeOrchestratorChatAdapter", () => {
     expect(turn.reply).toBe("I'd split this into 2 tasks.");
     expect(turn.proposedSpecs).toBeUndefined();
     expect(capturedArgs).toEqual(
-      expect.arrayContaining(["-p", "--model", "opus", "--input-format", "stream-json", "--output-format", "stream-json"]),
+      expect.arrayContaining([
+        "-p",
+        "--model",
+        "opus",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--safe-mode",
+      ]),
     );
     expect(written[0]).toContain("add rate limiting");
   });
@@ -105,6 +114,15 @@ describe("ClaudeOrchestratorChatAdapter", () => {
     const sendPromise = adapter.send(handle, "also the webhook");
     emitErrorResult(child, "Not logged in · Please run /login");
     await expect(sendPromise).rejects.toThrow(/Not logged in/);
+  });
+
+  it("startSession closes the underlying process when the opening turn fails", async () => {
+    const { child } = makeFakeChild();
+    const adapter = new ClaudeOrchestratorChatAdapter({ cfg: fakeCfg(), repoRoot: "/repo", spawnFn: (() => child) as never });
+    const startPromise = adapter.startSession({ intent: "x", state: emptyState, onToken: () => {} });
+    emitErrorResult(child, "Not logged in · Please run /login");
+    await expect(startPromise).rejects.toThrow(/Not logged in/);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
   it("close() tears down the underlying process", async () => {
