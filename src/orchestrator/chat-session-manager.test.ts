@@ -174,4 +174,24 @@ describe("ChatSessionManager", () => {
     mgr.reapOnce();
     expect(closed).toContain(sessionId);
   });
+
+  it("cancel() still closes the underlying process (and does not throw) when the attached SSE sink's end() throws", async () => {
+    const { adapter, closed } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    const throwingSink = {
+      write: () => {},
+      end: () => {
+        throw new Error("write after end");
+      },
+    };
+    expect(mgr.attachStream(sessionId, throwingSink)).toBe(true);
+
+    // The throwing sink must not prevent cancel() from resolving, nor from
+    // reaching adapter.close() — release()'s sink teardown is best-effort.
+    await expect(mgr.cancel(sessionId)).resolves.toBe(true);
+    expect(closed).toEqual([sessionId]);
+    expect(mgr.hasOpenSession("p1")).toBe(false);
+  });
 });

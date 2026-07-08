@@ -158,7 +158,13 @@ export class ChatSessionManager {
   private release(sessionId: string, s: ManagedSession): void {
     this.sessions.delete(sessionId);
     this.projectsInFlight.delete(s.projectId);
-    s.sseRes?.end();
+    try {
+      s.sseRes?.end();
+    } catch {
+      /* best-effort: a misbehaving sink (e.g. .end() on an already-reset
+       * HTTP response) must never block registry cleanup or the caller's
+       * subsequent adapter.close(). */
+    }
   }
 
   /** Cancel: close the underlying process; nothing was ever enqueued.
