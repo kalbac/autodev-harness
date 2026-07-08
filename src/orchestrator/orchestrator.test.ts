@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createOrchestrator } from "./orchestrator.js";
 import type { OrchestratorAdapter, DecomposeInput } from "./adapter.js";
-import type { OrchestratorCapabilities } from "./capabilities.js";
+import type { OrchestratorCapabilities, RunManifestSummary } from "./capabilities.js";
 import type { QueueState } from "../blackboard/repository.js";
 import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
@@ -31,6 +31,7 @@ function makeFakeCaps(
     triggerOutcome: unknown;
     enqueueImpl: (spec: TaskSpec) => Promise<{ id: string; path: string }>;
     recordRunResult: { runId: string; path: string } | null;
+    recentRuns: RunManifestSummary[];
   }> = {},
 ): { caps: OrchestratorCapabilities; recorder: FakeCapsRecorder } {
   const recorder: FakeCapsRecorder = { enqueueCalls: [], triggerCalls: [], reportCalls: [], recordRunCalls: [] };
@@ -55,6 +56,9 @@ function makeFakeCaps(
       },
       async digestTail() {
         return "";
+      },
+      async recentRuns() {
+        return overrides.recentRuns ?? [];
       },
     },
     async report(entry) {
@@ -270,6 +274,66 @@ describe("createOrchestrator / handleIntent", () => {
     expect(isDuplicateTask(spec, { title: "add the thing", file_set: ["src/z.ts"] })).toBe(false);
     // overlapping files, different title -> not a duplicate
     expect(isDuplicateTask(spec, { title: "something else", file_set: ["src/a.ts"] })).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Intent-level dedup (primary — robust to LLM title drift on a relaunch)
+  // -------------------------------------------------------------------------
+
+  it("relaunch of the SAME intent (prior run's task still in-flight) → skips decompose, enqueues nothing, re-triggers", async () => {
+    const queues = emptyQueues();
+    queues.escalated = [makeTask("t-old", { title: "whatever the LLM titled it", file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({
+      queues,
+      recentRuns: [{ runId: "run-1", intent: "Build the thing", taskIds: ["t-old"], at: 1 }],
+    });
+    // Adapter MUST NOT be called — intent-level dedup short-circuits before decompose.
+    const adapter: OrchestratorAdapter = {
+      async decompose() {
+        throw new Error("decompose must not run on an intent-level relaunch");
+      },
+    };
+    const orchestrator = createOrchestrator({ caps, adapter, log: noopLog });
+
+    // Different case/whitespace than the recorded intent — normalized match still fires.
+    const result = await orchestrator.handleIntent("  build   the THING ");
+
+    expect(recorder.enqueueCalls).toEqual([]);
+    expect(recorder.recordRunCalls).toEqual([]);
+    expect(recorder.triggerCalls).toEqual([{ drain: true }]);
+    expect(result.enqueued).toEqual([]);
+    expect(result.triggered).toBe(true);
+    expect(recorder.reportCalls.at(-1)?.level).toBe("WARN");
+    expect(recorder.reportCalls.at(-1)?.message).toMatch(/already orchestrated/i);
+  });
+
+  it("same intent but the prior run's tasks are NO longer in-flight (all done) → decomposes normally", async () => {
+    const queues = emptyQueues();
+    queues.done = [makeTask("t-done", { file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({
+      queues,
+      recentRuns: [{ runId: "run-1", intent: "Build the thing", taskIds: ["t-done"], at: 1 }],
+    });
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter([makeSpec("new-1")]), log: noopLog });
+
+    await orchestrator.handleIntent("Build the thing");
+    // Not a relaunch of in-flight work (t-done is done) → decompose + enqueue proceed.
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["new-1"]);
+  });
+
+  it("a DIFFERENT intent (no recent-run match) decomposes normally even with in-flight work", async () => {
+    const queues = emptyQueues();
+    queues.active = [makeTask("t-old", { file_set: ["src/a.ts"] })];
+    const { caps, recorder } = makeFakeCaps({
+      queues,
+      recentRuns: [{ runId: "run-1", intent: "Build the thing", taskIds: ["t-old"], at: 1 }],
+    });
+    // Distinct file_set + title so the SECONDARY task-level dedup doesn't fire either.
+    const spec = makeSpec("other-1", { file_set: ["src/z.ts"], title: "Unrelated task" });
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter([spec]), log: noopLog });
+
+    await orchestrator.handleIntent("A completely different request");
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["other-1"]);
   });
 
   it("recordRun best-effort failure (returns null) does NOT fail handleIntent — normal success result still returned", async () => {
