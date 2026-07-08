@@ -352,6 +352,74 @@ describe("ChatSessionManager", () => {
     expect(mgr.hasSession(sessionId)).toBe(false);
   });
 
+  it("start() rejects with a timeout-shaped error when adapter.startSession() never settles within START_TIMEOUT_MS, and frees the project slot", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, closed } = makeFakeAdapter();
+      // Hang forever -- never resolve, never reject.
+      adapter.startSession = () => new Promise(() => {});
+      const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+      const startPromise = mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+      // hasOpenSession() must read "busy" while the opening turn is still
+      // racing the timeout.
+      expect(mgr.hasOpenSession("p1")).toBe(true);
+
+      const assertion = expect(startPromise).rejects.toThrow(/failed to start within/);
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000);
+      await assertion;
+
+      // The project slot must be freed so a retry is possible -- this is the
+      // whole point of the fix (previously it stayed locked forever).
+      expect(mgr.hasOpenSession("p1")).toBe(false);
+      expect(closed).toEqual([]); // startSession() never resolved -- nothing to close yet
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a LATE-resolving startSession() (settles after START_TIMEOUT_MS already fired) closes the orphaned handle and never registers the session", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, closed } = makeFakeAdapter();
+      let resolveStart!: (value: { handle: ChatSessionHandle; turn: { reply: string } }) => void;
+      adapter.startSession = () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        });
+      const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+      const startPromise = mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+      const assertion = expect(startPromise).rejects.toThrow(/failed to start within/);
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000);
+      await assertion;
+      expect(mgr.hasOpenSession("p1")).toBe(false);
+
+      // NOW the real adapter call finally resolves, long after start() gave up.
+      const handle: ChatSessionHandle = { sessionId: "late-session" };
+      resolveStart({ handle, turn: { reply: "hi" } });
+      // Flush the microtask queue so the fire-and-forget cleanup `.then()` runs.
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(closed).toEqual(["late-session"]);
+      expect(mgr.hasSession("late-session")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the normal (fast, non-timeout) start() path is completely unaffected -- adapter.close() is never called for a session that resolved normally", async () => {
+    const { adapter, closed } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    expect(mgr.hasSession(sessionId)).toBe(true);
+    expect(mgr.hasOpenSession("p1")).toBe(true);
+    expect(closed).toEqual([]);
+  });
+
   it("a session whose startSession() resolves AFTER closeAll() has already run is closed immediately, not registered — the shutdown-race leak", async () => {
     const { adapter, closed } = makeFakeAdapter();
     const mgr = new ChatSessionManager({ adapter, log: () => {} });

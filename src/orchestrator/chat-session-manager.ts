@@ -8,6 +8,14 @@ import type { Logger } from "../util/log.js";
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 /** How often the reaper sweeps for idle sessions. */
 const REAP_INTERVAL_MS = 60 * 1000;
+/** How long the opening chat turn (adapter.startSession()) may take before
+ *  start() gives up and releases the project slot. A hung/stalled spawn
+ *  (network hang, an interactive prompt that never gets answered, etc.)
+ *  would otherwise permanently lock the project's chat slot -- before this
+ *  point, no ManagedSession exists yet for the idle reaper or cancel route
+ *  to reach. Generous (opus can genuinely take a while composing a first
+ *  reply), but bounded -- not a product decision, a reasonable default. */
+const START_TIMEOUT_MS = 3 * 60 * 1000;
 
 /** Minimal shape of the SSE response the manager writes to — matches
  *  `node:http`'s `ServerResponse` surface without importing it here. */
@@ -136,12 +144,33 @@ export class ChatSessionManager {
         /* best-effort: a misbehaving sink must never crash mid-stream token delivery */
       }
     };
+    const startPromise = this.adapter.startSession({
+      intent: input.intent,
+      state: input.state,
+      onToken: forwardToken,
+    });
+    // Set synchronously by the timeout's own callback, BEFORE it rejects --
+    // this is what lets the `catch` block below tell, unambiguously, whether
+    // the race was lost to the timeout (in which case `startPromise` is
+    // guaranteed still pending, since a settled promise would have already
+    // won the race) or to a genuine `startSession()` rejection (nothing to
+    // clean up). Deliberately NOT implemented as a `.then()` attached to
+    // `startPromise` up front and raced separately -- that would create a
+    // second, independent reaction on the same promise whose firing order
+    // relative to the `await Promise.race(...)` below is not something to
+    // depend on. Attaching the late-cleanup listener only HERE, only after
+    // we've confirmed via this flag that the timeout won, sidesteps that
+    // ordering question entirely: there is no earlier queued reaction of
+    // ours on `startPromise` to race against.
+    let timedOut = false;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`chat failed to start within ${START_TIMEOUT_MS}ms`));
+      }, START_TIMEOUT_MS);
+    });
     try {
-      const { handle, turn } = await this.adapter.startSession({
-        intent: input.intent,
-        state: input.state,
-        onToken: forwardToken,
-      });
+      const { handle, turn } = await Promise.race([startPromise, timeoutPromise]);
       if (this.closed) {
         // Shutdown ran while this opening turn was in flight -- `closeAll()`
         // had nothing to close (this session wasn't registered yet). Close
@@ -167,6 +196,23 @@ export class ChatSessionManager {
       return { sessionId: handle.sessionId, turn };
     } catch (err) {
       this.projectsInFlight.delete(input.projectId);
+      if (timedOut) {
+        // The timeout won the race, so the real `adapter.startSession()`
+        // call is still out there and may eventually settle. Nothing else
+        // can ever reach it (it was never registered in `this.sessions`),
+        // so if it resolves, close the now-orphaned process instead of
+        // leaking it; if it rejects, there's nothing to close.
+        startPromise.then(
+          ({ handle }) => {
+            void this.adapter.close(handle).catch(() => {
+              /* best-effort cleanup of an abandoned/late session */
+            });
+          },
+          () => {
+            /* startSession() itself eventually failed too -- nothing to close */
+          },
+        );
+      }
       throw err;
     }
   }
