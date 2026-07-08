@@ -33,6 +33,34 @@ deferred to a supervised morning run). Seed cleanup done; test repo left clean o
 
 ---
 
+## s32 (cont'd) — 2026-07-08 — live-proving #2 found a REAL dedup gap → fixed (intent-level dedup, PR #58)
+
+**Operator resumed for the deferred #2 live-prove — and the live run found a real bug the unit tests missed.**
+First attempt: launched the same intent twice from the UI. Run 1 escalated `dedup-proof-md` (critic disagreement,
+correct). Operator replied "A" on the escalation card BETWEEN the two launches (a UI habit, not instructed) — moving
+the task to `quarantine`, which dedup deliberately excludes. Run 2 then decomposed a SECOND task, `dedup-proof-doc`,
+same `file_set: [DEDUP-PROOF.md]` but a DIFFERENT title ("verifying relaunch-intent deduplication" vs "verification
+note at repo root") — opus re-titles identical work on every decompose. **`isDuplicateTask`'s AND-title-match missed
+it: real duplicate, not caught, fail-open.** Root-caused live from `conductor.log` + the queue state, not guessed.
+**Fix (operator-chosen, "intent-level dedup"):** compare the OPERATOR's intent text (normalized), not the LLM's
+retitled task output — robust to exactly the drift that broke the task-level heuristic. New `caps.read.recentRuns()`
+reads `<stateDir>/runs/*.json`; `handleIntent` checks it BEFORE the expensive decompose: same intent + a prior run's
+task still pending/active/escalated → skip decompose, enqueue nothing, re-trigger, WARN. Task-level heuristic kept as
+a secondary layer (still catches other duplicate shapes). codex gate: Sev-2 (recentRuns read+parsed ALL manifests
+before slicing to 50 — unbounded on a large runs dir) + Sev-3 (forged manifest, low-risk trusted-stateDir) → bounded
+(filter `run-*.json` → sort → slice 50 BEFORE any read; lstat + 64KB cap per candidate before parse) → **re-critic
+CLEAN**. 837 tests / 3 skip, root+ui typecheck green. **Merged PR #58 (`ec9721f`).**
+**RE-LIVE-PROVEN clean, same repo, same daemon-restart discipline:** two real orchestrate launches of the IDENTICAL
+intent (this time NOT replying to the first escalation) → run 2's log: `"this intent was already orchestrated ...
+nothing enqueued -- re-triggering"` in ~30ms (opus decompose skipped) → exactly ONE escalated task afterward, zero
+duplicates. **All three s32 backlog items are now live-proven end-to-end.**
+**Lesson banked** (operator's standing ask — prove the real goal, evidence-first): a live run surfaced what 6 passing
+integration tests (written with controlled identical titles) structurally could not — the tests proved the code did
+what the tests said, not that the tests said the right thing. Proportional live-proving on a gate-adjacent feature
+(dedup interacts with the escalation/quarantine lifecycle) paid for itself immediately.
+
+---
+
 ## s31 — 2026-07-07 — Three stuck-task / runs-UI bug fixes (PR #54) + harness PROVEN end-to-end (first green DONE)
 
 **Trigger:** operator's live SMOKE run "stuck in ACTIVE ~30 min", not escalating/quarantining. Systematic-debugging.
