@@ -1,22 +1,33 @@
 # CURRENT STATE — Autodev Harness
 
-> ## 🟡 IN PROGRESS (s34) — orchestrator-chat backend LANDED + LIVE-PROVEN (Tasks 1-9/12); UI (10-12) next
-> Executing the s33 orchestrator-chat plan, subagent-driven (Sonnet 5 workers + mandatory codex GPT-5.5 critic gate
-> per task, several real fix rounds). Backend complete on branch `autodev/s34-orchestrator-chat`: shared JSON-array
-> extractor, chat wire-parser, `ClaudeChatProcess` (live multi-turn child), `ClaudeOrchestratorChatAdapter`
-> (`--safe-mode`+`--strict-mcp-config`+`--tools ""` isolated, live-verified), `ChatSessionManager` (registry/idle
-> reaper/one-per-project guard — went through 5 codex rounds), 5 HTTP routes (start/stream/message/confirm/cancel)
-> with a clean `launchOrchestrate` extraction, composition-root + real-`ProjectView` wiring. **Codex found and fixed
-> real bugs across almost every task** (stderr-pipe hang, SIGKILL timer leak, oversized-line silent hang, isError
-> swallowed, cancel-before-launch-success data loss, dead-SSE-socket writes, and — the standout finding — live
+> ## 🟢 s34 — orchestrator-chat COMPLETE, backend + UI, LIVE-PROVEN end-to-end (curl AND real browser)
+> Executed the s33 orchestrator-chat plan in full (Tasks 1-12), subagent-driven (Sonnet 5 workers + mandatory codex
+> GPT-5.5 critic gate per task, many real fix rounds — codex found and fixed a genuine bug in nearly every task:
+> stderr-pipe hang, SIGKILL timer leak, oversized-line silent hang, isError swallowed, cancel-before-launch-success
+> data loss, dead-SSE-socket writes, a throwing-sink `attachStream`/`release` gap, and — the standout finding — live
 > token streaming silently never worked past the opening chat turn, since `ClaudeChatProcess`'s `onToken` is bound
-> ONCE for a session's whole lifetime; new gotcha `[chat/onToken-bound-once]`, count 51). **Task 9 live-verified
-> end-to-end on aurora** (real `claude -p opus` chat spawn, live SSE token frames captured via `curl -N` matching
-> the final reply, conversational continuity across turns, `--safe-mode` confirmed in the real spawn args, cancel
-> killed the process cleanly with no orphan, confirm → real `handleIntent` → real decompose/enqueue/trigger → real
-> worker → critic correctly caught a bad chat-guessed assumption (no `PROVIDERS` map exists) and escalated rather
-> than fabricating a commit — proving the "chat is advisory-only" design works). **Next: Tasks 10-12** (UI API
-> client, `ChatModal` component, full-stack browser verification + docs + final codex gate + merge decision).
+> ONCE for a session's whole lifetime; new gotcha `[chat/onToken-bound-once]`, count 51). Backend: shared JSON-array
+> extractor, chat wire-parser, `ClaudeChatProcess` (live multi-turn child), `ClaudeOrchestratorChatAdapter`
+> (`--safe-mode`+`--strict-mcp-config`+`--tools ""` isolated), `ChatSessionManager` (registry/idle reaper/one-per-
+> project guard/SSE detach — 5+ codex rounds), 5 HTTP routes (start/stream/message/confirm/cancel) with a clean
+> `launchOrchestrate` extraction, composition-root + real-`ProjectView` wiring. UI: `api.ts`/`queries.ts` chat client
+> mirroring `postOrchestrate`'s idiom, `ChatModal` (shadcn Dialog/ScrollArea/Badge composition) replacing the direct
+> textarea-launch, `NewRunComposer` wired to open it (digest-watch toast arming preserved via `onLaunched`).
+> **LIVE-PROVEN TWICE:** (1) curl end-to-end on aurora — real `claude -p opus` chat spawn, live SSE token frames
+> matching the final reply, conversational continuity, `--safe-mode` confirmed in the real spawn args, clean cancel
+> teardown (no orphan), confirm → real orchestrate → decompose → worker → critic correctly escalated a chat-guessed
+> wrong assumption (no `PROVIDERS` map exists) rather than fabricating a commit. (2) **Real Chrome browser** (Task
+> 12) — typed an intent, opened `ChatModal`, watched the real opening reply + proposed-plan preview render, sent two
+> follow-up turns (conversational continuity confirmed via DOM), clicked Confirm & Launch → the dashboard showed
+> `RUNNING` → `CLEAN` live, and a **real commit landed on aurora** (`a794b88`, `1 task · committed & merged`);
+> separately verified Cancel enqueues nothing and releases the session slot (a fresh chat 200s instead of 409ing).
+> **One UX polish item found** (not a functional bug): the chat transcript `ScrollArea` doesn't auto-scroll to the
+> newest message — deferred to `FUTURE-BACKLOG.md`, not blocking. **Session-wide gotcha:** memory pressure on this
+> box caused repeated transient `Fatal process out of memory`/`spawn UNKNOWN` errors from stale MCP-server/dev-server
+> processes accumulated across PRIOR sessions (weeks old) — operator-approved cleanup freed the codex reviewer to
+> run reliably; `curl -N` and the inline-diff-with-no-tools-preamble `codex task` recipe (not `codex review`) were
+> the reliable workarounds when the sandboxed `git diff` kept failing. **Next: mandatory full-diff codex gate, then
+> `superpowers:finishing-a-development-branch` (merge decision).**
 >
 > ## 📝 DOCS-ONLY (s33) — two specs written, no code yet: orchestrator-chat (+plan) and agent-ci gate-hardening
 > Both s33 agenda items were discussion-first per the operator's ask; zero production diffs this session — four

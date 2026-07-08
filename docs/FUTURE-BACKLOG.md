@@ -180,6 +180,13 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   `escalated/`, where its `file_set` blocks every future same-file run with zero operator signal.
   **Scheduled as the s26 opener (variant 1):** the reply-apply path must move the task
   `escalated → done` (accepted) or re-queue `→ pending` (redo). Codex-gate it.
+- **ChatModal transcript doesn't auto-scroll to the newest message** (found s34 live browser
+  verification). The `ScrollArea` in `ui/src/components/ChatModal.tsx` stays wherever the
+  operator last scrolled it — a new turn (operator or assistant) can land off-screen with no
+  visual cue, which is confusing (double-sent a test message during s34's live-verify because
+  of exactly this). Not a functional bug (the transcript/state is correct, verified via DOM),
+  but real UX polish: auto-scroll to bottom on new message, unless the operator has scrolled up
+  to read history (don't yank them back down mid-read).
 
 ## Related
 
