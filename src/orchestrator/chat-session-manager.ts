@@ -1,0 +1,161 @@
+import type { OrchestratorChatAdapter, ChatSessionHandle, ChatTurnResult } from "./chat-adapter.js";
+import type { ReadSnapshot } from "./adapter.js";
+import type { Logger } from "../util/log.js";
+
+/** Default idle timeout before the reaper kills an abandoned session
+ *  (operator closed the tab without cancelling). Chosen at plan time — not a
+ *  product decision (see spec §7's open question). */
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/** How often the reaper sweeps for idle sessions. */
+const REAP_INTERVAL_MS = 60 * 1000;
+
+/** Minimal shape of the SSE response the manager writes to — matches
+ *  `node:http`'s `ServerResponse` surface without importing it here. */
+export interface ChatStreamSink {
+  write(chunk: string): void;
+  end(): void;
+}
+
+interface ManagedSession {
+  projectId: string;
+  handle: ChatSessionHandle;
+  lastActivityAt: number;
+  sseRes: ChatStreamSink | null;
+}
+
+export interface ChatSessionManagerDeps {
+  adapter: OrchestratorChatAdapter;
+  log: Logger;
+  now?: () => number;
+  idleTimeoutMs?: number;
+}
+
+/**
+ * Owns every live pre-launch chat session for a project's daemon process:
+ * one active session per project (mirrors the existing `orchestrateInFlight`
+ * single-flight guard in `api/server.ts`), an idle-timeout reaper for
+ * abandoned sessions, and `closeAll()` for daemon shutdown (mirrors
+ * `ApiServerHandle.close()`'s WS-client teardown — no chat process may
+ * outlive the server).
+ */
+export class ChatSessionManager {
+  private readonly sessions = new Map<string, ManagedSession>();
+  private readonly projectsInFlight = new Set<string>();
+  private readonly adapter: OrchestratorChatAdapter;
+  private readonly log: Logger;
+  private readonly now: () => number;
+  private readonly idleTimeoutMs: number;
+  private reaper: ReturnType<typeof setInterval> | undefined;
+
+  constructor(deps: ChatSessionManagerDeps) {
+    this.adapter = deps.adapter;
+    this.log = deps.log;
+    this.now = deps.now ?? (() => Date.now());
+    this.idleTimeoutMs = deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  }
+
+  /** Starts the periodic reaper. Call once at daemon startup — NOT from the
+   *  constructor, so tests can drive `reapOnce()` deterministically instead. */
+  startReaper(): void {
+    if (this.reaper) return;
+    this.reaper = setInterval(() => this.reapOnce(), REAP_INTERVAL_MS);
+    this.reaper.unref?.();
+  }
+
+  /** One reap sweep: close every session idle past `idleTimeoutMs`. Exposed
+   *  publicly so tests can invoke it directly instead of waiting on a timer. */
+  reapOnce(): void {
+    const cutoff = this.now() - this.idleTimeoutMs;
+    for (const [id, s] of this.sessions) {
+      if (s.lastActivityAt < cutoff) {
+        this.log("WARN", `chat: reaping idle session '${id}' for project '${s.projectId}'`);
+        void this.forceClose(id);
+      }
+    }
+  }
+
+  hasOpenSession(projectId: string): boolean {
+    return this.projectsInFlight.has(projectId);
+  }
+
+  async start(input: {
+    projectId: string;
+    intent: string;
+    state: ReadSnapshot;
+    onToken: (text: string) => void;
+  }): Promise<{ sessionId: string; turn: ChatTurnResult }> {
+    if (this.projectsInFlight.has(input.projectId)) {
+      throw new Error("a chat session is already open for this project");
+    }
+    this.projectsInFlight.add(input.projectId);
+    try {
+      const { handle, turn } = await this.adapter.startSession({
+        intent: input.intent,
+        state: input.state,
+        onToken: input.onToken,
+      });
+      this.sessions.set(handle.sessionId, {
+        projectId: input.projectId,
+        handle,
+        lastActivityAt: this.now(),
+        sseRes: null,
+      });
+      return { sessionId: handle.sessionId, turn };
+    } catch (err) {
+      this.projectsInFlight.delete(input.projectId);
+      throw err;
+    }
+  }
+
+  async send(sessionId: string, message: string): Promise<ChatTurnResult> {
+    const s = this.sessions.get(sessionId);
+    if (!s) throw new Error("chat session not found");
+    s.lastActivityAt = this.now();
+    return this.adapter.send(s.handle, message);
+  }
+
+  /** Attach (or replace) the SSE sink for a session — a browser reconnect
+   *  simply replaces the previous sink; the old one is ended so it isn't
+   *  double-written. Returns false if the session doesn't exist. */
+  attachStream(sessionId: string, res: ChatStreamSink): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    if (s.sseRes) s.sseRes.end();
+    s.sseRes = res;
+    return true;
+  }
+
+  private release(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    this.sessions.delete(sessionId);
+    this.projectsInFlight.delete(s.projectId);
+    s.sseRes?.end();
+  }
+
+  /** Cancel: close the underlying process; nothing was ever enqueued. */
+  async cancel(sessionId: string): Promise<boolean> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    await this.adapter.close(s.handle);
+    this.release(sessionId);
+    return true;
+  }
+
+  private async forceClose(sessionId: string): Promise<void> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    try {
+      await this.adapter.close(s.handle);
+    } catch {
+      /* best-effort reap */
+    }
+    this.release(sessionId);
+  }
+
+  /** Kill every live session — called on daemon shutdown. */
+  async closeAll(): Promise<void> {
+    if (this.reaper) clearInterval(this.reaper);
+    await Promise.all([...this.sessions.keys()].map((id) => this.forceClose(id)));
+  }
+}
