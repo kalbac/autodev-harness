@@ -35,6 +35,8 @@ import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 import type { ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
+import { ChatSessionManager, type ChatStreamSink } from "../orchestrator/chat-session-manager.js";
+import type { ReadSnapshot } from "../orchestrator/adapter.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -120,6 +122,14 @@ const MAX_ESCALATION_READ_BYTES = 256 * 1024;
  * silently accepted and handed to the LLM decomposer.
  */
 const MAX_INTENT_LENGTH = 4000;
+
+/**
+ * Soft cap on a chat `POST /message` body's `message` string -- mirrors
+ * `MAX_INTENT_LENGTH`'s reasoning exactly (the 1MB `MAX_BODY_BYTES` body cap
+ * already bounds memory; this rejects an implausibly large single chat
+ * message with a clear 400 instead of handing it to the LLM).
+ */
+const MAX_CHAT_MESSAGE_LENGTH = 4000;
 
 /** Signals that a request body exceeded `MAX_BODY_BYTES` (mapped to HTTP 413). */
 class PayloadTooLargeError extends Error {}
@@ -208,6 +218,14 @@ export interface ProjectView {
    * NOT bless — a human override that A/B (release-only) never performs.
    */
   onApplyOnAccept?: (taskId: string) => Promise<ApplyOnAcceptResult>;
+  /**
+   * OPTIONAL pre-launch chat capability for `POST/GET/DELETE
+   * /projects/:id/chat*`. When unset, those routes 404 (mirrors
+   * `onOrchestrate`). `manager` is the project's `ChatSessionManager`;
+   * `buildSnapshot` builds the `ReadSnapshot` the chat's opening turn needs
+   * (same shape `handleIntent` uses via `buildReadSnapshot`).
+   */
+  chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
 }
 
 export interface ApiServerDeps {
@@ -748,6 +766,14 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   // past it; cleared in the background chain's `finally` once the (unawaited) run
   // settles. Different projects run independently.
   const orchestrateInFlight = new Set<string>();
+
+  // Every `ChatSessionManager` a resolved `ProjectView` has actually exposed
+  // via `p.chat`, tracked so `close()` can tear every one of them down before
+  // the http server itself closes. `ProjectView`s are resolved per-request
+  // (there is no persistent project list here), so this set is built up
+  // lazily as chat-capable projects are touched -- see the `p.chat &&
+  // chatManagersSeen.add(...)` line right after `ensureWatcher` below.
+  const chatManagersSeen = new Set<ChatSessionManager>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
@@ -1326,6 +1352,26 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
+    await launchOrchestrate(pid, p, intent, res);
+  }
+
+  /**
+   * The actual 202-async launch, extracted from `handleOrchestrate` so `POST
+   * /chat/confirm` (`handleChatConfirm`) can reach the SAME launch path with
+   * an operator-assembled `finalIntent` it parsed from a DIFFERENT request
+   * body shape (`{sessionId, finalIntent}` vs `{intent}`), without re-reading
+   * `req`'s already-consumed body stream. Pure extraction: identical
+   * behavior to the inline code this replaced for the existing `/orchestrate`
+   * route -- the `p.onOrchestrate` 404 check is repeated here (not just in
+   * `handleOrchestrate`) because this function is a second, independent entry
+   * point that must enforce the same guard on its own.
+   */
+  async function launchOrchestrate(pid: string, p: ProjectView, intent: string, res: ServerResponse): Promise<void> {
+    if (!p.onOrchestrate) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
     if (orchestrateInFlight.has(pid)) {
       sendJson(res, 409, { error: "an orchestrate run is already in progress" });
       return;
@@ -1366,6 +1412,206 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       });
 
     sendJson(res, 202, { accepted: true, intent });
+  }
+
+  /**
+   * `POST /projects/:id/chat` -- starts a new pre-launch chat session
+   * (mirrors `handleOrchestrate`'s 404/validation pattern). The FIRST turn's
+   * tokens are not streamed (no SSE client is attached yet -- the UI shows a
+   * spinner until this response, then attaches SSE via `handleChatStream` for
+   * subsequent turns), so `onToken: () => {}` here is intentional, not a bug.
+   */
+  async function handleChatStart(pid: string, p: ProjectView, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!p.chat) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { intent?: unknown } | null;
+    const rawIntent = parsed?.intent;
+    if (typeof rawIntent !== "string") {
+      sendJson(res, 400, { error: "intent must be a string" });
+      return;
+    }
+    const intent = rawIntent.trim();
+    if (intent === "") {
+      sendJson(res, 400, { error: "intent must not be empty" });
+      return;
+    }
+    if (intent.length > MAX_INTENT_LENGTH) {
+      sendJson(res, 400, { error: `intent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    const chat = p.chat;
+    try {
+      const state = await chat.buildSnapshot();
+      const { sessionId, turn } = await chat.manager.start({ projectId: pid, intent, state, onToken: () => {} });
+      sendJson(res, 200, { sessionId, reply: turn.reply, proposedSpecs: turn.proposedSpecs ?? [] });
+    } catch (err) {
+      const message = String((err as Error).message ?? err);
+      const status = message.includes("already open") ? 409 : message.includes("not found") ? 404 : 500;
+      sendJson(res, status, { error: message });
+    }
+  }
+
+  /**
+   * `GET /projects/:id/chat/:sessionId/stream` -- attaches an SSE sink for a
+   * live session's token stream. Not `async`: the manager's `attachStream` is
+   * synchronous, and there is nothing else to await here.
+   */
+  function handleChatStream(p: ProjectView, sessionId: string, res: ServerResponse): void {
+    if (!p.chat) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+
+    const sink: ChatStreamSink = {
+      write: (chunk) => res.write(`data: ${chunk}\n\n`),
+      end: () => res.end(),
+    };
+    const attached = p.chat.manager.attachStream(sessionId, sink);
+    if (!attached) {
+      res.write(`data: ${JSON.stringify({ type: "error", message: "session not found" })}\n\n`);
+      res.end();
+    }
+  }
+
+  /** `POST /projects/:id/chat/:sessionId/message` -- forwards one operator
+   *  message to the live session and returns the model's reply turn. */
+  async function handleChatMessage(p: ProjectView, sessionId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!p.chat) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { message?: unknown } | null;
+    const rawMessage = parsed?.message;
+    if (typeof rawMessage !== "string") {
+      sendJson(res, 400, { error: "message must be a string" });
+      return;
+    }
+    const message = rawMessage.trim();
+    if (message === "") {
+      sendJson(res, 400, { error: "message must not be empty" });
+      return;
+    }
+    if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+      sendJson(res, 400, { error: `message must be at most ${MAX_CHAT_MESSAGE_LENGTH} characters` });
+      return;
+    }
+
+    try {
+      const turn = await p.chat.manager.send(sessionId, message);
+      sendJson(res, 200, { reply: turn.reply, proposedSpecs: turn.proposedSpecs ?? [] });
+    } catch (err) {
+      const errMessage = String((err as Error).message ?? err);
+      const status = errMessage.includes("not found") ? 404 : errMessage.includes("already in flight") ? 409 : 500;
+      sendJson(res, status, { error: errMessage });
+    }
+  }
+
+  /** `DELETE /projects/:id/chat/:sessionId` -- cancels (kills) a live session. */
+  async function handleChatCancel(p: ProjectView, sessionId: string, res: ServerResponse): Promise<void> {
+    if (!p.chat) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const cancelled = await p.chat.manager.cancel(sessionId);
+    sendJson(res, cancelled ? 200 : 404, cancelled ? { cancelled: true } : { error: "session not found" });
+  }
+
+  /**
+   * `POST /projects/:id/chat/confirm` -- best-effort tears down the chat
+   * session, then launches the REAL orchestrate run via `launchOrchestrate`
+   * with the operator-assembled `finalIntent`. Deliberately NOT a new
+   * enforcement code path: `launchOrchestrate` performs its own
+   * `p.onOrchestrate` 404 check, its own `orchestrateInFlight` 409 check, and
+   * sends its own 202 -- this function must never send a response of its own
+   * after calling it.
+   */
+  async function handleChatConfirm(pid: string, p: ProjectView, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!p.chat) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { sessionId?: unknown; finalIntent?: unknown } | null;
+    const rawSessionId = parsed?.sessionId;
+    if (typeof rawSessionId !== "string" || rawSessionId === "") {
+      sendJson(res, 400, { error: "sessionId must be a non-empty string" });
+      return;
+    }
+    const rawFinalIntent = parsed?.finalIntent;
+    if (typeof rawFinalIntent !== "string") {
+      sendJson(res, 400, { error: "finalIntent must be a string" });
+      return;
+    }
+    const finalIntent = rawFinalIntent.trim();
+    if (finalIntent === "") {
+      sendJson(res, 400, { error: "finalIntent must not be empty" });
+      return;
+    }
+    if (finalIntent.length > MAX_INTENT_LENGTH) {
+      sendJson(res, 400, { error: `finalIntent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    // Best-effort teardown: a stale/unknown sessionId is a no-op (`cancel`
+    // returns false), which is intentionally ignored here -- the operator's
+    // goal (launch the real run) must not be blocked by an already-gone or
+    // never-really-open chat session.
+    await p.chat.manager.cancel(rawSessionId);
+
+    await launchOrchestrate(pid, p, finalIntent, res);
   }
 
   /**
@@ -1791,6 +2037,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       }
       const p = resolved.view;
       ensureWatcher(rawPid, p.stateDir);
+      if (p.chat) chatManagersSeen.add(p.chat.manager);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
@@ -1823,6 +2070,16 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         return void (await handleScanExtensions(p, res));
       if (req.method === "POST" && (sub === "/orchestrate" || sub === "/orchestrate/"))
         return void (await handleOrchestrate(rawPid, p, req, res));
+
+      if (req.method === "POST" && (sub === "/chat" || sub === "/chat/")) return void (await handleChatStart(rawPid, p, req, res));
+      const chatStreamMatch = /^\/chat\/([^/]+)\/stream\/?$/.exec(sub);
+      if (req.method === "GET" && chatStreamMatch) return void handleChatStream(p, chatStreamMatch[1]!, res);
+      const chatMessageMatch = /^\/chat\/([^/]+)\/message\/?$/.exec(sub);
+      if (req.method === "POST" && chatMessageMatch) return void (await handleChatMessage(p, chatMessageMatch[1]!, req, res));
+      if (req.method === "POST" && (sub === "/chat/confirm" || sub === "/chat/confirm/"))
+        return void (await handleChatConfirm(rawPid, p, req, res));
+      const chatCancelMatch = /^\/chat\/([^/]+)\/?$/.exec(sub);
+      if (req.method === "DELETE" && chatCancelMatch) return void (await handleChatCancel(p, chatCancelMatch[1]!, res));
 
       sendJson(res, 404, { error: "not found" });
       return;
@@ -1919,6 +2176,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // close() can hang the test runner (`[ts/test-hang]`).
       for (const client of clients) client.terminate();
       clients.clear();
+
+      // Kill every live chat process BEFORE the http server itself shuts
+      // down -- a chat session that outlives the daemon would leak a live
+      // model subprocess with no way to reach it anymore.
+      await Promise.all([...chatManagersSeen].map((m) => m.closeAll()));
 
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve, reject) => {

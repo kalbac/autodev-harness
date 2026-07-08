@@ -15,6 +15,9 @@ import type { DetectedAgent } from "../detect/detect-agents.js";
 import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { createScheduler } from "../scheduler/scheduler.js";
+import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
+import type { OrchestratorChatAdapter, ChatSessionHandle } from "../orchestrator/chat-adapter.js";
+import type { ReadSnapshot } from "../orchestrator/adapter.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
@@ -27,6 +30,7 @@ function projectDeps(
     config?: ProjectConfigView;
     onScanExtensions?: () => Promise<AgentExtensions | null>;
     onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
+    chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -43,6 +47,7 @@ function projectDeps(
                 ...(one.config !== undefined ? { config: one.config } : {}),
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
                 ...(one.onApplyOnAccept !== undefined ? { onApplyOnAccept: one.onApplyOnAccept } : {}),
+                ...(one.chat !== undefined ? { chat: one.chat } : {}),
               },
             }
           : null,
@@ -2131,6 +2136,129 @@ describe("createApiServer / POST /orchestrate", () => {
     dA.resolve();
     await tick();
     expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+  });
+});
+
+/** A fake chat adapter: `startSession` returns an incrementing session id and
+ *  a canned first turn; `send` echoes the message back so tests can assert on
+ *  it without a real model. Mirrors the shape `ChatSessionManager` expects
+ *  from `OrchestratorChatAdapter` (see `chat-adapter.ts`). */
+function makeFakeChatAdapter(): OrchestratorChatAdapter {
+  let n = 0;
+  return {
+    startSession: async () => ({ handle: { sessionId: `s${++n}` }, turn: { reply: "hi", proposedSpecs: [] } }),
+    send: async (_h: ChatSessionHandle, message: string) => ({ reply: `echo:${message}` }),
+    close: async () => {},
+  };
+}
+
+const emptySnapshot = async (): Promise<ReadSnapshot> => ({ existingIds: [], queues: {} as never });
+
+describe("createApiServer / chat routes", () => {
+  it("POST /chat 404s when chat is not configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /chat starts a session and returns the first turn", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { sessionId: string; reply: string; proposedSpecs: unknown[] };
+    expect(json.sessionId).toBe("s1");
+    expect(json.reply).toBe("hi");
+    expect(json.proposedSpecs).toEqual([]);
+  });
+
+  it("a second POST /chat for the same project 409s while one is open", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const post = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent: "build X" }),
+      });
+
+    const res1 = await post();
+    expect(res1.status).toBe(200);
+
+    const res2 = await post();
+    expect(res2.status).toBe(409);
+  });
+
+  it("POST /chat/:id/message forwards to the session, and DELETE /chat/:id cancels it", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const msgRes = await fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/message`)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "make it faster" }),
+    });
+    expect(msgRes.status).toBe(200);
+    expect(await msgRes.json()).toEqual({ reply: "echo:make it faster", proposedSpecs: [] });
+
+    const cancelRes = await fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}`)}`, { method: "DELETE" });
+    expect(cancelRes.status).toBe(200);
+    expect(await cancelRes.json()).toEqual({ cancelled: true });
+    expect(manager.hasOpenSession("p1")).toBe(false);
+  });
+
+  it("POST /chat/confirm closes the session and launches the real orchestrate path", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    const calls: string[] = [];
+    const onOrchestrate = async (intent: string): Promise<void> => {
+      calls.push(intent);
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(202);
+    expect(await confirmRes.json()).toEqual({ accepted: true, intent: "build X, refined" });
+
+    expect(manager.hasOpenSession("p1")).toBe(false);
+
+    await tick();
+    expect(calls).toEqual(["build X, refined"]);
   });
 });
 
