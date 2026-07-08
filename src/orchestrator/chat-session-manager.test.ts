@@ -194,4 +194,44 @@ describe("ChatSessionManager", () => {
     expect(closed).toEqual([sessionId]);
     expect(mgr.hasOpenSession("p1")).toBe(false);
   });
+
+  it("attachStream() still attaches the NEW sink (and does not throw) when the OLD sink's end() throws", async () => {
+    const { adapter } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    const ended: string[] = [];
+    const firstSink = {
+      write: () => {},
+      end: () => {
+        throw new Error("write after end");
+      },
+    };
+    const secondSink = {
+      write: () => {},
+      end: () => {
+        ended.push("second");
+      },
+    };
+    const thirdSink = {
+      write: () => {},
+      end: () => {
+        ended.push("third");
+      },
+    };
+
+    expect(mgr.attachStream(sessionId, firstSink)).toBe(true);
+
+    // Replacing the throwing first sink must not throw, and must genuinely
+    // attach the second sink (not silently leave the old one wired up) —
+    // attachStream()'s old-sink teardown is best-effort, mirroring release().
+    expect(() => mgr.attachStream(sessionId, secondSink)).not.toThrow();
+
+    // Prove the SECOND sink (not the first) is the one now attached: a
+    // third attachStream() call ends whichever sink is currently attached,
+    // and only "second" (never "first", which can't push anyway) should
+    // show up.
+    expect(mgr.attachStream(sessionId, thirdSink)).toBe(true);
+    expect(ended).toEqual(["second"]);
+  });
 });

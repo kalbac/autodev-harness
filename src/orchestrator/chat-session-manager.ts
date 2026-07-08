@@ -144,7 +144,13 @@ export class ChatSessionManager {
   attachStream(sessionId: string, res: ChatStreamSink): boolean {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
-    if (s.sseRes) s.sseRes.end();
+    try {
+      s.sseRes?.end();
+    } catch {
+      /* best-effort: a misbehaving OLD sink (e.g. .end() on an already-reset
+       * HTTP response during a browser reconnect) must never block the NEW
+       * sink from being attached. */
+    }
     s.sseRes = res;
     return true;
   }
