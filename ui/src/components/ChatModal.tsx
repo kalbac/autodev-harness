@@ -186,7 +186,7 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
   };
 
   const canSend = messageInput.trim().length > 0 && sessionId !== null && !chatMessage.isPending;
-  const canConfirm = sessionId !== null && !chatConfirm.isPending;
+  const canConfirm = sessionId !== null && !chatConfirm.isPending && !chatMessage.isPending;
   const startConflict = chatStart.error instanceof ApiError && chatStart.error.status === 409;
 
   return (

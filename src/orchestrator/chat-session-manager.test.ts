@@ -175,6 +175,34 @@ describe("ChatSessionManager", () => {
     expect(closed).toContain(sessionId);
   });
 
+  it("isTurnInFlight() reflects whether a turn is currently active, and is false for an unknown session", async () => {
+    const { adapter } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+    let resolveSend!: (value: { reply: string }) => void;
+    adapter.send = () =>
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      });
+
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    // No turn in flight yet, right after start().
+    expect(mgr.isTurnInFlight(sessionId)).toBe(false);
+
+    const sendPromise = mgr.send(sessionId, "hello");
+    expect(mgr.isTurnInFlight(sessionId)).toBe(true);
+
+    resolveSend({ reply: "done" });
+    await expect(sendPromise).resolves.toEqual({ reply: "done" });
+
+    // Back to false once the turn completes.
+    expect(mgr.isTurnInFlight(sessionId)).toBe(false);
+
+    // Unknown session id must never throw -- just report "no turn in flight".
+    expect(mgr.isTurnInFlight("unknown")).toBe(false);
+  });
+
   it("cancel() still closes the underlying process (and does not throw) when the attached SSE sink's end() throws", async () => {
     const { adapter, closed } = makeFakeAdapter();
     const mgr = new ChatSessionManager({ adapter, log: () => {} });

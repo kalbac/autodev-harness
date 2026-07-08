@@ -1647,6 +1647,18 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
+    // A message send may still be awaiting the model's reply for this exact
+    // session. Confirming now would launch the real run from a transcript
+    // that hasn't yet received the assistant's latest reply, AND the
+    // teardown below would call cancel() -> adapter.close(), which kills the
+    // live process out from under that in-flight send() -- rejecting the
+    // pending `POST /chat/:id/message` request with a confusing error. Make
+    // the operator wait for the turn to finish before confirming.
+    if (p.chat.manager.isTurnInFlight(rawSessionId)) {
+      sendJson(res, 409, { error: "a chat turn is still in flight for this session -- wait for it to finish before confirming" });
+      return;
+    }
+
     // Launch FIRST, tear down SECOND: `launchOrchestrate` sends its own
     // response (202 on success, 404/409 on its own guards) and never awaits
     // anything between those guard checks and calling `sendJson`, so

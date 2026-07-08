@@ -99,6 +99,12 @@ export class ChatSessionManager {
     return this.sessions.has(sessionId);
   }
 
+  /** Read-only: is a turn currently in flight for this session? Used to gate
+   *  actions (like confirming a launch) that must not race a live turn. */
+  isTurnInFlight(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.turnInFlight ?? false;
+  }
+
   async start(input: {
     projectId: string;
     intent: string;

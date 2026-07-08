@@ -2382,6 +2382,61 @@ describe("createApiServer / chat routes", () => {
     await tick();
   });
 
+  it("POST /chat/confirm 409s while a message send is still in flight for that session, and never invokes onOrchestrate", async () => {
+    // A custom adapter whose send() is manually controlled -- the same
+    // technique chat-session-manager.test.ts's turnInFlight tests use --
+    // applied here through the real HTTP routes so the race is exercised
+    // end-to-end (start, then a follow-up message that never resolves on
+    // its own, then confirm racing against it).
+    const dSend = deferred<{ reply: string }>();
+    const adapter = makeFakeChatAdapter();
+    adapter.send = () => dSend.promise;
+    const manager = new ChatSessionManager({ adapter, log: () => {} });
+    let orchestrateCalled = false;
+    const onOrchestrate = async (): Promise<void> => {
+      orchestrateCalled = true;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const msgPromise = fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/message`)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "refine it" }),
+    });
+    // Let the message POST actually reach the manager and set turnInFlight
+    // before firing confirm.
+    await tick();
+    expect(manager.isTurnInFlight(sessionId)).toBe(true);
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(409);
+    const confirmBody = (await confirmRes.json()) as { error: string };
+    expect(confirmBody.error).toMatch(/in flight/);
+
+    expect(orchestrateCalled).toBe(false);
+    // The chat session must still be open -- the 409 guard must fire BEFORE
+    // any teardown, so the pending message send is left alone.
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    dSend.resolve({ reply: "ok" });
+    const msgRes = await msgPromise;
+    expect(msgRes.status).toBe(200);
+  });
+
   it("POST /chat/confirm 404s for a sessionId that was never started, and never invokes onOrchestrate", async () => {
     const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
     let orchestrateCalled = false;
