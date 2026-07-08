@@ -1,5 +1,23 @@
 # CURRENT STATE — Autodev Harness
 
+> ## 🟡 IN PROGRESS (s34) — orchestrator-chat backend LANDED + LIVE-PROVEN (Tasks 1-9/12); UI (10-12) next
+> Executing the s33 orchestrator-chat plan, subagent-driven (Sonnet 5 workers + mandatory codex GPT-5.5 critic gate
+> per task, several real fix rounds). Backend complete on branch `autodev/s34-orchestrator-chat`: shared JSON-array
+> extractor, chat wire-parser, `ClaudeChatProcess` (live multi-turn child), `ClaudeOrchestratorChatAdapter`
+> (`--safe-mode`+`--strict-mcp-config`+`--tools ""` isolated, live-verified), `ChatSessionManager` (registry/idle
+> reaper/one-per-project guard — went through 5 codex rounds), 5 HTTP routes (start/stream/message/confirm/cancel)
+> with a clean `launchOrchestrate` extraction, composition-root + real-`ProjectView` wiring. **Codex found and fixed
+> real bugs across almost every task** (stderr-pipe hang, SIGKILL timer leak, oversized-line silent hang, isError
+> swallowed, cancel-before-launch-success data loss, dead-SSE-socket writes, and — the standout finding — live
+> token streaming silently never worked past the opening chat turn, since `ClaudeChatProcess`'s `onToken` is bound
+> ONCE for a session's whole lifetime; new gotcha `[chat/onToken-bound-once]`, count 51). **Task 9 live-verified
+> end-to-end on aurora** (real `claude -p opus` chat spawn, live SSE token frames captured via `curl -N` matching
+> the final reply, conversational continuity across turns, `--safe-mode` confirmed in the real spawn args, cancel
+> killed the process cleanly with no orphan, confirm → real `handleIntent` → real decompose/enqueue/trigger → real
+> worker → critic correctly caught a bad chat-guessed assumption (no `PROVIDERS` map exists) and escalated rather
+> than fabricating a commit — proving the "chat is advisory-only" design works). **Next: Tasks 10-12** (UI API
+> client, `ChatModal` component, full-stack browser verification + docs + final codex gate + merge decision).
+>
 > ## 📝 DOCS-ONLY (s33) — two specs written, no code yet: orchestrator-chat (+plan) and agent-ci gate-hardening
 > Both s33 agenda items were discussion-first per the operator's ask; zero production diffs this session — four
 > docs commits (`fa96605` chat spec, `294a78c` chat plan, `b330656` agent-ci recon, `72a09d8` agent-ci gate spec).
