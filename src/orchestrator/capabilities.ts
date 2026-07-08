@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, lstat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import type { Task } from "../blackboard/types.js";
@@ -23,6 +23,10 @@ export interface OrchestratorCapabilities {
     queues(): Promise<Record<QueueState, Task[]>>;
     runtimeReport(id: string, name: string): Promise<string | null>;
     digestTail(): Promise<string>;
+    /** Recent run manifests (newest first, bounded), for intent-level dedup —
+     *  a relaunch of an already-orchestrated intent whose tasks are still
+     *  in-flight. Best-effort: unreadable/corrupt manifests are skipped. */
+    recentRuns(): Promise<RunManifestSummary[]>;
   };
   report(entry: { level: string; message: string }): Promise<void>;
   /**
@@ -40,6 +44,43 @@ export interface OrchestratorCapabilities {
    * manifest-write failure can never fail a real orchestrated run.
    */
   recordRun(run: { intent: string; taskIds: string[] }): Promise<{ runId: string; path: string } | null>;
+}
+
+/** The subset of a run manifest the orchestrator's intent-level dedup needs
+ *  (mirrors what `recordRun` writes; the API layer has its own richer type). */
+export interface RunManifestSummary {
+  runId: string;
+  intent: string;
+  taskIds: string[];
+  at: number;
+}
+
+function isRunManifestSummary(v: unknown): v is RunManifestSummary {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.runId === "string" &&
+    typeof o.intent === "string" &&
+    Array.isArray(o.taskIds) &&
+    o.taskIds.every((x) => typeof x === "string") &&
+    typeof o.at === "number" &&
+    Number.isFinite(o.at)
+  );
+}
+
+/** Cap on how many recent run manifests intent-level dedup scans — bounds the
+ *  per-orchestrate read cost even for a project with a long run history. */
+const MAX_RECENT_RUNS = 50;
+
+/** Size cap per manifest read (a manifest is tiny: id/intent/taskIds/at). Guards
+ *  against reading a huge file that happens to sit in runsDir. */
+const MAX_MANIFEST_BYTES = 64 * 1024;
+
+/** `<repoRoot>/<stateDir>/runs` — derived from `repo.runtimeDir` the same way
+ *  `digestPath` recovers `<repoRoot>/<stateDir>` (frozen seam has no direct getter). */
+function runsDirOf(repo: BlackboardRepository): string {
+  const probe = repo.runtimeDir("__runs_dir_probe__");
+  return join(dirname(dirname(probe)), "runs");
 }
 
 /** Number of trailing lines `read.digestTail()` returns (undocumented in the
@@ -79,6 +120,38 @@ export function createReadCapability(repo: BlackboardRepository): OrchestratorCa
       const lines = content.split("\n");
       if (lines.length <= DIGEST_TAIL_LINES) return content;
       return lines.slice(-DIGEST_TAIL_LINES).join("\n");
+    },
+    async recentRuns(): Promise<RunManifestSummary[]> {
+      const dir = runsDirOf(repo);
+      if (!existsSync(dir)) return [];
+      let candidates: string[];
+      try {
+        // Bound the work BEFORE any file read (codex Sev-2): recordRun names its
+        // manifests `run-<at>-<slug>.json`, so a lexical desc sort ≈ newest-first
+        // (the ms-epoch prefix is fixed width); take only the newest MAX_RECENT_RUNS
+        // filenames, so a huge runs dir never makes an orchestrate read/parse them all.
+        candidates = (await readdir(dir))
+          .filter((f) => f.startsWith("run-") && f.endsWith(".json"))
+          .sort()
+          .reverse()
+          .slice(0, MAX_RECENT_RUNS);
+      } catch {
+        return []; // best-effort — an unreadable runs dir must not fail an orchestrate
+      }
+      const manifests: RunManifestSummary[] = [];
+      for (const f of candidates) {
+        try {
+          const full = join(dir, f);
+          const st = await lstat(full); // lstat: never follow a symlink into a huge/foreign file
+          if (!st.isFile() || st.size > MAX_MANIFEST_BYTES) continue;
+          const parsed: unknown = JSON.parse(await readFile(full, "utf8"));
+          if (isRunManifestSummary(parsed)) manifests.push(parsed);
+        } catch {
+          /* skip an unreadable/corrupt manifest — never fail the read */
+        }
+      }
+      manifests.sort((a, b) => b.at - a.at); // exact newest-first by parsed `at`
+      return manifests;
     },
   };
 }

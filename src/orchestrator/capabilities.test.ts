@@ -71,6 +71,42 @@ describe("createReadCapability", () => {
     expect(tail).not.toContain("line 0\n");
     expect(tail).toContain("line 79");
   });
+
+  it("recentRuns() returns [] when no runs dir exists", async () => {
+    const read = createReadCapability(repo);
+    expect(await read.recentRuns()).toEqual([]);
+  });
+
+  it("recentRuns() returns written manifests newest-first and skips a corrupt one", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    const rec1 = createRecordRunCapability({ runsDir, now: () => 1000, log: () => {} });
+    const rec2 = createRecordRunCapability({ runsDir, now: () => 2000, log: () => {} });
+    await rec1({ intent: "older intent", taskIds: ["t1"] });
+    await rec2({ intent: "newer intent", taskIds: ["t2", "t3"] });
+    // A corrupt manifest must be skipped, not throw.
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, "run-corrupt.json"), "{ not json");
+
+    const read = createReadCapability(repo);
+    const runs = await read.recentRuns();
+    expect(runs.map((r) => r.intent)).toEqual(["newer intent", "older intent"]); // newest first
+    expect(runs.find((r) => r.at === 2000)?.taskIds).toEqual(["t2", "t3"]);
+  });
+
+  it("recentRuns() ignores non-run-*.json files and skips an oversized manifest (bounded reads)", async () => {
+    const runsDir = join(root, ".autodev", "runs");
+    mkdirSync(runsDir, { recursive: true });
+    // A valid manifest that is NOT named run-*.json → ignored (naming filter).
+    writeFileSync(join(runsDir, "notes.json"), JSON.stringify({ runId: "x", intent: "sneaky", taskIds: [], at: 1 }));
+    // An oversized run-*.json → skipped by the size cap even though it parses.
+    const huge = { runId: "run-huge", intent: "huge", taskIds: ["t"], at: 9, pad: "x".repeat(70 * 1024) };
+    writeFileSync(join(runsDir, "run-huge.json"), JSON.stringify(huge));
+    // A normal small manifest → returned.
+    writeFileSync(join(runsDir, "run-ok.json"), JSON.stringify({ runId: "run-ok", intent: "ok", taskIds: ["t1"], at: 5 }));
+
+    const runs = await createReadCapability(repo).recentRuns();
+    expect(runs.map((r) => r.intent)).toEqual(["ok"]); // only the small run-*.json survives
+  });
 });
 
 describe("createReportCapability", () => {

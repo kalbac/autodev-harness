@@ -44,6 +44,14 @@ function normalizeTitle(t: string): string {
   return t.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/** Case/whitespace-folded intent text, for intent-level dedup (a relaunch of the
+ *  SAME intent). Robust where the task-level title heuristic is not: the LLM
+ *  re-titles the same work on each decomposition, but the operator's intent text
+ *  is identical on a relaunch. */
+function normalizeIntent(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 /**
  * A new spec DUPLICATES an in-flight task when their `file_set`s OVERLAP (share a
  * normalized path — the scheduler would serialize them behind a file-lock anyway)
@@ -141,6 +149,29 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
       const queues = await caps.read.queues();
       const existingIds = ALL_QUEUE_STATES.flatMap((state) => queues[state].map((t) => t.id));
       const state: ReadSnapshot = { existingIds, queues };
+
+      // Intent-level dedup (PRIMARY, before the expensive decompose): if THIS exact
+      // intent was already orchestrated and its prior run's tasks are still in-flight
+      // (pending/active/escalated), it's a relaunch -> enqueue nothing and re-trigger
+      // the existing pool, skipping the decompose entirely. Robust where the task-level
+      // file_set+title heuristic (below) is not: the LLM re-titles the same work on each
+      // decomposition, so a relaunch's specs rarely title-match — but the intent text is
+      // identical. `done`/`quarantine` are excluded (a re-run after completion/abandon is
+      // legitimate, not a duplicate), matching DEDUP_STATES.
+      const inFlightIds = new Set(DEDUP_STATES.flatMap((s) => queues[s]).map((t) => t.id));
+      if (inFlightIds.size > 0) {
+        const priorRun = (await caps.read.recentRuns()).find(
+          (r) => normalizeIntent(r.intent) === normalizeIntent(intent) && r.taskIds.some((id) => inFlightIds.has(id)),
+        );
+        if (priorRun) {
+          const liveIds = priorRun.taskIds.filter((id) => inFlightIds.has(id));
+          const message = `orchestrator: this intent was already orchestrated (run ${priorRun.runId}) with ${liveIds.length} task(s) still in-flight (${liveIds.join(", ")}); nothing enqueued -- re-triggering the existing pending pool instead of duplicating`;
+          log("INFO", message);
+          const triggerOutcome = await caps.trigger({ drain: true });
+          await caps.report({ level: "WARN", message });
+          return { intent, enqueued: [], triggered: true, triggerOutcome };
+        }
+      }
 
       log("INFO", "orchestrator: decomposing intent");
       const specs = await adapter.decompose({ intent, state });
