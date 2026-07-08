@@ -310,4 +310,56 @@ describe("ChatSessionManager", () => {
     const [payload] = sink.write.mock.calls[0]!;
     expect(payload).toContain("hello");
   });
+
+  it("hasSession() is true for a live session, false for an unknown one, and false again after cancel()", async () => {
+    const { adapter } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    expect(mgr.hasSession("nope")).toBe(false);
+
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+    expect(mgr.hasSession(sessionId)).toBe(true);
+    expect(mgr.hasSession("still-not-a-real-id")).toBe(false);
+
+    await mgr.cancel(sessionId);
+    expect(mgr.hasSession(sessionId)).toBe(false);
+  });
+
+  it("a session whose startSession() resolves AFTER closeAll() has already run is closed immediately, not registered — the shutdown-race leak", async () => {
+    const { adapter, closed } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+    // Same manually-controlled-promise technique as the turnInFlight tests
+    // above, but on startSession() instead of send(): hold the opening turn
+    // open so closeAll() can run while it's still in flight.
+    let resolveStart!: (value: { handle: ChatSessionHandle; turn: { reply: string } }) => void;
+    adapter.startSession = () =>
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      });
+
+    const startPromise = mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    // Daemon shutdown runs while the opening turn is still awaiting the
+    // adapter — the session isn't in the registry yet, so this sweep has
+    // nothing to close.
+    await mgr.closeAll();
+    expect(closed).toEqual([]);
+
+    // NOW the adapter's startSession() finally resolves.
+    const handle: ChatSessionHandle = { sessionId: "late-session" };
+    resolveStart({ handle, turn: { reply: "hi" } });
+
+    // start() must reject (not silently register the now-orphaned session)
+    // once it observes that closeAll() already ran.
+    await expect(startPromise).rejects.toThrow("chat session manager is shutting down");
+
+    // The handle that was about to be registered must have been closed
+    // immediately instead — proving the leaked-process path is now closed.
+    expect(closed).toEqual(["late-session"]);
+
+    // The session must never appear in the registry, and the project slot
+    // must be freed (not left permanently stuck "in flight").
+    expect(mgr.hasSession("late-session")).toBe(false);
+    expect(mgr.hasOpenSession("p1")).toBe(false);
+  });
 });

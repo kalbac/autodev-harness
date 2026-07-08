@@ -1586,14 +1586,16 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   /**
-   * `POST /projects/:id/chat/confirm` -- launches the REAL orchestrate run via
-   * `launchOrchestrate` with the operator-assembled `finalIntent` FIRST, then
-   * best-effort tears down the chat session ONLY if that launch actually
-   * succeeded (see the launch-then-teardown comment below). Deliberately NOT
-   * a new enforcement code path: `launchOrchestrate` performs its own
-   * `p.onOrchestrate` 404 check, its own `orchestrateInFlight` 409 check, and
-   * sends its own 202 -- this function must never send a response of its own
-   * after calling it.
+   * `POST /projects/:id/chat/confirm` -- verifies `sessionId` corresponds to
+   * a real, still-open chat session (404 if not -- a stale/reaped/bogus
+   * sessionId must never trigger a real run), then launches the REAL
+   * orchestrate run via `launchOrchestrate` with the operator-assembled
+   * `finalIntent`, then best-effort tears down the chat session ONLY if that
+   * launch actually succeeded (see the launch-then-teardown comment below).
+   * Deliberately NOT a new enforcement code path beyond the liveness check:
+   * `launchOrchestrate` performs its own `p.onOrchestrate` 404 check, its own
+   * `orchestrateInFlight` 409 check, and sends its own 202 -- this function
+   * must never send a response of its own after calling it.
    */
   async function handleChatConfirm(pid: string, p: ProjectView, req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!p.chat) {
@@ -1633,6 +1635,15 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
     if (finalIntent.length > MAX_INTENT_LENGTH) {
       sendJson(res, 400, { error: `finalIntent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    // Verify the chat session is actually live BEFORE launching a real run --
+    // the route's contract is "confirm THIS chat session", so a stale
+    // (already idle-reaped, already cancelled) or simply fabricated
+    // sessionId must never be able to trigger a launch.
+    if (!p.chat.manager.hasSession(rawSessionId)) {
+      sendJson(res, 404, { error: "chat session not found" });
       return;
     }
 

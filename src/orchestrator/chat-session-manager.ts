@@ -51,6 +51,14 @@ export class ChatSessionManager {
   private readonly now: () => number;
   private readonly idleTimeoutMs: number;
   private reaper: ReturnType<typeof setInterval> | undefined;
+  /** Set at the START of `closeAll()`, before awaiting anything. Guards
+   *  against a `start()` call whose `adapter.startSession()` is still in
+   *  flight when shutdown runs: that session isn't in `this.sessions` yet,
+   *  so `closeAll()`'s sweep can't close it -- without this flag it would be
+   *  registered AFTER shutdown completed and leak forever (see codex
+   *  finding). `start()` checks this right after `startSession()` resolves
+   *  and closes (rather than registers) the session if shutdown has begun. */
+  private closed = false;
 
   constructor(deps: ChatSessionManagerDeps) {
     this.adapter = deps.adapter;
@@ -82,6 +90,13 @@ export class ChatSessionManager {
 
   hasOpenSession(projectId: string): boolean {
     return this.projectsInFlight.has(projectId);
+  }
+
+  /** Read-only existence check -- does NOT close/mutate anything (unlike
+   *  cancel()). Used by callers that must verify a session is still live
+   *  BEFORE taking an action gated on it (e.g. confirming a launch). */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
   }
 
   async start(input: {
@@ -121,6 +136,20 @@ export class ChatSessionManager {
         state: input.state,
         onToken: forwardToken,
       });
+      if (this.closed) {
+        // Shutdown ran while this opening turn was in flight -- `closeAll()`
+        // had nothing to close (this session wasn't registered yet). Close
+        // it now instead of registering it, and throw so the caller (an
+        // in-flight HTTP request) gets a clear failure rather than a
+        // silently-registered-then-orphaned session. Falls through to the
+        // `catch` below for the shared `projectsInFlight` cleanup.
+        try {
+          await this.adapter.close(handle);
+        } catch {
+          /* best-effort -- the daemon is shutting down regardless */
+        }
+        throw new Error("chat session manager is shutting down");
+      }
       liveSessionId = handle.sessionId;
       this.sessions.set(handle.sessionId, {
         projectId: input.projectId,
@@ -236,8 +265,12 @@ export class ChatSessionManager {
     }
   }
 
-  /** Kill every live session — called on daemon shutdown. */
+  /** Kill every live session — called on daemon shutdown. Sets `closed`
+   *  BEFORE awaiting anything so a `start()` call whose `startSession()`
+   *  resolves after this point closes its session instead of leaking it
+   *  (see the `closed` field's doc comment). */
   async closeAll(): Promise<void> {
+    this.closed = true;
     if (this.reaper) clearInterval(this.reaper);
     await Promise.all([...this.sessions.keys()].map((id) => this.forceClose(id)));
   }

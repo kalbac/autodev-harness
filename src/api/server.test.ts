@@ -2381,6 +2381,32 @@ describe("createApiServer / chat routes", () => {
     dOrchestrate.resolve();
     await tick();
   });
+
+  it("POST /chat/confirm 404s for a sessionId that was never started, and never invokes onOrchestrate", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    let orchestrateCalled = false;
+    const onOrchestrate = async (): Promise<void> => {
+      orchestrateCalled = true;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    // No `/chat` start call was ever made -- this sessionId is entirely
+    // bogus/fabricated, mirroring a stale (already idle-reaped or already
+    // cancelled) session left behind by a modal.
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "never-started", finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(404);
+    expect(await confirmRes.json()).toEqual({ error: "chat session not found" });
+
+    await tick();
+    expect(orchestrateCalled).toBe(false);
+  });
 });
 
 describe("createApiServer / listen with an explicit bind host", () => {
