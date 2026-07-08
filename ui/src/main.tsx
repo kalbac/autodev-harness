@@ -13,6 +13,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { connectWs } from "./lib/ws";
 import { applyTheme, getTheme } from "./lib/theme";
+import { Toaster } from "./components/ui/sonner";
 
 // Apply the persisted theme before first paint so the correct .dark class is set.
 applyTheme(getTheme());
@@ -37,6 +38,7 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
+      <Toaster position="bottom-right" />
     </QueryClientProvider>
   </StrictMode>,
 );

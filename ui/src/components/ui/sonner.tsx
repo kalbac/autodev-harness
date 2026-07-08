@@ -1,11 +1,16 @@
 "use client"
 
-import { useTheme } from "next-themes"
+import { useTheme } from "@/lib/theme"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
+// next-themes' <ThemeProvider> is never mounted in this app (the project has its
+// OWN theme system — @/lib/theme, a `.dark` class on <html> — see docs/gotchas
+// "ui/light-theme-tokens"), so sonner's original scaffold wiring (`useTheme` from
+// "next-themes") would always read the un-provided default, never the operator's
+// real light/dark choice. Use the real hook instead.
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  const [theme] = useTheme()
 
   return (
     <Sonner
