@@ -80,4 +80,56 @@ describe("ChatSessionManager", () => {
     await mgr.closeAll();
     expect(closed.sort()).toEqual([a, b].sort());
   });
+
+  it("cancel() releases the registry BEFORE awaiting close(), so a rejecting close still leaves state clean but still surfaces the error", async () => {
+    const { adapter } = makeFakeAdapter();
+    // Override just this instance's close() to reject, without touching the
+    // shared makeFakeAdapter() helper's default (best-effort) behavior.
+    adapter.close = async () => {
+      throw new Error("close failed");
+    };
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    await expect(mgr.cancel(sessionId)).rejects.toThrow("close failed");
+    // Registry/project-slot bookkeeping must already be clean, even though
+    // the close itself failed — a subsequent start() for the same project
+    // must not be blocked by a session that's already torn down.
+    expect(mgr.hasOpenSession("p1")).toBe(false);
+    await expect(
+      mgr.start({ projectId: "p1", intent: "y", state: emptyState, onToken: () => {} }),
+    ).resolves.toBeDefined();
+  });
+
+  it("reapOnce() does not kill a session with a turn in flight, even past the idle timeout, and reaps it once the turn completes and it goes idle again", async () => {
+    const { adapter, closed } = makeFakeAdapter();
+    let now = 0;
+    const mgr = new ChatSessionManager({ adapter, log: () => {}, now: () => now, idleTimeoutMs: 1000 });
+
+    let resolveSend!: (value: { reply: string }) => void;
+    adapter.send = () =>
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      });
+
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    const sendPromise = mgr.send(sessionId, "hello");
+
+    // Advance well past the idle timeout while the turn is still in flight.
+    now = 5000;
+    mgr.reapOnce();
+    expect(closed).not.toContain(sessionId);
+    expect(mgr.hasOpenSession("p1")).toBe(true);
+
+    // Complete the turn.
+    resolveSend({ reply: "done" });
+    await expect(sendPromise).resolves.toEqual({ reply: "done" });
+
+    // Now that the turn is over, turnInFlight must have reset to false — a
+    // further idle stretch should reap it like any other idle session.
+    now = 5000 + 1000 + 1;
+    mgr.reapOnce();
+    expect(closed).toContain(sessionId);
+  });
 });

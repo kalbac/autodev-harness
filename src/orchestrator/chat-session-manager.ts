@@ -21,6 +21,11 @@ interface ManagedSession {
   handle: ChatSessionHandle;
   lastActivityAt: number;
   sseRes: ChatStreamSink | null;
+  /** True while a `send()` turn is awaiting the adapter (the model is
+   *  actively working). The reaper must never kill a session while this is
+   *  true — the idle clock only applies when the session is waiting on the
+   *  OPERATOR, not busy waiting on the model. */
+  turnInFlight: boolean;
 }
 
 export interface ChatSessionManagerDeps {
@@ -67,6 +72,7 @@ export class ChatSessionManager {
   reapOnce(): void {
     const cutoff = this.now() - this.idleTimeoutMs;
     for (const [id, s] of this.sessions) {
+      if (s.turnInFlight) continue; // mid-turn: busy waiting on the model, never idle-reaped
       if (s.lastActivityAt < cutoff) {
         this.log("WARN", `chat: reaping idle session '${id}' for project '${s.projectId}'`);
         void this.forceClose(id);
@@ -99,6 +105,7 @@ export class ChatSessionManager {
         handle,
         lastActivityAt: this.now(),
         sseRes: null,
+        turnInFlight: false,
       });
       return { sessionId: handle.sessionId, turn };
     } catch (err) {
@@ -111,7 +118,13 @@ export class ChatSessionManager {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error("chat session not found");
     s.lastActivityAt = this.now();
-    return this.adapter.send(s.handle, message);
+    s.turnInFlight = true;
+    try {
+      return await this.adapter.send(s.handle, message);
+    } finally {
+      s.turnInFlight = false;
+      s.lastActivityAt = this.now();
+    }
   }
 
   /** Attach (or replace) the SSE sink for a session — a browser reconnect
@@ -125,32 +138,40 @@ export class ChatSessionManager {
     return true;
   }
 
-  private release(sessionId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s) return;
+  /** Removes a session from the registry and frees its project slot. Takes
+   *  the already-looked-up `ManagedSession` so callers don't re-query the
+   *  map. Callers release BEFORE awaiting `adapter.close()` (not after) so
+   *  the registry is never held hostage by a slow or failing close, and so
+   *  a concurrent second teardown (reaper tick, another `cancel()`) can no
+   *  longer find the session and double-close the same handle. */
+  private release(sessionId: string, s: ManagedSession): void {
     this.sessions.delete(sessionId);
     this.projectsInFlight.delete(s.projectId);
     s.sseRes?.end();
   }
 
-  /** Cancel: close the underlying process; nothing was ever enqueued. */
+  /** Cancel: close the underlying process; nothing was ever enqueued.
+   *  Registry state is released before the close is awaited, so a failed
+   *  close still leaves the manager's bookkeeping clean — but the failure
+   *  itself still propagates to the caller (an explicit operator action,
+   *  unlike the reaper's best-effort `forceClose()`). */
   async cancel(sessionId: string): Promise<boolean> {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
+    this.release(sessionId, s);
     await this.adapter.close(s.handle);
-    this.release(sessionId);
     return true;
   }
 
   private async forceClose(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s) return;
+    this.release(sessionId, s);
     try {
       await this.adapter.close(s.handle);
     } catch {
       /* best-effort reap */
     }
-    this.release(sessionId);
   }
 
   /** Kill every live session — called on daemon shutdown. */
