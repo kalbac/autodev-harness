@@ -4,7 +4,7 @@ import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
 import { fileSetsDisjoint } from "../scheduler/scheduler.js";
 import type { OrchestratorAdapter, ReadSnapshot } from "./adapter.js";
-import type { OrchestratorCapabilities } from "./capabilities.js";
+import { buildReadSnapshot, type OrchestratorCapabilities } from "./capabilities.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
 
 export interface OrchestratorResult {
@@ -30,8 +30,6 @@ export interface CreateOrchestratorDeps {
    */
   unlink?: (path: string) => Promise<void>;
 }
-
-const ALL_QUEUE_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
 /** Queue states whose tasks represent live, not-yet-resolved work that a relaunch
  *  of the same intent would duplicate. Mirrors the scheduler's file-lock set
@@ -146,9 +144,8 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
   return {
     async handleIntent(intent: string): Promise<OrchestratorResult> {
       log("INFO", `orchestrator: building read snapshot for intent: ${intent}`);
-      const queues = await caps.read.queues();
-      const existingIds = ALL_QUEUE_STATES.flatMap((state) => queues[state].map((t) => t.id));
-      const state: ReadSnapshot = { existingIds, queues };
+      const state: ReadSnapshot = await buildReadSnapshot(caps.read);
+      const { queues, existingIds } = state;
 
       // Intent-level dedup (PRIMARY, before the expensive decompose): if THIS exact
       // intent was already orchestrated and its prior run's tasks are still in-flight

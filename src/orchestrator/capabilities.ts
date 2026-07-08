@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
+import type { ReadSnapshot } from "./adapter.js";
 import { writeTaskToPending, type WriteTaskDeps } from "./enqueue.js";
 import { isPathSafeId, type TaskSpec } from "./task-spec.js";
 
@@ -154,6 +155,19 @@ export function createReadCapability(repo: BlackboardRepository): OrchestratorCa
       return manifests;
     },
   };
+}
+
+/**
+ * Builds the exact `ReadSnapshot` shape `handleIntent` uses (every queue +
+ * the flattened `existingIds` across ALL queue states), from the `read`
+ * capability. Extracted here so `handleIntent` and the chat wiring's opening
+ * turn (`ChatSessionManager.start`) share ONE definition of "current queue
+ * state" rather than maintaining two independently-drifting copies.
+ */
+export async function buildReadSnapshot(read: OrchestratorCapabilities["read"]): Promise<ReadSnapshot> {
+  const queues = await read.queues();
+  const existingIds = ALL_QUEUE_STATES.flatMap((state) => queues[state].map((t) => t.id));
+  return { existingIds, queues };
 }
 
 /**
