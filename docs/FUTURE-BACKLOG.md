@@ -104,6 +104,20 @@ heavier package. Polish the product surface first; wrap it once it's real.
   (today's adapter is a single spawn-and-exit call), streaming to the UI, a new chat view/route,
   message history persistence. Do NOT start implementation without that design conversation.
 
+- **Optional local-CI replay as an extra machine-gate layer (from the `redwoodjs/agent-ci`
+  recon, s33 2026-07-08)** — for a project that already ships its own
+  `.github/workflows/*.yml`, optionally let the machine gate replay that CI locally
+  (via `agent-ci run --all --json`, parsing its NDJSON event stream) as an ADDITIONAL
+  check layered onto — never instead of — the existing worktree `success_commands` gate
+  AND the independent codex critic. Would catch environment-drift failures neither
+  current check can (a workflow-only step, a matrix combination, a clean-container
+  quirk). Needs Docker as a new host dependency; `agent-ci` is FSL-1.1-MIT (fair-source,
+  fine for this non-competing internal use, unlike AO/OpenHands/Open Design's fully
+  permissive MIT/Apache). **Low priority — no current project in this harness's orbit
+  has been reported hitting this specific gap**; full analysis + 5-way verdict in
+  `wiki/agent-ci-analysis.md` (verdict: not a must-have, not redundant, this is the one
+  surviving footnote).
+
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 
 Ranked by fit with "never merge bullshit":
