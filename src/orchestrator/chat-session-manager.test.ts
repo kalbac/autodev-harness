@@ -235,6 +235,41 @@ describe("ChatSessionManager", () => {
     expect(ended).toEqual(["second"]);
   });
 
+  it("detachStream() is identity-guarded (a stale sink can't clobber the live one) and only clears the CURRENTLY attached sink", async () => {
+    const { adapter } = makeFakeAdapter();
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    const staleSink = { write: () => {}, end: () => {} };
+    const liveSink = { write: () => {}, end: () => {} };
+    expect(mgr.attachStream(sessionId, liveSink)).toBe(true);
+
+    // A stale close event (e.g. from an OLD connection that a reconnect
+    // already superseded) must be a safe no-op: it is not the currently
+    // attached sink, so nothing is cleared.
+    expect(mgr.detachStream(sessionId, staleSink)).toBe(false);
+
+    // Prove the live sink is genuinely still attached after the no-op: a
+    // fresh attachStream() call ends whatever is CURRENTLY attached, and it
+    // must be `liveSink` (not `staleSink`, which was never wired up).
+    const ended: string[] = [];
+    const probeSink = { write: () => {}, end: () => ended.push("probe-saw-live") };
+    liveSink.end = () => ended.push("live-ended-by-probe");
+    expect(mgr.attachStream(sessionId, probeSink)).toBe(true);
+    expect(ended).toEqual(["live-ended-by-probe"]);
+
+    // Now detach the sink that IS actually attached (probeSink) -- must
+    // succeed and return true.
+    expect(mgr.detachStream(sessionId, probeSink)).toBe(true);
+
+    // Detaching twice is a safe no-op the second time: it is no longer the
+    // currently attached sink (attach cleared it to null already).
+    expect(mgr.detachStream(sessionId, probeSink)).toBe(false);
+
+    // An unknown session id is also a safe no-op.
+    expect(mgr.detachStream("no-such-session", probeSink)).toBe(false);
+  });
+
   it("start()'s onToken forwarding stays live for later turns: a token that arrives AFTER attachStream() reaches the sink, but one that arrives BEFORE is safely dropped", async () => {
     const { adapter } = makeFakeAdapter();
     // Capture the onToken the manager hands to the adapter -- ClaudeChatProcess

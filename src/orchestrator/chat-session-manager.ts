@@ -177,6 +177,23 @@ export class ChatSessionManager {
     return true;
   }
 
+  /** Detach a session's SSE sink -- but ONLY if `sink` is STILL the currently
+   *  attached one for that session. This guards against a stale disconnect
+   *  event racing a newer reconnect: if the client reconnected (a fresh
+   *  `attachStream()` call already replaced the sink) before this session's
+   *  OLD connection's 'close' event fires, that stale event must not clobber
+   *  the NEW live sink. Does NOT call `sink.end()` -- this fires in response
+   *  to the connection ALREADY being gone (client closed it, or it dropped),
+   *  not a proactive close; teardown elsewhere (`release()`/`forceClose()`)
+   *  already owns ending a still-live sink. Returns true if it actually
+   *  detached something. */
+  detachStream(sessionId: string, sink: ChatStreamSink): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.sseRes !== sink) return false;
+    s.sseRes = null;
+    return true;
+  }
+
   /** Removes a session from the registry and frees its project slot. Takes
    *  the already-looked-up `ManagedSession` so callers don't re-query the
    *  map. Callers release BEFORE awaiting `adapter.close()` (not after) so

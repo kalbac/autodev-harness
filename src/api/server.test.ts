@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2270,6 +2270,74 @@ describe("createApiServer / chat routes", () => {
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toMatch(/application\/json/);
     expect(await res.json()).toEqual({ error: "session not found" });
+  });
+
+  it("GET /chat/:id/stream detaches its sink from the manager when the client disconnects", async () => {
+    // Real HTTP client abort (not a fake `res`), because `handleChatStream`'s
+    // `res.on("close", ...)` wiring is closure-internal to `createApiServer`
+    // and cannot be reached directly from a test -- driving a genuine socket
+    // teardown end-to-end is the only way to exercise it. `ChatSessionManager`
+    // is real (not mocked); `vi.spyOn` wraps its `attachStream`/`detachStream`
+    // so the test can observe the calls without losing the real behavior
+    // underneath.
+    //
+    // NOTE on shape: this deliberately does NOT `await fetch(...)` for the
+    // stream response -- Node's `http.ServerResponse.writeHead()` does not
+    // flush headers to the socket until the first `write()`/`end()` (verified
+    // empirically against this exact no-write-until-token shape), and this
+    // route never writes until a token arrives, so an `await`ed fetch would
+    // hang forever waiting for headers no production client-disconnect
+    // scenario is actually blocked on. Instead: fire the request unawaited,
+    // poll (bounded) for the server to have actually called `attachStream()`
+    // (proving the request was fully dispatched and routed), THEN abort.
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const attachSpy = vi.spyOn(manager, "attachStream");
+    const detachSpy = vi.spyOn(manager, "detachStream");
+
+    const controller = new AbortController();
+    const streamFetch = fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/stream`)}`, {
+      signal: controller.signal,
+    }).catch(() => {
+      /* expected: the abort below rejects this fetch -- nothing to assert on it */
+    });
+
+    const attachDeadline = Date.now() + 5000;
+    while (attachSpy.mock.calls.length === 0 && Date.now() < attachDeadline) {
+      await tick(10);
+    }
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    expect(attachSpy.mock.results[0]?.value).toBe(true);
+
+    // Client-side disconnect: abort the in-flight request, which tears down
+    // the underlying socket and must fire `res`'s 'close' event server-side.
+    controller.abort();
+    await streamFetch;
+
+    // The server's 'close' event is async relative to the client abort --
+    // poll (bounded) instead of asserting synchronously.
+    const detachDeadline = Date.now() + 5000;
+    while (detachSpy.mock.calls.length === 0 && Date.now() < detachDeadline) {
+      await tick(20);
+    }
+
+    expect(detachSpy).toHaveBeenCalledTimes(1);
+    expect(detachSpy.mock.calls[0]?.[0]).toBe(sessionId);
+    expect(detachSpy.mock.results[0]?.value).toBe(true);
+
+    // The registry must be left clean, not holding the dead sink: a fresh
+    // attach for the same session succeeds normally.
+    const newSink = { write: () => {}, end: () => {} };
+    expect(manager.attachStream(sessionId, newSink)).toBe(true);
   });
 
   it("POST /chat/confirm does NOT destroy the chat session when the real launch 409s (in-flight orchestrate)", async () => {

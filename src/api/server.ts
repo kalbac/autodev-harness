@@ -1474,7 +1474,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * live session's token stream. Not `async`: the manager's `attachStream` is
    * synchronous, and there is nothing else to await here.
    */
-  function handleChatStream(p: ProjectView, sessionId: string, res: ServerResponse): void {
+  function handleChatStream(p: ProjectView, sessionId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!p.chat) {
       sendJson(res, 404, { error: "not found" });
       return;
@@ -1505,6 +1505,15 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       sendJson(res, 404, { error: "session not found" });
       return;
     }
+
+    // A disconnected SSE client (network drop, tab close, navigation away)
+    // must not leave a dead sink attached forever -- `res` emits 'close' both
+    // for a client-initiated disconnect AND for our own `sink.end()`-driven
+    // teardown; `detachStream`'s identity guard makes the latter (and any
+    // reconnect race) a safe no-op.
+    res.on("close", () => {
+      p.chat?.manager.detachStream(sessionId, sink);
+    });
 
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -2097,7 +2106,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
       if (req.method === "POST" && (sub === "/chat" || sub === "/chat/")) return void (await handleChatStart(rawPid, p, req, res));
       const chatStreamMatch = /^\/chat\/([^/]+)\/stream\/?$/.exec(sub);
-      if (req.method === "GET" && chatStreamMatch) return void handleChatStream(p, chatStreamMatch[1]!, res);
+      if (req.method === "GET" && chatStreamMatch) return void handleChatStream(p, chatStreamMatch[1]!, req, res);
       const chatMessageMatch = /^\/chat\/([^/]+)\/message\/?$/.exec(sub);
       if (req.method === "POST" && chatMessageMatch) return void (await handleChatMessage(p, chatMessageMatch[1]!, req, res));
       if (req.method === "POST" && (sub === "/chat/confirm" || sub === "/chat/confirm/"))
