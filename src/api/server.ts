@@ -1480,21 +1480,37 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
+    // Build the sink first -- it's a plain object literal, no I/O happens
+    // until attachStream() actually accepts it. That way a missing session
+    // gets a normal JSON 404 (matching every other chat route) instead of an
+    // HTTP 200 SSE response carrying an in-band error frame.
+    const sink: ChatStreamSink = {
+      write: (chunk) => {
+        try {
+          res.write(`data: ${chunk}\n\n`);
+        } catch {
+          /* the client may have already disconnected; a dead socket must never crash the session */
+        }
+      },
+      end: () => {
+        try {
+          res.end();
+        } catch {
+          /* already closed */
+        }
+      },
+    };
+    const attached = p.chat.manager.attachStream(sessionId, sink);
+    if (!attached) {
+      sendJson(res, 404, { error: "session not found" });
+      return;
+    }
+
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
-
-    const sink: ChatStreamSink = {
-      write: (chunk) => res.write(`data: ${chunk}\n\n`),
-      end: () => res.end(),
-    };
-    const attached = p.chat.manager.attachStream(sessionId, sink);
-    if (!attached) {
-      res.write(`data: ${JSON.stringify({ type: "error", message: "session not found" })}\n\n`);
-      res.end();
-    }
   }
 
   /** `POST /projects/:id/chat/:sessionId/message` -- forwards one operator
@@ -1605,13 +1621,20 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
 
-    // Best-effort teardown: a stale/unknown sessionId is a no-op (`cancel`
-    // returns false), which is intentionally ignored here -- the operator's
-    // goal (launch the real run) must not be blocked by an already-gone or
-    // never-really-open chat session.
-    await p.chat.manager.cancel(rawSessionId);
-
+    // Launch FIRST, tear down SECOND: `launchOrchestrate` sends its own
+    // response (202 on success, 404/409 on its own guards) and never awaits
+    // anything between those guard checks and calling `sendJson`, so
+    // `res.statusCode` is reliably set by the time this await returns. Only
+    // destroy the chat session if the real run actually launched -- if the
+    // launch was rejected (e.g. a 409 for an in-flight orchestrate run), the
+    // chat session is left open so the operator can retry confirm later
+    // without losing their refined conversation.
     await launchOrchestrate(pid, p, finalIntent, res);
+    if (res.statusCode === 202) {
+      // Best-effort teardown: a stale/unknown sessionId is a no-op (`cancel`
+      // returns false), which is intentionally ignored here.
+      await p.chat.manager.cancel(rawSessionId);
+    }
   }
 
   /**

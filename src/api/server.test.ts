@@ -2260,6 +2260,59 @@ describe("createApiServer / chat routes", () => {
     await tick();
     expect(calls).toEqual(["build X, refined"]);
   });
+
+  it("GET /chat/:id/stream on an unknown session returns a real 404 JSON response, not a 200 SSE frame", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat/does-not-exist/stream")}`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(await res.json()).toEqual({ error: "session not found" });
+  });
+
+  it("POST /chat/confirm does NOT destroy the chat session when the real launch 409s (in-flight orchestrate)", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    const dOrchestrate = deferred<void>();
+    const onOrchestrate = async (): Promise<void> => {
+      await dOrchestrate.promise;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    // Kick off a real orchestrate run directly so it's in flight when confirm fires.
+    const firstOrchestrate = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "already running" }),
+    });
+    expect(firstOrchestrate.status).toBe(202);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(409);
+
+    // The chat session must still be open -- confirm's cancel() must only run
+    // AFTER a successful (202) launch, never before/regardless.
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    dOrchestrate.resolve();
+    await tick();
+  });
 });
 
 describe("createApiServer / listen with an explicit bind host", () => {

@@ -234,4 +234,45 @@ describe("ChatSessionManager", () => {
     expect(mgr.attachStream(sessionId, thirdSink)).toBe(true);
     expect(ended).toEqual(["second"]);
   });
+
+  it("start()'s onToken forwarding stays live for later turns: a token that arrives AFTER attachStream() reaches the sink, but one that arrives BEFORE is safely dropped", async () => {
+    const { adapter } = makeFakeAdapter();
+    // Capture the onToken the manager hands to the adapter -- ClaudeChatProcess
+    // binds this ONCE at construction and reuses it for every later send() turn,
+    // so this simulates a token arriving asynchronously during a SECOND turn.
+    let capturedOnToken: ((text: string) => void) | undefined;
+    adapter.startSession = async (input) => {
+      capturedOnToken = input.onToken;
+      return { handle: { sessionId: "s1" }, turn: { reply: "hi" } };
+    };
+
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+    const callerOnTokenCalls: string[] = [];
+    const { sessionId } = await mgr.start({
+      projectId: "p1",
+      intent: "x",
+      state: emptyState,
+      onToken: (t) => callerOnTokenCalls.push(t),
+    });
+    expect(capturedOnToken).toBeTruthy();
+
+    // Before any SSE client is attached (i.e. still "turn one" from the UI's
+    // perspective), a token must not throw and must not reach any sink.
+    expect(() => capturedOnToken!("too-early")).not.toThrow();
+    // The caller-supplied onToken must still fire regardless (kept for
+    // backward API compatibility / testability).
+    expect(callerOnTokenCalls).toEqual(["too-early"]);
+
+    const sink = { write: vi.fn(), end: vi.fn() };
+    expect(mgr.attachStream(sessionId, sink)).toBe(true);
+
+    // Now simulate a token arriving during a LATER turn, after the SSE
+    // stream is attached -- it must reach the live sink.
+    capturedOnToken!("hello");
+    expect(callerOnTokenCalls).toEqual(["too-early", "hello"]);
+    expect(sink.write).toHaveBeenCalledTimes(1);
+    const [payload] = sink.write.mock.calls[0]!;
+    expect(payload).toContain("hello");
+  });
 });

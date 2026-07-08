@@ -94,12 +94,34 @@ export class ChatSessionManager {
       throw new Error("a chat session is already open for this project");
     }
     this.projectsInFlight.add(input.projectId);
+    // The real sessionId isn't known until adapter.startSession() resolves, but
+    // `ClaudeChatProcess` binds its onToken callback ONCE at construction and
+    // reuses it for the whole session's lifetime (every later send() call, not
+    // just this opening turn) -- so this closure must look up the CURRENTLY
+    // attached SSE sink fresh on every token, not capture one at start() time.
+    // Before liveSessionId is assigned (i.e. during THIS opening turn), there is
+    // by definition no SSE client attached yet (the UI only learns the
+    // sessionId from this call's own return value), so tokens are correctly
+    // dropped for turn one -- this becomes live starting with the next turn.
+    let liveSessionId: string | null = null;
+    const forwardToken = (text: string): void => {
+      input.onToken(text);
+      if (liveSessionId === null) return;
+      const s = this.sessions.get(liveSessionId);
+      if (!s?.sseRes) return;
+      try {
+        s.sseRes.write(JSON.stringify({ type: "token", text }));
+      } catch {
+        /* best-effort: a misbehaving sink must never crash mid-stream token delivery */
+      }
+    };
     try {
       const { handle, turn } = await this.adapter.startSession({
         intent: input.intent,
         state: input.state,
-        onToken: input.onToken,
+        onToken: forwardToken,
       });
+      liveSessionId = handle.sessionId;
       this.sessions.set(handle.sessionId, {
         projectId: input.projectId,
         handle,
