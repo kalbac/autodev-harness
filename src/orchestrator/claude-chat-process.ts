@@ -51,6 +51,10 @@ export class ClaudeChatProcess {
   private remainder = "";
   private pending: { resolve: (o: ChatTurnOutcome) => void; reject: (e: Error) => void } | null = null;
   private closed = false;
+  /** The pending SIGKILL escalation scheduled by `close()`, if any — cleared
+   *  on either settlement signal (`error`/`close`) below, mirroring
+   *  `util/native.ts`'s `clearTimers()`. */
+  private killTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: ClaudeChatProcessDeps) {
     this.onToken = deps.onToken;
@@ -59,11 +63,28 @@ export class ClaudeChatProcess {
 
     this.child.stdout?.setEncoding("utf8");
     this.child.stdout?.on("data", (chunk: string) => this.handleChunk(chunk));
+    this.child.stderr?.setEncoding("utf8");
+    // Drain stderr so an OS pipe full of CLI diagnostics (MCP warnings, hook
+    // output) can't backpressure-stall the child and stall the in-flight
+    // send()'s stdout `result` with it. Not surfaced anywhere -- mirrors
+    // util/native.ts's stderr capture, minus the capture (no "final result"
+    // object exists here to attach it to).
+    this.child.stderr?.on("data", () => {});
     // EPIPE guard, same as util/native.ts: a fast-exiting child can close its
     // stdin read end before a write lands.
     this.child.stdin?.on("error", () => {});
-    this.child.on("error", (err: Error) => this.failPending(err));
-    this.child.on("close", () => this.failPending(new Error("chat process exited unexpectedly")));
+    this.child.on("error", (err: Error) => {
+      this.clearKillTimer();
+      this.failPending(err);
+    });
+    this.child.on("close", () => {
+      this.clearKillTimer();
+      this.failPending(new Error("chat process exited unexpectedly"));
+    });
+  }
+
+  private clearKillTimer(): void {
+    if (this.killTimer) clearTimeout(this.killTimer);
   }
 
   private handleChunk(chunk: string): void {
@@ -126,7 +147,7 @@ export class ClaudeChatProcess {
     } catch {
       /* already gone */
     }
-    setTimeout(() => {
+    this.killTimer = setTimeout(() => {
       try {
         this.child.kill("SIGKILL");
       } catch {
