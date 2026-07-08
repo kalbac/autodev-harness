@@ -116,6 +116,22 @@ describe("ClaudeChatProcess", () => {
     await expect(proc.send("hello")).rejects.toThrow("chat process is closed");
   });
 
+  it("rejects the in-flight send() when an unterminated line exceeds the buffer cap, without closing the session", async () => {
+    const { child } = makeFakeChild();
+    const proc = new ClaudeChatProcess({ exe: "claude", cwd: "/repo", args: [], onToken: () => {}, spawnFn: () => child as never });
+    const pending = proc.send("hello");
+    // A runaway/oversized single line with no newline -- e.g. a legitimate
+    // but huge `result` event whose JSON hasn't finished arriving yet.
+    child.stdout.emit("data", "x".repeat(1_100_000));
+    await expect(pending).rejects.toThrow("chat process response exceeded the maximum buffered line size");
+
+    // The session itself must survive this -- not marked closed, so a
+    // subsequent send() is still accepted (not "chat process is closed").
+    const next = proc.send("hello again");
+    emitLine(child, { type: "result", subtype: "success", is_error: false, result: "OK" });
+    await expect(next).resolves.toEqual({ replyText: "OK", isError: false });
+  });
+
   it("clears the pending SIGKILL timer when the child closes before the grace period elapses", () => {
     vi.useFakeTimers();
     try {

@@ -109,9 +109,15 @@ export class ClaudeChatProcess {
     // unlike the kill-on-overflow probe in agent-extensions.ts, a long-lived
     // chat session just drops the overflowed partial line and keeps running
     // (dropping one malformed line is preferable to killing an otherwise-live
-    // conversation).
+    // conversation). But the terminal `result` line is the ONLY signal that
+    // settles send()'s promise, so silently dropping it would abandon any
+    // in-flight turn forever with no error -- fail just that turn (if one is
+    // waiting) instead, leaving the session itself alive for the next send().
     if (this.remainder.length > MAX_REMAINDER_BYTES) {
       this.remainder = "";
+      if (this.pending) {
+        this.failPending(new Error("chat process response exceeded the maximum buffered line size"));
+      }
     }
   }
 
