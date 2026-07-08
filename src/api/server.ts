@@ -1572,10 +1572,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   /**
-   * `POST /projects/:id/chat/confirm` -- best-effort tears down the chat
-   * session, then launches the REAL orchestrate run via `launchOrchestrate`
-   * with the operator-assembled `finalIntent`. Deliberately NOT a new
-   * enforcement code path: `launchOrchestrate` performs its own
+   * `POST /projects/:id/chat/confirm` -- launches the REAL orchestrate run via
+   * `launchOrchestrate` with the operator-assembled `finalIntent` FIRST, then
+   * best-effort tears down the chat session ONLY if that launch actually
+   * succeeded (see the launch-then-teardown comment below). Deliberately NOT
+   * a new enforcement code path: `launchOrchestrate` performs its own
    * `p.onOrchestrate` 404 check, its own `orchestrateInFlight` 409 check, and
    * sends its own 202 -- this function must never send a response of its own
    * after calling it.
