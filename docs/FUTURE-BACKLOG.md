@@ -84,6 +84,25 @@ heavier package. Polish the product surface first; wrap it once it's real.
   `wiki/agency-agents-analysis.md`). Scope when picked up: a `persona:` field per task/project that is
   prepended to the worker prompt (composes with, does not replace, the role matrix). Low priority — our
   differentiator is the gate, not persona breadth; this is a cheap quality lever, not a blocker.
+- **Orchestrator CHAT — a real conversation, not one-shot decompose (operator vision, discussed since
+  early design, resurfaced s32 2026-07-08 from the dedup live-prove's UX gap).** Today `handleIntent`
+  (`src/orchestrator/orchestrator.ts`) is explicitly a **staged, TERMINATING pipeline** — one call per
+  intent (snapshot → decompose → validate → enqueue → trigger → return), NOT an agentic loop; the doc
+  comment says so verbatim. The operator's vision: launching a run should drop the operator into an
+  actual **chat with the orchestrator** — back-and-forth, not silence — UNLESS the intent is a relaunch
+  duplicate (backlog C), in which case there's nothing to discuss and a toast is enough (see the s32
+  toast fix, shipped, for that narrower case). This is a **larger architectural topic, deliberately
+  DEFERRED to its own brainstorm → spec → plan session** (same discipline as onboarding-redesign /
+  shadcn-migration), NOT bundled into the s32 wrap-up. **Open question for that brainstorm, flagged
+  up front:** does a live conversational orchestrator conflict with `adr/003`'s accepted role model —
+  "the operator talks to an in-harness LLM orchestrator that drives the run; the **gate/enforcement
+  stays deterministic** (an LLM can't talk past it)" (`docs/VISION.md` line ~21)? A chat UI must not
+  let conversational back-and-forth become a side channel that bypasses the critic gate — the
+  brainstorm needs to nail down exactly what the orchestrator CAN be talked into changing (task scope,
+  re-decompose, abandon) versus what stays off-limits (skipping the gate, forcing a commit — that's
+  `apply-on-accept`'s job, not chat's). Likely touches: a persistent orchestrator session/adapter
+  (today's adapter is a single spawn-and-exit call), streaming to the UI, a new chat view/route,
+  message history persistence. Do NOT start implementation without that design conversation.
 
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 

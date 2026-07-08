@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowUp, CircleAlert } from "lucide-react";
+import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
-import { qk, useConfig, useProjects } from "@/lib/queries";
+import { qk, useConfig, useProjects, useState as useProjectState } from "@/lib/queries";
 import { useAppStore } from "@/lib/store";
 import { useProjectId } from "@/lib/useProjectId";
 import { cn } from "@/lib/utils";
@@ -11,6 +12,21 @@ import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Spinner } from "./ui/Feedback";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/Button";
+
+/** Only watch for this long after a launch: the orchestrator's own early outcome
+ *  lines (0-task / relaunch dedup / validation reject) land within a couple of
+ *  WS-invalidate cycles; a plain enqueue+drain can run far longer, in which case
+ *  the existing "Recent runs" / sidebar surfaces already show something new, so
+ *  there is nothing silent left to explain. */
+const DIGEST_WATCH_MS = 20_000;
+
+/** Split one digest.md line of the form `[orchestrator] [LEVEL] message` into its
+ *  level + a human message (drops the also-redundant leading "orchestrator: "). */
+function parseOrchestratorDigestLine(line: string): { level: string; message: string } | null {
+  const m = /^\[orchestrator\] \[(\w+)\] (?:orchestrator: )?(.*)$/.exec(line);
+  if (!m) return null;
+  return { level: m[1]!, message: m[2]! };
+}
 
 /**
  * The "new run" intent box — the one write surface that launches work. It only
@@ -34,16 +50,53 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
   const qc = useQueryClient();
   const projects = useProjects();
   const config = useConfig(projectId);
+  const projectState = useProjectState(projectId);
 
   const projectName = projects.data?.projects.find((p) => p.id === projectId)?.name ?? projectId;
   const cfg = config.data;
   const workerModel = cfg?.roles.worker.ladder[0] ?? "—";
   const criticModel = cfg ? `${cfg.roles.critic.model} · ${cfg.roles.critic.effort}` : "—";
 
+  // Surfaces the orchestrator's own real outcome for THIS launch — a relaunch
+  // dedup skip, a 0-task decomposition, or a rejected batch previously looked
+  // like a silent no-op (the composer only ever showed a static "accepted"
+  // message; see gotcha [ui/orchestrate-silent-dedup]). `digestTail` is already
+  // WS-live (any digest.md write re-triggers this query), so we just watch it:
+  // capture how many `[orchestrator]`-prefixed lines exist at launch time, then
+  // toast the first NEW one that appears (its own report() call, whatever the
+  // outcome was), once, within a bounded window.
+  const watchRef = useRef<{ baseline: number; deadline: number } | null>(null);
+  useEffect(() => {
+    const watch = watchRef.current;
+    const digest = projectState.data?.digestTail;
+    if (!watch || digest === undefined) return;
+    if (Date.now() > watch.deadline) {
+      watchRef.current = null;
+      return;
+    }
+    const orchLines = digest.split(/\r?\n/).filter((l) => l.startsWith("[orchestrator] "));
+    if (orchLines.length <= watch.baseline) return;
+    // The FIRST new line after the launch — not the latest overall — in case
+    // several orchestrator lines land between one digestTail refetch and the
+    // next (codex finding): the operator wants THIS launch's own outcome, not
+    // whatever is newest by the time the toast fires.
+    const parsed = parseOrchestratorDigestLine(orchLines[watch.baseline]!);
+    if (parsed) {
+      if (parsed.level === "WARN") toast.warning(parsed.message);
+      else if (parsed.level === "ERROR") toast.error(parsed.message);
+      else toast.info(parsed.message);
+    }
+    watchRef.current = null; // one toast per launch
+  }, [projectState.data?.digestTail]);
+
   const launch = useMutation({
     mutationFn: (text: string) => api.postOrchestrate(projectId, text),
     onSuccess: () => {
       setIntent("");
+      const baseline = (projectState.data?.digestTail ?? "")
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith("[orchestrator] ")).length;
+      watchRef.current = { baseline, deadline: Date.now() + DIGEST_WATCH_MS };
       void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
       void qc.invalidateQueries({ queryKey: qk.state(projectId) });
     },
