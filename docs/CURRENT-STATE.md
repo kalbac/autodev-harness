@@ -1,5 +1,11 @@
 # CURRENT STATE — Autodev Harness
 
+> ## 📝 DOCS-ONLY (s33) — two specs written, no code yet: orchestrator-chat (+plan) and agent-ci gate-hardening
+> Both s33 agenda items were discussion-first per the operator's ask; zero production diffs this session — four
+> docs commits (`fa96605` chat spec, `294a78c` chat plan, `b330656` agent-ci recon, `72a09d8` agent-ci gate spec).
+> **Next session starts by picking an execution mode for the chat plan** (subagent-driven recommended) OR by writing
+> the agent-ci gate-hardening plan first — operator's call. Full detail: `docs/SESSION-LOG.md` s33 entry.
+
 > ## ✅ DONE + MERGED (s32) — agency-agents pivot resolved + THREE backlog features (PRs #55/#56) + LIVE-PROVEN
 > **Pivot first:** studied `github.com/msitarzewski/agency-agents` (MIT) vs the operator's 5-way frame → **#4 Not for us**
 > (a ~280-file persona-prompt library + multi-tool installer, NOT an orchestrator; it *installs* prompt files, doesn't
