@@ -13,6 +13,7 @@ import { detectRepoRoot } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
 import { buildProjectConfigView } from "./api/config-view.js";
 import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
+import { buildReadSnapshot, createReadCapability } from "./orchestrator/capabilities.js";
 import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
@@ -188,6 +189,15 @@ async function main(): Promise<void> {
                   isolationFlags: workerIsolationFlags(c),
                 }),
               onApplyOnAccept: (taskId: string) => root.applyOnAccept(taskId),
+              // Pre-launch chat (adr/003-safe -- see chat-adapter.ts): `manager` is
+              // the project's lazily-built ChatSessionManager (composition/root.ts);
+              // `buildSnapshot` gives the chat's opening turn the SAME ReadSnapshot
+              // shape `handleIntent` uses, over the SAME repo, so "current state"
+              // never drifts between the two call sites.
+              chat: {
+                manager: root.chat,
+                buildSnapshot: () => buildReadSnapshot(createReadCapability(root.repo)),
+              },
             },
           };
         },
