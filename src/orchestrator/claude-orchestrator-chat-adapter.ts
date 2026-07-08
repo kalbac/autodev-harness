@@ -35,12 +35,20 @@ function extractProposedSpecs(replyText: string): TaskSpec[] | undefined {
   return specs.length > 0 ? specs : undefined;
 }
 
-/** Builds a `ChatTurnResult`, omitting `proposedSpecs` entirely (rather than
- *  setting it to `undefined`) when there is no preview — required under this
- *  project's `exactOptionalPropertyTypes: true`. */
-function turnResultFrom(replyText: string): ChatTurnResult {
-  const proposedSpecs = extractProposedSpecs(replyText);
-  return proposedSpecs !== undefined ? { reply: replyText, proposedSpecs } : { reply: replyText };
+/** Builds a `ChatTurnResult` from a completed `proc.send()` outcome, omitting
+ *  `proposedSpecs` entirely (rather than setting it to `undefined`) when there
+ *  is no preview — required under this project's `exactOptionalPropertyTypes: true`.
+ *
+ *  Throws when `outcome.isError` is set: a terminal `result` event with
+ *  `is_error: true` (auth failure, rate limit, CLI crash) is a genuine
+ *  turn failure, not a conversational reply — it must never be surfaced to
+ *  the UI as if the orchestrator had actually replied. */
+function turnResultFrom(outcome: { replyText: string; isError: boolean }): ChatTurnResult {
+  if (outcome.isError) {
+    throw new Error(`chat turn failed: ${outcome.replyText}`);
+  }
+  const proposedSpecs = extractProposedSpecs(outcome.replyText);
+  return proposedSpecs !== undefined ? { reply: outcome.replyText, proposedSpecs } : { reply: outcome.replyText };
 }
 
 /**
@@ -87,12 +95,12 @@ export class ClaudeOrchestratorChatAdapter implements OrchestratorChatAdapter {
     const prompt = buildChatOpeningPrompt(input.intent, input.state);
     const outcome = await proc.send(prompt);
     const handle: ClaudeChatSessionHandle = { sessionId, proc };
-    return { handle, turn: turnResultFrom(outcome.replyText) };
+    return { handle, turn: turnResultFrom(outcome) };
   }
 
   async send(handle: ChatSessionHandle, message: string): Promise<ChatTurnResult> {
     const outcome = await (handle as ClaudeChatSessionHandle).proc.send(message);
-    return turnResultFrom(outcome.replyText);
+    return turnResultFrom(outcome);
   }
 
   async close(handle: ChatSessionHandle): Promise<void> {

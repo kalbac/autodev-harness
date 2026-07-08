@@ -29,6 +29,13 @@ function emitResult(child: { stdout: EventEmitter }, result: string): void {
   child.stdout.emit("data", `${JSON.stringify({ type: "result", subtype: "success", is_error: false, result })}\n`);
 }
 
+function emitErrorResult(child: { stdout: EventEmitter }, result: string): void {
+  child.stdout.emit(
+    "data",
+    `${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result })}\n`,
+  );
+}
+
 describe("ClaudeOrchestratorChatAdapter", () => {
   it("startSession spawns claude with the correct chat args and returns the first turn", async () => {
     const { child, written } = makeFakeChild();
@@ -78,6 +85,26 @@ describe("ClaudeOrchestratorChatAdapter", () => {
     emitResult(child, "got it, added.");
     const turn = await sendPromise;
     expect(turn.reply).toBe("got it, added.");
+  });
+
+  it("startSession rejects when the underlying process reports isError", async () => {
+    const { child } = makeFakeChild();
+    const adapter = new ClaudeOrchestratorChatAdapter({ cfg: fakeCfg(), repoRoot: "/repo", spawnFn: (() => child) as never });
+    const startPromise = adapter.startSession({ intent: "x", state: emptyState, onToken: () => {} });
+    emitErrorResult(child, "Not logged in · Please run /login");
+    await expect(startPromise).rejects.toThrow(/Not logged in/);
+  });
+
+  it("send() rejects when the underlying process reports isError on a follow-up turn", async () => {
+    const { child } = makeFakeChild();
+    const adapter = new ClaudeOrchestratorChatAdapter({ cfg: fakeCfg(), repoRoot: "/repo", spawnFn: (() => child) as never });
+    const startPromise = adapter.startSession({ intent: "x", state: emptyState, onToken: () => {} });
+    emitResult(child, "ok, what else?");
+    const { handle } = await startPromise;
+
+    const sendPromise = adapter.send(handle, "also the webhook");
+    emitErrorResult(child, "Not logged in · Please run /login");
+    await expect(sendPromise).rejects.toThrow(/Not logged in/);
   });
 
   it("close() tears down the underlying process", async () => {
