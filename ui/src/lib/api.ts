@@ -276,6 +276,23 @@ export interface AgentExtensions {
   agents: string[];
 }
 
+/** Narrower mirror (server-shape subset) of `TaskSpec` from the orchestrator
+ *  chat's proposed-decomposition preview -- the UI only needs enough to render
+ *  a task-card list, not the full spec the server persists. */
+export interface ChatTaskSpecPreview {
+  id: string;
+  title: string;
+  type: string;
+  file_set: string[];
+}
+
+/** One reply turn from the orchestrator chat (`POST /chat` and
+ *  `POST /chat/:sessionId/message` share this response shape). */
+export interface ChatTurn {
+  reply: string;
+  proposedSpecs: ChatTaskSpecPreview[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -451,5 +468,96 @@ export const api = {
       throw new ApiError(res.status, msg);
     }
     return (await res.json()) as { accepted: boolean; intent: string };
+  },
+
+  /** Start a pre-launch chat session. 409 if one is already open for this project. */
+  async postChatStart(projectId: string, intent: string): Promise<{ sessionId: string } & ChatTurn> {
+    const res = await fetch(projectPath(projectId, "/chat"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+    return (await res.json()) as { sessionId: string } & ChatTurn;
+  },
+
+  /** Send one operator turn. The reply also streams token-by-token over the
+   *  EventSource opened via `chatStreamUrl` -- this call's resolved value is
+   *  the same final turn, useful as a fallback if the stream missed anything. */
+  async postChatMessage(projectId: string, sessionId: string, message: string): Promise<ChatTurn> {
+    const res = await fetch(projectPath(projectId, `/chat/${encodeURIComponent(sessionId)}/message`), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+    return (await res.json()) as ChatTurn;
+  },
+
+  /** Confirm: closes the chat session and launches the SAME `/orchestrate`
+   *  path as a plain one-shot launch -- `finalIntent` is assembled CLIENT-SIDE
+   *  from the operator's own messages (never the LLM's). */
+  async postChatConfirm(
+    projectId: string,
+    sessionId: string,
+    finalIntent: string,
+  ): Promise<{ accepted: boolean; intent: string }> {
+    const res = await fetch(projectPath(projectId, "/chat/confirm"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+    return (await res.json()) as { accepted: boolean; intent: string };
+  },
+
+  /** Cancel: kills the session, nothing was ever enqueued. */
+  async deleteChat(projectId: string, sessionId: string): Promise<void> {
+    const res = await fetch(projectPath(projectId, `/chat/${encodeURIComponent(sessionId)}`), {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+  },
+
+  /** URL for the token-streaming SSE connection -- the CALLER opens this with
+   *  `new EventSource(...)` (a raw URL, not a fetch-based client method). */
+  chatStreamUrl(projectId: string, sessionId: string): string {
+    return projectPath(projectId, `/chat/${encodeURIComponent(sessionId)}/stream`);
   },
 };
