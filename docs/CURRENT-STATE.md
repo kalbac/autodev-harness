@@ -18,13 +18,34 @@
 >    pinned to the captured loop-branch; clean-tree required; post-apply failure restores clean; LOUD override commit msg.
 >    UI: "Commit anyway" button + confirmation modal (409 reason shown in-modal). codex 2 Sev-1+Sev-2+Sev-3 → +2 more
 >    (leading-dot bypass, rollback exit codes) → **re-critic CLEAN**.
-> **830 tests / 3 skip**, root+ui typecheck+build green. **LIVE-PROVEN on `woodev-shipping-plugin-test` (real daemon):**
-> #3 choice C committed a real diff → HEAD `c62a5f4` with the override marker, task escalated→done (+ fail-closed: no-diff
-> task → 409, stays escalated, no reply); #1 exclude on a fresh serena repo → `.serena/` excluded, tree stays clean; #1
-> preflight WARN fired on a dirtied tree. **#2 dedup NOT live-proven** (needs 2 expensive opus-decompose runs — deferred
-> to a supervised morning run; covered by 6 integration tests). **Next:** live-prove #2 with the operator; web-UI polish
-> track; worker-persona-catalog. NB: existing pre-s32 projects don't retroactively get `.serena/` excluded (startup
-> re-apply was scoped out) — they still need a one-time `git update-index --skip-worktree` (the preflight now hints it).
+> **830 tests / 3 skip**, root+ui typecheck+build green. **LIVE-PROVEN overnight on `woodev-shipping-plugin-test` (real
+> daemon):** #3 choice C committed a real diff → HEAD `c62a5f4` with the override marker, task escalated→done (+
+> fail-closed: no-diff task → 409, stays escalated, no reply); #1 exclude on a fresh serena repo → `.serena/` excluded,
+> tree stays clean; #1 preflight WARN fired on a dirtied tree. NB: existing pre-s32 projects don't retroactively get
+> `.serena/` excluded (startup re-apply was scoped out) — one-time `git update-index --skip-worktree` still needed (the
+> preflight hints it).
+>
+> ## ✅ DONE + MERGED (s32 cont'd) — live-proving #2 FOUND a real gap in the task-level dedup heuristic → fixed (PR #58)
+> Operator resumed for the deferred #2 live-prove. **The live run found a real bug the unit tests could not:** the
+> shipped `isDuplicateTask` (file_set overlap AND normalized-title match) requires the SAME title, but the LLM
+> (opus decompose) re-titles the same relaunched work every time — same `file_set`, different `title` → no match →
+> **fail-open → the relaunch enqueued a duplicate** (`dedup-proof-md` then `dedup-proof-doc`, same file, different
+> title). Root-caused from `conductor.log` + the escalation queue; a compounding factor was the operator replying "A"
+> to the first escalation mid-demo, moving it to `quarantine` (excluded from dedup by design) before the second
+> launch — so the FIRST demo was doubly inconclusive, not just an accident.
+> **Fix (operator-chosen, "intent-level dedup"):** compare the OPERATOR's intent text (normalized), not the LLM's
+> retitled output. New `caps.read.recentRuns()` (bounded: `run-*.json` filter → sort → slice 50 BEFORE any read;
+> per-candidate lstat + 64KB cap before parse — codex Sev-2 fixed). `handleIntent` now checks, BEFORE the expensive
+> decompose: if this exact intent was already orchestrated and that run's tasks are still pending/active/escalated →
+> skip decompose entirely, enqueue nothing, re-trigger the pool, WARN. Task-level heuristic kept as a secondary layer.
+> codex gate: Sev-2 (unbounded manifest read) + Sev-3 (forged manifest, trusted stateDir) → bounded → **re-critic
+> CLEAN**. **837 tests / 3 skip**, root+ui typecheck green. Merged PR #58 (`ec9721f`).
+> **RE-LIVE-PROVEN clean**: two real orchestrate launches of the identical intent → run 2's log shows `"this intent
+> was already orchestrated ... nothing enqueued -- re-triggering"` in **~30ms** (decompose skipped) → exactly ONE
+> escalated task, zero duplicates. **All three backlog items are now live-proven end-to-end.** Demo artifacts cleaned;
+> test repo left clean on `autodev/main`. **Lesson banked:** a live run found what 6 passing integration tests (built
+> with controlled identical titles) could not — proportional live-proving on a gate-adjacent feature paid for itself.
+> **Next:** web-UI polish track; worker-persona-catalog (from the agency-agents pivot).
 >
 > ## ✅ DONE + MERGED (s31) — three stuck-task / runs-UI bug fixes + harness PROVEN end-to-end (green DONE)
 > Started as a debug of a live SMOKE run "stuck in ACTIVE ~30 min" (no escalation/quarantine). Root-caused + fixed
