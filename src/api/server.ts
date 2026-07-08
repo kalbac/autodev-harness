@@ -1474,7 +1474,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * live session's token stream. Not `async`: the manager's `attachStream` is
    * synchronous, and there is nothing else to await here.
    */
-  function handleChatStream(p: ProjectView, sessionId: string, req: IncomingMessage, res: ServerResponse): void {
+  function handleChatStream(p: ProjectView, sessionId: string, res: ServerResponse): void {
     if (!p.chat) {
       sendJson(res, 404, { error: "not found" });
       return;
@@ -1520,6 +1520,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
+    // Without this, Node buffers the headers until the first write() -- an
+    // EventSource/fetch client would see no response at all (not even a
+    // "connected" signal) until the FIRST token arrives, which may be a
+    // long wait if the operator hasn't typed anything yet.
+    res.flushHeaders();
   }
 
   /** `POST /projects/:id/chat/:sessionId/message` -- forwards one operator
@@ -2106,7 +2111,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
       if (req.method === "POST" && (sub === "/chat" || sub === "/chat/")) return void (await handleChatStart(rawPid, p, req, res));
       const chatStreamMatch = /^\/chat\/([^/]+)\/stream\/?$/.exec(sub);
-      if (req.method === "GET" && chatStreamMatch) return void handleChatStream(p, chatStreamMatch[1]!, req, res);
+      if (req.method === "GET" && chatStreamMatch) return void handleChatStream(p, chatStreamMatch[1]!, res);
       const chatMessageMatch = /^\/chat\/([^/]+)\/message\/?$/.exec(sub);
       if (req.method === "POST" && chatMessageMatch) return void (await handleChatMessage(p, chatMessageMatch[1]!, req, res));
       if (req.method === "POST" && (sub === "/chat/confirm" || sub === "/chat/confirm/"))
