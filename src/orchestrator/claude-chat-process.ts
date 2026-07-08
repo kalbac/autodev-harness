@@ -74,10 +74,12 @@ export class ClaudeChatProcess {
     // stdin read end before a write lands.
     this.child.stdin?.on("error", () => {});
     this.child.on("error", (err: Error) => {
+      this.closed = true;
       this.clearKillTimer();
       this.failPending(err);
     });
     this.child.on("close", () => {
+      this.closed = true;
       this.clearKillTimer();
       this.failPending(new Error("chat process exited unexpectedly"));
     });

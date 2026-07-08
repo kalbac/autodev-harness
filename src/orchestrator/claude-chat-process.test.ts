@@ -100,6 +100,22 @@ describe("ClaudeChatProcess", () => {
     await expect(pending).resolves.toEqual({ replyText: "PONG", isError: false });
   });
 
+  it("marks the process closed when the child closes with no turn pending, rejecting a later send()", async () => {
+    const { child } = makeFakeChild();
+    const proc = new ClaudeChatProcess({ exe: "claude", cwd: "/repo", args: [], onToken: () => {}, spawnFn: () => child as never });
+    // Child dies on its own (e.g. crashes between turns) while nothing is in flight.
+    child.emit("close", 1);
+    await expect(proc.send("hello")).rejects.toThrow("chat process is closed");
+  });
+
+  it("marks the process closed when the child emits error with no turn pending, rejecting a later send()", async () => {
+    const { child } = makeFakeChild();
+    const proc = new ClaudeChatProcess({ exe: "claude", cwd: "/repo", args: [], onToken: () => {}, spawnFn: () => child as never });
+    // Spawn failure or similar before any send() was ever issued.
+    child.emit("error", new Error("spawn failed"));
+    await expect(proc.send("hello")).rejects.toThrow("chat process is closed");
+  });
+
   it("clears the pending SIGKILL timer when the child closes before the grace period elapses", () => {
     vi.useFakeTimers();
     try {
