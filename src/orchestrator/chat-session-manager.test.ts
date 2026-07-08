@@ -132,4 +132,46 @@ describe("ChatSessionManager", () => {
     mgr.reapOnce();
     expect(closed).toContain(sessionId);
   });
+
+  it("send() rejects a second concurrent call for the SAME session immediately, without clearing turnInFlight for the first", async () => {
+    const { adapter, closed } = makeFakeAdapter();
+    let now = 0;
+    const mgr = new ChatSessionManager({ adapter, log: () => {}, now: () => now, idleTimeoutMs: 1000 });
+
+    let resolveSend!: (value: { reply: string }) => void;
+    adapter.send = () =>
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      });
+
+    const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+    const firstSend = mgr.send(sessionId, "hello");
+
+    // Second concurrent send for the same session, WITHOUT resolving the
+    // first send's underlying adapter promise first. This must reject
+    // immediately at the manager's own guard — proving it fires before the
+    // process-level rejection would even be reachable, and that it does NOT
+    // touch (and in particular does not clear) the first call's turnInFlight.
+    await expect(mgr.send(sessionId, "world")).rejects.toThrow(
+      "a turn is already in flight for this chat session",
+    );
+
+    // The first call's turn must still be considered in-flight: a reap sweep
+    // well past the idle timeout must NOT kill this session.
+    now = 5000;
+    mgr.reapOnce();
+    expect(closed).not.toContain(sessionId);
+    expect(mgr.hasOpenSession("p1")).toBe(true);
+
+    // Now resolve the first send's promise and confirm it completes normally.
+    resolveSend({ reply: "done" });
+    await expect(firstSend).resolves.toEqual({ reply: "done" });
+
+    // turnInFlight must correctly end up false once the first turn is done —
+    // a further idle stretch should reap it like any other idle session.
+    now = 5000 + 1000 + 1;
+    mgr.reapOnce();
+    expect(closed).toContain(sessionId);
+  });
 });

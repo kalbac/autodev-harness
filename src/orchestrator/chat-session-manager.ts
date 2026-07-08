@@ -117,6 +117,17 @@ export class ChatSessionManager {
   async send(sessionId: string, message: string): Promise<ChatTurnResult> {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error("chat session not found");
+    // Guard FIRST, before touching any shared state: a second concurrent
+    // send() for the same session must be rejected outright, not raced.
+    // `ClaudeChatProcess.send()` (one layer down) already enforces exactly
+    // one turn in flight per session and rejects a second call almost
+    // immediately — if we let both calls set turnInFlight = true and rely on
+    // their `finally` blocks, the SECOND call's finally can run first and
+    // clear turnInFlight while the FIRST call's real turn is still active,
+    // letting the reaper kill a genuinely busy session (see codex finding).
+    if (s.turnInFlight) {
+      throw new Error("a turn is already in flight for this chat session");
+    }
     s.lastActivityAt = this.now();
     s.turnInFlight = true;
     try {
