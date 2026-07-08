@@ -61,6 +61,39 @@ what the tests said, not that the tests said the right thing. Proportional live-
 
 ---
 
+## s32 (cont'd 2) — 2026-07-08 — "how would I know it was deduped?" → toast fix (PR #60) + orchestrator-CHAT vision parked
+
+**Operator's follow-up question, exactly on point:** after seeing the dedup fix work, "as an operator how was I supposed
+to know the run didn't start because of a duplicate? It looked like a silent failure to me." Investigated instead of
+assuming: `POST /orchestrate` is fire-and-forget (202 immediately, R1-safe by design); the real outcome is decided in
+the background and reported ONLY as a `[orchestrator] [LEVEL]` line in `digest.md`. `NewRunComposer` showed a static
+"Run accepted — decomposing intent…" that never updates; `DigestStrip` (the only activity-log surface) lives on
+`RunView`, not `Home`; a dedup-skip records no new run manifest, so there's nowhere to click into. **Confirmed
+genuinely silent**, not the operator misreading something.
+**Fix (PR #60, `c58ad21`):** watch the already-WS-live `digestTail` (reuses the existing `useState(projectId)` query
+and the existing WS→invalidate pipeline — zero backend change) for the first NEW `[orchestrator]`-line after a
+launch, within a 20s window, toast it (sonner) with a level-mapped variant. While in there, fixed a latent bug in the
+never-rendered shadcn `sonner.tsx` scaffold: it read `useTheme` from `next-themes`, a library whose `<ThemeProvider>`
+is never mounted in this app (own theme system in `@/lib/theme`) — toast theme would never have tracked the real
+light/dark switch; mounted `<Toaster/>` at the app root (existed, never rendered). codex: 1 real bug (toasted the
+LATEST orchestrator line instead of the FIRST new one after baseline, in case several land between refetches) → fixed
+→ re-critic CLEAN. Review-only UI (no test infra for this UI, established convention); typecheck+build green.
+**Live-proven via the real data path** (not synthetic): pulled the actual WARN line from the earlier dedup live-prove
+straight out of `digest.md`, confirmed the real `GET /state` serves it in `digestTail`, and ran it through the
+EXACT shipped regex → `{level:"WARN", message:"..."}` → would call `toast.warning(...)`. Every stage proven with real
+production data; only the DOM paint itself is out of API-reach.
+**The bigger reveal:** the operator's actual target isn't a toast — it's a real CONVERSATION with the orchestrator on
+launch ("we discussed this since early design"). Today's `handleIntent` is explicitly a one-shot TERMINATING pipeline,
+not an agentic loop. This is a genuine architecture pivot, deliberately NOT bundled into this wrap-up — parked in
+`FUTURE-BACKLOG.md` "Orchestrator CHAT" with the key open question flagged up front: does a live conversational
+orchestrator conflict with `adr/003`'s accepted role split ("gate/enforcement stays deterministic, an LLM can't talk
+past it")? **Next session opens with that brainstorm**, per operator instruction, PLUS scoping a NEW pivot candidate
+the operator found: `github.com/redwoodjs/agent-ci` + `agent-ci.dev/blog/the-agentic-dev-loop` — recon-first against
+our 5-way frame (same discipline as the agency-agents pivot) before judging nice-to-have vs YAGNI vs must-have.
+Session saved; see `next-session-promt.md` (gitignored) for the full handoff.
+
+---
+
 ## s31 — 2026-07-07 — Three stuck-task / runs-UI bug fixes (PR #54) + harness PROVEN end-to-end (first green DONE)
 
 **Trigger:** operator's live SMOKE run "stuck in ACTIVE ~30 min", not escalating/quarantining. Systematic-debugging.
