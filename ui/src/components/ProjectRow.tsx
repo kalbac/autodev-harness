@@ -4,22 +4,42 @@ import { toneVar } from "@/lib/status";
 import { runSeal } from "@/lib/runSeal";
 import { useRuns, useState as useHarnessState } from "@/lib/queries";
 import { cn, timeAgo } from "@/lib/utils";
+import {
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+} from "./ui/sidebar";
 
 /**
- * One project in the sidebar.
+ * One project in the sidebar, rendered as a shadcn `SidebarMenuItem`.
  *
- * DATA-FETCH DISCIPLINE: only the ACTIVE project's runs + state are fetched.
- * The runs/state hooks live in `<ActiveProjectRuns>`, which is mounted ONLY for
- * the active row — so collapsed rows issue zero requests and just show the idle
- * dot. (Hooks can't be conditional inside one component, so mounting-gating the
- * child is what keeps this to a single project's fetch instead of N.)
+ * DATA-FETCH DISCIPLINE (unchanged from the pre-block version): only the ACTIVE
+ * project's runs + state are fetched. The runs/state hooks live in
+ * `<ActiveProject>`, mounted ONLY for the active row — so collapsed rows issue
+ * zero requests and just show the idle dot. Mount-gating the child is what keeps
+ * this to a single project's fetch instead of N.
+ *
+ * In the collapsed icon rail, the leading letter-avatar shows (tooltip = name)
+ * and the label + runs sub-menu clip/hide via the block's own icon-mode classes.
  */
 export function ProjectRow({ project, active }: { project: ProjectSummary; active: boolean }) {
   if (active) return <ActiveProject project={project} />;
-  return <ProjectHead project={project} active={false} hasActiveRun={false} />;
+  return (
+    <SidebarMenuItem>
+      <ProjectHead project={project} active={false} hasActiveRun={false} />
+    </SidebarMenuItem>
+  );
 }
 
-/** The collapsed/active head row: chevron + name + a status dot on the right. */
+/** Stable 1-letter avatar for the collapsed icon rail. */
+function initial(name: string): string {
+  const c = name.trim()[0];
+  return c ? c.toUpperCase() : "?";
+}
+
+/** The head row: letter-avatar + name + a status dot on the right. */
 function ProjectHead({
   project,
   active,
@@ -30,20 +50,26 @@ function ProjectHead({
   hasActiveRun: boolean;
 }) {
   const isError = project.status === "error";
+  const tone = isError ? "broken" : hasActiveRun ? "working" : "idle";
   return (
-    <Link
-      to="/p/$projectId"
-      params={{ projectId: project.id }}
+    <SidebarMenuButton
+      isActive={active}
+      tooltip={project.name}
+      render={<Link to="/p/$projectId" params={{ projectId: project.id }} />}
       className={cn(
-        "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-semibold transition-colors",
-        active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-card",
+        "font-semibold",
         isError && !active && "bg-[color-mix(in_srgb,var(--color-broken)_10%,transparent)]",
       )}
     >
-      <span className="w-2.5 shrink-0 text-[10px] text-muted-foreground">{active ? "▾" : "▸"}</span>
-      <span className="min-w-0 truncate">{project.name}</span>
-      <StatusDot tone={isError ? "broken" : hasActiveRun ? "working" : "idle"} pulse={hasActiveRun} />
-    </Link>
+      <span
+        aria-hidden
+        className="grid size-4 shrink-0 place-items-center rounded-[4px] bg-muted text-[9px] font-bold text-muted-foreground"
+      >
+        {initial(project.name)}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+      <StatusDot tone={tone} pulse={hasActiveRun} />
+    </SidebarMenuButton>
   );
 }
 
@@ -51,7 +77,7 @@ function ProjectHead({
 function StatusDot({ tone, pulse }: { tone: "working" | "idle" | "broken"; pulse: boolean }) {
   return (
     <span
-      className="ml-auto size-[7px] shrink-0 rounded-full"
+      className="size-[7px] shrink-0 rounded-full"
       style={{
         background: tone === "idle" ? "var(--border)" : toneVar[tone],
         boxShadow: tone === "working" ? `0 0 6px ${toneVar.working}` : undefined,
@@ -69,34 +95,43 @@ function ActiveProject({ project }: { project: ProjectSummary }) {
   const last5 = (runs.data ?? []).slice(0, 5);
 
   return (
-    <div>
+    <SidebarMenuItem>
       <ProjectHead project={project} active hasActiveRun={hasActiveRun} />
-      <div className="pl-6 pr-1 pt-0.5 pb-1.5">
-        {last5.map((run) => (
-          <Link
-            key={run.runId}
-            to="/p/$projectId/runs/$runId"
-            params={{ projectId: project.id, runId: run.runId }}
-            className="flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-          >
-            <span
-              className="size-[6px] shrink-0 rounded-[2px]"
-              style={{ background: toneVar[runSeal(run, state.data)] }}
-            />
-            <span className="min-w-0 flex-1 truncate text-xs">{run.name ?? run.intent}</span>
-            <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{timeAgo(run.at)}</span>
-          </Link>
-        ))}
-        {runs.data && runs.data.length > 0 && (
-          <Link
-            to="/p/$projectId/board"
-            params={{ projectId: project.id }}
-            className="block px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
-          >
-            show more…
-          </Link>
-        )}
-      </div>
-    </div>
+      {last5.length > 0 && (
+        <SidebarMenuSub>
+          {last5.map((run) => (
+            <SidebarMenuSubItem key={run.runId}>
+              <SidebarMenuSubButton
+                render={
+                  <Link
+                    to="/p/$projectId/runs/$runId"
+                    params={{ projectId: project.id, runId: run.runId }}
+                  />
+                }
+              >
+                <span
+                  className="size-[6px] shrink-0 rounded-[2px]"
+                  style={{ background: toneVar[runSeal(run, state.data)] }}
+                />
+                <span className="min-w-0 flex-1 truncate text-xs">{run.name ?? run.intent}</span>
+                <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+                  {timeAgo(run.at)}
+                </span>
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          ))}
+          {runs.data && runs.data.length > 0 && (
+            <SidebarMenuSubItem>
+              <SidebarMenuSubButton
+                render={<Link to="/p/$projectId/board" params={{ projectId: project.id }} />}
+                className="text-[11px] text-muted-foreground"
+              >
+                show more…
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          )}
+        </SidebarMenuSub>
+      )}
+    </SidebarMenuItem>
   );
 }

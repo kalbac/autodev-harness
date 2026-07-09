@@ -1,14 +1,20 @@
-import type { ReactNode } from "react";
-import { AlertTriangle, Ban, CheckSquare, Square } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, Ban, CheckSquare, PanelRight, Square, X } from "lucide-react";
 import { Spinner } from "./ui/spinner";
 import { useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
 import { useTaskIndex } from "@/lib/useTaskIndex";
+import { useMediaQuery } from "@/lib/use-media-query";
 import { toneVar } from "@/lib/status";
 import type { QueueState } from "@/lib/api";
 import { Dot } from "./ui/Dot";
 import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import { cn } from "@/lib/utils";
+
+// The session rail hides below this width on narrow desktops; a floating toggle
+// then re-opens it as an overlay (see SessionRailZone). At/above it, the rail is
+// an inline shell column. 70rem = 1120px.
+const RAIL_INLINE = "(min-width: 70rem)";
 
 /** Compact token count: 12345 -> "12.3k", 2_100_000 -> "2.1M", <1000 -> as-is. */
 function formatTokens(n: number): string {
@@ -27,7 +33,7 @@ function formatTokens(n: number): string {
  * per-step feed. An active task means the worker is running; gate → critic →
  * commit are shown as upcoming, decompose as done.
  */
-export function SessionRail({ projectId }: { projectId: string }) {
+export function SessionRail({ projectId, onClose }: { projectId: string; onClose?: () => void }) {
   const state = useProjectState(projectId);
   const config = useConfig(projectId);
   // Token totals across runs, from the server-side per-run aggregate
@@ -72,12 +78,23 @@ export function SessionRail({ projectId }: { projectId: string }) {
     : dash;
 
   return (
-    <aside className="w-[300px] shrink-0 border-l border-border bg-sidebar">
+    <aside className="h-full w-[300px] shrink-0 border-l border-border bg-sidebar">
       <ScrollArea className="h-full">
         <div className="p-3.5">
-          <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            Session inspector
-          </h3>
+          <div className="mb-2.5 flex items-center">
+            <h3 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Session inspector
+            </h3>
+            {onClose && (
+              <button
+                onClick={onClose}
+                aria-label="Hide session inspector"
+                className="ml-auto grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
 
           {/* Now — pipeline inferred from queue state */}
           <Block title="Now">
@@ -168,6 +185,49 @@ export function SessionRail({ projectId }: { projectId: string }) {
         </div>
       </ScrollArea>
     </aside>
+  );
+}
+
+/**
+ * Responsive wrapper for the session rail. At/above 1120px the rail is an inline
+ * shell column (its normal home). Below it — on a narrow desktop where the fixed
+ * 300px rail would starve `main` — the rail is hidden behind a floating toggle
+ * and re-opens as a right-edge overlay with a scrim. Going wide again drops any
+ * open overlay back to the inline column.
+ */
+export function SessionRailZone({ projectId }: { projectId: string }) {
+  const inline = useMediaQuery(RAIL_INLINE);
+  const [peek, setPeek] = useState(false);
+
+  useEffect(() => {
+    if (inline) setPeek(false);
+  }, [inline]);
+
+  if (inline) return <SessionRail projectId={projectId} />;
+
+  if (!peek) {
+    return (
+      <button
+        onClick={() => setPeek(true)}
+        aria-label="Show session inspector"
+        className="fixed bottom-4 right-4 z-30 grid size-9 place-items-center rounded-full border border-border bg-card text-muted-foreground shadow-lg transition-colors hover:text-foreground"
+      >
+        <PanelRight className="size-4" />
+      </button>
+    );
+  }
+
+  return (
+    <>
+      <div
+        aria-hidden
+        onClick={() => setPeek(false)}
+        className="fixed inset-0 z-30 bg-black/40"
+      />
+      <div className="fixed inset-y-0 right-0 z-40 shadow-xl">
+        <SessionRail projectId={projectId} onClose={() => setPeek(false)} />
+      </div>
+    </>
   );
 }
 
