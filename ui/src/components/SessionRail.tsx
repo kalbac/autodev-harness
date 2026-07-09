@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { AlertTriangle, Ban, CheckSquare, Loader2, Square } from "lucide-react";
+import { AlertTriangle, Ban, CheckSquare, Square } from "lucide-react";
+import { Spinner } from "./ui/spinner";
 import { useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
 import { useTaskIndex } from "@/lib/useTaskIndex";
 import { toneVar } from "@/lib/status";
@@ -214,7 +215,7 @@ function PlanGlyph({ state, resolved }: { state?: QueueState; resolved: boolean 
   if (!resolved || state === undefined) return <Dot tone="idle" className="size-[7px]" />;
   if (state === "done") return <CheckSquare className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.clean }} />;
   if (state === "active")
-    return <Loader2 className="size-3.5 animate-spin" strokeWidth={2.5} style={{ color: toneVar.working }} />;
+    return <Spinner className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.working }} />;
   if (state === "escalated")
     return <AlertTriangle className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.uncertain }} />;
   if (state === "quarantine") return <Ban className="size-3.5" strokeWidth={2.5} style={{ color: toneVar.broken }} />;
