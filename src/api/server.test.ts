@@ -2462,6 +2462,29 @@ describe("createApiServer / chat routes", () => {
     await tick();
     expect(orchestrateCalled).toBe(false);
   });
+
+  it("handle.closeProjectChat closes the tracked manager for that project id, and is a safe no-op for an untracked one", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(startRes.status).toBe(200);
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    // An untracked project id must be a silent no-op -- never throw.
+    await expect(handle.closeProjectChat("unknown-project")).resolves.toBeUndefined();
+
+    // The real target: closing by project id (as admin.unregister / the
+    // config-evict path do) tears down the live session even though the
+    // project no longer resolves through the normal /chat routes.
+    await handle.closeProjectChat("p1");
+    expect(manager.hasOpenSession("p1")).toBe(false);
+  });
 });
 
 describe("createApiServer / listen with an explicit bind host", () => {

@@ -280,6 +280,12 @@ export interface ApiServerHandle {
   listen(port?: number, host?: string): Promise<number>;
   /** Closes the http server, the ws server (+ all connected clients), and the watcher. */
   close(): Promise<void>;
+  /** Closes and forgets the chat session manager for `projectId` (if one is
+   *  tracked) — called when a project is unregistered or its root evicted, so
+   *  a live chat subprocess isn't orphaned once the project no longer resolves
+   *  through the normal routes. Best-effort: a failure here must never break
+   *  the unregister/config-update that triggered it. No-op for an untracked id. */
+  closeProjectChat(projectId: string): Promise<void>;
   readonly port: number;
 }
 
@@ -768,12 +774,16 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const orchestrateInFlight = new Set<string>();
 
   // Every `ChatSessionManager` a resolved `ProjectView` has actually exposed
-  // via `p.chat`, tracked so `close()` can tear every one of them down before
-  // the http server itself closes. `ProjectView`s are resolved per-request
-  // (there is no persistent project list here), so this set is built up
-  // lazily as chat-capable projects are touched -- see the `p.chat &&
-  // chatManagersSeen.add(...)` line right after `ensureWatcher` below.
-  const chatManagersSeen = new Set<ChatSessionManager>();
+  // via `p.chat`, keyed by project id so `close()` can tear every one of them
+  // down before the http server itself closes AND so a single project's
+  // manager can be found and closed on its own (`closeProjectChat`, used by
+  // admin.unregister / the config-evict path -- a project that no longer
+  // resolves through the normal routes must not leak its live chat
+  // subprocess until the daemon shuts down). `ProjectView`s are resolved
+  // per-request (there is no persistent project list here), so this map is
+  // built up lazily as chat-capable projects are touched -- see the `p.chat &&
+  // chatManagersByProject.set(...)` line right after `ensureWatcher` below.
+  const chatManagersByProject = new Map<string, ChatSessionManager>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
@@ -2098,7 +2108,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       }
       const p = resolved.view;
       ensureWatcher(rawPid, p.stateDir);
-      if (p.chat) chatManagersSeen.add(p.chat.manager);
+      if (p.chat) chatManagersByProject.set(rawPid, p.chat.manager);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
@@ -2241,7 +2251,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // Kill every live chat process BEFORE the http server itself shuts
       // down -- a chat session that outlives the daemon would leak a live
       // model subprocess with no way to reach it anymore.
-      await Promise.all([...chatManagersSeen].map((m) => m.closeAll()));
+      await Promise.all([...chatManagersByProject.values()].map((m) => m.closeAll()));
 
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve, reject) => {
@@ -2249,6 +2259,20 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       });
       for (const w of watchers.values()) await w.handle.close();
       watchers.clear();
+    },
+
+    async closeProjectChat(projectId: string): Promise<void> {
+      const manager = chatManagersByProject.get(projectId);
+      if (!manager) return;
+      // Remove first so a concurrent close() (or a second unregister/config
+      // update racing this one) can't try to close the same manager twice.
+      chatManagersByProject.delete(projectId);
+      try {
+        await manager.closeAll();
+      } catch {
+        // Best-effort -- closing the chat must never throw out of the
+        // unregister/config-update flow that triggered this.
+      }
     },
   };
 }
