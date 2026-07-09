@@ -78,7 +78,7 @@ export function SessionRail({ projectId, onClose }: { projectId: string; onClose
     : dash;
 
   return (
-    <aside className="h-full w-[300px] shrink-0 border-l border-border bg-sidebar">
+    <aside className="h-full w-[300px] shrink-0 border-l border-border">
       <ScrollArea className="h-full">
         <div className="p-3.5">
           <div className="mb-2.5 flex items-center">
@@ -224,7 +224,7 @@ export function SessionRailZone({ projectId }: { projectId: string }) {
         onClick={() => setPeek(false)}
         className="fixed inset-0 z-30 bg-black/40"
       />
-      <div className="fixed inset-y-0 right-0 z-40 shadow-xl">
+      <div className="fixed inset-y-0 right-0 z-40 bg-background shadow-xl">
         <SessionRail projectId={projectId} onClose={() => setPeek(false)} />
       </div>
     </>

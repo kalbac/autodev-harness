@@ -3,7 +3,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { useProjectId } from "@/lib/useProjectId";
 import { AppSidebar } from "./Sidebar";
 import { SessionRailZone } from "./SessionRail";
-import { SidebarProvider } from "./ui/sidebar";
+import { SidebarInset, SidebarProvider } from "./ui/sidebar";
 
 // Desktop-only responsiveness: the shell targets comfort down to 1280px, then
 // compacts. At/above 1280 the sidebar is expanded; below it auto-collapses to
@@ -58,10 +58,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <SidebarShell>
       <AppSidebar />
-      <div className="flex min-w-0 flex-1 overflow-hidden">
-        <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
-        {showRail && projectId && <SessionRailZone projectId={projectId} />}
-      </div>
+      <SidebarInset className="overflow-hidden">
+        <div className="flex min-w-0 flex-1 overflow-hidden">
+          <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
+          {showRail && projectId && <SessionRailZone projectId={projectId} />}
+        </div>
+      </SidebarInset>
     </SidebarShell>
   );
 }
