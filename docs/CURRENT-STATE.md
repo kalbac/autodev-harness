@@ -1,5 +1,23 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ MERGED (s35) — component-currency migration **Tier 1**, LIVE-PROVEN, **PR #63 merged to main** (`de57d6c`)
+> Operator ask from s34 (prompted by the s34 `MessageScroller` miss): review EVERY UI component vs the current shadcn
+> catalog (now via the LIVE shadcn MCP) and adopt purpose-built primitives. **Key reframe (gotcha 53):** our style is
+> `base-nova` (shadcn on **Base UI**); the MCP's default-style metadata reports Radix deps, but the raw `base-nova`
+> registry JSON shows the **whole catalog is Base-UI-ported** — so there's NO radix-foundation trap; the real filter is
+> value/churn/behaviour. Audit written to `docs/wiki/component-currency-audit-s35.md` (Tier 1/2/3), driven by 3 parallel
+> Explore agents. **Tier 1 shipped (5 module commits):** vendored 6 base-nova primitives (spinner/empty/kbd/label/field/
+> bubble); rebuilt `Feedback.tsx` on shadcn `spinner`+`empty` (public signatures unchanged → every caller inherits);
+> SessionRail `Loader2`→`Spinner`; RuntimeFileView/EscalationCard panel-empties→`EmptyState` (small inline one-liners
+> deliberately kept as idiomatic text — `empty` is heavier than the idiom there); ChatModal `ChatBubble`→shadcn `bubble`
+> (operator=default, assistant=outline; unused `message` primitive dropped); NewRunComposer ⌘⏎→`kbd`; RegisterForm 4
+> fields→`field`; SettingsPopover `h-px`→`separator`. **Gate: root+ui typecheck+build ✓ · codex GPT-5.5 full-diff CLEAN
+> (0 findings) ✓ · browser live-proof ✓ (real daemon+Chrome: `bubble` both variants in a real end-to-end chat, `kbd`,
+> `spinner` pixel-proven; `Tabs`/`VerdictSeal`/`DiffView` intact, zero layout breakage) · CI 4/4 ✓.** GOTCHAS 52→53.
+> **NEXT: Tier 2, item-by-item, subagent-driven (Sonnet 5 + codex critic)** — `toggle-group` (theme segments), `checkbox`
+> (RegisterForm), `input-group` (composer shell), `collapsible`/`accordion`, `alert-dialog`, then the big `sidebar` block
+> last; plus Badge/Button chip consolidation + vendored-primitive drift spot-check (`shadcn diff`). See `next-session-promt.md`.
+>
 > ## ✅ MERGED (s34) — orchestrator pre-launch chat, backend + UI, LIVE-PROVEN twice, **PR #62 merged to main** (`5989c26`)
 > The full s33 orchestrator-chat plan (12 tasks) shipped: submitting an intent now opens a live multi-turn `claude -p`
 > chat (`ChatModal`) — stream token-by-token, see a proposed-plan preview, Confirm & Launch fires the unchanged

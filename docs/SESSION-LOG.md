@@ -4,6 +4,49 @@
 
 ---
 
+## s35 — 2026-07-09 — Component-currency migration **Tier 1** → **MERGED (PR #63, `de57d6c`)**
+
+**Context.** Operator ask carried from s34 (prompted by the s34 `MessageScroller` miss — shipped a generic component
+where a purpose-built one existed): with the shadcn MCP now LIVE, review EVERY UI component vs the current catalog and
+adopt purpose-built primitives — "task-maximum," including blocks and the Skills docs.
+
+**The reframe (gotcha 53).** Our `components.json` style is `base-nova` (shadcn on **Base UI**). The shadcn MCP's item
+metadata reports the **default-style (Radix)** deps, so I (and the 3 audit subagents I briefed with that metadata) first
+tagged `bubble`/`item`/`sidebar`/`collapsible`/`tabs`/`toggle-group`/`checkbox`/`alert-dialog` as "FOUNDATION-COST (radix)."
+Fetching the raw `base-nova` registry JSON (`ui.shadcn.com/r/styles/base-nova/<item>.json`) proved that WRONG: base-nova
+ships **Base-UI ports of the whole catalog** — none pull Radix. So there is no foundation trap; the real adoption filter
+is value/churn/behaviour. Rewrote the audit accordingly (`docs/wiki/component-currency-audit-s35.md`, Tier 1/2/3).
+
+**Method.** Recon via 3 parallel Explore agents over all 18 composites + 7 custom primitives + 15 vendored, cross-checked
+against the live catalog (61 `ui` items + blocks) and the Skills docs (an AI-assist skill ≈ the MCP we already have;
+useful byproduct: `shadcn diff` for drift). Operator chose "Tier 1 now, Tier 2 item-by-item."
+
+**Tier 1 shipped (5 commits, subagent/main-session mix).** Vendored 6 base-nova primitives (spinner/empty/kbd/label/
+field/bubble) via curl-the-registry-JSON + alias/icon rewrites (gotcha `[ui/shadcn-cli-vendor-windows]`; no `button` dep
+→ no Windows case-collision). **Keystone:** rebuilt `Feedback.tsx` — `Spinner` wraps shadcn `spinner` (muted default
+kept), `EmptyState` is a shadcn `empty` composition; public signatures unchanged so every caller (Inspector ×4, all
+Loading spinners) inherits the primitive with zero caller edits. Then: SessionRail `Loader2`→`Spinner`; RuntimeFileView
+"Select a file" + EscalationCard "No record" panel-empties→`EmptyState` (small inline one-liners in dropdown/sidebar/
+log-tail deliberately KEPT as idiomatic muted text — forcing `empty` there is an anti-pattern); ChatModal `ChatBubble`→
+shadcn `bubble` (chose `bubble` over the audit's `message` — it's the purpose-built tinted bubble; dropped the unused
+`message` primitive); NewRunComposer ⌘⏎→`kbd`; RegisterForm 4 input fields→`field` (mono micro-label preserved via
+twMerge overrides; form-level error kept as `text-broken`, not `FieldError`'s `text-destructive`); SettingsPopover
+hand-rolled `h-px` divider→`separator`. NewRunComposer textarea→`input-group` and RegisterForm checkbox→`checkbox`
+correctly deferred to Tier 2 (the composer textarea is intentionally borderless-in-a-card; vendored Textarea fights that).
+
+**Gate.** root+ui typecheck ✓, ui vite build ✓, **independent codex GPT-5.5 full-diff gate: CLEAN, 0 findings** (verified
+alias/icon rewrites, preserved signatures, `whitespace-pre-wrap`, twMerge override order, no dead refs). **Browser
+live-proof** on a real daemon (:4319) + real project + real Chrome: `bubble` BOTH variants in a real end-to-end
+`claude -p` chat (operator=primary/right, assistant=outline/left), `kbd` key-caps, `spinner` (chatStart), `Tabs`
+switching + `VerdictSeal` CLEAN + `DiffView` colored diff — zero layout breakage across home/run/task. **CI green 4/4.**
+Merged PR #63 (merge commit `de57d6c`) — merge-commit to preserve M1–M4 module history. GOTCHAS 52→53.
+
+**Next (s36): Tier 2, item-by-item, subagent-driven (Sonnet 5 + codex critic)** — `toggle-group` (theme), `checkbox`,
+`input-group`, `collapsible`/`accordion`, `alert-dialog`, big `sidebar` block LAST; + Badge/Button chip consolidation +
+vendored-primitive drift spot-check. Stopped here (not starting Tier 2 this session) to keep a fresh context for it —
+operator's own condition. Env note: box at ~743MB free (stale node procs); the classifier blocks mass-killing unidentified
+node procs — start the daemon anyway (it's light) rather than force-cleaning.
+
 ## s34 — 2026-07-08/09 — Orchestrator pre-launch chat: executed the whole s33 plan (12 tasks) → **MERGED (PR #62, `5989c26`)**
 
 **What shipped.** The fire-and-forget "type intent → Launch → silence" flow is replaced by a live multi-turn `claude -p`
