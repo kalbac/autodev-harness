@@ -1,10 +1,21 @@
-import { Loader2, type LucideIcon } from "lucide-react";
+import { type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "./alert";
+import { Spinner as SpinnerPrimitive } from "./spinner";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "./empty";
 
+/** The critic/status muted spinner — the shadcn `spinner` primitive with our
+ *  default muted tone (callers can override via className). */
 export function Spinner({ className }: { className?: string }) {
-  return <Loader2 className={cn("size-4 animate-spin text-muted-foreground", className)} />;
+  return <SpinnerPrimitive className={cn("text-muted-foreground", className)} />;
 }
 
 export function Loading({ label = "Loading…" }: { label?: string }) {
@@ -16,6 +27,8 @@ export function Loading({ label = "Loading…" }: { label?: string }) {
   );
 }
 
+/** An icon/title/description/action empty state, now a shadcn `empty`
+ *  composition. Signature unchanged so every caller inherits the primitive. */
 export function EmptyState({
   icon: Icon,
   title,
@@ -30,21 +43,18 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div
-      className={cn(
-        "flex flex-col items-center justify-center text-center gap-3 px-6 py-16",
-        className,
-      )}
-    >
-      <div className="grid size-11 place-items-center rounded-full border border-border bg-card text-muted-foreground">
-        <Icon className="size-5" />
-      </div>
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">{title}</p>
-        {description && <p className="text-xs text-muted-foreground max-w-xs">{description}</p>}
-      </div>
-      {action}
-    </div>
+    <Empty className={cn("py-16", className)}>
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <Icon />
+        </EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        {description && (
+          <EmptyDescription className="max-w-xs text-xs">{description}</EmptyDescription>
+        )}
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </Empty>
   );
 }
 
