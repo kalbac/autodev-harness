@@ -4,6 +4,45 @@
 
 ---
 
+## s37 — 2026-07-10 — **agent-ci gate hardening** (optional local-CI-replay gate step) → **PR #69**, codex-CLEAN + LIVE-PROVEN
+
+**Scope.** Implemented the s33 spec (`2026-07-08-agent-ci-gate-hardening-design.md`) — an OPTIONAL, off-by-default,
+config-gated ADDITIONAL machine-gate step replaying a project's real GitHub Actions CI locally (`@redwoodjs/agent-ci`)
+in the per-task worktree BEFORE commit. Subagent-driven (Sonnet workers per module + mandatory codex GPT-5.5 gate).
+Wrote the plan first (`docs/superpowers/plans/2026-07-10-agent-ci-gate-hardening.md`), grounded in the real code.
+
+**Build (7 commits).** (1) `schema.ts` `gate.agentCi.{enabled,workflows,timeoutMs}` all-defaulted → opted-out = byte-identical.
+(2) `gate/agent-ci.ts` new pure `runAgentCiWorkflows`: sequential `npx @redwoodjs/agent-ci run --workflow <p> --json` per
+allowlisted workflow; **job-fail→RETURN `{green:false}`, infra-fail→THROW** (the throw-vs-return split IS the contract).
+(3) `gate.ts` step "1c" after `success_commands` + `agent_ci_green` verdict field + `||!agentCiGreen` RETRY fold; the throw
+propagates out of `runGate` uncaught (conductor already escalates gate throws, `conductor.ts:474`). (4) `root.ts` wires
+`runAgentCi` like `runCheck` (null when disabled; enabled+empty-allowlist→WARN+skip). (5) config-preservation regression
+test (a UI `checkCommand` save keeps a hand-set `gate.agentCi` — `mergeConfigYaml` spreads `...raw.gate`).
+
+**Gate discipline.** 934 tests/3 skip, typecheck+build(root+ui) green. **codex GPT-5.5 gate ran 3 rounds.** R1: 2 Sev-2 —
+(a) the `Promise.race` timeout threw but never killed the agent-ci/Docker child → leak; fix = pass `timeoutMs` INTO the
+runner so `runNative` reaps it (SIGTERM→SIGKILL), race stays as the throw-contract guarantee; (b) parser OR'd pass/fail
+across all terminal events → a late `{status:cancelled}` after `{status:passed}` misread as pass; fix = last-terminal-wins
++ unknown-terminal→failed (fail-closed, never COMMIT on ambiguity) → re-critic CLEAN. Then the LIVE-PROVE found a real
+correctness bug → fix → final codex **CLEAN**.
+
+**Live-prove (operator chose full).** Docker 29.4 present. agent-ci **does not run on native Windows** (dies pre-Docker on
+`tar -czf C:\...` — Unix-tar reads `C:` as a remote host) → proved the **infra-fail branch for real** (module + `runGate`
+both throw → escalate). Ran the **pass/job-fail branches under WSL** (node22 + Docker there): real agent-ci pulled the
+490MB actions-runner image and ran real containers. **Captured the REAL NDJSON — and it broke the parser:** events are
+keyed by **`event`**, not the initially-guessed `type` (`{"event":"run.finish","status":"passed"|"failed"}`). Keyed on
+`type`, EVERY real run (pass or fail) would have parsed as infra→throw→escalate — green unit tests, 100% useless in
+production. Fix = `obj.event ?? obj.type` (type kept as a defensive fallback) + two VERBATIM real-NDJSON regression tests.
+**All 3 branches then proven end-to-end via the real built module:** pass→module `{green:true}`→gate `COMMIT`;
+job-fail→`{green:false}`→gate `RETRY`; infra→throw→escalate.
+
+**Docs/gotchas.** GOTCHAS 55→57: `[gate/agent-ci-not-runnable-on-native-windows]` (feature is Linux/WSL-only in practice;
+Windows always infra-escalates — the correct fail-safe), `[gate/agent-ci-ndjson-keyed-by-event-not-type]` (the guessed-shape
+trap; live-prove earned its keep, same class as the s32 dedup lesson). **Result: PR #69** (CI-gated merge).
+**Next: merge #69 if not landed; then the polish track.**
+
+---
+
 ## s36 — 2026-07-09 — Component-currency **Tier 2** (8 items) + native shell + desktop responsiveness → **MERGED (PR #65 `a5efbb5`)**, + 2 polish fixes (**PR #66 `2bab3c7`**)
 
 **Scope.** Executed all of Tier 2 from the s35 audit, subagent-driven (Sonnet workers + mandatory codex GPT-5.5 gate
