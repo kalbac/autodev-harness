@@ -13,7 +13,14 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Spinner } from "./ui/Feedback";
-import { ScrollArea } from "./ui/scroll-area";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "./ui/message-scroller";
 import { Textarea } from "./ui/textarea";
 
 interface ChatMessage {
@@ -206,16 +213,35 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
           <DialogTitle>Discuss before launching</DialogTitle>
         </DialogHeader>
 
-        <ScrollArea className="h-80 rounded-lg border border-border bg-muted/30 p-3">
-          <div className="flex flex-col gap-3">
-            {transcript.map((m, i) => (
-              <ChatBubble key={i} role={m.role} text={m.text} />
-            ))}
-            {chatStart.isPending && <Spinner className="self-start" />}
-            {streamingText && <ChatBubble role="assistant" text={streamingText} />}
-            {chatMessage.isPending && !streamingText && <Spinner className="self-start" />}
-          </div>
-        </ScrollArea>
+        <MessageScrollerProvider autoScroll>
+          <MessageScroller className="h-80 rounded-lg border border-border bg-muted/30">
+            <MessageScrollerViewport className="p-3">
+              <MessageScrollerContent className="gap-3">
+                {transcript.map((m, i) => (
+                  <MessageScrollerItem key={i} scrollAnchor={m.role === "operator"}>
+                    <ChatBubble role={m.role} text={m.text} />
+                  </MessageScrollerItem>
+                ))}
+                {chatStart.isPending && (
+                  <MessageScrollerItem>
+                    <Spinner className="self-start" />
+                  </MessageScrollerItem>
+                )}
+                {streamingText && (
+                  <MessageScrollerItem>
+                    <ChatBubble role="assistant" text={streamingText} />
+                  </MessageScrollerItem>
+                )}
+                {chatMessage.isPending && !streamingText && (
+                  <MessageScrollerItem>
+                    <Spinner className="self-start" />
+                  </MessageScrollerItem>
+                )}
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
+        </MessageScrollerProvider>
 
         {proposedSpecs.length > 0 && (
           <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/30 p-3">
