@@ -70,6 +70,13 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
   // ORIGINAL request landed, wrongly treating its stale response as
   // legitimate).
   const startAttemptRef = useRef(0);
+  // True only while a follow-up turn's `POST /message` is genuinely in flight.
+  // The SSE token stream and the POST response are SEPARATE channels: a token
+  // frame can arrive AFTER the POST already resolved (its `onSettled` ran and
+  // swapped `streamingText` for the final reply). Gating token appends on this
+  // ref means a late/stale token after the turn settled is dropped, instead of
+  // re-populating `streamingText` into a duplicate trailing assistant bubble.
+  const awaitingReplyRef = useRef(false);
 
   const chatStart = useChatStart(projectId);
   const chatMessage = useChatMessage(projectId);
@@ -81,6 +88,7 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
   useEffect(() => {
     if (open) return;
     startedRef.current = false;
+    awaitingReplyRef.current = false;
     setSessionId(null);
     setTranscript([]);
     setProposedSpecs([]);
@@ -134,6 +142,10 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
     es.onmessage = (ev) => {
       try {
         const parsed = JSON.parse(ev.data) as { type?: string; text?: string };
+        // Drop any token that arrives once the turn has already settled (its
+        // POST resolved and the final reply was appended) — otherwise a late
+        // frame would re-open a duplicate streaming bubble below the reply.
+        if (!awaitingReplyRef.current) return;
         if (parsed.type === "token" && typeof parsed.text === "string") {
           setStreamingText((prev) => prev + parsed.text);
         }
@@ -150,6 +162,9 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
     setTranscript((prev) => [...prev, { role: "operator", text: trimmed }]);
     setMessageInput("");
     setStreamingText("");
+    // Open the token gate for THIS turn; the SSE handler only appends while
+    // this is true, and `onSettled` closes it the instant the POST resolves.
+    awaitingReplyRef.current = true;
     chatMessage.mutate(
       { sessionId, message: trimmed },
       {
@@ -160,6 +175,11 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
           setStreamingText("");
           setTranscript((prev) => [...prev, { role: "assistant", text: data.reply }]);
           setProposedSpecs(data.proposedSpecs);
+        },
+        // Close the token gate on BOTH success and error — any frame after
+        // this point is stale and must not resurrect the streaming bubble.
+        onSettled: () => {
+          awaitingReplyRef.current = false;
         },
       },
     );
