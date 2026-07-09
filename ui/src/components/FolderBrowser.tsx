@@ -3,6 +3,7 @@ import { ArrowUp, Folder, FolderGit2 } from "lucide-react";
 import type { FsDirEntry, GitInitResponse } from "@/lib/api";
 import { useFsDirs, useGitInit } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { Badge } from "./ui/badge";
 import { Loading, ErrorState } from "./ui/Feedback";
 
 /**
@@ -74,14 +75,20 @@ export function FolderBrowser({
                 <Icon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="truncate text-foreground">{entry.name}</span>
                 {entry.isGitRepo && (
-                  <span className="shrink-0 rounded-[5px] border border-[color-mix(in_srgb,var(--color-clean)_40%,transparent)] px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] text-clean">
+                  <Badge
+                    variant="outline"
+                    className="h-auto shrink-0 rounded-[5px] border-[color-mix(in_srgb,var(--color-clean)_40%,transparent)] px-1.5 py-0.5 font-mono text-[9px] font-normal tracking-[0.06em] text-clean"
+                  >
                     git
-                  </span>
+                  </Badge>
                 )}
                 {entry.isRegistered && (
-                  <span className="shrink-0 rounded-[5px] border border-border px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] text-muted-foreground">
+                  <Badge
+                    variant="outline"
+                    className="h-auto shrink-0 rounded-[5px] px-1.5 py-0.5 font-mono text-[9px] font-normal tracking-[0.06em] text-muted-foreground"
+                  >
                     registered
-                  </span>
+                  </Badge>
                 )}
                 {selectable && (
                   <button

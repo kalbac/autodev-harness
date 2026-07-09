@@ -11,13 +11,13 @@ import { Textarea } from "./ui/textarea";
 import { EmptyState, Loading } from "./ui/Feedback";
 import { Button } from "./ui/Button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./ui/dialog";
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 
 /**
  * The A/B decision surface — this IS "never merge bullshit" in the moment the
@@ -123,10 +123,11 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
 
           {/* Gate OVERRIDE — commits the reviewed diff the critic did NOT bless.
               Deliberately separate from A/B and gated behind a confirmation. */}
-          <button
+          <Button
+            variant="outline"
             onClick={() => setConfirmC(true)}
             disabled={reply.isPending}
-            className="flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
+            className="h-auto justify-center gap-2 rounded-lg border-dashed bg-transparent px-3 py-2 text-[13px] font-medium whitespace-normal hover:bg-muted disabled:opacity-50"
             style={{
               borderColor: `color-mix(in srgb, ${toneVar.broken} 45%, transparent)`,
               color: toneVar.broken,
@@ -134,7 +135,7 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
           >
             <GitCommitHorizontal className="size-4" />
             Commit anyway — override the gate
-          </button>
+          </Button>
 
           {reply.isError && (
             <p className="text-xs text-broken">Could not record reply: {(reply.error as Error).message}</p>
@@ -142,42 +143,42 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
         </div>
       )}
 
-      <Dialog open={confirmC} onOpenChange={(o) => !reply.isPending && setConfirmC(o)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+      <AlertDialog open={confirmC} onOpenChange={(o) => !reply.isPending && setConfirmC(o)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
               <ShieldAlert className="size-4" style={{ color: toneVar.broken }} />
               Commit over the critic&apos;s objection?
-            </DialogTitle>
-            <DialogDescription>
+            </AlertDialogTitle>
+            <AlertDialogDescription>
               This commits the worker&apos;s reviewed change to the loop branch even though the
               independent critic did <span className="font-semibold text-foreground">not</span> bless it.
               It is a deliberate human override of the gate — the change becomes part of the repo and
               satisfies any dependent task. It only applies if the diff still cleanly applies; otherwise
               it is refused and the task stays escalated.
-            </DialogDescription>
-          </DialogHeader>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
           {reply.isError && (
             <p className="rounded-md border border-broken/40 bg-muted/60 px-3 py-2 text-xs text-broken">
               Refused: {(reply.error as Error).message}
             </p>
           )}
-          <DialogFooter>
+          <AlertDialogFooter>
             <Button variant="outline" onClick={() => setConfirmC(false)} disabled={reply.isPending}>
               Cancel
             </Button>
-            <button
+            <Button
+              variant="primary"
               onClick={() => reply.mutate("C")}
               disabled={reply.isPending}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3.5 text-sm font-medium text-primary-foreground transition-colors disabled:opacity-50"
               style={{ backgroundColor: toneVar.broken }}
             >
               <GitCommitHorizontal className="size-4" />
               {reply.isPending ? "Committing…" : "Commit anyway"}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }
@@ -194,15 +195,16 @@ function OptionButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
+      variant="outline"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-left transition-colors hover:bg-muted disabled:opacity-50"
+      className="h-auto items-start justify-start gap-2.5 whitespace-normal rounded-lg border-border bg-muted/40 px-3 py-2.5 text-left font-normal hover:bg-muted disabled:opacity-50"
     >
       <span className="grid size-6 shrink-0 place-items-center rounded-md border border-border bg-muted font-mono text-xs font-semibold text-foreground">
         {letter}
       </span>
       <span className="text-[13px] leading-snug text-muted-foreground">{text}</span>
-    </button>
+    </Button>
   );
 }

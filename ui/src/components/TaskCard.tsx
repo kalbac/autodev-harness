@@ -3,6 +3,7 @@ import { ShieldAlert } from "lucide-react";
 import type { QueueState, Task } from "@/lib/api";
 import { QUEUE_META, isGuarded } from "@/lib/status";
 import { useProjectId } from "@/lib/useProjectId";
+import { Badge } from "./ui/badge";
 import { Card, CardBody } from "./ui/Card";
 import { StatusPill } from "./ui/StatusPill";
 
@@ -40,7 +41,9 @@ export function TaskCard({ task, state }: { task: Task; state: QueueState }) {
           <div className="mt-2 flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
             <span className="truncate">{task.id}</span>
             <span className="ml-auto flex items-center gap-2 shrink-0">
-              <span className="rounded border border-border px-1 py-0.5 text-muted-foreground">{task.type}</span>
+              <Badge variant="outline" className="h-auto rounded px-1 py-0.5 font-normal text-muted-foreground">
+                {task.type}
+              </Badge>
               {task.model && <span className="text-muted-foreground">{task.model}</span>}
             </span>
           </div>

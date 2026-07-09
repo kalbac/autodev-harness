@@ -7,6 +7,7 @@ import { TabBar, type TabDef } from "./ui/Tabs";
 import { VerdictSeal } from "./ui/VerdictSeal";
 import { RuntimeFileView } from "./RuntimeFileView";
 import { EmptyState, Loading } from "./ui/Feedback";
+import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group";
 
 type Verdict = "clean" | "broken" | "uncertain" | null;
 
@@ -158,22 +159,33 @@ function FilesTab({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-1.5">
+      <ToggleGroup
+        value={selected ? [selected] : []}
+        onValueChange={(values) => {
+          // Base UI's ToggleGroup value is always string[]; it can emit [] on
+          // re-click of the active chip — ignore that so a file, once picked,
+          // stays selected (matches the prior manual-button behavior).
+          const next = values[0];
+          if (next) setSelected(next);
+        }}
+        spacing={1.5}
+        className="w-full flex-wrap"
+      >
         {names.map((n) => (
-          <button
+          // Pressed styling (bg-muted, foreground text) comes from the base
+          // `toggleVariants` aria-pressed classes already — Base UI sets aria-pressed
+          // natively, so no JS-computed className ternary is needed here. Only the
+          // inline tone color still needs JS (verdictTone isn't expressible in CSS).
+          <ToggleGroupItem
             key={n}
-            onClick={() => setSelected(n)}
-            className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
-              selected === n
-                ? "border-border bg-muted text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground"
-            }`}
+            value={n}
+            className="h-auto min-w-fit rounded-md border border-border px-2 py-1 font-mono text-[11px] font-normal text-muted-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
             style={selected === n ? { color: toneVar[verdictTone("clean")] } : undefined}
           >
             {n}
-          </button>
+          </ToggleGroupItem>
         ))}
-      </div>
+      </ToggleGroup>
       <RuntimeFileView projectId={projectId} taskId={taskId} name={selected} />
     </div>
   );
