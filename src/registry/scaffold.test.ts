@@ -69,6 +69,24 @@ describe("mergeConfigYaml", () => {
     expect(parsed.antiDrift.model).toBe("custom-model"); // survives untouched
   });
 
+  it("preserves a hand-set gate.agentCi across a checkCommand UI edit (config-file-only block, no UI)", () => {
+    const existing = [
+      "gate:",
+      "  agentCi:",
+      "    enabled: true",
+      "    workflows:",
+      "      - .github/workflows/ci.yml",
+      "",
+    ].join("\n");
+    const merged = mergeConfigYaml(existing, ScaffoldFormSchema.parse({ gate: { checkCommand: "npm test" } }));
+    const parsed = parseYaml(merged) as {
+      gate: { checkCommand: string; agentCi: { enabled: boolean; workflows: string[] } };
+    };
+    expect(parsed.gate.checkCommand).toBe("npm test");
+    expect(parsed.gate.agentCi.enabled).toBe(true);
+    expect(parsed.gate.agentCi.workflows).toEqual([".github/workflows/ci.yml"]);
+  });
+
   it("preserves roles.worker's extra hand-set fields while updating only the form's ladder", () => {
     const existing = "roles:\n  worker:\n    adapter: claude\n    maxTurns: 55\n";
     const text = mergeConfigYaml(

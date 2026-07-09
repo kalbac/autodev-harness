@@ -345,6 +345,7 @@ function defaultGateVerdict(overrides: Partial<GateVerdict> = {}): GateVerdict {
     task_id: "t1",
     composer_green: true,
     success_green: true,
+    agent_ci_green: true,
     constitution_touched: [],
     zones_touched: [],
     decision: "COMMIT",

@@ -1,5 +1,28 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ s37 — **agent-ci gate hardening SHIPPED** (optional local-CI-replay gate step), codex-CLEAN + LIVE-PROVEN end-to-end → **PR #69**
+> Implemented the s33 spec (`docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md`) subagent-driven (Sonnet
+> workers + mandatory codex GPT-5.5 gate). An **optional, off-by-default, config-gated ADDITIONAL** machine-gate step replays
+> a project's real GitHub Actions CI locally (`@redwoodjs/agent-ci`) in the per-task worktree BEFORE commit. **Inert unless
+> `gate.agentCi.enabled:true` + explicit workflow allowlist** (never `run --all`). Job-fail → RETURN `{green:false}` → folds
+> into the gate's existing **RETRY**; agent-ci/Docker infra-fail (no Docker/binary/terminal-event/timeout) → **THROWS** →
+> propagates out of `runGate` → existing conductor try/catch **ESCALATES** (`gate threw -- broken operator config`; zero new
+> escalation code). New step "1c" after `success_commands`; new verdict field `agent_ci_green`; never replaces the critic,
+> never mandatory, no UI (config-file only). Touched `gate.ts` (most sensitive) + `agent-ci.ts` (new) + `schema.ts` + `root.ts`.
+> **Gate: 934 tests/3 skip, typecheck+build(root+ui) green; codex GPT-5.5 gate ran 3 rounds** — R1 found 2 Sev-2 (timeout
+> didn't kill the child→leak; parser OR'd terminal events→late `cancelled` after `passed` misread as pass) → fixed (child-kill
+> via `runNative.timeoutMs`; last-terminal-wins + fail-closed) → re-critic CLEAN; then the **live-prove found a real correctness
+> bug** (below) → fixed → final codex **CLEAN**. **LIVE-PROVEN end-to-end against REAL agent-ci** (WSL+Docker, real container
+> runs): pass→**COMMIT** (`agent_ci_green:true`), job-fail→**RETRY** (+reason), infra-fail→**throw→escalate** (proven for real
+> on native Windows where agent-ci can't run). **The live-prove earned its keep:** the NDJSON parser was first keyed off a
+> GUESSED `type` field; the real `@redwoodjs/agent-ci@0.16.2` stream keys events by **`event`** (`{"event":"run.finish",
+> "status":"passed"|"failed"}`) — keyed on `type`, EVERY real run (pass or fail) would parse as infra→throw→escalate: green
+> unit tests, 100% useless in production. Fixed + locked with verbatim real-NDJSON tests. **GOTCHAS 55→57** (new:
+> `[gate/agent-ci-not-runnable-on-native-windows]` — agent-ci dies pre-Docker on `tar C:\` so the feature is Linux/WSL-only
+> in practice, Windows always infra-escalates; `[gate/agent-ci-ndjson-keyed-by-event-not-type]` — the guessed-shape trap).
+> **NEXT (s38): merge PR #69 if not yet landed; then the polish track** (`FUTURE-BACKLOG.md` "Web UI: pilot → product":
+> per-field help → i18n → drift check; + optional footer accent-tile). agent-ci Settings-toggle UI is a natural v2 follow-up.
+>
 > ## ✅ MERGED (s36) — component-currency **Tier 2** (all 8 items) + native shell + desktop responsiveness → **PR #65 (`a5efbb5`)**; + 2 polish fixes → **PR #66 (`2bab3c7`)**
 > Executed the full Tier 2 audit subagent-driven (Sonnet workers + codex GPT-5.5 gate per item), one PR. Operator added
 > **desktop responsiveness** (no mobile) up front. **8 items, all codex CLEAN/CLEAN-after-fix:** toggle-group · **sidebar

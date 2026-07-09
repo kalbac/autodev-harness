@@ -35,6 +35,7 @@ export interface GateVerdict {
   task_id: string;
   composer_green: boolean;
   success_green: boolean;
+  agent_ci_green: boolean; // true when the feature is off / not applicable
   constitution_touched: string[];
   zones_touched: ZoneResult[];
   decision: Decision;
@@ -62,6 +63,13 @@ export interface GateDeps {
   runSuccessCommand: (cmd: string) => Promise<{ exitCode: number }>;
   /** Live mutation-check for a guard: true iff it still goes red-on-flip. Parity: Test-AutodevGuardStillRed. */
   guardStillRed: (guard: GuardRow) => Promise<boolean>;
+  /** Optional local-CI replay (agent-ci). null = feature off (skip). A genuine
+   *  workflow failure returns {green:false}; an INFRA failure THROWS, and that
+   *  throw is meant to propagate out of runGate exactly like a throwing
+   *  loadInvariants/loadGuardPairs does (conductor treats a gate throw as
+   *  ESCALATE -- see conductor.ts try/catch around runGate). Do NOT wrap it in
+   *  a try/catch here. */
+  runAgentCi: (() => Promise<{ green: boolean; reasons: string[] }>) | null;
   /** Optional: persist gate-verdict.json. Omit in unit tests. */
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
 }
@@ -89,6 +97,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
       task_id: input.taskId,
       composer_green: false,
       success_green: false,
+      agent_ci_green: true,
       constitution_touched: [],
       zones_touched: [],
       decision: "ESCALATE",
@@ -127,6 +136,21 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     if (sc.exitCode !== 0) {
       successGreen = false;
       reasons.push(`success_command FAILED (exit ${sc.exitCode}): ${cmd}`);
+    }
+  }
+
+  // 1c. optional agent-ci local CI replay (spec 2026-07-08). null = feature off.
+  // A red workflow is worker-fixable -> RETRY (folds in below, exactly like a
+  // failed success_command). An INFRA failure THROWS out of runGate here (Docker
+  // down / binary unresolvable / timeout) -- intentionally NOT caught: the
+  // conductor's try/catch around runGate escalates it as a broken-operator-config
+  // problem, the same path a throwing loadInvariants takes.
+  let agentCiGreen = true;
+  if (deps.runAgentCi !== null) {
+    const ci = await deps.runAgentCi();
+    agentCiGreen = ci.green;
+    if (!ci.green) {
+      reasons.push(...ci.reasons);
     }
   }
 
@@ -232,7 +256,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
 
   // 4. decision — RETRY overrides everything, then constitution, then any bad zone, else COMMIT
   let decision: Decision = "COMMIT";
-  if (!composerGreen || !successGreen) {
+  if (!composerGreen || !successGreen || !agentCiGreen) {
     decision = "RETRY";
   } else if (constitutionTouched.length > 0) {
     decision = "ESCALATE";
@@ -249,6 +273,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     task_id: input.taskId,
     composer_green: composerGreen,
     success_green: successGreen,
+    agent_ci_green: agentCiGreen,
     constitution_touched: constitutionTouched,
     zones_touched: zonesTouched,
     decision,

@@ -39,6 +39,7 @@ import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
 import { ClaudeOrchestratorChatAdapter } from "../orchestrator/claude-orchestrator-chat-adapter.js";
 import type { OrchestratorChatAdapter } from "../orchestrator/chat-adapter.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "../gate/gate.js";
+import { runAgentCiWorkflows } from "../gate/agent-ci.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
 import {
   parseGuardsTable,
@@ -185,6 +186,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
   // --- Gate --------------------------------------------------------------
   function gateDeps(wt: Worktree): GateDeps {
     const checkCommand = cfg.gate.checkCommand;
+    const agentCi = cfg.gate.agentCi;
     return {
       loadInvariants: () => loadInvariantsFrom(wt.path),
       loadGuardPairs: () => loadGuardPairsFrom(wt.path),
@@ -204,6 +206,23 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
         const r = await runNative(c, a, { cwd: wt.path });
         return { exitCode: r.exitCode };
       },
+      runAgentCi: agentCi.enabled
+        ? async () => {
+            if (agentCi.workflows.length === 0) {
+              // Enabled but nothing to run: fail OPEN with a loud warning
+              // (mirrors policy.heterogeneity's misconfig convention). Never
+              // blocks a run on a half-finished config.
+              log("WARN", "gate.agentCi.enabled but workflows allowlist is empty -- skipping agent-ci this round");
+              return { green: true, reasons: [] };
+            }
+            return runAgentCiWorkflows({
+              cwd: wt.path,
+              workflows: agentCi.workflows,
+              timeoutMs: agentCi.timeoutMs,
+              runner: runNative,
+            });
+          }
+        : null,
       guardStillRed: async (guard: GuardRow) => {
         const pairs = await loadGuardPairsFrom(wt.path);
         // Match the FULL row identity, not contract_id alone: per-value coverage
