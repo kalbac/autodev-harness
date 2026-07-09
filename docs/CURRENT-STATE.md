@@ -1,5 +1,49 @@
 # CURRENT STATE — Autodev Harness
 
+> ## 🟢 s34 — orchestrator-chat COMPLETE, backend + UI, LIVE-PROVEN end-to-end (curl AND real browser)
+> Executed the s33 orchestrator-chat plan in full (Tasks 1-12), subagent-driven (Sonnet 5 workers + mandatory codex
+> GPT-5.5 critic gate per task, many real fix rounds — codex found and fixed a genuine bug in nearly every task:
+> stderr-pipe hang, SIGKILL timer leak, oversized-line silent hang, isError swallowed, cancel-before-launch-success
+> data loss, dead-SSE-socket writes, a throwing-sink `attachStream`/`release` gap, and — the standout finding — live
+> token streaming silently never worked past the opening chat turn, since `ClaudeChatProcess`'s `onToken` is bound
+> ONCE for a session's whole lifetime; new gotcha `[chat/onToken-bound-once]`, count 51). Backend: shared JSON-array
+> extractor, chat wire-parser, `ClaudeChatProcess` (live multi-turn child), `ClaudeOrchestratorChatAdapter`
+> (`--safe-mode`+`--strict-mcp-config`+`--tools ""` isolated), `ChatSessionManager` (registry/idle reaper/one-per-
+> project guard/SSE detach — 5+ codex rounds), 5 HTTP routes (start/stream/message/confirm/cancel) with a clean
+> `launchOrchestrate` extraction, composition-root + real-`ProjectView` wiring. UI: `api.ts`/`queries.ts` chat client
+> mirroring `postOrchestrate`'s idiom, `ChatModal` (shadcn Dialog/ScrollArea/Badge composition) replacing the direct
+> textarea-launch, `NewRunComposer` wired to open it (digest-watch toast arming preserved via `onLaunched`).
+> **LIVE-PROVEN TWICE:** (1) curl end-to-end on aurora — real `claude -p opus` chat spawn, live SSE token frames
+> matching the final reply, conversational continuity, `--safe-mode` confirmed in the real spawn args, clean cancel
+> teardown (no orphan), confirm → real orchestrate → decompose → worker → critic correctly escalated a chat-guessed
+> wrong assumption (no `PROVIDERS` map exists) rather than fabricating a commit. (2) **Real Chrome browser** (Task
+> 12) — typed an intent, opened `ChatModal`, watched the real opening reply + proposed-plan preview render, sent two
+> follow-up turns (conversational continuity confirmed via DOM), clicked Confirm & Launch → the dashboard showed
+> `RUNNING` → `CLEAN` live, and a **real commit landed on aurora** (`a794b88`, `1 task · committed & merged`);
+> separately verified Cancel enqueues nothing and releases the session slot (a fresh chat 200s instead of 409ing).
+> **One UX polish item found** (not a functional bug): the chat transcript `ScrollArea` doesn't auto-scroll to the
+> newest message — deferred to `FUTURE-BACKLOG.md`, not blocking. **Session-wide gotcha:** memory pressure on this
+> box caused repeated transient `Fatal process out of memory`/`spawn UNKNOWN` errors from stale MCP-server/dev-server
+> processes accumulated across PRIOR sessions (weeks old) — operator-approved cleanup freed the codex reviewer to
+> run reliably; `curl -N` and the inline-diff-with-no-tools-preamble `codex task` recipe (not `codex review`) were
+> the reliable workarounds when the sandboxed `git diff` kept failing. **Full-diff codex gate ran 7 rounds** — each
+> found a genuine session/process-lifecycle edge case (stale-session confirm, shutdown-race leak, close-during-start
+> resurrection, confirm-during-active-turn, unbounded opening-turn hang → permanent slot lock, then a self-inflicted
+> timer leak in that very fix) — all fixed with regression tests. **Post-plan operator-driven improvement:** operator
+> caught that the chat transcript used a generic `ScrollArea` where shadcn's purpose-built `MessageScroller` existed
+> (a real methodology miss — worked from the locally-vendored shadcn set, not the live catalog). Swapped to
+> `MessageScroller` (commit `9f4d1d0`, browser-verified: auto-scrolls to newest on every turn — closes the backlogged
+> auto-scroll gap). Wired the **shadcn MCP into a new project `.mcp.json`** (project-level per operator, live next
+> session) + backlogged a **component-currency audit** of all UI components against the current shadcn catalog.
+> **Next: final confirming codex round on the timer-leak + MessageScroller diff, then `finishing-a-development-branch`
+> (merge decision).**
+>
+> ## 📝 DOCS-ONLY (s33) — two specs written, no code yet: orchestrator-chat (+plan) and agent-ci gate-hardening
+> Both s33 agenda items were discussion-first per the operator's ask; zero production diffs this session — four
+> docs commits (`fa96605` chat spec, `294a78c` chat plan, `b330656` agent-ci recon, `72a09d8` agent-ci gate spec).
+> **Next session starts by picking an execution mode for the chat plan** (subagent-driven recommended) OR by writing
+> the agent-ci gate-hardening plan first — operator's call. Full detail: `docs/SESSION-LOG.md` s33 entry.
+
 > ## ✅ DONE + MERGED (s32) — agency-agents pivot resolved + THREE backlog features (PRs #55/#56) + LIVE-PROVEN
 > **Pivot first:** studied `github.com/msitarzewski/agency-agents` (MIT) vs the operator's 5-way frame → **#4 Not for us**
 > (a ~280-file persona-prompt library + multi-tool installer, NOT an orchestrator; it *installs* prompt files, doesn't

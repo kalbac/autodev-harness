@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowUp, CircleAlert } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api";
-import { qk, useConfig, useProjects, useState as useProjectState } from "@/lib/queries";
+import { useConfig, useProjects, useState as useProjectState } from "@/lib/queries";
 import { useAppStore } from "@/lib/store";
 import { useProjectId } from "@/lib/useProjectId";
-import { cn } from "@/lib/utils";
+import { ChatModal } from "./ChatModal";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
-import { Spinner } from "./ui/Feedback";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/Button";
 
@@ -29,9 +26,12 @@ function parseOrchestratorDigestLine(line: string): { level: string; message: st
 }
 
 /**
- * The "new run" intent box — the one write surface that launches work. It only
- * enqueues+triggers through the same validated orchestrator path the CLI uses
- * (R1-safe server-side); it cannot run/skip/reorder any gate step.
+ * The "new run" intent box — the one write surface that launches work. The
+ * textarea's "Launch run" no longer POSTs /orchestrate directly: it opens a
+ * `ChatModal` with the typed text as the first turn, and only a successful
+ * "Confirm & Launch" inside that modal actually enqueues+triggers, through the
+ * same validated orchestrator path the CLI uses (R1-safe server-side); it
+ * cannot run/skip/reorder any gate step.
  */
 export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
   // Rendered on the project home; the route guarantees projectId (`?? ""` for the type).
@@ -47,7 +47,6 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
       clearComposerSeed();
     }
   }, [composerSeed, clearComposerSeed]);
-  const qc = useQueryClient();
   const projects = useProjects();
   const config = useConfig(projectId);
   const projectState = useProjectState(projectId);
@@ -64,7 +63,11 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
   // WS-live (any digest.md write re-triggers this query), so we just watch it:
   // capture how many `[orchestrator]`-prefixed lines exist at launch time, then
   // toast the first NEW one that appears (its own report() call, whatever the
-  // outcome was), once, within a bounded window.
+  // outcome was), once, within a bounded window. This arming needs to fire from
+  // BOTH a real launch's trigger points — today that's only `ChatModal`'s
+  // Confirm & Launch (the plain direct-POST path this replaced is gone), but
+  // the arming logic itself stays local to this component since it owns the
+  // watch and the toast.
   const watchRef = useRef<{ baseline: number; deadline: number } | null>(null);
   useEffect(() => {
     const watch = watchRef.current;
@@ -89,36 +92,29 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
     watchRef.current = null; // one toast per launch
   }, [projectState.data?.digestTail]);
 
-  const launch = useMutation({
-    mutationFn: (text: string) => api.postOrchestrate(projectId, text),
-    onSuccess: () => {
-      setIntent("");
-      const baseline = (projectState.data?.digestTail ?? "")
-        .split(/\r?\n/)
-        .filter((l) => l.startsWith("[orchestrator] ")).length;
-      watchRef.current = { baseline, deadline: Date.now() + DIGEST_WATCH_MS };
-      void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
-      void qc.invalidateQueries({ queryKey: qk.state(projectId) });
-    },
-  });
+  const armDigestWatch = useCallback(() => {
+    const baseline = (projectState.data?.digestTail ?? "")
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("[orchestrator] ")).length;
+    watchRef.current = { baseline, deadline: Date.now() + DIGEST_WATCH_MS };
+  }, [projectState.data?.digestTail]);
+
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatIntent, setChatIntent] = useState("");
 
   const trimmed = intent.trim();
-  const canSubmit = trimmed.length > 0 && !launch.isPending;
+  const canSubmit = trimmed.length > 0;
 
   const submit = () => {
-    if (canSubmit) launch.mutate(trimmed);
+    if (!canSubmit || chatOpen) return;
+    setChatIntent(trimmed);
+    setChatOpen(true);
+    setIntent("");
   };
-
-  const inFlight = launch.error instanceof ApiError && launch.error.status === 409;
 
   return (
     <div className="flex flex-col gap-2">
-      <div
-        className={cn(
-          "rounded-xl border bg-card transition-colors focus-within:border-ring",
-          launch.isError ? "border-broken/40" : "border-border",
-        )}
-      >
+      <div className="rounded-xl border border-border bg-card transition-colors focus-within:border-ring">
         <textarea
           autoFocus={autoFocus}
           value={intent}
@@ -151,23 +147,19 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           </Badge>
           <span className="ml-auto font-mono text-[11px] text-muted-foreground">⌘⏎ to launch</span>
           <Button onClick={submit} disabled={!canSubmit} variant="primary">
-            {launch.isPending ? <Spinner className="text-primary-foreground" /> : <ArrowUp className="size-4" />}
+            <ArrowUp className="size-4" />
             Launch run
           </Button>
         </div>
       </div>
 
-      {launch.isSuccess && (
-        <p className="px-1 text-xs text-clean">Run accepted — decomposing intent…</p>
-      )}
-      {launch.isError && (
-        <p className="flex items-center gap-1.5 px-1 text-xs text-broken">
-          <CircleAlert className="size-3.5" />
-          {inFlight
-            ? "A run is already in flight — wait for it to settle, then try again."
-            : `Could not launch: ${(launch.error as Error).message}`}
-        </p>
-      )}
+      <ChatModal
+        projectId={projectId}
+        open={chatOpen}
+        initialIntent={chatIntent}
+        onClose={() => setChatOpen(false)}
+        onLaunched={armDigestWatch}
+      />
     </div>
   );
 }

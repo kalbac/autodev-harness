@@ -104,6 +104,20 @@ heavier package. Polish the product surface first; wrap it once it's real.
   (today's adapter is a single spawn-and-exit call), streaming to the UI, a new chat view/route,
   message history persistence. Do NOT start implementation without that design conversation.
 
+- **Optional local-CI replay as an extra machine-gate layer (from the `redwoodjs/agent-ci`
+  recon, s33 2026-07-08)** — for a project that already ships its own
+  `.github/workflows/*.yml`, optionally let the machine gate replay that CI locally
+  (via `agent-ci run --all --json`, parsing its NDJSON event stream) as an ADDITIONAL
+  check layered onto — never instead of — the existing worktree `success_commands` gate
+  AND the independent codex critic. Would catch environment-drift failures neither
+  current check can (a workflow-only step, a matrix combination, a clean-container
+  quirk). Needs Docker as a new host dependency; `agent-ci` is FSL-1.1-MIT (fair-source,
+  fine for this non-competing internal use, unlike AO/OpenHands/Open Design's fully
+  permissive MIT/Apache). **Low priority — no current project in this harness's orbit
+  has been reported hitting this specific gap**; full analysis + 5-way verdict in
+  `wiki/agent-ci-analysis.md` (verdict: not a must-have, not redundant, this is the one
+  surviving footnote).
+
 ## OpenHands-derived candidates (see `wiki/openhands-analysis.md`)
 
 Ranked by fit with "never merge bullshit":
@@ -166,6 +180,35 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   `escalated/`, where its `file_set` blocks every future same-file run with zero operator signal.
   **Scheduled as the s26 opener (variant 1):** the reply-apply path must move the task
   `escalated → done` (accepted) or re-queue `→ pending` (redo). Codex-gate it.
+- ~~**ChatModal transcript doesn't auto-scroll to the newest message**~~ **RESOLVED (s34, commit
+  `9f4d1d0`).** Swapped the generic `ScrollArea` for shadcn's purpose-built `MessageScroller`
+  (`@shadcn/react/message-scroller` primitive) — auto-follows streaming replies when the operator
+  is at the bottom, preserves position when scrolled up. Browser-verified: auto-scrolls to newest
+  on every turn. (Operator caught that the generic component should have been the purpose-built one
+  — see the two follow-up items below.)
+- **Wire the shadcn MCP into this project's `.mcp.json`** (operator ask, s34; PROJECT-level, not
+  global — it's needed in only 2-3 projects, not worth pulling into every project). `ui.shadcn.com/docs/mcp`.
+  Gives the agent live access to the shadcn component registry so it discovers purpose-built components
+  (like `message-scroller`) instead of working only from the locally-vendored set — the exact gap that
+  let a generic `ScrollArea` ship where `MessageScroller` existed. Not set up this session because the
+  MCP server only becomes live after a Claude Code restart (can't self-connect mid-session); the config
+  entry should be added so the NEXT session has it.
+- **Component-currency audit** (operator ask, s34): dedicate one session to reviewing EVERY UI
+  component we use (both our custom ones AND the already-vendored shadcn ones like `Dialog`) against
+  the CURRENT shadcn catalog — where a more-relevant/more-current shadcn component exists, replace ours
+  with it. Prompted by the `ScrollArea`→`MessageScroller` miss (worked from the vendored set, not the
+  live catalog); the shadcn MCP above is the tooling that makes this audit reliable. Best done AFTER
+  the MCP is wired.
+- ~~**A chat session's live process isn't closed when its project is unregistered or its config
+  is updated while the chat is open**~~ **RESOLVED (s34, commit `ef110b9`).** Codex re-raised this
+  across multiple full-diff review rounds, so it was fixed rather than left deferred (the project's
+  "never merge bullshit" bar). `server.ts` now tracks chat managers BY PROJECT ID
+  (`chatManagersByProject: Map`), exposes `ApiServerHandle.closeProjectChat(id)`, and `src/index.ts`
+  calls it from `admin.unregister` and the `updateConfig` → `hub.evict` path — so a live chat
+  subprocess is closed the moment its project is unregistered/evicted, not left for the idle reaper.
+  Simpler than the originally-feared `ProjectRoot.closeChatIfBuilt` approach: the server layer already
+  knows which projects have a live manager (per-request tracking), so no new `ProjectRoot` capability
+  was needed. Best-effort (never breaks the unregister/config-update).
 
 ## Related
 

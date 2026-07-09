@@ -4,6 +4,40 @@
 
 ---
 
+## s33 — 2026-07-08 — TWO discussion-first agenda items → two committed specs (no code yet)
+
+**Item 1 — Orchestrator CHAT brainstorm → spec → plan.** Resolved the load-bearing `adr/003` question first: a
+pre-launch chat is R1-safe as long as it stays a preview layer over the same 4 orchestrator capabilities
+(enqueue/trigger/read/report) — the ONLY write into enforcement stays the existing, unchanged `handleIntent`, fired
+once on explicit "Confirm & Launch" (finalIntent assembled from the operator's OWN messages, never the LLM's).
+Operator chose the maximal-scope options: pre-enqueue-only (v1), genuine conversational replies (not raw
+TaskSpec[]), and a truly **live, multi-turn `claude -p` process held open for the whole chat** (not per-turn
+history-restuffing). **Live-verified the wire format myself** (spawned real `claude -p --input-format stream-json
+--output-format stream-json`, fed 2 turns over one process's stdin) before writing the plan — confirmed the
+session_id-stable process + `content_block_delta`/`result` event shapes used throughout. Spec:
+`docs/superpowers/specs/2026-07-08-orchestrator-chat-design.md` (`fa96605`). Plan (12 tasks, TDD, grounded in the
+real transcript, not guessed): `docs/superpowers/plans/2026-07-08-orchestrator-chat.md` (`294a78c`). **Not started
+— execution mode (subagent-driven vs inline) not yet chosen.**
+
+**Item 2 — `redwoodjs/agent-ci` recon → corrected verdict → spec.** Recon-first (real README/LICENSE/shipped Claude
+skill/blog, not the name): it's a local-GitHub-Actions-fidelity/speed tool for a single agent's pre-push loop
+("CI becomes a formality — a verification of something you already proved"), NOT an orchestrator — near-zero
+overlap with our 6 frozen-skeleton axes. Wrote `docs/wiki/agent-ci-analysis.md` (`b330656`). **Operator corrected my
+framing**: not a replace-anything pitch, an optional STRENGTHEN of "never merge bullshit" (real downstream GH
+Actions CI today has zero pre-merge visibility from our gate — a genuine gap). Re-briefed as its own brainstorm →
+design: `docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md` (`72a09d8`) — folds into the
+EXISTING `RETRY`/`ESCALATE`/`COMMIT` machinery with zero new Decision/escalation types: a genuine workflow failure
+→ RETRY (like `success_commands`); a Docker/agent-ci infra failure → throws, reusing the already-existing
+"gate threw → broken operator config" escalation path. Opt-in, off by default, explicit workflow allowlist (never
+`--all`, to avoid an accidental deploy-workflow run). **Plan not yet written.**
+
+**No code changed this session** — both items were deliberately discussion-first per the operator's ask; three docs
+commits landed (specs + analysis + backlog entries), zero production diffs. Memory updated mid-session
+(`feedback-decide-dont-ask`): operator wants product/UX-shaping questions during brainstorm, NOT a
+section-by-section technical-architecture approval loop — decide the plumbing solo, bring back a finished design.
+
+---
+
 ## s32 — 2026-07-08 — agency-agents pivot + 3 backlog features (PRs #55/#56) + live proofs
 
 **Pivot:** studied `github.com/msitarzewski/agency-agents` (MIT) vs the operator's 5-way frame → **#4 Not for us** — a

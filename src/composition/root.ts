@@ -35,6 +35,9 @@ import {
 import { ClaudeOrchestratorAdapter } from "../orchestrator/claude-orchestrator-adapter.js";
 import type { OrchestratorAdapter } from "../orchestrator/adapter.js";
 import { createOrchestrator, type OrchestratorResult } from "../orchestrator/orchestrator.js";
+import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
+import { ClaudeOrchestratorChatAdapter } from "../orchestrator/claude-orchestrator-chat-adapter.js";
+import type { OrchestratorChatAdapter } from "../orchestrator/chat-adapter.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "../gate/gate.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
 import {
@@ -77,6 +80,11 @@ export interface ProjectRoot {
    *  `buildOrchestrator` rejects) must still let `run` work -- the pre-extraction
    *  behavior, when only serve/orchestrate constructed the orchestrator. */
   orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> };
+  /** Pre-launch conversational layer (adr/003-safe — see chat-adapter.ts).
+   *  Built LAZILY on first use, same rationale as `orchestrator`: the `run`
+   *  CLI verb never opens a chat, so a config with an unregistered chat
+   *  adapter must not break it. */
+  chat: ChatSessionManager;
   /** apply-on-accept (operator gate-override): replay an escalated task's persisted
    *  `diff.patch` onto the loop branch and commit it. Consumed by the reply endpoint's
    *  choice "C". Fails CLOSED with a typed reason (missing diff / dirty tree / bad
@@ -331,12 +339,28 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
   let orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> } | undefined;
   const getOrchestrator = () => (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, conductor, log }));
 
+  // Chat manager is built LAZILY on first access, same rationale as the
+  // orchestrator above: the `run` CLI verb never opens a chat, so a config
+  // with an unregistered chat adapter must not break it.
+  let chatManager: ChatSessionManager | undefined;
+  const getChatManager = (): ChatSessionManager => {
+    if (!chatManager) {
+      const chatAdapter: OrchestratorChatAdapter = new ClaudeOrchestratorChatAdapter({ cfg, repoRoot });
+      chatManager = new ChatSessionManager({ adapter: chatAdapter, log });
+      chatManager.startReaper();
+    }
+    return chatManager;
+  };
+
   return {
     repoRoot,
     cfg,
     repo,
     conductor,
     orchestrator: { handleIntent: (intent) => getOrchestrator().handleIntent(intent) },
+    get chat(): ChatSessionManager {
+      return getChatManager();
+    },
     applyOnAccept: (taskId) =>
       runApplyOnAccept({
         taskId,

@@ -13,6 +13,7 @@ import { detectRepoRoot } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
 import { buildProjectConfigView } from "./api/config-view.js";
 import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
+import { buildReadSnapshot, createReadCapability } from "./orchestrator/capabilities.js";
 import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
@@ -188,20 +189,43 @@ async function main(): Promise<void> {
                   isolationFlags: workerIsolationFlags(c),
                 }),
               onApplyOnAccept: (taskId: string) => root.applyOnAccept(taskId),
+              // Pre-launch chat (adr/003-safe -- see chat-adapter.ts): `manager` is
+              // the project's lazily-built ChatSessionManager (composition/root.ts);
+              // `buildSnapshot` gives the chat's opening turn the SAME ReadSnapshot
+              // shape `handleIntent` uses, over the SAME repo, so "current state"
+              // never drifts between the two call sites.
+              chat: {
+                manager: root.chat,
+                buildSnapshot: () => buildReadSnapshot(createReadCapability(root.repo)),
+              },
             },
           };
         },
       },
       admin: {
         register: (input) => admin.register(input),
-        unregister: (id) => admin.unregister(id),
+        unregister: async (id) => {
+          const ok = await admin.unregister(id);
+          // The project no longer resolves through the normal routes, so an
+          // open chat's cancel route becomes unreachable -- close it here
+          // rather than leaving the live claude subprocess for the idle
+          // reaper to eventually clean up.
+          await handle.closeProjectChat(id);
+          return ok;
+        },
         rename: (id, name) => admin.rename(id, name),
         updateConfig: async (id, form) => {
           const result = await admin.updateConfig(id, form);
           // config.yaml changed on disk -- drop the cached ProjectRoot (and any stale
           // error) so the NEXT hub.get() rebuilds from the fresh file. An
           // already-in-flight run keeps whatever root it already captured.
-          if (result.ok) hub.evict(id);
+          if (result.ok) {
+            hub.evict(id);
+            // Any open chat was started under the now-stale root/config --
+            // close it rather than let it keep running against a root the
+            // project no longer uses.
+            await handle.closeProjectChat(id);
+          }
           return result;
         },
         listDirs: (path) => listDirs(path, { isRegistered: (abs) => admin.isRegistered(abs) }),

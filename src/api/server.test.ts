@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,9 @@ import type { DetectedAgent } from "../detect/detect-agents.js";
 import type { DetectGitResult } from "../detect/detect-git.js";
 import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { createScheduler } from "../scheduler/scheduler.js";
+import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
+import type { OrchestratorChatAdapter, ChatSessionHandle } from "../orchestrator/chat-adapter.js";
+import type { ReadSnapshot } from "../orchestrator/adapter.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
@@ -27,6 +30,7 @@ function projectDeps(
     config?: ProjectConfigView;
     onScanExtensions?: () => Promise<AgentExtensions | null>;
     onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
+    chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -43,6 +47,7 @@ function projectDeps(
                 ...(one.config !== undefined ? { config: one.config } : {}),
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
                 ...(one.onApplyOnAccept !== undefined ? { onApplyOnAccept: one.onApplyOnAccept } : {}),
+                ...(one.chat !== undefined ? { chat: one.chat } : {}),
               },
             }
           : null,
@@ -2131,6 +2136,354 @@ describe("createApiServer / POST /orchestrate", () => {
     dA.resolve();
     await tick();
     expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+  });
+});
+
+/** A fake chat adapter: `startSession` returns an incrementing session id and
+ *  a canned first turn; `send` echoes the message back so tests can assert on
+ *  it without a real model. Mirrors the shape `ChatSessionManager` expects
+ *  from `OrchestratorChatAdapter` (see `chat-adapter.ts`). */
+function makeFakeChatAdapter(): OrchestratorChatAdapter {
+  let n = 0;
+  return {
+    startSession: async () => ({ handle: { sessionId: `s${++n}` }, turn: { reply: "hi", proposedSpecs: [] } }),
+    send: async (_h: ChatSessionHandle, message: string) => ({ reply: `echo:${message}` }),
+    close: async () => {},
+  };
+}
+
+const emptySnapshot = async (): Promise<ReadSnapshot> => ({ existingIds: [], queues: {} as never });
+
+describe("createApiServer / chat routes", () => {
+  it("POST /chat 404s when chat is not configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /chat starts a session and returns the first turn", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { sessionId: string; reply: string; proposedSpecs: unknown[] };
+    expect(json.sessionId).toBe("s1");
+    expect(json.reply).toBe("hi");
+    expect(json.proposedSpecs).toEqual([]);
+  });
+
+  it("a second POST /chat for the same project 409s while one is open", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const post = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent: "build X" }),
+      });
+
+    const res1 = await post();
+    expect(res1.status).toBe(200);
+
+    const res2 = await post();
+    expect(res2.status).toBe(409);
+  });
+
+  it("POST /chat/:id/message forwards to the session, and DELETE /chat/:id cancels it", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const msgRes = await fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/message`)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "make it faster" }),
+    });
+    expect(msgRes.status).toBe(200);
+    expect(await msgRes.json()).toEqual({ reply: "echo:make it faster", proposedSpecs: [] });
+
+    const cancelRes = await fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}`)}`, { method: "DELETE" });
+    expect(cancelRes.status).toBe(200);
+    expect(await cancelRes.json()).toEqual({ cancelled: true });
+    expect(manager.hasOpenSession("p1")).toBe(false);
+  });
+
+  it("POST /chat/confirm closes the session and launches the real orchestrate path", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    const calls: string[] = [];
+    const onOrchestrate = async (intent: string): Promise<void> => {
+      calls.push(intent);
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(202);
+    expect(await confirmRes.json()).toEqual({ accepted: true, intent: "build X, refined" });
+
+    expect(manager.hasOpenSession("p1")).toBe(false);
+
+    await tick();
+    expect(calls).toEqual(["build X, refined"]);
+  });
+
+  it("GET /chat/:id/stream on an unknown session returns a real 404 JSON response, not a 200 SSE frame", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/chat/does-not-exist/stream")}`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(await res.json()).toEqual({ error: "session not found" });
+  });
+
+  it("GET /chat/:id/stream detaches its sink from the manager when the client disconnects", async () => {
+    // Real HTTP client abort (not a fake `res`), because `handleChatStream`'s
+    // `res.on("close", ...)` wiring is closure-internal to `createApiServer`
+    // and cannot be reached directly from a test -- driving a genuine socket
+    // teardown end-to-end is the only way to exercise it. `ChatSessionManager`
+    // is real (not mocked); `vi.spyOn` wraps its `attachStream`/`detachStream`
+    // so the test can observe the calls without losing the real behavior
+    // underneath.
+    //
+    // NOTE on shape: this deliberately does NOT `await fetch(...)` for the
+    // stream response -- Node's `http.ServerResponse.writeHead()` does not
+    // flush headers to the socket until the first `write()`/`end()` (verified
+    // empirically against this exact no-write-until-token shape), and this
+    // route never writes until a token arrives, so an `await`ed fetch would
+    // hang forever waiting for headers no production client-disconnect
+    // scenario is actually blocked on. Instead: fire the request unawaited,
+    // poll (bounded) for the server to have actually called `attachStream()`
+    // (proving the request was fully dispatched and routed), THEN abort.
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const attachSpy = vi.spyOn(manager, "attachStream");
+    const detachSpy = vi.spyOn(manager, "detachStream");
+
+    const controller = new AbortController();
+    const streamFetch = fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/stream`)}`, {
+      signal: controller.signal,
+    }).catch(() => {
+      /* expected: the abort below rejects this fetch -- nothing to assert on it */
+    });
+
+    const attachDeadline = Date.now() + 5000;
+    while (attachSpy.mock.calls.length === 0 && Date.now() < attachDeadline) {
+      await tick(10);
+    }
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    expect(attachSpy.mock.results[0]?.value).toBe(true);
+
+    // Client-side disconnect: abort the in-flight request, which tears down
+    // the underlying socket and must fire `res`'s 'close' event server-side.
+    controller.abort();
+    await streamFetch;
+
+    // The server's 'close' event is async relative to the client abort --
+    // poll (bounded) instead of asserting synchronously.
+    const detachDeadline = Date.now() + 5000;
+    while (detachSpy.mock.calls.length === 0 && Date.now() < detachDeadline) {
+      await tick(20);
+    }
+
+    expect(detachSpy).toHaveBeenCalledTimes(1);
+    expect(detachSpy.mock.calls[0]?.[0]).toBe(sessionId);
+    expect(detachSpy.mock.results[0]?.value).toBe(true);
+
+    // The registry must be left clean, not holding the dead sink: a fresh
+    // attach for the same session succeeds normally.
+    const newSink = { write: () => {}, end: () => {} };
+    expect(manager.attachStream(sessionId, newSink)).toBe(true);
+  });
+
+  it("POST /chat/confirm does NOT destroy the chat session when the real launch 409s (in-flight orchestrate)", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    const dOrchestrate = deferred<void>();
+    const onOrchestrate = async (): Promise<void> => {
+      await dOrchestrate.promise;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    // Kick off a real orchestrate run directly so it's in flight when confirm fires.
+    const firstOrchestrate = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "already running" }),
+    });
+    expect(firstOrchestrate.status).toBe(202);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(409);
+
+    // The chat session must still be open -- confirm's cancel() must only run
+    // AFTER a successful (202) launch, never before/regardless.
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    dOrchestrate.resolve();
+    await tick();
+  });
+
+  it("POST /chat/confirm 409s while a message send is still in flight for that session, and never invokes onOrchestrate", async () => {
+    // A custom adapter whose send() is manually controlled -- the same
+    // technique chat-session-manager.test.ts's turnInFlight tests use --
+    // applied here through the real HTTP routes so the race is exercised
+    // end-to-end (start, then a follow-up message that never resolves on
+    // its own, then confirm racing against it).
+    const dSend = deferred<{ reply: string }>();
+    const adapter = makeFakeChatAdapter();
+    adapter.send = () => dSend.promise;
+    const manager = new ChatSessionManager({ adapter, log: () => {} });
+    let orchestrateCalled = false;
+    const onOrchestrate = async (): Promise<void> => {
+      orchestrateCalled = true;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    const { sessionId } = (await startRes.json()) as { sessionId: string };
+
+    const msgPromise = fetch(`http://127.0.0.1:${port}${p1(`/chat/${sessionId}/message`)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "refine it" }),
+    });
+    // Let the message POST actually reach the manager and set turnInFlight
+    // before firing confirm.
+    await tick();
+    expect(manager.isTurnInFlight(sessionId)).toBe(true);
+
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(409);
+    const confirmBody = (await confirmRes.json()) as { error: string };
+    expect(confirmBody.error).toMatch(/in flight/);
+
+    expect(orchestrateCalled).toBe(false);
+    // The chat session must still be open -- the 409 guard must fire BEFORE
+    // any teardown, so the pending message send is left alone.
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    dSend.resolve({ reply: "ok" });
+    const msgRes = await msgPromise;
+    expect(msgRes.status).toBe(200);
+  });
+
+  it("POST /chat/confirm 404s for a sessionId that was never started, and never invokes onOrchestrate", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    let orchestrateCalled = false;
+    const onOrchestrate = async (): Promise<void> => {
+      orchestrateCalled = true;
+    };
+    handle = createApiServer(
+      projectDeps({ repo, stateDir, onOrchestrate, chat: { manager, buildSnapshot: emptySnapshot } }),
+    );
+    const port = await handle.listen(0);
+
+    // No `/chat` start call was ever made -- this sessionId is entirely
+    // bogus/fabricated, mirroring a stale (already idle-reaped or already
+    // cancelled) session left behind by a modal.
+    const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "never-started", finalIntent: "build X, refined" }),
+    });
+    expect(confirmRes.status).toBe(404);
+    expect(await confirmRes.json()).toEqual({ error: "chat session not found" });
+
+    await tick();
+    expect(orchestrateCalled).toBe(false);
+  });
+
+  it("handle.closeProjectChat closes the tracked manager for that project id, and is a safe no-op for an untracked one", async () => {
+    const manager = new ChatSessionManager({ adapter: makeFakeChatAdapter(), log: () => {} });
+    handle = createApiServer(projectDeps({ repo, stateDir, chat: { manager, buildSnapshot: emptySnapshot } }));
+    const port = await handle.listen(0);
+
+    const startRes = await fetch(`http://127.0.0.1:${port}${p1("/chat")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(startRes.status).toBe(200);
+    expect(manager.hasOpenSession("p1")).toBe(true);
+
+    // An untracked project id must be a silent no-op -- never throw.
+    await expect(handle.closeProjectChat("unknown-project")).resolves.toBeUndefined();
+
+    // The real target: closing by project id (as admin.unregister / the
+    // config-evict path do) tears down the live session even though the
+    // project no longer resolves through the normal /chat routes.
+    await handle.closeProjectChat("p1");
+    expect(manager.hasOpenSession("p1")).toBe(false);
   });
 });
 

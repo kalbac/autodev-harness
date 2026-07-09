@@ -234,3 +234,40 @@ export const useRenameProject = () => {
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
   });
 };
+
+/** Start a pre-launch chat session. No cache invalidation -- a chat session is
+ *  ephemeral, server-side conversation state, not a resource the rest of the
+ *  dashboard reads. */
+export function useChatStart(projectId: string) {
+  return useMutation({
+    mutationFn: (intent: string) => api.postChatStart(projectId, intent),
+  });
+}
+
+/** Send one operator chat turn. Same no-invalidation rationale as `useChatStart`. */
+export function useChatMessage(projectId: string) {
+  return useMutation({
+    mutationFn: (input: { sessionId: string; message: string }) => api.postChatMessage(projectId, input.sessionId, input.message),
+  });
+}
+
+/** Confirm a chat session: launches the same `/orchestrate` path a plain
+ *  one-shot launch does, so it invalidates the SAME queries `NewRunComposer`'s
+ *  own `launch` mutation invalidates on success. */
+export function useChatConfirm(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { sessionId: string; finalIntent: string }) => api.postChatConfirm(projectId, input.sessionId, input.finalIntent),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
+      void qc.invalidateQueries({ queryKey: qk.state(projectId) });
+    },
+  });
+}
+
+/** Cancel a chat session: nothing was ever enqueued, so no invalidation. */
+export function useChatCancel(projectId: string) {
+  return useMutation({
+    mutationFn: (sessionId: string) => api.deleteChat(projectId, sessionId),
+  });
+}
