@@ -123,10 +123,11 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
 
           {/* Gate OVERRIDE — commits the reviewed diff the critic did NOT bless.
               Deliberately separate from A/B and gated behind a confirmation. */}
-          <button
+          <Button
+            variant="outline"
             onClick={() => setConfirmC(true)}
             disabled={reply.isPending}
-            className="flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
+            className="h-auto justify-center gap-2 rounded-lg border-dashed bg-transparent px-3 py-2 text-[13px] font-medium whitespace-normal hover:bg-muted disabled:opacity-50"
             style={{
               borderColor: `color-mix(in srgb, ${toneVar.broken} 45%, transparent)`,
               color: toneVar.broken,
@@ -134,7 +135,7 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
           >
             <GitCommitHorizontal className="size-4" />
             Commit anyway — override the gate
-          </button>
+          </Button>
 
           {reply.isError && (
             <p className="text-xs text-broken">Could not record reply: {(reply.error as Error).message}</p>
@@ -166,15 +167,15 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
             <Button variant="outline" onClick={() => setConfirmC(false)} disabled={reply.isPending}>
               Cancel
             </Button>
-            <button
+            <Button
+              variant="primary"
               onClick={() => reply.mutate("C")}
               disabled={reply.isPending}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3.5 text-sm font-medium text-primary-foreground transition-colors disabled:opacity-50"
               style={{ backgroundColor: toneVar.broken }}
             >
               <GitCommitHorizontal className="size-4" />
               {reply.isPending ? "Committing…" : "Commit anyway"}
-            </button>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -194,15 +195,16 @@ function OptionButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
+      variant="outline"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-left transition-colors hover:bg-muted disabled:opacity-50"
+      className="h-auto items-start justify-start gap-2.5 whitespace-normal rounded-lg border-border bg-muted/40 px-3 py-2.5 text-left font-normal hover:bg-muted disabled:opacity-50"
     >
       <span className="grid size-6 shrink-0 place-items-center rounded-md border border-border bg-muted font-mono text-xs font-semibold text-foreground">
         {letter}
       </span>
       <span className="text-[13px] leading-snug text-muted-foreground">{text}</span>
-    </button>
+    </Button>
   );
 }
