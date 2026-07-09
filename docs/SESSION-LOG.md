@@ -4,6 +4,44 @@
 
 ---
 
+## s36 — 2026-07-09 — Component-currency **Tier 2** (8 items) + native shell + desktop responsiveness → **MERGED (PR #65 `a5efbb5`)**, + 2 polish fixes (**PR #66 `2bab3c7`**)
+
+**Scope.** Executed all of Tier 2 from the s35 audit, subagent-driven (Sonnet workers + mandatory codex GPT-5.5 gate
+per module), browser-proven, ONE PR. Operator added a cross-cutting ask up front: **desktop responsiveness** (no mobile)
+— the shell had ~zero (556px fixed chrome: sidebar 256 + rail 300 starved `main` at every width).
+
+**8 items (each codex CLEAN or CLEAN-after-fix):** (1) **toggle-group** — SettingsPopover theme + Inspector file-chips
+(1 Low `min-w-fit`). (2) **sidebar block + responsiveness** — shell rebuilt on the base-nova `sidebar` block
+(`collapsible=icon`); a controlled `SidebarProvider` + matchMedia controller auto-collapses <1280 (Ctrl/⌘B overrides
+until the next breakpoint cross), the session rail auto-hides <1120 behind a floating overlay toggle; project rows →
+`SidebarMenu` (mount-gated fetch preserved; letter-avatars collapsed). (3) **native inset refine** (operator UI
+feedback mid-session, ref dashboard-01) — `variant="inset"` (sidebar + content read as SEPARATE panels); footer
+rebuilt as the native `DropdownMenu` NavUser pattern; daemon status → `Badge`. (4) **chips → Badge/Button** (codex 1
+Med `zone`-marker-got-a-pill → reverted to span + 1 Low font-normal). (5) **checkbox** (codex 1 Med — sibling
+`htmlFor` doesn't toggle a span-rooted Base UI checkbox → wrapping `<label>`). (6) **alert-dialog** — EscalationCard
+gate-override confirm (custom async/broken-tone Buttons kept, not AlertDialogAction). (7) **collapsible** — DigestStrip.
+(8) **input-group** — NewRunComposer shell (codex 2 Low → `focus-within:border-ring` [was control-only] + `flex-wrap`
+footer); ChatModal composer left as-is (different shape). Operator chose "all Tier 2 incl. input-group" over my
+churn-skip recommendation.
+
+**Verification.** ui typecheck + build green every commit; **codex GPT-5.5 gate on every module**; browser live-proof
+(real daemon + Chrome): 3-region shell light+dark, Ctrl+B icon-collapse (avatars, main reclaims ~208px), inset floating
+card, native footer DropdownMenu + `daemon live` badge + theme keep-open, composer focus (--border→--ring, ring glow
+suppressed), TaskCard chips compact. CI green 4/4. Rail-hide <1120 + alert-dialog confirm NOT live-clicked (window
+clamps ~1295px CSS; no escalation to reach) — logic + codex verified.
+
+**Polish (PR #66, operator-reported bugs).** (1) SidebarRail resize-cursor artifact → removed (`<SidebarRail/>`
+redundant given header trigger + Ctrl/⌘B + auto-collapse). (2) Collapsed-footer gear mis-rendered → **root cause
+(gotcha 54): tailwind-merge doesn't dedupe `important` + arbitrary-variant utilities**, so the block's `size=lg`
+`group-data-[collapsible=icon]:p-0!` lost to base `p-2!` (stylesheet order) → 16px content box clipped the size-8
+square. Fix: bare `size-4` gear (native default-button collapse, zero crutches; operator vetoed a `hidden`-style hack).
+Operator approved the trade-off (lost the accent tile). Couldn't screenshot the below-fold footer (box browser died);
+fix root-cause-confirmed by live measurement + operator eyeball.
+
+**New gotchas (2): 53→55** — `[ui/twmerge-important-arbitrary-variant-no-dedupe]` (54), `[ui/base-ui-checkbox-wrapping-label]` (55).
+**Vendored primitives:** toggle-group/toggle, sidebar/sheet/use-mobile, checkbox, alert-dialog, collapsible, input-group
++ `use-media-query` — all Base UI, zero radix; block `button` deps rewired to custom `Button` (Windows collision, gotcha 62).
+
 ## s35 — 2026-07-09 — Component-currency migration **Tier 1** → **MERGED (PR #63, `de57d6c`)**
 
 **Context.** Operator ask carried from s34 (prompted by the s34 `MessageScroller` miss — shipped a generic component
