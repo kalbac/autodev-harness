@@ -56,9 +56,7 @@ export function SidebarSettingsMenu({
           <DropdownMenuTrigger
             render={<SidebarMenuButton size="lg" className="aria-expanded:bg-sidebar-accent" />}
           >
-            <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent text-sidebar-foreground">
-              <Settings className="size-4" />
-            </div>
+            <Settings className="size-4 shrink-0" />
             <div className="grid flex-1 text-left leading-tight">
               <span className="truncate text-sm font-medium">Settings</span>
               <Badge

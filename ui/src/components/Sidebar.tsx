@@ -17,7 +17,6 @@ import {
   SidebarMenuItem,
   SidebarMenuButton,
   SidebarTrigger,
-  SidebarRail,
 } from "./ui/sidebar";
 
 /**
@@ -96,8 +95,6 @@ export function AppSidebar() {
           conn={conn}
         />
       </SidebarFooter>
-
-      <SidebarRail />
     </Sidebar>
   );
 }
