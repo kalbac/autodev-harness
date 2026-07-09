@@ -13,9 +13,12 @@
 > removed redundant `SidebarRail`; fixed collapsed-footer gear (**gotcha 54: tailwind-merge doesn't dedupe important +
 > arbitrary-variant → base `p-2` beat lg's `p-0` → size-8 square clipped**; fix = bare `size-4` gear, native pattern, no
 > crutch; operator-approved trade-off). GOTCHAS 53→55.
-> **NEXT (s37): polish track** (see `next-session-promt.md` / `FUTURE-BACKLOG.md` "pilot → product") — per-field help
-> tooltips (early), i18n/Russian UI (late), vendored-primitive drift spot-check (`shadcn diff`); optional "footer accent
-> tile back via a real p-0 fix" (backlog option B). No open blockers.
+> **NEXT (s37): agent-ci gate hardening** (operator's call) — implement the s33 spec
+> `docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md`: an optional, config-gated, ADDITIONAL machine-gate
+> step that replays the project's real GitHub Actions CI locally (`redwoodjs/agent-ci`) in the per-task worktree before
+> commit; off by default, workflow-failure→RETRY, infra-failure→ESCALATE, never mandatory, never replaces the critic.
+> Touches `src/gate/gate.ts` (most sensitive module) → TDD + codex gate. **Polish track is LOWER priority** (per-field
+> help → i18n → drift check; + optional footer accent-tile via a real p-0 fix, backlog option B). No open blockers.
 >
 > ## ✅ MERGED (s35) — component-currency migration **Tier 1**, LIVE-PROVEN, **PR #63 merged to main** (`de57d6c`)
 > Operator ask from s34 (prompted by the s34 `MessageScroller` miss): review EVERY UI component vs the current shadcn
