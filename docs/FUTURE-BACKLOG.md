@@ -199,20 +199,16 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   with it. Prompted by the `ScrollArea`→`MessageScroller` miss (worked from the vendored set, not the
   live catalog); the shadcn MCP above is the tooling that makes this audit reliable. Best done AFTER
   the MCP is wired.
-- **A chat session's live process isn't closed when its project is unregistered or its config
-  is updated while the chat is open** (found s34, full-diff codex review round 4 — deliberately
-  DEFERRED, not fixed, this session). `ChatSessionManager` is cached on the project's
-  `ProjectRoot` (`composition/root.ts`), and `hub.evict(id)` (called from `admin.unregister`
-  today only implicitly via registry removal, and explicitly from `updateConfig`) only drops the
-  cached root reference — it has no visibility into whether that root's `chat` getter was ever
-  invoked, so it can't reach in and close a live manager before dropping it. **Bounded, not
-  silent-forever:** the existing idle-timeout reaper (`ChatSessionManager`, default 10 min) still
-  eventually kills the orphaned process; a full daemon restart also clears it. Real fix needs a
-  new capability on `ProjectRoot` (e.g. `closeChatIfBuilt(): Promise<void>` that checks the
-  internal lazy-build state directly, WITHOUT triggering the lazy build itself — the tricky part)
-  wired into both `admin.unregister` and the `updateConfig` → `hub.evict` path in `src/index.ts`.
-  Deferred because the fix is cross-cutting (touches `composition/root.ts`, an already-closed
-  task) and the operational sequence (unregister/reconfigure a project mid-chat) is narrow.
+- ~~**A chat session's live process isn't closed when its project is unregistered or its config
+  is updated while the chat is open**~~ **RESOLVED (s34, commit `ef110b9`).** Codex re-raised this
+  across multiple full-diff review rounds, so it was fixed rather than left deferred (the project's
+  "never merge bullshit" bar). `server.ts` now tracks chat managers BY PROJECT ID
+  (`chatManagersByProject: Map`), exposes `ApiServerHandle.closeProjectChat(id)`, and `src/index.ts`
+  calls it from `admin.unregister` and the `updateConfig` → `hub.evict` path — so a live chat
+  subprocess is closed the moment its project is unregistered/evicted, not left for the idle reaper.
+  Simpler than the originally-feared `ProjectRoot.closeChatIfBuilt` approach: the server layer already
+  knows which projects have a live manager (per-request tracking), so no new `ProjectRoot` capability
+  was needed. Best-effort (never breaks the unregister/config-update).
 
 ## Related
 
