@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { runAgentCiWorkflows } from "./agent-ci.js";
-import type { NativeResult } from "../util/native.js";
+import { runAgentCiWorkflows, parseWorkflowOutcome } from "./agent-ci.js";
+import type { NativeOptions, NativeResult } from "../util/native.js";
 
 function res(stdout: string, exitCode = 0): NativeResult {
   return { stdout, stderr: "", exitCode } as NativeResult;
@@ -101,5 +101,50 @@ describe("runAgentCiWorkflows", () => {
       runner: async () => res(PASS),
     });
     expect(out).toEqual({ green: true, reasons: [] });
+  });
+
+  // Sev-2.1 fix (codex): the runner must receive `timeoutMs` in its options so the
+  // real runNative reaps its child on timeout instead of leaking a running Docker job.
+  it("passes timeoutMs through to the runner options (child-kill, no leak)", async () => {
+    let seen: NativeOptions | undefined;
+    await runAgentCiWorkflows({
+      cwd: "/wt",
+      workflows: [".github/workflows/ci.yml"],
+      timeoutMs: 12345,
+      runner: async (_c, _args, options) => {
+        seen = options;
+        return res(PASS);
+      },
+    });
+    expect(seen?.timeoutMs).toBe(12345);
+  });
+});
+
+// Sev-2.2 fix (codex): fail-closed classification — the LAST terminal event decides,
+// and an unrecognized terminal verdict counts as failed (never COMMIT on ambiguity).
+describe("parseWorkflowOutcome (fail-closed classification)", () => {
+  it("a later 'cancelled' terminal after an earlier 'passed' is FAILED, not passed", () => {
+    const stream = [
+      JSON.stringify({ type: "run.finish", status: "passed" }),
+      JSON.stringify({ type: "run.finish", status: "cancelled" }),
+    ].join("\n");
+    expect(parseWorkflowOutcome(stream)).toBe("failed");
+  });
+
+  it("a single terminal event with an unrecognized status is FAILED (fail-closed)", () => {
+    const stream = JSON.stringify({ type: "run.finish", status: "cancelled" });
+    expect(parseWorkflowOutcome(stream)).toBe("failed");
+  });
+
+  it("no terminal event at all is INFRA", () => {
+    expect(parseWorkflowOutcome("Cannot connect to the Docker daemon\n")).toBe("infra");
+  });
+
+  it("the last terminal event wins even when it flips fail->pass", () => {
+    const stream = [
+      JSON.stringify({ type: "run.finish", status: "failed" }),
+      JSON.stringify({ type: "run.finish", status: "passed" }),
+    ].join("\n");
+    expect(parseWorkflowOutcome(stream)).toBe("passed");
   });
 });

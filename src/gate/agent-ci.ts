@@ -61,8 +61,15 @@ export async function runAgentCiWorkflows(input: RunAgentCiInput): Promise<Agent
   return { green, reasons };
 }
 
-/** Spawn one workflow with an independent timeout race. A promise that never
- *  resolves before `timeoutMs` is an infra failure -> throw. */
+/** Spawn one workflow with a timeout that both throws (the infra-failure
+ *  contract) AND kills the underlying child. Two layers, deliberately:
+ *   1. `timeoutMs` is passed INTO the runner options — the real `runNative`
+ *      honors it (SIGTERM -> grace -> SIGKILL), so a hung agent-ci/Docker child
+ *      is actually reaped, not orphaned to keep running after the gate escalated.
+ *   2. A module-level `Promise.race` timeout guarantees `runOne` THROWS on time
+ *      even for a runner that ignores its `timeoutMs` (e.g. a test fake, or a
+ *      seam whose child-kill is delayed) — the throw is the infra-failure signal
+ *      callers rely on. Whichever fires, the child is still killed by layer 1. */
 async function runOne(wf: string, input: RunAgentCiInput): Promise<NativeResult> {
   const args = ["@redwoodjs/agent-ci", "run", "--workflow", wf, "--json"];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -77,6 +84,9 @@ async function runOne(wf: string, input: RunAgentCiInput): Promise<NativeResult>
       input.runner("npx", args, {
         cwd: input.cwd,
         env: { ...process.env, AGENT_CI_JSON: "1", AI_AGENT: "1" },
+        // Layer 1: the real runner reaps its own child on this deadline, so an
+        // infra-timeout never leaks a still-running Docker CI job.
+        timeoutMs: input.timeoutMs,
       }),
       timeout,
     ]);
@@ -91,15 +101,23 @@ type WorkflowOutcome = "passed" | "failed" | "infra";
  * Parse agent-ci's buffered NDJSON stdout for a run's terminal outcome.
  * DEFENSIVE by design: the terminal signal may appear as a `run.finish` event
  * carrying a `status`/`conclusion`/`result` string, or as a top-level `passed`
- * boolean. Any recognized "passed" wins; any recognized "failed" is a job
- * failure; NOTHING recognized (no terminal event at all) is an infra failure.
- * Unknown/extra fields are ignored, never a crash. The EXACT real shape is
- * confirmed later in a live-prove — this stays defensive.
+ * boolean. The EXACT real shape is confirmed later in a live-prove — this stays
+ * defensive.
+ *
+ * Classification rules (FAIL-CLOSED for the gate — never COMMIT on ambiguity):
+ *  - NO terminal event at all -> `infra` (agent-ci itself did not complete a run:
+ *    Docker down, bad binary, killed-on-timeout partial output). Callers throw.
+ *  - The LAST terminal event decides (not an OR across all): a later
+ *    `{status:"cancelled"}` after an earlier `{status:"passed"}` must NOT be
+ *    read as passed. agent-ci emits one terminal event per run today, but the
+ *    parser must not silently mis-rank a stream that carries more than one.
+ *  - A terminal event whose verdict we can't read as an explicit pass counts as
+ *    `failed`, not `passed` (unknown/`cancelled`/`skipped`/`neutral` -> RETRY,
+ *    not COMMIT). This is a job-level outcome, NOT infra — the run DID finish.
  */
 export function parseWorkflowOutcome(stdout: string): WorkflowOutcome {
-  let sawTerminal = false;
-  let failed = false;
-  let passed = false;
+  // null = no terminal event seen yet; last terminal event wins.
+  let lastTerminal: "passed" | "failed" | null = null;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -115,21 +133,16 @@ export function parseWorkflowOutcome(stdout: string): WorkflowOutcome {
 
     const type = obj["type"];
     if (type === "run.finish" || type === "run.finished" || type === "run.complete") {
-      sawTerminal = true;
-      const verdict = terminalVerdict(obj);
-      if (verdict === "passed") passed = true;
-      else if (verdict === "failed") failed = true;
+      // unknown terminal verdict -> failed (fail-closed): the run finished, but
+      // not with a verdict we can read as an explicit pass.
+      lastTerminal = terminalVerdict(obj) === "passed" ? "passed" : "failed";
     } else if (typeof obj["passed"] === "boolean" && (type === undefined || type === "run.finish")) {
-      sawTerminal = true;
-      if (obj["passed"] === true) passed = true;
-      else failed = true;
+      lastTerminal = obj["passed"] === true ? "passed" : "failed";
     }
   }
 
-  if (!sawTerminal) return "infra";
-  if (failed) return "failed";
-  if (passed) return "passed";
-  return "failed"; // a terminal event we couldn't read as pass -> job failure, not infra
+  if (lastTerminal === null) return "infra";
+  return lastTerminal;
 }
 
 /** Read pass/fail from a terminal event across the field names agent-ci might use. */
