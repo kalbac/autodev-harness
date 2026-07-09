@@ -38,8 +38,20 @@ job-fail→`{green:false}`→gate `RETRY`; infra→throw→escalate.
 
 **Docs/gotchas.** GOTCHAS 55→57: `[gate/agent-ci-not-runnable-on-native-windows]` (feature is Linux/WSL-only in practice;
 Windows always infra-escalates — the correct fail-safe), `[gate/agent-ci-ndjson-keyed-by-event-not-type]` (the guessed-shape
-trap; live-prove earned its keep, same class as the s32 dedup lesson). **Result: PR #69** (CI-gated merge).
-**Next: merge #69 if not landed; then the polish track.**
+trap; live-prove earned its keep, same class as the s32 dedup lesson). **Result: PR #69 MERGED** (`d5d5808`).
+
+**Addendum — operator battle-test + redirect (same session).** After the merge the operator pushed back, rightly: he never
+saw Docker spin up or any process IN the harness, because my live-prove ran through the built MODULE directly (a throwaway
+`prove.mjs`) and under WSL — NOT through the daemon/UI. Reconciled honestly: the run WAS real (real containers, real NDJSON)
+but module-level, and v1 has no UI + doesn't run on his native-Windows harness. He redirected: don't rush polish — make
+agent-ci **observable in the harness UI** and **runnable from his Windows box** (product for Windows/Mac/Linux + a future
+Tauri/Electron wrap; Windows users get an honest "needs WSL" message). Brainstormed (ASCII mockups, no browser companion)
+to locked decisions: **invocation** = cross-platform, Windows proxies into WSL (`wsl -e` + `/mnt` path map) with honest
+capability reporting; **CI screen depth** = live step tree, no raw logs (logs = v2); **transport** = hybrid (persist
+`agent-ci-events.ndjson` + SSE). Wrote the design spec `docs/superpowers/specs/2026-07-10-agent-ci-observability-design.md`
+(mockups approved). **Artifacts cleaned** (WSL test repo/state, Windows scratchpad, containers; only the 490MB actions-runner
+image kept for the next real run). **Next session: operator reviews the spec → writing-plans → subagent-driven build,
+live-proven THROUGH the daemon+browser.**
 
 ---
 

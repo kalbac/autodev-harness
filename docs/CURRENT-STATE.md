@@ -20,8 +20,15 @@
 > unit tests, 100% useless in production. Fixed + locked with verbatim real-NDJSON tests. **GOTCHAS 55→57** (new:
 > `[gate/agent-ci-not-runnable-on-native-windows]` — agent-ci dies pre-Docker on `tar C:\` so the feature is Linux/WSL-only
 > in practice, Windows always infra-escalates; `[gate/agent-ci-ndjson-keyed-by-event-not-type]` — the guessed-shape trap).
-> **NEXT (s38): merge PR #69 if not yet landed; then the polish track** (`FUTURE-BACKLOG.md` "Web UI: pilot → product":
-> per-field help → i18n → drift check; + optional footer accent-tile). agent-ci Settings-toggle UI is a natural v2 follow-up.
+> **PR #69 MERGED** (merge-commit `d5d5808`). **Then the operator battle-tested it and redirected (not polish yet):** v1 was
+> config-file-only + buffered + unusable on his native-Windows harness (agent-ci is Linux/WSL-only). He wants agent-ci
+> **observable IN the harness UI** and **runnable from his Windows box via WSL** — as a real product (Windows/Mac/Linux,
+> later Tauri/Electron). Brainstormed it to a design: **`docs/superpowers/specs/2026-07-10-agent-ci-observability-design.md`**
+> (cross-platform WSL-proxy invocation + honest capability reporting; streaming refactor of `agent-ci.ts`; hybrid transport
+> = persist `agent-ci-events.ndjson` + SSE; a `CI` block in the Session inspector + a dedicated live step-tree CI screen,
+> shadcn-first). **NEXT (s38): operator REVIEWS the observability spec → then writing-plans → subagent-driven build** (mode
+> as always: Sonnet workers + mandatory codex gate + live-prove THROUGH the daemon+browser this time, not a standalone
+> script). Polish track (per-field help → i18n → drift) is deferred behind this.
 >
 > ## ✅ MERGED (s36) — component-currency **Tier 2** (all 8 items) + native shell + desktop responsiveness → **PR #65 (`a5efbb5`)**; + 2 polish fixes → **PR #66 (`2bab3c7`)**
 > Executed the full Tier 2 audit subagent-driven (Sonnet workers + codex GPT-5.5 gate per item), one PR. Operator added
