@@ -4,6 +4,49 @@
 
 ---
 
+## s34 — 2026-07-08/09 — Orchestrator pre-launch chat: executed the whole s33 plan (12 tasks) → **MERGED (PR #62, `5989c26`)**
+
+**What shipped.** The fire-and-forget "type intent → Launch → silence" flow is replaced by a live multi-turn `claude -p`
+chat: `ChatModal` streams the orchestrator's replies token-by-token over SSE, shows a live proposed-plan preview, and
+only an explicit Confirm & Launch fires the exact same unchanged `handleIntent`/`POST /orchestrate` path (adr/003
+R1-safe — the chat never gains enqueue/trigger). Backend: shared JSON-array extractor, `stream-json` wire parser,
+`ClaudeChatProcess` (live multi-turn child, `--safe-mode`+`--strict-mcp-config`+`--tools ""` isolated),
+`ClaudeOrchestratorChatAdapter`, `ChatSessionManager` (registry/idle-reaper/one-per-project guard/SSE-detach/
+start-timeout/close-on-unregister), 5 HTTP routes (start/stream/message/confirm/cancel) with a clean `launchOrchestrate`
+extraction, composition-root + real-`ProjectView` wiring. UI: chat API client + hooks, `ChatModal` on shadcn's
+`MessageScroller`, wired from `NewRunComposer` (digest-watch toast preserved).
+
+**Discipline.** Subagent-driven (Sonnet 5 implementer TDD → spec-check → independent codex GPT-5.5 gate → fix +
+regression test → re-critic) per module. Codex found and fixed a REAL bug in nearly every task (stderr-pipe hang,
+SIGKILL timer leak, oversized-line silent hang, isError swallowed, cancel-before-launch data loss, dead-SSE writes,
+throwing-sink gaps, and the standout `onToken`-bound-once streaming break). **Full-diff codex gate then ran 9 rounds** —
+each surfacing a genuine session/process-lifecycle edge (stale-session confirm, shutdown-race leak, close-during-start
+resurrection, confirm-during-active-turn, unbounded opening-turn hang → permanent slot lock, a self-inflicted timer
+leak in THAT fix, chat-leak-on-unregister/evict, stale-SSE-token duplicate bubble) — all fixed; final round CLEAN, 0
+findings. **913 tests / 3 skip, root+ui typecheck+build green, CI green 4/4** (ubuntu+windows × node 20/22).
+
+**LIVE-PROVEN twice.** (1) curl on aurora: real `claude -p opus` chat spawn, live SSE frames, `--safe-mode` in the real
+spawn args, clean cancel (no orphan), confirm → real decompose/worker/critic — the critic correctly ESCALATED a
+chat-guessed wrong assumption (no `PROVIDERS` map exists) rather than fabricating a commit, proving "chat is
+advisory-only". (2) Real Chrome browser: ChatModal opens, streams, auto-scrolls, proposed-plan preview, multi-turn
+continuity, Confirm & Launch → dashboard RUNNING → CLEAN → **real commit `a794b88` landed on aurora**; Cancel enqueues
+nothing + releases the slot; MessageScroller auto-scroll + stale-token gate verified.
+
+**Operator-driven improvement + follow-ups.** Operator caught that the chat transcript used a generic `ScrollArea`
+where shadcn's purpose-built `MessageScroller` existed (a real methodology miss — worked from the locally-vendored
+shadcn set, not the live catalog). Swapped to `MessageScroller` (`9f4d1d0`, browser-verified auto-scroll — closed the
+backlogged auto-scroll gap). Added a project `.mcp.json` wiring the **shadcn MCP** (project-level per operator; live
+next session after a restart) + backlogged a **component-currency audit** of all UI components vs the current catalog.
+
+**Environment note.** This box was under severe memory pressure from stale MCP-server/dev-server processes accumulated
+across PRIOR sessions (weeks old) — operator-approved cleanup unblocked the codex reviewer. Reliable workarounds:
+`curl -N` for SSE, and the inline-diff-with-no-tools-preamble `codex task` recipe when the sandboxed `git diff` failed.
+
+**New gotcha:** `[chat/onToken-bound-once]` (count 51) — a session's `onToken` is bound ONCE for the process's whole
+lifetime, so live streaming silently never worked past the opening turn until it looked up the live sink per token.
+
+---
+
 ## s33 — 2026-07-08 — TWO discussion-first agenda items → two committed specs (no code yet)
 
 **Item 1 — Orchestrator CHAT brainstorm → spec → plan.** Resolved the load-bearing `adr/003` question first: a

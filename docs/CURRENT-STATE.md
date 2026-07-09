@@ -1,6 +1,18 @@
 # CURRENT STATE — Autodev Harness
 
-> ## 🟢 s34 — orchestrator-chat COMPLETE, backend + UI, LIVE-PROVEN end-to-end (curl AND real browser)
+> ## ✅ MERGED (s34) — orchestrator pre-launch chat, backend + UI, LIVE-PROVEN twice, **PR #62 merged to main** (`5989c26`)
+> The full s33 orchestrator-chat plan (12 tasks) shipped: submitting an intent now opens a live multi-turn `claude -p`
+> chat (`ChatModal`) — stream token-by-token, see a proposed-plan preview, Confirm & Launch fires the unchanged
+> `handleIntent` path (adr/003 R1-safe). Subagent-driven (Sonnet workers + codex GPT-5.5 gate per module). **Full-diff
+> codex gate ran 9 rounds — each found a real session/process-lifecycle edge case, all fixed with regression tests;
+> final round CLEAN.** 913 tests / 3 skip, root+ui typecheck+build green, **CI green 4/4** (ubuntu+windows × node 20/22).
+> LIVE-PROVEN via curl AND a real Chrome browser (real commit `a794b88` landed on aurora through the chat→confirm→
+> launch→CLEAN flow). Operator-driven late improvement: swapped the chat transcript's generic `ScrollArea` for shadcn's
+> purpose-built `MessageScroller` (`9f4d1d0`, auto-follows streaming). New: gotcha `[chat/onToken-bound-once]` (count 51);
+> project `.mcp.json` wiring the **shadcn MCP** (live next session); **two backlog items** — set up/use the shadcn MCP +
+> a component-currency audit of all UI components vs the current shadcn catalog. **No open items on this feature.**
+>
+> ## 🟢 s34 (detail) — orchestrator-chat COMPLETE, backend + UI, LIVE-PROVEN end-to-end (curl AND real browser)
 > Executed the s33 orchestrator-chat plan in full (Tasks 1-12), subagent-driven (Sonnet 5 workers + mandatory codex
 > GPT-5.5 critic gate per task, many real fix rounds — codex found and fixed a genuine bug in nearly every task:
 > stderr-pipe hang, SIGKILL timer leak, oversized-line silent hang, isError swallowed, cancel-before-launch-success
