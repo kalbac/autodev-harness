@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
 import { useTheme, type Theme } from "@/lib/theme";
-import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const THEME_SEGMENTS: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -70,26 +70,33 @@ export function SettingsPopover({
 
         <Separator className="my-1.5" />
 
-        <div className="flex gap-1 px-2 py-1.5">
-          {THEME_SEGMENTS.map((seg) => {
-            const on = theme === seg.value;
-            return (
-              <button
-                key={seg.value}
-                type="button"
-                onClick={() => setTheme(seg.value)}
-                className={cn(
-                  "flex-1 rounded-md border px-0 py-1 text-center text-[11px] transition-colors",
-                  on
-                    ? "border-primary bg-card text-foreground"
-                    : "border-border text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {seg.label}
-              </button>
-            );
-          })}
-        </div>
+        <ToggleGroup
+          value={[theme]}
+          onValueChange={(values) => {
+            // Base UI's ToggleGroup value is always string[] (even for single-select);
+            // it can emit [] on re-click of the active item — ignore that, never blank
+            // the theme. This handler intentionally never touches `open` — see the
+            // component doc comment above for why the popover must stay open here.
+            const next = values[0];
+            if (next) setTheme(next as Theme);
+          }}
+          spacing={1}
+          className="w-full px-2 py-1.5"
+        >
+          {THEME_SEGMENTS.map((seg) => (
+            // Pressed styling is driven by the `aria-pressed:` variant (which Base UI's
+            // Toggle sets natively) rather than a JS-computed ternary — this shares the
+            // same modifier signature as the base `toggleVariants` pressed classes, so
+            // twMerge dedupes them deterministically instead of racing on stylesheet order.
+            <ToggleGroupItem
+              key={seg.value}
+              value={seg.value}
+              className="h-auto flex-1 rounded-md border border-border px-0 py-1 text-center text-[11px] font-normal text-muted-foreground transition-colors hover:text-foreground aria-pressed:border-primary aria-pressed:bg-card aria-pressed:text-foreground"
+            >
+              {seg.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       </PopoverContent>
     </Popover>
   );
