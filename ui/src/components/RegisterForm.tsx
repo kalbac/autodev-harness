@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { Check, CircleAlert } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import type { FsDirEntry, ProjectSummary } from "@/lib/api";
 import { ApiError } from "@/lib/api";
 import { useRegisterProject } from "@/lib/queries";
-import { cn } from "@/lib/utils";
 import { Spinner } from "./ui/Feedback";
 import { Input } from "./ui/input";
 import { Button } from "./ui/Button";
+import { Checkbox } from "./ui/checkbox";
 import { Field, FieldDescription, FieldLabel } from "./ui/field";
 
 /** Read-only default role chips (mockup `.rolegrid`). These are NOT submitted —
@@ -153,24 +153,11 @@ export function RegisterForm({
           />
         </Field>
 
-        {/* Scaffold */}
+        {/* Scaffold — the Checkbox is wrapped BY the label so clicking anywhere
+            (box OR text) toggles it. Base UI's Checkbox root is a span + hidden
+            input, which a sibling `htmlFor` label would NOT reliably activate. */}
         <label className="my-3.5 flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
-          <span
-            className={cn(
-              "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border transition-colors",
-              scaffold
-                ? "border-primary bg-[color-mix(in_srgb,var(--primary)_25%,transparent)] text-primary"
-                : "border-border",
-            )}
-          >
-            {scaffold && <Check className="size-3" />}
-          </span>
-          <input
-            type="checkbox"
-            checked={scaffold}
-            onChange={(e) => setScaffold(e.target.checked)}
-            className="sr-only"
-          />
+          <Checkbox checked={scaffold} onCheckedChange={setScaffold} className="mt-0.5" />
           <span>
             Scaffold <b className="font-medium text-foreground">.autodev/</b> (config.yaml, GOAL.md,
             INVARIANTS.md, queue/) and add it to{" "}
