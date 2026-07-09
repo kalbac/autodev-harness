@@ -9,6 +9,7 @@ import { ChatModal } from "./ChatModal";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/Button";
+import { InputGroup, InputGroupAddon, InputGroupTextarea } from "./ui/input-group";
 import { Kbd, KbdGroup } from "./ui/kbd";
 
 /** Only watch for this long after a launch: the orchestrator's own early outcome
@@ -115,8 +116,8 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="rounded-xl border border-border bg-card transition-colors focus-within:border-ring">
-        <textarea
+      <InputGroup className="rounded-xl border-border bg-card focus-within:border-ring has-[[data-slot=input-group-control]:focus-visible]:ring-0">
+        <InputGroupTextarea
           autoFocus={autoFocus}
           value={intent}
           onChange={(e) => setIntent(e.target.value)}
@@ -125,9 +126,9 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           }}
           placeholder="Describe a change to make — the orchestrator decomposes it into gated tasks…"
           rows={3}
-          className="w-full resize-none bg-transparent px-4 pt-3.5 text-sm text-foreground placeholder:text-muted-foreground outline-none"
+          className="px-4 pt-3.5 text-sm outline-none"
         />
-        <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
+        <InputGroupAddon align="block-end" className="flex-wrap px-3 pb-3 pt-0">
           <ProjectSwitcherMenu projectId={projectId} projectName={projectName} />
           {/* Roles are read-only; clicking opens project settings. Badge (not
               Button) — these are display tags for the configured model that
@@ -157,8 +158,8 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
             <ArrowUp className="size-4" />
             Launch run
           </Button>
-        </div>
-      </div>
+        </InputGroupAddon>
+      </InputGroup>
 
       <ChatModal
         projectId={projectId}
