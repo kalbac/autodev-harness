@@ -4,6 +4,7 @@ import { api, ApiError, type ChatTaskSpecPreview } from "@/lib/api";
 import { useChatCancel, useChatConfirm, useChatMessage, useChatStart } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { Badge } from "./ui/badge";
+import { Bubble, BubbleContent } from "./ui/bubble";
 import { Button } from "./ui/Button";
 import {
   Dialog,
@@ -331,18 +332,15 @@ export function ChatModal({ projectId, open, initialIntent, onClose, onLaunched 
 
 function ChatBubble({ role, text }: { role: ChatMessage["role"]; text: string }) {
   const isOperator = role === "operator";
+  // shadcn `bubble` composition — `default` variant is the primary-tinted
+  // operator bubble, `outline` the bordered assistant bubble. The outer flex
+  // wrapper does the row alignment (MessageScrollerItem is a block, so the
+  // bubble's own `self-end` has no flex parent to resolve against).
   return (
     <div className={cn("flex", isOperator ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-snug whitespace-pre-wrap break-words",
-          isOperator
-            ? "bg-primary text-primary-foreground"
-            : "border border-border bg-card text-foreground",
-        )}
-      >
-        {text}
-      </div>
+      <Bubble variant={isOperator ? "default" : "outline"} align={isOperator ? "end" : "start"}>
+        <BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent>
+      </Bubble>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { ChatModal } from "./ChatModal";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/Button";
+import { Kbd, KbdGroup } from "./ui/kbd";
 
 /** Only watch for this long after a launch: the orchestrator's own early outcome
  *  lines (0-task / relaunch dedup / validation reject) land within a couple of
@@ -145,7 +146,13 @@ export function NewRunComposer({ autoFocus = false }: { autoFocus?: boolean }) {
           >
             critic <b className="font-medium text-foreground">{criticModel}</b>
           </Badge>
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">⌘⏎ to launch</span>
+          <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <KbdGroup>
+              <Kbd>⌘</Kbd>
+              <Kbd>⏎</Kbd>
+            </KbdGroup>
+            to launch
+          </span>
           <Button onClick={submit} disabled={!canSubmit} variant="primary">
             <ArrowUp className="size-4" />
             Launch run

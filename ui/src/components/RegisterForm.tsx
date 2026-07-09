@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Spinner } from "./ui/Feedback";
 import { Input } from "./ui/input";
 import { Button } from "./ui/Button";
+import { Field, FieldDescription, FieldLabel } from "./ui/field";
 
 /** Read-only default role chips (mockup `.rolegrid`). These are NOT submitted —
  *  the scaffold applies the schema defaults; roles are edited in project settings
@@ -20,6 +21,11 @@ const DEFAULT_ROLES: ReadonlyArray<[string, string]> = [
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground";
 const INPUT_CLASS = "font-mono text-xs";
 const HINT = "mt-1 text-[11px] text-muted-foreground";
+// Field-slot overrides: the shadcn Field owns the label/description spacing
+// (gap-1.5), so these drop the manual margins the standalone LABEL/HINT carry
+// while keeping the mono micro-label + hint look.
+const FIELD_LABEL = "font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground";
+const FIELD_HINT = "text-[11px] text-muted-foreground";
 
 /**
  * Project register form (mockup Frame 2 `.form`). Seeded from the selected git
@@ -72,17 +78,17 @@ export function RegisterForm({
         }}
       >
         {/* Display name */}
-        <div className="mb-3">
-          <label htmlFor="rf-name" className={LABEL}>
+        <Field className="mb-3 gap-1.5">
+          <FieldLabel htmlFor="rf-name" className={FIELD_LABEL}>
             Display name
-          </label>
+          </FieldLabel>
           <Input
             id="rf-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             className={INPUT_CLASS}
           />
-        </div>
+        </Field>
 
         {/* Roles — read-only defaults, applied by the scaffold, not submitted. */}
         <div className="mb-3">
@@ -101,10 +107,10 @@ export function RegisterForm({
         </div>
 
         {/* Gate check command */}
-        <div className="mb-3">
-          <label htmlFor="rf-gate" className={LABEL}>
+        <Field className="mb-3 gap-1.5">
+          <FieldLabel htmlFor="rf-gate" className={FIELD_LABEL}>
             Gate check command
-          </label>
+          </FieldLabel>
           <Input
             id="rf-gate"
             value={checkCommand}
@@ -112,14 +118,16 @@ export function RegisterForm({
             placeholder="e.g. npm test"
             className={INPUT_CLASS}
           />
-          <p className={HINT}>the un-bypassable machine gate, runs in the task worktree</p>
-        </div>
+          <FieldDescription className={FIELD_HINT}>
+            the un-bypassable machine gate, runs in the task worktree
+          </FieldDescription>
+        </Field>
 
         {/* Worktree provision */}
-        <div className="mb-3">
-          <label htmlFor="rf-provision" className={LABEL}>
+        <Field className="mb-3 gap-1.5">
+          <FieldLabel htmlFor="rf-provision" className={FIELD_LABEL}>
             Worktree provision
-          </label>
+          </FieldLabel>
           <Input
             id="rf-provision"
             value={provision}
@@ -127,21 +135,23 @@ export function RegisterForm({
             placeholder="e.g. node_modules, vendor"
             className={INPUT_CLASS}
           />
-          <p className={HINT}>gitignored dep dirs linked into each worktree, comma-separated</p>
-        </div>
+          <FieldDescription className={FIELD_HINT}>
+            gitignored dep dirs linked into each worktree, comma-separated
+          </FieldDescription>
+        </Field>
 
         {/* Branch pattern */}
-        <div className="mb-3">
-          <label htmlFor="rf-branch" className={LABEL}>
+        <Field className="mb-3 gap-1.5">
+          <FieldLabel htmlFor="rf-branch" className={FIELD_LABEL}>
             Branch pattern
-          </label>
+          </FieldLabel>
           <Input
             id="rf-branch"
             value={branchPattern}
             onChange={(e) => setBranchPattern(e.target.value)}
             className={INPUT_CLASS}
           />
-        </div>
+        </Field>
 
         {/* Scaffold */}
         <label className="my-3.5 flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
