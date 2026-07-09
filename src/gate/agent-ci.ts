@@ -99,10 +99,13 @@ type WorkflowOutcome = "passed" | "failed" | "infra";
 
 /**
  * Parse agent-ci's buffered NDJSON stdout for a run's terminal outcome.
- * DEFENSIVE by design: the terminal signal may appear as a `run.finish` event
- * carrying a `status`/`conclusion`/`result` string, or as a top-level `passed`
- * boolean. The EXACT real shape is confirmed later in a live-prove — this stays
- * defensive.
+ *
+ * REAL SHAPE (verified live s37, `@redwoodjs/agent-ci@0.16.2`): every line is an
+ * object keyed by `event` (NOT `type` — the initial defensive guess was wrong,
+ * caught by the live-prove), and the terminal line is
+ * `{"event":"run.finish","ts":"...","status":"passed"|"failed"}`. We key off
+ * `event` first and keep `type` as a defensive fallback for a future/alt build.
+ * `status` carries the verdict (also seen on `step.finish`/`job.finish`).
  *
  * Classification rules (FAIL-CLOSED for the gate — never COMMIT on ambiguity):
  *  - NO terminal event at all -> `infra` (agent-ci itself did not complete a run:
@@ -131,12 +134,14 @@ export function parseWorkflowOutcome(stdout: string): WorkflowOutcome {
       continue; // non-JSON log line -> ignore
     }
 
-    const type = obj["type"];
-    if (type === "run.finish" || type === "run.finished" || type === "run.complete") {
+    // agent-ci 0.16.2 keys events by `event` (verified live); keep `type` as a
+    // defensive fallback for a future/alternate build.
+    const kind = obj["event"] ?? obj["type"];
+    if (kind === "run.finish" || kind === "run.finished" || kind === "run.complete") {
       // unknown terminal verdict -> failed (fail-closed): the run finished, but
       // not with a verdict we can read as an explicit pass.
       lastTerminal = terminalVerdict(obj) === "passed" ? "passed" : "failed";
-    } else if (typeof obj["passed"] === "boolean" && (type === undefined || type === "run.finish")) {
+    } else if (typeof obj["passed"] === "boolean" && (kind === undefined || kind === "run.finish")) {
       lastTerminal = obj["passed"] === true ? "passed" : "failed";
     }
   }
