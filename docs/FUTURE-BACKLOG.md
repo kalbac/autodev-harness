@@ -180,13 +180,25 @@ Fills a gap the current four donors don't center on: **worker code-editing quali
   `escalated/`, where its `file_set` blocks every future same-file run with zero operator signal.
   **Scheduled as the s26 opener (variant 1):** the reply-apply path must move the task
   `escalated → done` (accepted) or re-queue `→ pending` (redo). Codex-gate it.
-- **ChatModal transcript doesn't auto-scroll to the newest message** (found s34 live browser
-  verification). The `ScrollArea` in `ui/src/components/ChatModal.tsx` stays wherever the
-  operator last scrolled it — a new turn (operator or assistant) can land off-screen with no
-  visual cue, which is confusing (double-sent a test message during s34's live-verify because
-  of exactly this). Not a functional bug (the transcript/state is correct, verified via DOM),
-  but real UX polish: auto-scroll to bottom on new message, unless the operator has scrolled up
-  to read history (don't yank them back down mid-read).
+- ~~**ChatModal transcript doesn't auto-scroll to the newest message**~~ **RESOLVED (s34, commit
+  `9f4d1d0`).** Swapped the generic `ScrollArea` for shadcn's purpose-built `MessageScroller`
+  (`@shadcn/react/message-scroller` primitive) — auto-follows streaming replies when the operator
+  is at the bottom, preserves position when scrolled up. Browser-verified: auto-scrolls to newest
+  on every turn. (Operator caught that the generic component should have been the purpose-built one
+  — see the two follow-up items below.)
+- **Wire the shadcn MCP into this project's `.mcp.json`** (operator ask, s34; PROJECT-level, not
+  global — it's needed in only 2-3 projects, not worth pulling into every project). `ui.shadcn.com/docs/mcp`.
+  Gives the agent live access to the shadcn component registry so it discovers purpose-built components
+  (like `message-scroller`) instead of working only from the locally-vendored set — the exact gap that
+  let a generic `ScrollArea` ship where `MessageScroller` existed. Not set up this session because the
+  MCP server only becomes live after a Claude Code restart (can't self-connect mid-session); the config
+  entry should be added so the NEXT session has it.
+- **Component-currency audit** (operator ask, s34): dedicate one session to reviewing EVERY UI
+  component we use (both our custom ones AND the already-vendored shadcn ones like `Dialog`) against
+  the CURRENT shadcn catalog — where a more-relevant/more-current shadcn component exists, replace ours
+  with it. Prompted by the `ScrollArea`→`MessageScroller` miss (worked from the vendored set, not the
+  live catalog); the shadcn MCP above is the tooling that makes this audit reliable. Best done AFTER
+  the MCP is wired.
 - **A chat session's live process isn't closed when its project is unregistered or its config
   is updated while the chat is open** (found s34, full-diff codex review round 4 — deliberately
   DEFERRED, not fixed, this session). `ChatSessionManager` is cached on the project's

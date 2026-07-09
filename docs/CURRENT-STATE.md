@@ -26,8 +26,17 @@
 > box caused repeated transient `Fatal process out of memory`/`spawn UNKNOWN` errors from stale MCP-server/dev-server
 > processes accumulated across PRIOR sessions (weeks old) — operator-approved cleanup freed the codex reviewer to
 > run reliably; `curl -N` and the inline-diff-with-no-tools-preamble `codex task` recipe (not `codex review`) were
-> the reliable workarounds when the sandboxed `git diff` kept failing. **Next: mandatory full-diff codex gate, then
-> `superpowers:finishing-a-development-branch` (merge decision).**
+> the reliable workarounds when the sandboxed `git diff` kept failing. **Full-diff codex gate ran 7 rounds** — each
+> found a genuine session/process-lifecycle edge case (stale-session confirm, shutdown-race leak, close-during-start
+> resurrection, confirm-during-active-turn, unbounded opening-turn hang → permanent slot lock, then a self-inflicted
+> timer leak in that very fix) — all fixed with regression tests. **Post-plan operator-driven improvement:** operator
+> caught that the chat transcript used a generic `ScrollArea` where shadcn's purpose-built `MessageScroller` existed
+> (a real methodology miss — worked from the locally-vendored shadcn set, not the live catalog). Swapped to
+> `MessageScroller` (commit `9f4d1d0`, browser-verified: auto-scrolls to newest on every turn — closes the backlogged
+> auto-scroll gap). Wired the **shadcn MCP into a new project `.mcp.json`** (project-level per operator, live next
+> session) + backlogged a **component-currency audit** of all UI components against the current shadcn catalog.
+> **Next: final confirming codex round on the timer-leak + MessageScroller diff, then `finishing-a-development-branch`
+> (merge decision).**
 >
 > ## 📝 DOCS-ONLY (s33) — two specs written, no code yet: orchestrator-chat (+plan) and agent-ci gate-hardening
 > Both s33 agenda items were discussion-first per the operator's ask; zero production diffs this session — four
