@@ -27,6 +27,7 @@ interface DepsOverrides {
   runCheck?: GateDeps["runCheck"];
   runSuccessCommand?: GateDeps["runSuccessCommand"];
   guardStillRed?: GateDeps["guardStillRed"];
+  runAgentCi?: GateDeps["runAgentCi"];
 }
 
 interface Calls {
@@ -59,6 +60,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     runCheck: overrides.runCheck !== undefined ? overrides.runCheck : async () => ({ green: true, exitCode: 0 }),
     runSuccessCommand: overrides.runSuccessCommand ?? (async () => ({ exitCode: 0 })),
     guardStillRed: overrides.guardStillRed ?? (async () => true),
+    runAgentCi: overrides.runAgentCi !== undefined ? overrides.runAgentCi : null,
   };
 
   return { deps, calls };
@@ -298,5 +300,57 @@ describe("runGate", () => {
       guard_test: "T_fallback",
       touched_strings: [],
     });
+  });
+
+  it("12. agent-ci present and green leaves the decision unchanged and sets agent_ci_green", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async () => ({ green: true, reasons: [] }),
+    });
+    const input: GateInput = { taskId: "t", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.agent_ci_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("13. agent-ci present and red forces RETRY and records its reasons", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async () => ({
+        green: false,
+        reasons: ["agent-ci workflow '.github/workflows/ci.yml' FAILED"],
+      }),
+    });
+    const input: GateInput = { taskId: "t", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.agent_ci_green).toBe(false);
+    expect(result.decision).toBe("RETRY");
+    expect(result.reasons.some((r) => r.includes("ci.yml"))).toBe(true);
+  });
+
+  it("14. an agent-ci INFRA throw propagates out of runGate (conductor escalates)", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async () => {
+        throw new Error("agent-ci ... infrastructure failure");
+      },
+    });
+    const input: GateInput = { taskId: "t", fileSet: ["a.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toThrow(/infrastructure/i);
+  });
+
+  it("15. agent-ci absent (null) is a no-op: decision unchanged, agent_ci_green defaults true", async () => {
+    const { deps } = makeDeps({ changedFiles: ["src/foo.ts"], runAgentCi: null });
+    const input: GateInput = { taskId: "t", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.agent_ci_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
   });
 });
