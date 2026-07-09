@@ -1,6 +1,7 @@
+import { FileText } from "lucide-react";
 import { useRuntimeFile } from "@/lib/queries";
 import { DiffView } from "./DiffView";
-import { Loading } from "./ui/Feedback";
+import { EmptyState, Loading } from "./ui/Feedback";
 
 /** Fetches one runtime file and renders it: diff coloring for `.patch`, plain
  *  mono for everything else. A truncated body (server `x-truncated`) is flagged. */
@@ -16,7 +17,13 @@ export function RuntimeFileView({
   const file = useRuntimeFile(projectId, taskId, name);
 
   if (name === null) {
-    return <p className="px-3 py-6 text-center text-xs text-muted-foreground">Select a file.</p>;
+    return (
+      <EmptyState
+        icon={FileText}
+        title="Select a file"
+        description="Choose a runtime artifact to view its contents."
+      />
+    );
   }
   if (file.isLoading) return <Loading />;
   if (file.isError) {

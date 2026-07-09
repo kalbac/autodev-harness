@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ShieldAlert, GitCommitHorizontal } from "lucide-react";
+import { CheckCircle2, ShieldAlert, GitCommitHorizontal, Inbox } from "lucide-react";
 import { api } from "@/lib/api";
 import { qk, useEscalation } from "@/lib/queries";
 import { verdictTone, toneVar } from "@/lib/status";
@@ -8,7 +8,7 @@ import { StatusPill } from "./ui/StatusPill";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/Card";
 import { Textarea } from "./ui/textarea";
-import { Loading } from "./ui/Feedback";
+import { EmptyState, Loading } from "./ui/Feedback";
 import { Button } from "./ui/Button";
 import {
   Dialog,
@@ -43,9 +43,7 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
   if (esc.isLoading) return <Loading label="Loading escalation…" />;
   if (esc.isError) {
     return (
-      <div className="rounded-lg border border-border px-4 py-3 text-xs text-muted-foreground">
-        No escalation record for this task.
-      </div>
+      <EmptyState icon={Inbox} title="No escalation record for this task." />
     );
   }
 

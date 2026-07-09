@@ -4,6 +4,7 @@ import { Settings } from "lucide-react";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 
 const THEME_SEGMENTS: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -67,7 +68,7 @@ export function SettingsPopover({
           </div>
         )}
 
-        <div className="my-1.5 mx-1 h-px bg-border" />
+        <Separator className="my-1.5" />
 
         <div className="flex gap-1 px-2 py-1.5">
           {THEME_SEGMENTS.map((seg) => {
