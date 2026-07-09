@@ -21,6 +21,27 @@ describe("loadConfig", () => {
     expect(cfg.policy.heterogeneity).toBe("warn");
   });
 
+  it("defaults gate.agentCi to disabled when the config omits it", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), "gate:\n  checkCommand: npm test\n");
+    const cfg = await loadConfig(dir);
+    expect(cfg.gate.agentCi).toEqual({ enabled: false, workflows: [], timeoutMs: 600000 });
+  });
+
+  it("loads an explicit gate.agentCi block", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(
+      join(dir, ".autodev", "config.yaml"),
+      "gate:\n  agentCi:\n    enabled: true\n    workflows:\n      - .github/workflows/ci.yml\n    timeoutMs: 120000\n",
+    );
+    const cfg = await loadConfig(dir);
+    expect(cfg.gate.agentCi).toEqual({
+      enabled: true,
+      workflows: [".github/workflows/ci.yml"],
+      timeoutMs: 120000,
+    });
+  });
+
   it("throws a clear error on an invalid type", async () => {
     mkdirSync(join(dir, ".autodev"), { recursive: true });
     writeFileSync(join(dir, ".autodev", "config.yaml"), "loop:\n  maxAttempts: not-a-number\n");

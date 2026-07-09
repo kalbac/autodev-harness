@@ -92,8 +92,28 @@ export const HarnessConfigSchema = z.object({
     .object({
       checkCommand: z.string().nullable().default(null), // e.g. "composer check" / "npm test"
       skipCheckByDefault: z.boolean().default(false),
+      // OPTIONAL local-CI-replay hardening (spec 2026-07-08-agent-ci-gate-hardening).
+      // Fully inert unless `enabled` AND a non-empty `workflows` allowlist — mirrors
+      // checkCommand's null-is-a-no-op shape. NEVER auto-discovers workflows (a
+      // deploy/publish workflow with secrets must never fire pre-merge); the allowlist
+      // is explicit. A genuine workflow failure -> RETRY; an agent-ci/Docker infra
+      // failure -> the gate step throws -> conductor escalates (see gate.ts step 1c).
+      agentCi: z
+        .object({
+          enabled: z.boolean().default(false),
+          workflows: z.array(z.string()).default([]),
+          // 10 min: comfortably covers a cold `npx @redwoodjs/agent-ci` download +
+          // a real Docker CI job. A run exceeding this is an INFRA failure (escalate),
+          // not a job failure (retry).
+          timeoutMs: z.number().int().positive().default(600000),
+        })
+        .default({ enabled: false, workflows: [], timeoutMs: 600000 }),
     })
-    .default({ checkCommand: null, skipCheckByDefault: false }),
+    .default({
+      checkCommand: null,
+      skipCheckByDefault: false,
+      agentCi: { enabled: false, workflows: [], timeoutMs: 600000 },
+    }),
 
   guards: z
     .object({ testCommandTemplate: z.string().default("{testFile}") }) // {testFile} placeholder
