@@ -11,13 +11,13 @@ import { Textarea } from "./ui/textarea";
 import { EmptyState, Loading } from "./ui/Feedback";
 import { Button } from "./ui/Button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./ui/dialog";
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 
 /**
  * The A/B decision surface — this IS "never merge bullshit" in the moment the
@@ -143,27 +143,27 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
         </div>
       )}
 
-      <Dialog open={confirmC} onOpenChange={(o) => !reply.isPending && setConfirmC(o)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+      <AlertDialog open={confirmC} onOpenChange={(o) => !reply.isPending && setConfirmC(o)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
               <ShieldAlert className="size-4" style={{ color: toneVar.broken }} />
               Commit over the critic&apos;s objection?
-            </DialogTitle>
-            <DialogDescription>
+            </AlertDialogTitle>
+            <AlertDialogDescription>
               This commits the worker&apos;s reviewed change to the loop branch even though the
               independent critic did <span className="font-semibold text-foreground">not</span> bless it.
               It is a deliberate human override of the gate — the change becomes part of the repo and
               satisfies any dependent task. It only applies if the diff still cleanly applies; otherwise
               it is refused and the task stays escalated.
-            </DialogDescription>
-          </DialogHeader>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
           {reply.isError && (
             <p className="rounded-md border border-broken/40 bg-muted/60 px-3 py-2 text-xs text-broken">
               Refused: {(reply.error as Error).message}
             </p>
           )}
-          <DialogFooter>
+          <AlertDialogFooter>
             <Button variant="outline" onClick={() => setConfirmC(false)} disabled={reply.isPending}>
               Cancel
             </Button>
@@ -176,9 +176,9 @@ export function EscalationCard({ projectId, taskId }: { projectId: string; taskI
               <GitCommitHorizontal className="size-4" />
               {reply.isPending ? "Committing…" : "Commit anyway"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }
