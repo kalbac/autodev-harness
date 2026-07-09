@@ -163,11 +163,20 @@ export class ChatSessionManager {
     // ordering question entirely: there is no earlier queued reaction of
     // ours on `startPromise` to race against.
     let timedOut = false;
+    // Captured so it can be cleared once the race settles (see the `finally`
+    // below) -- otherwise a SUCCESSFUL start leaves this 3-minute timer
+    // referenced and alive, keeping the event loop running long after the
+    // session (or the whole server) has already been torn down. `.unref?.()`
+    // is defense-in-depth, matching the reaper's pattern below: even if a
+    // future edit somehow skips the `finally`'s `clearTimeout`, this timer
+    // alone must never be the thing keeping the process alive.
+    let timeoutHandle!: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         timedOut = true;
         reject(new Error(`chat failed to start within ${START_TIMEOUT_MS}ms`));
       }, START_TIMEOUT_MS);
+      timeoutHandle.unref?.();
     });
     try {
       const { handle, turn } = await Promise.race([startPromise, timeoutPromise]);
@@ -214,6 +223,13 @@ export class ChatSessionManager {
         );
       }
       throw err;
+    } finally {
+      // Runs on every exit path (normal return, the `this.closed`
+      // shutdown-throw, a genuine `startSession()` rejection, AND the
+      // timeout-reject itself) -- the race has settled by this point in all
+      // of them, so the timer is pointless either way. `clearTimeout` on an
+      // already-fired or already-cleared timer is a documented safe no-op.
+      clearTimeout(timeoutHandle);
     }
   }
 

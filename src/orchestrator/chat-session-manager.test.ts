@@ -420,6 +420,32 @@ describe("ChatSessionManager", () => {
     expect(closed).toEqual([]);
   });
 
+  it("a successful start() clears the start-timeout timer instead of leaking it — no pending timer survives, and advancing past START_TIMEOUT_MS afterward has no effect", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, closed } = makeFakeAdapter();
+      const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+      const { sessionId } = await mgr.start({ projectId: "p1", intent: "x", state: emptyState, onToken: () => {} });
+
+      // The opening turn already won the race (adapter.startSession() above
+      // resolves synchronously-ish via a real Promise, no fake-timer
+      // advancement needed) -- if the timeout timer had been cleared, there
+      // must be NO pending timers left at all.
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Belt-and-suspenders: even if a pending timer had somehow survived,
+      // advancing past START_TIMEOUT_MS must not retroactively fail or close
+      // the now fully-registered session.
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 1);
+      expect(mgr.hasSession(sessionId)).toBe(true);
+      expect(mgr.hasOpenSession("p1")).toBe(true);
+      expect(closed).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a session whose startSession() resolves AFTER closeAll() has already run is closed immediately, not registered — the shutdown-race leak", async () => {
     const { adapter, closed } = makeFakeAdapter();
     const mgr = new ChatSessionManager({ adapter, log: () => {} });
