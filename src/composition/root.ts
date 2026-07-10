@@ -228,7 +228,8 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               log("WARN", "gate.agentCi.enabled but workflows allowlist is empty -- skipping agent-ci this round");
               return { green: true, reasons: [] };
             }
-            const MAX_CI_NDJSON_BYTES = 2_000_000; // ~2MB persisted history cap
+            const MAX_CI_NDJSON_BYTES = 2_000_000; // ~2MB persisted history cap (strict incl. the marker)
+            const CI_TRUNCATION_MARKER = JSON.stringify({ kind: "other", note: "event log truncated (size cap)" }) + "\n";
             let ndjson = "";
             let ndjsonCapped = false;
             let status = initialCiStatus();
@@ -239,9 +240,11 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               // are unaffected by the cap.
               if (!ndjsonCapped) {
                 const line = JSON.stringify(event) + "\n";
-                if (ndjson.length + line.length > MAX_CI_NDJSON_BYTES) {
+                // Reserve the marker's length so the final file is STRICTLY <= MAX_CI_NDJSON_BYTES
+                // (the marker is always appended within the reserved budget on the tripping event).
+                if (ndjson.length + line.length > MAX_CI_NDJSON_BYTES - CI_TRUNCATION_MARKER.length) {
                   ndjsonCapped = true;
-                  ndjson += JSON.stringify({ kind: "other", note: "event log truncated (size cap)" }) + "\n";
+                  ndjson += CI_TRUNCATION_MARKER;
                   log(
                     "WARN",
                     `agent-ci event log for task ${taskId} exceeded ${MAX_CI_NDJSON_BYTES} bytes -- truncating persisted history`,
