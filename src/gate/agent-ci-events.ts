@@ -38,14 +38,24 @@ export function parseAgentCiEvent(line: string): AgentCiEvent {
   const job = str(obj["job"]);
   const step = str(obj["step"]);
   const index = num(obj["index"]) ?? 0;
-  const status = str(obj["status"]) ?? str(obj["conclusion"]) ?? str(obj["result"]) ?? "";
+  const status = str(obj["status"]) ?? "";
   const durationMs = num(obj["durationMs"]);
 
   switch (kind) {
-    case "run.start":
-      return { kind: "run-start", ...(str(obj["runId"]) ? { runId: str(obj["runId"])! } : {}) };
-    case "job.start":
-      return { kind: "job-start", job: job ?? "", ...(str(obj["runner"]) ? { runner: str(obj["runner"])! } : {}), ...(str(obj["workflow"]) ? { workflow: str(obj["workflow"])! } : {}) };
+    case "run.start": {
+      const runId = str(obj["runId"]);
+      return { kind: "run-start", ...(runId !== undefined ? { runId } : {}) };
+    }
+    case "job.start": {
+      const runner = str(obj["runner"]);
+      const workflow = str(obj["workflow"]);
+      return {
+        kind: "job-start",
+        job: job ?? "",
+        ...(runner !== undefined ? { runner } : {}),
+        ...(workflow !== undefined ? { workflow } : {}),
+      };
+    }
     case "step.start":
       return { kind: "step-start", job: job ?? "", step: step ?? "", index };
     case "step.finish":
@@ -53,8 +63,6 @@ export function parseAgentCiEvent(line: string): AgentCiEvent {
     case "job.finish":
       return { kind: "job-finish", job: job ?? "", status, ...(durationMs !== undefined ? { durationMs } : {}) };
     case "run.finish":
-    case "run.finished":
-    case "run.complete":
       return { kind: "run-finish", status };
     default:
       return { kind: "other" };

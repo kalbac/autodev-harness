@@ -27,6 +27,27 @@ describe("parseAgentCiEvent", () => {
   it("maps an unrecognized JSON event to { kind: 'other' }", () => {
     expect(parseAgentCiEvent('{"event":"cache.hit","key":"x"}')).toEqual({ kind: "other" });
   });
+
+  it("parses a job.start with runner + workflow", () => {
+    expect(parseAgentCiEvent('{"event":"job.start","job":"build","runner":"ubuntu-latest","workflow":"ci.yml"}'))
+      .toEqual({ kind: "job-start", job: "build", runner: "ubuntu-latest", workflow: "ci.yml" });
+  });
+
+  it("parses a step.start", () => {
+    expect(parseAgentCiEvent('{"event":"step.start","job":"build","step":"lint","index":0}'))
+      .toEqual({ kind: "step-start", job: "build", step: "lint", index: 0 });
+  });
+
+  it("parses a job.finish with status", () => {
+    expect(parseAgentCiEvent('{"event":"job.finish","job":"build","status":"failed","durationMs":50}'))
+      .toEqual({ kind: "job-finish", job: "build", status: "failed", durationMs: 50 });
+  });
+
+  it("maps an empty line and a JSON array/null to { kind: 'other' }", () => {
+    expect(parseAgentCiEvent("   ")).toEqual({ kind: "other" });
+    expect(parseAgentCiEvent("[1,2,3]")).toEqual({ kind: "other" });
+    expect(parseAgentCiEvent("null")).toEqual({ kind: "other" });
+  });
 });
 
 describe("deriveWorkflowVerdict", () => {
