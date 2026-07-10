@@ -256,6 +256,38 @@ export interface CriticVerdictDoc {
   updated_at: number;
 }
 
+/** Mirrors `src/gate/ci-status.ts` CiStatus — the rolling summary persisted at
+ *  `runtime/<taskId>/agent-ci-status.json`, read via the generic runtime-file
+ *  endpoint (like `CriticVerdictDoc`/`TokenUsageDoc`). */
+export interface CiStatus {
+  phase: "running" | "passed" | "failed";
+  workflow: string | null;
+  steps: { done: number; total: number };
+  failedSteps: string[];
+}
+
+export type CiCapabilityMode = "native" | "wsl" | "unavailable";
+
+/** Mirrors `src/gate/agent-ci-exec.ts` AgentCiCapability — the payload of
+ *  `GET /projects/:id/ci/capability` (best-effort probe of whether agent-ci
+ *  can run for this project: native, via WSL, or unavailable). */
+export interface CiCapability {
+  mode: CiCapabilityMode;
+  reason?: "needs-wsl-on-windows" | "needs-node-in-wsl";
+  detail: string;
+}
+
+/** One CI event frame as delivered over SSE (mirrors `src/gate/agent-ci-events.ts`
+ *  AgentCiEvent union). */
+export type CiEventFrame =
+  | { kind: "run-start"; runId?: string }
+  | { kind: "job-start"; job: string; runner?: string; workflow?: string }
+  | { kind: "step-start"; job: string; step: string; index: number }
+  | { kind: "step-finish"; job: string; step: string; index: number; status: string; durationMs?: number }
+  | { kind: "job-finish"; job: string; status: string; durationMs?: number }
+  | { kind: "run-finish"; status: string }
+  | { kind: "other" };
+
 /** Mirrors `src/detect/agent-extensions.ts` McpServerStatus. */
 export interface McpServerStatus {
   name: string;
@@ -559,5 +591,18 @@ export const api = {
    *  `new EventSource(...)` (a raw URL, not a fetch-based client method). */
   chatStreamUrl(projectId: string, sessionId: string): string {
     return projectPath(projectId, `/chat/${encodeURIComponent(sessionId)}/stream`);
+  },
+
+  /** Best-effort probe of whether agent-ci can run for this project (native,
+   *  via WSL, or unavailable). 404s when the daemon has no admin port -- callers
+   *  should treat any failure as "unknown", not a crash. See GET /ci/capability. */
+  getCiCapability: (projectId: string) => req<CiCapability>(projectPath(projectId, "/ci/capability")),
+
+  /** URL for the CI event SSE connection -- the CALLER opens this with
+   *  `new EventSource(...)`, same idiom as `chatStreamUrl`. On connect the
+   *  server replays the persisted history (`agent-ci-status.json`'s sibling
+   *  ndjson log) before streaming live events. */
+  ciEventsUrl(projectId: string, taskId: string): string {
+    return projectPath(projectId, `/ci/${encodeURIComponent(taskId)}/stream`);
   },
 };

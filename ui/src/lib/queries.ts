@@ -1,5 +1,19 @@
+// Aliased: this file itself exports a `useState` (the project-state query hook,
+// consumed elsewhere as `useState as useProjectState`/`useHarnessState`), so the
+// React hook of the same name must be renamed here to avoid a redeclaration.
+import { useEffect, useState as useReactState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type RegisterProjectInput, type ProjectConfigForm, type RunUsageSummary, type CriticVerdictDoc, type RunPatch } from "./api";
+import {
+  api,
+  ApiError,
+  type RegisterProjectInput,
+  type ProjectConfigForm,
+  type RunUsageSummary,
+  type CriticVerdictDoc,
+  type RunPatch,
+  type CiStatus,
+  type CiEventFrame,
+} from "./api";
 
 /** Query keys — resource-name first, then projectId, then params. Every
  *  project-scoped key carries the projectId so caches never collide across
@@ -18,6 +32,8 @@ export const qk = {
   taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
   detectedAgents: ["detected-agents"] as const,
   agentExtensions: (p: string) => ["agent-extensions", p] as const,
+  ciStatus: (p: string, taskId: string) => ["ci-status", p, taskId] as const,
+  ciCapability: (p: string) => ["ci-capability", p] as const,
 };
 
 /** Cross-run token totals for the session rail (s25). Token count only — cost was
@@ -138,6 +154,67 @@ export const useTaskVerdict = (p: string, taskId: string) =>
       }
     },
   });
+
+/**
+ * Rolling agent-ci summary for one task: reads `agent-ci-status.json` via the
+ * existing runtime-file endpoint, same 404-tolerant idiom as `useTaskVerdict`
+ * (the runtime-file route serves raw text, not a JSON envelope, so there's no
+ * dedicated `getCiStatus` api method — `getRuntimeFile` + `JSON.parse` is reused
+ * directly). A task with no CI run yet (or a run predating this feature) has no
+ * file, so the query resolves to `null` rather than throwing.
+ */
+export const useCiStatus = (p: string, taskId: string) =>
+  useQuery({
+    queryKey: qk.ciStatus(p, taskId),
+    enabled: p !== "" && taskId !== "",
+    queryFn: async (): Promise<CiStatus | null> => {
+      let text: string;
+      try {
+        ({ text } = await api.getRuntimeFile(p, taskId, "agent-ci-status.json"));
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null; // no CI run yet for this task
+        throw err;
+      }
+      try {
+        return JSON.parse(text) as CiStatus;
+      } catch {
+        return null; // malformed/truncated — treat as "no status yet"
+      }
+    },
+  });
+
+/** Best-effort agent-ci capability probe (native/wsl/unavailable), project-scoped.
+ *  Static-ish — same shape as `useConfig`. */
+export const useCiCapability = (p: string) =>
+  useQuery({ queryKey: qk.ciCapability(p), queryFn: () => api.getCiCapability(p), enabled: p !== "" });
+
+/**
+ * Live CI event stream for one task — the FIRST reusable SSE hook in this
+ * codebase, modeled directly on the inline `EventSource` effect in
+ * `ChatModal.tsx` (`chatStreamUrl`). Unlike a query hook, this owns LOCAL
+ * component state (an accumulating events array), not the query cache — there
+ * is no server-side "get all events so far" endpoint to poll, only the stream
+ * itself, which replays history on connect. Torn down and reset on every
+ * `projectId`/`taskId` change (including to empty, which just clears the array).
+ */
+export const useCiEvents = (projectId: string, taskId: string): CiEventFrame[] => {
+  const [events, setEvents] = useReactState<CiEventFrame[]>([]);
+  useEffect(() => {
+    setEvents([]);
+    if (projectId === "" || taskId === "") return;
+    const es = new EventSource(api.ciEventsUrl(projectId, taskId));
+    es.onmessage = (ev) => {
+      try {
+        const frame = JSON.parse(ev.data) as CiEventFrame;
+        if (frame && typeof frame.kind === "string") setEvents((prev) => [...prev, frame]);
+      } catch {
+        /* malformed frame -- ignore */
+      }
+    };
+    return () => es.close();
+  }, [projectId, taskId]);
+  return events;
+};
 
 /** Curated project config (top bar + inspector rail). Static-ish — invalidated
  *  by WS like everything else. `enabled` guards the daemon-global routes. */
