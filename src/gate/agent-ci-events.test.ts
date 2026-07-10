@@ -77,3 +77,35 @@ describe("deriveWorkflowVerdict", () => {
     expect(deriveWorkflowVerdict(events).outcome).toBe("failed");
   });
 });
+
+// VERBATIM real NDJSON captured live from @redwoodjs/agent-ci@0.16.2 (s37 live-prove,
+// under WSL+Docker). Migrated from agent-ci.test.ts's now-removed parseWorkflowOutcome
+// suite (Task 3) -- these pin the exact real event stream this parser + verdict deriver
+// must keep reading correctly.
+describe("parseAgentCiEvent + deriveWorkflowVerdict (REAL agent-ci NDJSON fixtures)", () => {
+  it("classifies a REAL passing agent-ci NDJSON stream as passed (event-keyed)", () => {
+    const realPass = [
+      '{"event":"run.start","ts":"2026-07-09T22:14:52.927Z","schemaVersion":1,"runId":"run-1783635292924"}',
+      '{"event":"job.start","ts":"2026-07-09T22:14:56.281Z","job":"check","runner":"agent-ci-1-j1","workflow":"ci.yml"}',
+      '{"event":"step.finish","ts":"2026-07-09T22:15:04.877Z","job":"check","step":"Run node","index":3,"status":"passed","durationMs":272}',
+      '{"event":"job.finish","ts":"2026-07-09T22:15:05.964Z","job":"check","workflow":"ci.yml","status":"passed","durationMs":476}',
+      '{"event":"run.finish","ts":"2026-07-09T22:15:06.657Z","status":"passed"}',
+    ];
+    const events = realPass.map(parseAgentCiEvent);
+    expect(deriveWorkflowVerdict(events)).toEqual({ outcome: "passed", failedSteps: [] });
+  });
+
+  it("classifies a REAL failing agent-ci NDJSON stream as failed (event-keyed)", () => {
+    const realFail = [
+      '{"event":"run.start","ts":"2026-07-09T22:15:42.404Z","schemaVersion":1,"runId":"run-1783635342403"}',
+      '{"event":"step.finish","ts":"2026-07-09T22:15:49.337Z","job":"check","step":"Run node","index":3,"status":"failed","durationMs":60}',
+      '{"event":"step.finish","ts":"2026-07-09T22:15:49.339Z","job":"check","step":"Capture outputs","index":4,"status":"skipped","durationMs":0}',
+      '{"event":"job.finish","ts":"2026-07-09T22:15:50.324Z","job":"check","workflow":"fail.yml","status":"failed","durationMs":198}',
+      '{"event":"run.finish","ts":"2026-07-09T22:15:50.893Z","status":"failed"}',
+    ];
+    const events = realFail.map(parseAgentCiEvent);
+    const verdict = deriveWorkflowVerdict(events);
+    expect(verdict.outcome).toBe("failed");
+    expect(verdict.failedSteps).toEqual(["Run node"]);
+  });
+});
