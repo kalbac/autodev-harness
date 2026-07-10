@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import { AlertTriangle, Ban, CheckSquare, PanelRight, Square, X } from "lucide-react";
 import { Spinner } from "./ui/spinner";
 import { useCiStatus, useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
@@ -166,14 +167,13 @@ export function SessionRail({ projectId, onClose }: { projectId: string; onClose
                     </span>
                   </div>
                   <Kv k="workflow" v={ciStatus.data.workflow ?? dash} />
-                  {/* TODO Task 11: switch to typed <Link to="/p/$projectId/ci/$taskId">
-                      once that route is registered — plain anchor keeps typecheck green now. */}
-                  <a
-                    href={`/p/${projectId}/ci/${activeTaskId}`}
+                  <Link
+                    to="/p/$projectId/ci/$taskId"
+                    params={{ projectId, taskId: activeTaskId }}
                     className="font-mono text-[11px] text-accent hover:underline"
                   >
                     open CI run →
-                  </a>
+                  </Link>
                 </div>
               ) : (
                 <Step state="idle" label="no CI run yet" />
