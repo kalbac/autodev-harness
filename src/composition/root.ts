@@ -228,13 +228,30 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               log("WARN", "gate.agentCi.enabled but workflows allowlist is empty -- skipping agent-ci this round");
               return { green: true, reasons: [] };
             }
+            const MAX_CI_NDJSON_BYTES = 2_000_000; // ~2MB persisted history cap
             let ndjson = "";
+            let ndjsonCapped = false;
             let status = initialCiStatus();
             const onEvent = (workflow: string, event: AgentCiEvent): void => {
               // Persist (best-effort; a persist failure must NEVER fail a real CI verdict).
-              ndjson += JSON.stringify(event) + "\n";
+              // Cap the persisted ndjson so a verbose/stuck workflow can't grow it (and its
+              // rewrite cost) unbounded; the live bus publish + status.json summary below
+              // are unaffected by the cap.
+              if (!ndjsonCapped) {
+                const line = JSON.stringify(event) + "\n";
+                if (ndjson.length + line.length > MAX_CI_NDJSON_BYTES) {
+                  ndjsonCapped = true;
+                  ndjson += JSON.stringify({ kind: "other", note: "event log truncated (size cap)" }) + "\n";
+                  log(
+                    "WARN",
+                    `agent-ci event log for task ${taskId} exceeded ${MAX_CI_NDJSON_BYTES} bytes -- truncating persisted history`,
+                  );
+                } else {
+                  ndjson += line;
+                }
+                void repo.writeRuntimeFile(taskId, "agent-ci-events.ndjson", ndjson).catch(() => {});
+              }
               status = foldCiStatus(status, workflow, event);
-              void repo.writeRuntimeFile(taskId, "agent-ci-events.ndjson", ndjson).catch(() => {});
               void repo.writeRuntimeFile(taskId, "agent-ci-status.json", JSON.stringify(status, null, 2)).catch(() => {});
               // Publish to the live bus (best-effort).
               try {

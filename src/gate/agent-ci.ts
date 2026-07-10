@@ -3,6 +3,7 @@ import {
   buildAgentCiCommand,
   detectAgentCiCapability,
   spawnAgentCiStream,
+  winToWslPath,
   type AgentCiCapability,
   type AgentCiSpawner,
 } from "./agent-ci-exec.js";
@@ -54,13 +55,27 @@ export async function runAgentCiWorkflows(input: RunAgentCiInput): Promise<Agent
   const reasons: string[] = [];
   let green = true;
 
+  // Map the worktree path into WSL once (same cwd for every workflow). Unmappable -> honest unavailable.
+  let commandCwd = input.cwd;
+  if (capability.mode === "wsl") {
+    const posix = winToWslPath(input.cwd);
+    if (posix === null) {
+      throw new AgentCiUnavailableError(
+        "unmappable-worktree-path",
+        `agent-ci cannot map the worktree path '${input.cwd}' into WSL (UNC or no drive letter) -- ` +
+          `move the repo onto a drive-letter path or run the daemon on Linux/Mac`,
+      );
+    }
+    commandCwd = posix;
+  }
+
   for (const wf of input.workflows) {
     const events: AgentCiEvent[] = [];
-    const { command, args } = buildAgentCiCommand(capability.mode, { cwd: input.cwd, workflow: wf });
-    const { exitCode } = await input.spawn({
+    const { command, args } = buildAgentCiCommand(capability.mode, { cwd: commandCwd, workflow: wf });
+    const { exitCode, timedOut } = await input.spawn({
       command,
       args,
-      cwd: input.cwd,
+      cwd: input.cwd, // spawn from the Windows worktree; the `cd` inside the wsl script (commandCwd) is authoritative
       env: { ...process.env, ...AGENT_CI_ENV },
       timeoutMs: input.timeoutMs,
       onLine: (line) => {
@@ -70,6 +85,12 @@ export async function runAgentCiWorkflows(input: RunAgentCiInput): Promise<Agent
         input.onEvent(wf, ev);
       },
     });
+
+    if (timedOut) {
+      throw new Error(
+        `agent-ci workflow '${wf}' timed out after ${input.timeoutMs}ms -- treating as an infrastructure failure`,
+      );
+    }
 
     const verdict = deriveWorkflowVerdict(events);
     if (verdict.outcome === "infra") {

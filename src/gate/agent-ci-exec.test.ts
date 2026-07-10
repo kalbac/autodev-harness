@@ -3,6 +3,7 @@ import {
   winToWslPath,
   buildAgentCiCommand,
   detectAgentCiCapability,
+  spawnAgentCiStream,
   AgentCiUnavailableError,
 } from "./agent-ci-exec.js";
 
@@ -57,16 +58,30 @@ describe("detectAgentCiCapability", () => {
 });
 
 describe("spawnAgentCiStream", () => {
-  it("resolves { exitCode: -1 } and never rejects when the child spawn throws synchronously", async () => {
+  it("resolves { exitCode: -1, timedOut: false } and never rejects when the child spawn throws synchronously", async () => {
     vi.resetModules();
     vi.doMock("cross-spawn", () => ({ default: () => { throw new Error("boom"); } }));
     const { spawnAgentCiStream } = await import("./agent-ci-exec.js");
     await expect(
       spawnAgentCiStream({ command: "x", args: [], cwd: "/", env: {}, timeoutMs: 1000, onLine: () => {} }),
-    ).resolves.toEqual({ exitCode: -1 });
+    ).resolves.toEqual({ exitCode: -1, timedOut: false });
     vi.doUnmock("cross-spawn");
     vi.resetModules();
   });
+
+  it("resolves { exitCode: -1, timedOut: true } when the deadline fires before the child exits", async () => {
+    // Real child process that never exits on its own -- exercises the actual
+    // deadline/kill path (no cross-spawn mock needed).
+    const res = await spawnAgentCiStream({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: process.cwd(),
+      env: process.env,
+      timeoutMs: 50,
+      onLine: () => {},
+    });
+    expect(res).toEqual({ exitCode: -1, timedOut: true });
+  }, 10000);
 });
 
 describe("AgentCiUnavailableError", () => {

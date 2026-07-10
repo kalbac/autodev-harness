@@ -5,7 +5,7 @@ const MAX_REMAINDER_BYTES = 1_000_000;
 const WSL_PROBE_TIMEOUT_MS = 5000;
 
 export type AgentCiMode = "native" | "wsl" | "unavailable";
-export type AgentCiUnavailableReason = "needs-wsl-on-windows" | "needs-node-in-wsl";
+export type AgentCiUnavailableReason = "needs-wsl-on-windows" | "needs-node-in-wsl" | "unmappable-worktree-path";
 
 export interface AgentCiCapability {
   mode: AgentCiMode;
@@ -142,20 +142,22 @@ export interface AgentCiSpawnInput {
 
 /** Mirrors runNative's / makeStreamingSpawnInit's kill discipline, but streams stdout
  *  line-by-line to `onLine` instead of buffering. Never rejects on non-zero exit;
- *  resolves { exitCode } (a timeout resolves with the killed child's code). */
-export type AgentCiSpawner = (input: AgentCiSpawnInput) => Promise<{ exitCode: number }>;
+ *  resolves { exitCode, timedOut } (a timeout resolves with the killed child's code
+ *  AND `timedOut: true`, so the caller can throw infra even after a terminal event). */
+export type AgentCiSpawner = (input: AgentCiSpawnInput) => Promise<{ exitCode: number; timedOut: boolean }>;
 
 export const spawnAgentCiStream: AgentCiSpawner = (input) =>
   new Promise((resolve) => {
     let remainder = "";
     let settled = false;
+    let timedOut = false;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const resolveOnce = (exitCode: number): void => {
       if (settled) return;
       settled = true;
       if (deadline) clearTimeout(deadline); // NOT killTimer: a scheduled SIGKILL must still fire
-      resolve({ exitCode });
+      resolve({ exitCode, timedOut });
     };
 
     let child: ReturnType<typeof spawn>;
@@ -174,6 +176,7 @@ export const spawnAgentCiStream: AgentCiSpawner = (input) =>
       killTimer.unref?.();
     };
     deadline = setTimeout(() => {
+      timedOut = true;
       killChild();
       resolveOnce(-1);
     }, input.timeoutMs);

@@ -9,7 +9,7 @@ function fakeSpawnerFromLines(linesByWorkflow: Record<string, string[]>): AgentC
     const wfIdx = args.indexOf("--workflow");
     const wf = wfIdx >= 0 ? args[wfIdx + 1]! : Object.keys(linesByWorkflow)[0]!;
     for (const l of linesByWorkflow[wf] ?? []) onLine(l);
-    return { exitCode: 0 };
+    return { exitCode: 0, timedOut: false };
   };
 }
 
@@ -82,5 +82,40 @@ describe("runAgentCiWorkflows (streaming)", () => {
     expect(res.green).toBe(false);
     expect(res.reasons.join(" ")).toMatch(/b\.yml/);
     expect(res.reasons.join(" ")).not.toMatch(/a\.yml/);
+  });
+
+  it("throws infra on a timeout even if a terminal run.finish was already seen", async () => {
+    const timingOutSpawner: AgentCiSpawner = async ({ onLine }) => {
+      onLine('{"event":"run.finish","status":"passed"}');
+      return { exitCode: -1, timedOut: true };
+    };
+    await expect(runAgentCiWorkflows(baseInput({ spawn: timingOutSpawner })))
+      .rejects.toThrow(/timed out|infrastructure/i);
+  });
+
+  it("wsl mode maps the Windows worktree path into /mnt/<drive> in the spawned command", async () => {
+    let capturedArgs: string[] = [];
+    const capturingSpawner: AgentCiSpawner = async ({ args, onLine }) => {
+      capturedArgs = args;
+      onLine('{"event":"run.finish","status":"passed"}');
+      return { exitCode: 0, timedOut: false };
+    };
+    await runAgentCiWorkflows(baseInput({
+      cwd: "D:\\Projects\\app",
+      detectCapability: async () => ({ mode: "wsl", detail: "wsl" }),
+      spawn: capturingSpawner,
+    }));
+    expect(capturedArgs.join(" ")).toContain("cd '/mnt/d/Projects/app'");
+    expect(capturedArgs.join(" ")).not.toContain("D:\\");
+  });
+
+  it("throws AgentCiUnavailableError(unmappable-worktree-path) for a UNC worktree under wsl mode (never spawns)", async () => {
+    const spawn = vi.fn(fakeSpawnerFromLines({ "ci.yml": [] }));
+    await expect(runAgentCiWorkflows(baseInput({
+      cwd: "\\\\server\\share\\app",
+      detectCapability: async () => ({ mode: "wsl", detail: "wsl" }),
+      spawn,
+    }))).rejects.toBeInstanceOf(AgentCiUnavailableError);
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

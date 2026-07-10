@@ -66,10 +66,18 @@ export function handleCiStream(ci: CiCapabilityProvider | undefined, taskId: str
     end: () => { try { res.end(); } catch { /* already closed */ } },
   };
 
+  let closed = false;
+  // Register the disconnect handler SYNCHRONOUSLY so a drop DURING history replay still detaches.
+  res.on("close", () => {
+    closed = true;
+    ci.bus.unsubscribe(taskId, sink); // safe no-op if not yet subscribed
+  });
+
   // History replay first (best-effort), then go live. A microscopic race (an event landing
   // between replay and subscribe) is covered by persistence -- a reconnect replays it.
   void ci.readEvents(taskId)
     .then((ndjson) => {
+      if (closed) return;
       for (const line of ndjson.split(/\r?\n/)) {
         const t = line.trim();
         if (t.length > 0) sink.write(t);
@@ -77,8 +85,7 @@ export function handleCiStream(ci: CiCapabilityProvider | undefined, taskId: str
     })
     .catch(() => { /* no history yet -- stream live only */ })
     .finally(() => {
-      ci.bus.subscribe(taskId, sink);
-      res.on("close", () => ci.bus.unsubscribe(taskId, sink));
+      if (!closed) ci.bus.subscribe(taskId, sink);
     });
 }
 
