@@ -7,6 +7,7 @@ import {
   useUpdateProjectConfig,
   useDetectedAgents,
   useAgentExtensions,
+  useCiCapability,
 } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import {
@@ -274,6 +275,7 @@ export function ProjectSettingsView() {
 
           <ConfigSections
             config={config.data}
+            projectId={projectId}
             projectPath={project?.path}
             editing={editing}
             draft={draft}
@@ -297,6 +299,7 @@ export function ProjectSettingsView() {
 
 function ConfigSections({
   config,
+  projectId,
   projectPath,
   editing,
   draft,
@@ -304,6 +307,7 @@ function ConfigSections({
   detectedAgents,
 }: {
   config: ProjectConfigView;
+  projectId: string;
   projectPath?: string;
   editing: boolean;
   draft: EditDraft | null;
@@ -351,6 +355,7 @@ function ConfigSections({
         ) : (
           <SettingsRow label="Check command" value={gate.checkCommand} />
         )}
+        <CiCapabilityRow projectId={projectId} />
       </SettingsSection>
 
       <SettingsSection title="Worktree provisioning">
@@ -1001,6 +1006,26 @@ function EditableList({
 /** `adapter · model · effort` — effort omitted when unset. */
 function roleLine(adapter: string, model: string, effort?: string): string {
   return [adapter, model, effort].filter(Boolean).join(" · ");
+}
+
+/** Read-only capability line for `GET /projects/:id/ci/capability` — tells the
+ *  operator, BEFORE running, whether agent-ci can run natively, only via WSL,
+ *  or not at all on this machine (Windows without WSL). No toggle: this is a
+ *  probe result, not a setting. Renders nothing until the probe resolves. */
+function CiCapabilityRow({ projectId }: { projectId: string }) {
+  const cap = useCiCapability(projectId);
+  if (!cap.data) return null;
+  const tone = cap.data.mode === "unavailable" ? "broken" : cap.data.mode === "wsl" ? "uncertain" : "clean";
+  const label = cap.data.mode === "native" ? "native" : cap.data.mode === "wsl" ? "via WSL" : "needs WSL on Windows";
+  return (
+    <div className="flex flex-col gap-1 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[13px] text-muted-foreground">agent-ci</span>
+        <StatusPill tone={tone} label={label} />
+      </div>
+      <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">{cap.data.detail}</p>
+    </div>
+  );
 }
 
 /**
