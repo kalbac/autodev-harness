@@ -3087,7 +3087,7 @@ describe("GET /projects/:id/config", () => {
   const sampleConfig: ProjectConfigView = {
     stateDir: ".autodev",
     allowedBranchPattern: "^autodev/",
-    gate: { checkCommand: "npm test" },
+    gate: { checkCommand: "npm test", agentCi: { enabled: false } },
     worktree: { provision: ["vendor", "node_modules"] },
     roles: {
       orchestrator: { adapter: "claude", model: "opus", effort: "high" },
@@ -3148,7 +3148,7 @@ describe("PATCH /projects/:id/config", () => {
   const sampleConfig: ProjectConfigView = {
     stateDir: ".autodev",
     allowedBranchPattern: "^autodev/",
-    gate: { checkCommand: "npm test" },
+    gate: { checkCommand: "npm test", agentCi: { enabled: false } },
     worktree: { provision: ["vendor", "node_modules"] },
     roles: {
       orchestrator: { adapter: "claude", model: "opus", effort: "high" },
@@ -3257,7 +3257,7 @@ describe("PATCH /projects/:id/config", () => {
     // index.ts's real wiring triggers via hub.evict).
     const { admin } = fakeAdmin({ updateConfig: async () => ({ ok: true }) });
     let getCalls = 0;
-    const fixedConfig: ProjectConfigView = { ...sampleConfig, gate: { checkCommand: "fixed" } };
+    const fixedConfig: ProjectConfigView = { ...sampleConfig, gate: { checkCommand: "fixed", agentCi: { enabled: false } } };
     handle = createApiServer({
       projects: {
         list: async () => [{ id: "p1", name: "p1", path: stateDir, status: "error" }],

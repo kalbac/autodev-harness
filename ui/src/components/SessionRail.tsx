@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Ban, CheckSquare, PanelRight, Square, X } from "lucide-react";
 import { Spinner } from "./ui/spinner";
-import { useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
+import { useCiStatus, useConfig, useRuns, useSessionUsage, useState as useProjectState } from "@/lib/queries";
 import { useTaskIndex } from "@/lib/useTaskIndex";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { toneVar } from "@/lib/status";
@@ -57,6 +57,12 @@ export function SessionRail({ projectId, onClose }: { projectId: string; onClose
   const cfg = config.data;
   const dash = "—";
 
+  // CI block (Task 10) — shown only when the project opted into agent-ci; the
+  // status query is scoped to the active task (no active task -> disabled).
+  const ciEnabled = cfg?.gate?.agentCi?.enabled === true;
+  const activeTaskId = activeTask?.id ?? "";
+  const ciStatus = useCiStatus(projectId, ciEnabled ? activeTaskId : "");
+
   const roleWorker = cfg
     ? `${cfg.roles.worker.adapter} · ${cfg.roles.worker.ladder[0] ?? dash}${
         cfg.roles.worker.ladder.length > 1 ? ` +${cfg.roles.worker.ladder.length - 1}` : ""
@@ -103,13 +109,77 @@ export function SessionRail({ projectId, onClose }: { projectId: string; onClose
                 <>
                   <Step state="done" label="decompose" />
                   <Step state="now" label={`${activeTask.id} worker`} />
-                  <Step state="idle" label={`${activeTask.id} gate → critic → commit`} />
+                  <Step
+                    state="idle"
+                    label={`${activeTask.id} gate${
+                      ciEnabled && ciStatus.data && ciStatus.data.phase === "running"
+                        ? ` (CI ${ciStatus.data.steps.done}/${ciStatus.data.steps.total || "?"})`
+                        : ""
+                    } → critic → commit`}
+                  />
                 </>
               ) : (
                 <Step state="idle" label="no active run" />
               )}
             </div>
           </Block>
+
+          {/* CI — rolling agent-ci summary for the active task; only shown when
+              the project opted into gate.agentCi. Links out to the dedicated CI
+              screen (Task 11). */}
+          {ciEnabled && (
+            <Block
+              title="CI"
+              badge={
+                ciStatus.data ? (
+                  <Badge
+                    variant="secondary"
+                    className="ml-auto h-auto rounded-full px-1.5 py-0 font-mono text-[10px] normal-case tracking-normal text-muted-foreground"
+                  >
+                    {ciStatus.data.steps.done}/{ciStatus.data.steps.total || "?"}
+                  </Badge>
+                ) : undefined
+              }
+            >
+              {ciStatus.data ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Dot
+                      tone={
+                        ciStatus.data.phase === "passed"
+                          ? "clean"
+                          : ciStatus.data.phase === "failed"
+                            ? "broken"
+                            : "working"
+                      }
+                      pulse={ciStatus.data.phase === "running"}
+                    />
+                    <span className="font-mono text-[11px] text-foreground">
+                      {ciStatus.data.phase === "running"
+                        ? "running"
+                        : ciStatus.data.phase === "passed"
+                          ? "passed"
+                          : "failed"}
+                      {ciStatus.data.phase === "failed" && ciStatus.data.failedSteps[0]
+                        ? ` (step "${ciStatus.data.failedSteps[0]}")`
+                        : ""}
+                    </span>
+                  </div>
+                  <Kv k="workflow" v={ciStatus.data.workflow ?? dash} />
+                  {/* TODO Task 11: switch to typed <Link to="/p/$projectId/ci/$taskId">
+                      once that route is registered — plain anchor keeps typecheck green now. */}
+                  <a
+                    href={`/p/${projectId}/ci/${activeTaskId}`}
+                    className="font-mono text-[11px] text-accent hover:underline"
+                  >
+                    open CI run →
+                  </a>
+                </div>
+              ) : (
+                <Step state="idle" label="no CI run yet" />
+              )}
+            </Block>
+          )}
 
           {/* Plan — the newest run's ordered tasks as a live status checklist */}
           <Block

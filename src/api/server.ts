@@ -162,7 +162,7 @@ const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 export interface ProjectConfigView {
   stateDir: string;
   allowedBranchPattern: string;
-  gate: { checkCommand: string | null };
+  gate: { checkCommand: string | null; agentCi: { enabled: boolean } };
   worktree: { provision: string[] };
   roles: {
     orchestrator: { adapter: string; model: string; effort?: string };

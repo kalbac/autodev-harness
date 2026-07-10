@@ -24,7 +24,7 @@ export function buildProjectConfigView(cfg: HarnessConfig, plannerConfigured: bo
   return {
     stateDir: cfg.stateDir,
     allowedBranchPattern: cfg.allowedBranchPattern,
-    gate: { checkCommand: cfg.gate.checkCommand },
+    gate: { checkCommand: cfg.gate.checkCommand, agentCi: { enabled: cfg.gate.agentCi.enabled } },
     worktree: { provision: cfg.worktree.provision },
     roles: {
       orchestrator: {
