@@ -76,6 +76,11 @@ describe("deriveWorkflowVerdict", () => {
     const events = [ev({ kind: "run-finish", status: "passed" }), ev({ kind: "run-finish", status: "failed" })];
     expect(deriveWorkflowVerdict(events).outcome).toBe("failed");
   });
+
+  it("fail-closed: a terminal run-finish with an unrecognized status reads as failed (never passed/infra)", () => {
+    expect(deriveWorkflowVerdict([ev({ kind: "run-finish", status: "cancelled" })]))
+      .toEqual({ outcome: "failed", failedSteps: [] });
+  });
 });
 
 // VERBATIM real NDJSON captured live from @redwoodjs/agent-ci@0.16.2 (s37 live-prove,
