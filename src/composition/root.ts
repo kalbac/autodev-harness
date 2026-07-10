@@ -39,7 +39,11 @@ import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
 import { ClaudeOrchestratorChatAdapter } from "../orchestrator/claude-orchestrator-chat-adapter.js";
 import type { OrchestratorChatAdapter } from "../orchestrator/chat-adapter.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "../gate/gate.js";
-import { runAgentCiWorkflows } from "../gate/agent-ci.js";
+import { runAgentCiWorkflows, spawnAgentCiStream, detectAgentCiCapability } from "../gate/agent-ci.js";
+import type { AgentCiEvent } from "../gate/agent-ci-events.js";
+import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
+import { CiEventBus } from "../api/ci-events.js";
+import { foldCiStatus, initialCiStatus } from "../gate/ci-status.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
 import {
   parseGuardsTable,
@@ -98,6 +102,15 @@ export interface ProjectRoot {
    *  parsed `cfg` always carries a defaulted planner, so the config projection
    *  (R1) needs this raw-presence signal to expose planner only when configured. */
   plannerConfigured: boolean;
+  /** Live/replay surface for streamed agent-ci events (Task 7 wires this over HTTP/SSE).
+   *  Built LAZILY, same rationale as `chat`. */
+  ci: {
+    bus: CiEventBus;
+    readEvents: (taskId: string) => Promise<string>;
+  };
+  /** Probe agent-ci's runtime capability (native/wsl/unavailable) for the UI, without
+   *  actually running a workflow. */
+  onCiCapability: () => Promise<AgentCiCapability>;
 }
 
 export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
@@ -207,7 +220,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
         return { exitCode: r.exitCode };
       },
       runAgentCi: agentCi.enabled
-        ? async () => {
+        ? async (taskId: string) => {
             if (agentCi.workflows.length === 0) {
               // Enabled but nothing to run: fail OPEN with a loud warning
               // (mirrors policy.heterogeneity's misconfig convention). Never
@@ -215,11 +228,28 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               log("WARN", "gate.agentCi.enabled but workflows allowlist is empty -- skipping agent-ci this round");
               return { green: true, reasons: [] };
             }
+            let ndjson = "";
+            let status = initialCiStatus();
+            const onEvent = (workflow: string, event: AgentCiEvent): void => {
+              // Persist (best-effort; a persist failure must NEVER fail a real CI verdict).
+              ndjson += JSON.stringify(event) + "\n";
+              status = foldCiStatus(status, workflow, event);
+              void repo.writeRuntimeFile(taskId, "agent-ci-events.ndjson", ndjson).catch(() => {});
+              void repo.writeRuntimeFile(taskId, "agent-ci-status.json", JSON.stringify(status, null, 2)).catch(() => {});
+              // Publish to the live bus (best-effort).
+              try {
+                getCiBus().publish(taskId, event);
+              } catch {
+                /* ignore */
+              }
+            };
             return runAgentCiWorkflows({
               cwd: wt.path,
               workflows: agentCi.workflows,
               timeoutMs: agentCi.timeoutMs,
-              runner: runNative,
+              detectCapability: () => detectAgentCiCapability(),
+              spawn: spawnAgentCiStream,
+              onEvent,
             });
           }
         : null,
@@ -371,6 +401,15 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     return chatManager;
   };
 
+  // CI event bus is built LAZILY on first access, same rationale as the chat
+  // manager above: most CLI verbs never stream agent-ci, so there is no need
+  // to construct it eagerly.
+  let ciBus: CiEventBus | undefined;
+  const getCiBus = (): CiEventBus => {
+    if (!ciBus) ciBus = new CiEventBus();
+    return ciBus;
+  };
+
   return {
     repoRoot,
     cfg,
@@ -395,6 +434,14 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     log,
     stateDirAbs: join(repoRoot, cfg.stateDir),
     plannerConfigured,
+    get ci() {
+      return {
+        bus: getCiBus(),
+        readEvents: async (taskId: string): Promise<string> =>
+          (await repo.readRuntimeFile(taskId, "agent-ci-events.ndjson")) ?? "",
+      };
+    },
+    onCiCapability: () => detectAgentCiCapability(),
   };
 }
 
