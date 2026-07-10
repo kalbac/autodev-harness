@@ -37,6 +37,8 @@ import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../us
 import type { ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
 import { ChatSessionManager, type ChatStreamSink } from "../orchestrator/chat-session-manager.js";
 import type { ReadSnapshot } from "../orchestrator/adapter.js";
+import { CiEventBus, handleCiStream, handleCiCapability } from "./ci-events.js";
+import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -226,6 +228,11 @@ export interface ProjectView {
    * (same shape `handleIntent` uses via `buildReadSnapshot`).
    */
   chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
+  /** OPTIONAL CI observability: the per-project event bus + a history reader for
+   *  `GET /projects/:id/ci/:taskId/stream`. Unset -> 404. */
+  ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
+  /** OPTIONAL agent-ci capability probe for `GET /projects/:id/ci/capability`. Unset -> 404. */
+  onCiCapability?: () => Promise<AgentCiCapability>;
 }
 
 export interface ApiServerDeps {
@@ -784,6 +791,13 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   // built up lazily as chat-capable projects are touched -- see the `p.chat &&
   // chatManagersByProject.set(...)` line right after `ensureWatcher` below.
   const chatManagersByProject = new Map<string, ChatSessionManager>();
+
+  // Every project's `CiEventBus` a resolved `ProjectView` has actually exposed
+  // via `p.ci`, keyed by project id -- mirrors `chatManagersByProject` above so
+  // `close()` can shut every bus's live SSE sinks down before the http server
+  // itself closes. Built up lazily the same way, per-request, as CI-capable
+  // projects are touched.
+  const ciBusesByProject = new Map<string, CiEventBus>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
@@ -2109,6 +2123,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       const p = resolved.view;
       ensureWatcher(rawPid, p.stateDir);
       if (p.chat) chatManagersByProject.set(rawPid, p.chat.manager);
+      if (p.ci) ciBusesByProject.set(rawPid, p.ci.bus);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
@@ -2151,6 +2166,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         return void (await handleChatConfirm(rawPid, p, req, res));
       const chatCancelMatch = /^\/chat\/([^/]+)\/?$/.exec(sub);
       if (req.method === "DELETE" && chatCancelMatch) return void (await handleChatCancel(p, chatCancelMatch[1]!, res));
+
+      if (req.method === "GET" && (sub === "/ci/capability" || sub === "/ci/capability/"))
+        return void handleCiCapability(p.onCiCapability, res);
+      const ciStreamMatch = /^\/ci\/([^/]+)\/stream\/?$/.exec(sub);
+      if (req.method === "GET" && ciStreamMatch)
+        return void handleCiStream(p.ci, decodeURIComponent(ciStreamMatch[1]!), res);
 
       sendJson(res, 404, { error: "not found" });
       return;
@@ -2252,6 +2273,17 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // down -- a chat session that outlives the daemon would leak a live
       // model subprocess with no way to reach it anymore.
       await Promise.all([...chatManagersByProject.values()].map((m) => m.closeAll()));
+
+      // Same reasoning as the chat teardown above: a live CI SSE sink whose
+      // socket outlives the daemon would spin forever with no reader -- close
+      // every tracked bus's sinks before the http server itself shuts down.
+      for (const b of ciBusesByProject.values()) {
+        try {
+          b.closeAll();
+        } catch {
+          /* ignore -- best-effort teardown, must never block shutdown */
+        }
+      }
 
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve, reject) => {
