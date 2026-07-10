@@ -3,6 +3,7 @@ import { runGate } from "./gate.js";
 import type { GateDeps, GateInput } from "./gate.js";
 import type { Invariants, ContractZone } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
+import { AgentCiUnavailableError } from "./agent-ci-exec.js";
 
 /** Builds a minimal unified diff whose body is exactly the given +/- lines. */
 function makeDiff(lines: string[]): string {
@@ -305,7 +306,7 @@ describe("runGate", () => {
   it("12. agent-ci present and green leaves the decision unchanged and sets agent_ci_green", async () => {
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
-      runAgentCi: async () => ({ green: true, reasons: [] }),
+      runAgentCi: async (_taskId: string) => ({ green: true, reasons: [] }),
     });
     const input: GateInput = { taskId: "t", fileSet: ["a.ts"] };
 
@@ -318,7 +319,7 @@ describe("runGate", () => {
   it("13. agent-ci present and red forces RETRY and records its reasons", async () => {
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
-      runAgentCi: async () => ({
+      runAgentCi: async (_taskId: string) => ({
         green: false,
         reasons: ["agent-ci workflow '.github/workflows/ci.yml' FAILED"],
       }),
@@ -335,7 +336,7 @@ describe("runGate", () => {
   it("14. an agent-ci INFRA throw propagates out of runGate (conductor escalates)", async () => {
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
-      runAgentCi: async () => {
+      runAgentCi: async (_taskId: string) => {
         throw new Error("agent-ci ... infrastructure failure");
       },
     });
@@ -352,5 +353,33 @@ describe("runGate", () => {
 
     expect(result.agent_ci_green).toBe(true);
     expect(result.decision).toBe("COMMIT");
+  });
+
+  it("16. propagates an AgentCiUnavailableError out of runGate (not swallowed)", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async (_taskId: string) => {
+        throw new AgentCiUnavailableError("needs-wsl-on-windows", "needs WSL");
+      },
+    });
+    const input: GateInput = { taskId: "t1", fileSet: ["a.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toBeInstanceOf(AgentCiUnavailableError);
+  });
+
+  it("17. passes the task id into runAgentCi", async () => {
+    const seen: string[] = [];
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async (taskId: string) => {
+        seen.push(taskId);
+        return { green: true, reasons: [] };
+      },
+    });
+    const input: GateInput = { taskId: "task-42", fileSet: ["a.ts"] };
+
+    await runGate(input, deps);
+
+    expect(seen).toEqual(["task-42"]);
   });
 });
