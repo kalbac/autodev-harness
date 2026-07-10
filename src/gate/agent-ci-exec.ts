@@ -58,8 +58,12 @@ export interface WslProbeResult {
  *  node exists if `wsl.exe -e bash -lc "node -v"` exits 0. Best-effort, bounded. */
 export async function probeWslReal(): Promise<WslProbeResult> {
   const listOut = await runProbe("wsl.exe", ["-l", "-q"]);
-  // wsl -l -q output is UTF-16LE with NULs; strip them and check for any non-empty line.
-  const distros = listOut.stdout.replace(/ /g, "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  // wsl -l -q output is UTF-16LE with interleaved NUL bytes; strip them, then check for any non-empty line.
+  const distros = listOut.stdout
+    .replace(/\0/g, "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
   const hasDistro = listOut.exitCode === 0 && distros.length > 0;
   if (!hasDistro) return { hasDistro: false, hasNode: false };
   const nodeOut = await runProbe("wsl.exe", ["-e", "bash", "-lc", "node -v"]);
@@ -145,11 +149,12 @@ export const spawnAgentCiStream: AgentCiSpawner = (input) =>
   new Promise((resolve) => {
     let remainder = "";
     let settled = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const resolveOnce = (exitCode: number): void => {
       if (settled) return;
       settled = true;
-      if (deadline) clearTimeout(deadline);
+      if (deadline) clearTimeout(deadline); // NOT killTimer: a scheduled SIGKILL must still fire
       resolve({ exitCode });
     };
 
@@ -168,7 +173,7 @@ export const spawnAgentCiStream: AgentCiSpawner = (input) =>
       }, SIGKILL_GRACE_MS);
       killTimer.unref?.();
     };
-    const deadline = setTimeout(() => {
+    deadline = setTimeout(() => {
       killChild();
       resolveOnce(-1);
     }, input.timeoutMs);
@@ -187,8 +192,12 @@ export const spawnAgentCiStream: AgentCiSpawner = (input) =>
     });
     child.stderr?.on("data", () => {}); // drain to avoid pipe backpressure
 
-    child.on("error", () => { resolveOnce(-1); });
+    child.on("error", () => {
+      if (killTimer) clearTimeout(killTimer);
+      resolveOnce(-1);
+    });
     child.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
       if (remainder.trim().length > 0) {
         try { input.onLine(remainder); } catch { /* ignore */ }
       }

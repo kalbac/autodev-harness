@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   winToWslPath,
   buildAgentCiCommand,
@@ -53,6 +53,19 @@ describe("detectAgentCiCapability", () => {
     const cap = await detectAgentCiCapability({ platform: "win32", probeWsl: async () => ({ hasDistro: true, hasNode: false }) });
     expect(cap.mode).toBe("unavailable");
     expect(cap.reason).toBe("needs-node-in-wsl");
+  });
+});
+
+describe("spawnAgentCiStream", () => {
+  it("resolves { exitCode: -1 } and never rejects when the child spawn throws synchronously", async () => {
+    vi.resetModules();
+    vi.doMock("cross-spawn", () => ({ default: () => { throw new Error("boom"); } }));
+    const { spawnAgentCiStream } = await import("./agent-ci-exec.js");
+    await expect(
+      spawnAgentCiStream({ command: "x", args: [], cwd: "/", env: {}, timeoutMs: 1000, onLine: () => {} }),
+    ).resolves.toEqual({ exitCode: -1 });
+    vi.doUnmock("cross-spawn");
+    vi.resetModules();
   });
 });
 
