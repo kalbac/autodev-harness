@@ -55,10 +55,12 @@ describe("worktreeGitDirWsl", () => {
 });
 
 describe("buildAgentCiCommand gitDirWsl", () => {
-  it("wsl: prepends GIT_DIR + GIT_WORK_TREE exports when gitDirWsl is given", () => {
+  it("wsl: prepends a GIT_DIR export (ONLY -- never GIT_WORK_TREE) when gitDirWsl is given", () => {
     const { args } = buildAgentCiCommand("wsl", { cwd: "/mnt/d/a/wt", workflow: "ci.yml", gitDirWsl: "/mnt/d/a/.git/worktrees/wt" });
     expect(args[3]).toContain("export GIT_DIR='/mnt/d/a/.git/worktrees/wt'");
-    expect(args[3]).toContain("export GIT_WORK_TREE='/mnt/d/a/wt'");
+    // GIT_WORK_TREE must NOT be set: it persists core.worktree=/mnt into the shared config
+    // and breaks the Windows conductor's git.
+    expect(args[3]).not.toContain("GIT_WORK_TREE");
     expect(args[3]).toContain("cd '/mnt/d/a/wt'");
     expect(args[3]).toContain("npx @redwoodjs/agent-ci run --workflow 'ci.yml' --json");
   });

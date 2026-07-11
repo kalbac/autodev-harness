@@ -57,10 +57,11 @@ export function buildAgentCiCommand(
     return { command: "npx", args: ["@redwoodjs/agent-ci", "run", "--workflow", opts.workflow, "--json"] };
   }
   // WSL: a Windows-created worktree's `.git` gitdir pointer is a Windows path WSL git can't
-  // follow -- so point git at the WSL-form gitdir + work tree when we could derive them.
-  const gitEnv = opts.gitDirWsl
-    ? `export GIT_DIR='${shSingleQuote(opts.gitDirWsl)}' && export GIT_WORK_TREE='${shSingleQuote(opts.cwd)}' && `
-    : "";
+  // follow -- so point git at the WSL-form gitdir. NB: set GIT_DIR ONLY, never GIT_WORK_TREE:
+  // exporting GIT_WORK_TREE makes git persist `core.worktree = /mnt/...` into the SHARED
+  // `.git/config`, which then breaks the Windows conductor's post-gate git (`fatal: Invalid
+  // path '/mnt'`). agent-ci's host-git calls are all `rev-parse`, which need only GIT_DIR.
+  const gitEnv = opts.gitDirWsl ? `export GIT_DIR='${shSingleQuote(opts.gitDirWsl)}' && ` : "";
   const script = `cd '${shSingleQuote(opts.cwd)}' && ${gitEnv}npx @redwoodjs/agent-ci run --workflow '${shSingleQuote(opts.workflow)}' --json`;
   return { command: "wsl.exe", args: ["-e", "bash", "-lc", script] };
 }
