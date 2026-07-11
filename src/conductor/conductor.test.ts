@@ -14,6 +14,7 @@ import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
+import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 
 // ---------------------------------------------------------------------------
 // Fakes / test helpers. No real subprocesses, no real filesystem (except the
@@ -510,6 +511,64 @@ describe("runIteration -- fail-closed commit gating", () => {
     expect(state.locations.get(task.id)).toBe("escalated");
     expect(escalateCalls.length).toBe(1);
     expect(escalateCalls[0]!.type).toBe("needs-guard");
+    expect(wgSpy.commit.length).toBe(0);
+  });
+
+  it("escalates with the AgentCiUnavailableError's detail (not the generic gate-threw string)", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit, spy: wgSpy } = makeWorktreeGitFactory();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      worktreeGit,
+      runGate: async () => {
+        throw new AgentCiUnavailableError(
+          "needs-wsl-on-windows",
+          "agent-ci gate requires WSL on Windows -- install WSL or run on Linux/Mac",
+        );
+      },
+    });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.reason).toMatch(/requires WSL on Windows/);
+    expect(escalateCalls[0]!.reason).not.toMatch(/broken operator config/);
+    expect(wgSpy.commit.length).toBe(0);
+  });
+
+  it("still uses the generic reason for a non-agent-ci gate throw", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit, spy: wgSpy } = makeWorktreeGitFactory();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      worktreeGit,
+      runGate: async () => {
+        throw new Error("INVARIANTS.md missing");
+      },
+    });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.reason).toMatch(/broken operator config/);
     expect(wgSpy.commit.length).toBe(0);
   });
 });

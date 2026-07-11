@@ -63,13 +63,10 @@ export interface GateDeps {
   runSuccessCommand: (cmd: string) => Promise<{ exitCode: number }>;
   /** Live mutation-check for a guard: true iff it still goes red-on-flip. Parity: Test-AutodevGuardStillRed. */
   guardStillRed: (guard: GuardRow) => Promise<boolean>;
-  /** Optional local-CI replay (agent-ci). null = feature off (skip). A genuine
-   *  workflow failure returns {green:false}; an INFRA failure THROWS, and that
-   *  throw is meant to propagate out of runGate exactly like a throwing
-   *  loadInvariants/loadGuardPairs does (conductor treats a gate throw as
-   *  ESCALATE -- see conductor.ts try/catch around runGate). Do NOT wrap it in
-   *  a try/catch here. */
-  runAgentCi: (() => Promise<{ green: boolean; reasons: string[] }>) | null;
+  /** Optional agent-ci replay. null = feature off. May THROW: a genuine infra failure or an
+   *  AgentCiUnavailableError (Windows-without-WSL) propagates OUT of runGate on purpose --
+   *  do NOT wrap in try/catch here; the conductor escalates a gate throw. */
+  runAgentCi: ((taskId: string) => Promise<{ green: boolean; reasons: string[] }>) | null;
   /** Optional: persist gate-verdict.json. Omit in unit tests. */
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
 }
@@ -147,7 +144,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
   // problem, the same path a throwing loadInvariants takes.
   let agentCiGreen = true;
   if (deps.runAgentCi !== null) {
-    const ci = await deps.runAgentCi();
+    const ci = await deps.runAgentCi(input.taskId);
     agentCiGreen = ci.green;
     if (!ci.green) {
       reasons.push(...ci.reasons);

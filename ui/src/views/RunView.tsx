@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { Layers, Pencil, Archive, ArchiveRestore, RotateCcw, Check, X } from "lucide-react";
+import { getRouteApi, useNavigate, Link } from "@tanstack/react-router";
+import { Layers, Pencil, Archive, ArchiveRestore, RotateCcw, Activity, Check, X } from "lucide-react";
 import { useRun, usePatchRun, useState as useHarnessState } from "@/lib/queries";
 import { useAppStore } from "@/lib/store";
 import { useTaskIndex } from "@/lib/useTaskIndex";
@@ -95,6 +95,7 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
 
   const isArchived = manifest.archived_at !== undefined;
   const label = manifest.name ?? manifest.intent;
+  const firstTaskId = manifest.taskIds[0];
 
   const startRename = () => {
     setDraft(manifest.name ?? "");
@@ -152,6 +153,16 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
         <IconBtn title="Re-run this intent" onClick={reRun}>
           <RotateCcw className="size-3.5 text-muted-foreground" />
         </IconBtn>
+        {firstTaskId && (
+          <Link
+            to="/p/$projectId/ci/$taskId"
+            params={{ projectId, taskId: firstTaskId }}
+            title="Open CI run"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+          >
+            <Activity className="size-3.5" />
+          </Link>
+        )}
       </div>
     </div>
   );

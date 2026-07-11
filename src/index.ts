@@ -198,6 +198,8 @@ async function main(): Promise<void> {
                 manager: root.chat,
                 buildSnapshot: () => buildReadSnapshot(createReadCapability(root.repo)),
               },
+              ci: root.ci,
+              onCiCapability: root.onCiCapability,
             },
           };
         },

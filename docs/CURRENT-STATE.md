@@ -1,5 +1,26 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ s38 — **agent-ci observability BUILT + codex-CLEAN + LIVE-PROVEN end-to-end through the daemon+browser** (happy DONE+commit AND red RETRY), branch `autodev/s38-agent-ci-observability`
+> Executed the s38 plan (`docs/superpowers/plans/2026-07-11-agent-ci-observability.md`) subagent-driven (Sonnet workers +
+> spec/quality review per module + mandatory codex GPT-5.5 gate). Makes the off-by-default `gate.agentCi` step **cross-platform
+> + observable**: streaming refactor of `agent-ci.ts` (buffered→line-by-line typed `AgentCiEvent`), **WSL-proxy invocation on
+> Windows** (`detectAgentCiCapability`→native/wsl/unavailable; `winToWslPath`), persist `agent-ci-events.ndjson`+`agent-ci-status.json`
+> + an in-memory `CiEventBus` + SSE (`GET /ci/:taskId/stream`, history-replay→live) + `GET /ci/capability`, a **CI block in
+> SessionRail** (enabled-gated) + a **live `CiRunView` step-tree screen** + a **Settings capability line**, and an honest
+> `AgentCiUnavailableError("needs-wsl-on-windows")` escalation reason. Verdict/decision semantics UNCHANGED from v1.
+> **Gate: 981 tests/3 skip, typecheck+build(root+ui) green; codex GPT-5.5 ran 4 passes — backend R1 found 1 Critical (timeout
+> passed after a terminal event) + 2 High (WSL path never mapped — `winToWslPath` was dead code! + unmappable≠unavailable) + 2
+> Medium (SSE replay-disconnect leak; unbounded ndjson) → fixed; R2 found 1 Medium (cap off-by-marker) → fixed; the two
+> live-prove git-fixes → CLEAN.** **LIVE-PROVEN through the REAL daemon + Chrome** on `agentci-live4` (WSL+Docker): a real task
+> ran opus-decompose → sonnet-worker → gate(check + **agent-ci full CI in WSL, 6/6 steps passed**) → codex-critic clean → COMMIT
+> → merge → **DONE with a real commit `565b93c` on autodev/main**; the CI screen streamed the green step-tree live ("agent_ci_green
+> ✓ → gate COMMIT unaffected"); Settings showed "agent-ci ● VIA WSL". Red path proven too (`agentci-red`, failing workflow): CI
+> screen red tree with `failing-check` red + "agent_ci_green ✗ → gate RETRY (failed: failing-check)" + CI block "failed (step …)".
+> **The live-prove earned its keep AGAIN** — it found TWO Windows↔WSL git-interop blockers unit tests could never see (agent-ci
+> couldn't resolve HEAD in a Windows-created worktree; agent-ci corrupts the shared `.git/config`), both fixed → **GOTCHAS 57→58**
+> (`[gate/agent-ci-worktree-wsl-git-interop]`). **NEXT: operator reviews → codex `/code-review` full-branch (optional) → one PR →
+> merge.** honest-unavailable path is unit-proven + same machinery (this box has WSL, so not driven live).
+>
 > ## ✅ s37 — **agent-ci gate hardening SHIPPED** (optional local-CI-replay gate step), codex-CLEAN + LIVE-PROVEN end-to-end → **PR #69**
 > Implemented the s33 spec (`docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md`) subagent-driven (Sonnet
 > workers + mandatory codex GPT-5.5 gate). An **optional, off-by-default, config-gated ADDITIONAL** machine-gate step replays

@@ -8,7 +8,7 @@
 // so it is deliberately NOT unit-tested; every module it wires already has its
 // own unit tests against injected fakes (same status as src/index.ts).
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
@@ -39,7 +39,11 @@ import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
 import { ClaudeOrchestratorChatAdapter } from "../orchestrator/claude-orchestrator-chat-adapter.js";
 import type { OrchestratorChatAdapter } from "../orchestrator/chat-adapter.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "../gate/gate.js";
-import { runAgentCiWorkflows } from "../gate/agent-ci.js";
+import { runAgentCiWorkflows, spawnAgentCiStream, detectAgentCiCapability, worktreeGitDirWsl } from "../gate/agent-ci.js";
+import type { AgentCiEvent } from "../gate/agent-ci-events.js";
+import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
+import { CiEventBus } from "../api/ci-events.js";
+import { foldCiStatus, initialCiStatus } from "../gate/ci-status.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
 import {
   parseGuardsTable,
@@ -98,6 +102,15 @@ export interface ProjectRoot {
    *  parsed `cfg` always carries a defaulted planner, so the config projection
    *  (R1) needs this raw-presence signal to expose planner only when configured. */
   plannerConfigured: boolean;
+  /** Live/replay surface for streamed agent-ci events (Task 7 wires this over HTTP/SSE).
+   *  Built LAZILY, same rationale as `chat`. */
+  ci: {
+    bus: CiEventBus;
+    readEvents: (taskId: string) => Promise<string>;
+  };
+  /** Probe agent-ci's runtime capability (native/wsl/unavailable) for the UI, without
+   *  actually running a workflow. */
+  onCiCapability: () => Promise<AgentCiCapability>;
 }
 
 export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
@@ -207,7 +220,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
         return { exitCode: r.exitCode };
       },
       runAgentCi: agentCi.enabled
-        ? async () => {
+        ? async (taskId: string) => {
             if (agentCi.workflows.length === 0) {
               // Enabled but nothing to run: fail OPEN with a loud warning
               // (mirrors policy.heterogeneity's misconfig convention). Never
@@ -215,12 +228,86 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               log("WARN", "gate.agentCi.enabled but workflows allowlist is empty -- skipping agent-ci this round");
               return { green: true, reasons: [] };
             }
-            return runAgentCiWorkflows({
-              cwd: wt.path,
-              workflows: agentCi.workflows,
-              timeoutMs: agentCi.timeoutMs,
-              runner: runNative,
-            });
+            const MAX_CI_NDJSON_BYTES = 2_000_000; // ~2MB persisted history cap (strict incl. the marker)
+            const CI_TRUNCATION_MARKER = JSON.stringify({ kind: "other", note: "event log truncated (size cap)" }) + "\n";
+            let ndjson = "";
+            let ndjsonCapped = false;
+            let status = initialCiStatus();
+            const onEvent = (workflow: string, event: AgentCiEvent): void => {
+              // Persist (best-effort; a persist failure must NEVER fail a real CI verdict).
+              // Cap the persisted ndjson so a verbose/stuck workflow can't grow it (and its
+              // rewrite cost) unbounded; the live bus publish + status.json summary below
+              // are unaffected by the cap.
+              if (!ndjsonCapped) {
+                const line = JSON.stringify(event) + "\n";
+                // Reserve the marker's length so the final file is STRICTLY <= MAX_CI_NDJSON_BYTES
+                // (the marker is always appended within the reserved budget on the tripping event).
+                if (ndjson.length + line.length > MAX_CI_NDJSON_BYTES - CI_TRUNCATION_MARKER.length) {
+                  ndjsonCapped = true;
+                  ndjson += CI_TRUNCATION_MARKER;
+                  log(
+                    "WARN",
+                    `agent-ci event log for task ${taskId} exceeded ${MAX_CI_NDJSON_BYTES} bytes -- truncating persisted history`,
+                  );
+                } else {
+                  ndjson += line;
+                }
+                void repo.writeRuntimeFile(taskId, "agent-ci-events.ndjson", ndjson).catch(() => {});
+              }
+              status = foldCiStatus(status, workflow, event);
+              void repo.writeRuntimeFile(taskId, "agent-ci-status.json", JSON.stringify(status, null, 2)).catch(() => {});
+              // Publish to the live bus (best-effort).
+              try {
+                getCiBus().publish(taskId, event);
+              } catch {
+                /* ignore */
+              }
+            };
+            // Derive the WSL-form gitdir so WSL git can resolve HEAD in a Windows-created
+            // worktree (its `.git` pointer is a Windows path). null/native -> no exports.
+            let gitDirWsl: string | undefined;
+            try {
+              const dotGit = join(wt.path, ".git");
+              if (statSync(dotGit).isFile()) {
+                gitDirWsl = worktreeGitDirWsl(readFileSync(dotGit, "utf8")) ?? undefined;
+              }
+            } catch {
+              /* best-effort: no gitdir derivation -> agent-ci runs without the exports */
+            }
+            // agent-ci MUTATES the repo's SHARED git config (flips core.bare=true, overwrites
+            // user.*) via the GIT_DIR it's pointed at -- which, for a linked worktree, is the
+            // MAIN repo's `.git/config`. That leaves the main tree "bare" and breaks the
+            // conductor's post-gate merge (`fatal: this operation must be run in a work tree`).
+            // Snapshot the config and restore it after the run -- the conductor is single-threaded
+            // per project, so nothing else touches it meanwhile. Applies to native + wsl alike.
+            const gitConfigPath = join(repoRoot, ".git", "config");
+            let savedGitConfig: string | null = null;
+            try {
+              savedGitConfig = readFileSync(gitConfigPath, "utf8");
+            } catch {
+              /* no readable config -> nothing to protect */
+            }
+            try {
+              return await runAgentCiWorkflows({
+                cwd: wt.path,
+                workflows: agentCi.workflows,
+                timeoutMs: agentCi.timeoutMs,
+                detectCapability: () => detectAgentCiCapability(),
+                spawn: spawnAgentCiStream,
+                onEvent,
+                ...(gitDirWsl !== undefined ? { gitDirWsl } : {}),
+              });
+            } finally {
+              // Restore the config even if agent-ci threw (an infra/timeout run can still have
+              // flipped core.bare before dying).
+              if (savedGitConfig !== null) {
+                try {
+                  writeFileSync(gitConfigPath, savedGitConfig);
+                } catch {
+                  /* best-effort restore */
+                }
+              }
+            }
           }
         : null,
       guardStillRed: async (guard: GuardRow) => {
@@ -371,6 +458,15 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     return chatManager;
   };
 
+  // CI event bus is built LAZILY on first access, same rationale as the chat
+  // manager above: most CLI verbs never stream agent-ci, so there is no need
+  // to construct it eagerly.
+  let ciBus: CiEventBus | undefined;
+  const getCiBus = (): CiEventBus => {
+    if (!ciBus) ciBus = new CiEventBus();
+    return ciBus;
+  };
+
   return {
     repoRoot,
     cfg,
@@ -395,6 +491,14 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     log,
     stateDirAbs: join(repoRoot, cfg.stateDir),
     plannerConfigured,
+    get ci() {
+      return {
+        bus: getCiBus(),
+        readEvents: async (taskId: string): Promise<string> =>
+          (await repo.readRuntimeFile(taskId, "agent-ci-events.ndjson")) ?? "",
+      };
+    },
+    onCiCapability: () => detectAgentCiCapability(),
   };
 }
 

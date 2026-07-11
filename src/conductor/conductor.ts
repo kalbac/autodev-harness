@@ -17,6 +17,7 @@ import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import type { HarnessConfig } from "../config/schema.js";
+import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
@@ -473,19 +474,26 @@ export function createConductor(deps: ConductorDeps): Conductor {
       let gv: GateVerdict;
       try {
         gv = await runGate({ taskId: task.id, fileSet: task.file_set, successCommands: task.success_commands }, wt);
-      } catch {
+      } catch (err) {
         await repo.moveTask(task.id, "active", "escalated");
         const escType: EscalationType = task.contract_zones_touched.length > 0 ? "constitution" : "needs-guard";
+        const isUnavailable = err instanceof AgentCiUnavailableError;
+        const reason = isUnavailable
+          ? err.detail
+          : "gate threw -- broken operator config";
+        const decision = isUnavailable
+          ? "Install WSL (Windows) or run the daemon on Linux/Mac, then re-queue -- or disable gate.agentCi."
+          : "Fix the broken gate config (INVARIANTS.md / GUARDS.md / check command) before retrying.";
         await escalate(
           buildEscalation(task, {
-            reason: "gate threw -- broken operator config",
+            reason,
             type: escType,
             what: `Task ${task.id} gate invocation threw.`,
-            decision: "Fix the broken gate config (INVARIANTS.md / GUARDS.md / check command) before retrying.",
-            optionA: "Fix the config and re-queue.",
+            decision,
+            optionA: isUnavailable ? "Enable WSL / switch platform and re-queue." : "Fix the config and re-queue.",
             optionB: "Abandon the task.",
             costOfWrong: "A broken gate config cannot safely judge ANY task, not just this one.",
-            evidence: `taskId=${task.id}`,
+            evidence: `taskId=${task.id}${isUnavailable ? ` reason=${err.reason}` : ""}`,
           }),
         );
         return { claimedTaskId: task.id, committed: false, rateLimited: false };

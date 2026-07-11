@@ -88,7 +88,7 @@ describe("buildProjectConfigView", () => {
       roles: { worker: { ladder: ["sonnet"] } },
     });
     const view = buildProjectConfigView(cfg, false);
-    expect(view.gate).toEqual({ checkCommand: "npm test" });
+    expect(view.gate).toEqual({ checkCommand: "npm test", agentCi: { enabled: false } });
     expect(view.worktree).toEqual({ provision: ["vendor"] });
     expect(view.roles.worker).toEqual({ adapter: "claude", ladder: ["sonnet"] });
     expect(view.roles.critic).toEqual({ adapter: "codex", model: "gpt-5.5", effort: "high" });

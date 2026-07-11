@@ -18,6 +18,8 @@ import { createScheduler } from "../scheduler/scheduler.js";
 import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
 import type { OrchestratorChatAdapter, ChatSessionHandle } from "../orchestrator/chat-adapter.js";
 import type { ReadSnapshot } from "../orchestrator/adapter.js";
+import { CiEventBus } from "./ci-events.js";
+import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
@@ -31,6 +33,8 @@ function projectDeps(
     onScanExtensions?: () => Promise<AgentExtensions | null>;
     onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
     chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
+    ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
+    onCiCapability?: () => Promise<AgentCiCapability>;
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -48,6 +52,8 @@ function projectDeps(
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
                 ...(one.onApplyOnAccept !== undefined ? { onApplyOnAccept: one.onApplyOnAccept } : {}),
                 ...(one.chat !== undefined ? { chat: one.chat } : {}),
+                ...(one.ci !== undefined ? { ci: one.ci } : {}),
+                ...(one.onCiCapability !== undefined ? { onCiCapability: one.onCiCapability } : {}),
               },
             }
           : null,
@@ -3081,7 +3087,7 @@ describe("GET /projects/:id/config", () => {
   const sampleConfig: ProjectConfigView = {
     stateDir: ".autodev",
     allowedBranchPattern: "^autodev/",
-    gate: { checkCommand: "npm test" },
+    gate: { checkCommand: "npm test", agentCi: { enabled: false } },
     worktree: { provision: ["vendor", "node_modules"] },
     roles: {
       orchestrator: { adapter: "claude", model: "opus", effort: "high" },
@@ -3142,7 +3148,7 @@ describe("PATCH /projects/:id/config", () => {
   const sampleConfig: ProjectConfigView = {
     stateDir: ".autodev",
     allowedBranchPattern: "^autodev/",
-    gate: { checkCommand: "npm test" },
+    gate: { checkCommand: "npm test", agentCi: { enabled: false } },
     worktree: { provision: ["vendor", "node_modules"] },
     roles: {
       orchestrator: { adapter: "claude", model: "opus", effort: "high" },
@@ -3251,7 +3257,7 @@ describe("PATCH /projects/:id/config", () => {
     // index.ts's real wiring triggers via hub.evict).
     const { admin } = fakeAdmin({ updateConfig: async () => ({ ok: true }) });
     let getCalls = 0;
-    const fixedConfig: ProjectConfigView = { ...sampleConfig, gate: { checkCommand: "fixed" } };
+    const fixedConfig: ProjectConfigView = { ...sampleConfig, gate: { checkCommand: "fixed", agentCi: { enabled: false } } };
     handle = createApiServer({
       projects: {
         list: async () => [{ id: "p1", name: "p1", path: stateDir, status: "error" }],
@@ -3282,5 +3288,63 @@ describe("PATCH /projects/:id/config", () => {
     const body = (await res.json()) as ProjectConfigView;
     expect(body).toEqual(fixedConfig);
     expect(getCalls).toBe(2);
+  });
+});
+
+describe("createApiServer / CI observability routes", () => {
+  it("GET /projects/:id/ci/capability 404s when the view has no onCiCapability (default projectDeps helper doesn't set it)", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/ci/capability")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /projects/:id/ci/capability returns the capability JSON when the view provides onCiCapability", async () => {
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onCiCapability: async () => ({ mode: "native", detail: "native here" }),
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/ci/capability")}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ mode: "native", detail: "native here" });
+  });
+
+  it("GET /projects/:id/ci/:taskId/stream 404s when the view has no ci capability", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/ci/t1/stream")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /projects/:id/ci/:taskId/stream replays persisted history as SSE frames", async () => {
+    const bus = new CiEventBus();
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        ci: {
+          bus,
+          readEvents: async () => '{"kind":"run-start"}\n{"kind":"run-finish","status":"passed"}\n',
+        },
+        onCiCapability: async () => ({ mode: "native", detail: "x" }),
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/ci/t1/stream")}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/text\/event-stream/);
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    const text = new TextDecoder().decode(value);
+    expect(text).toContain('data: {"kind":"run-start"}');
+    await reader.cancel();
   });
 });
