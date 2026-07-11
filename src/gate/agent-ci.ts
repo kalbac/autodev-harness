@@ -4,6 +4,7 @@ import {
   detectAgentCiCapability,
   spawnAgentCiStream,
   winToWslPath,
+  worktreeGitDirWsl,
   type AgentCiCapability,
   type AgentCiSpawner,
 } from "./agent-ci-exec.js";
@@ -22,6 +23,9 @@ export interface RunAgentCiInput {
   spawn: AgentCiSpawner;
   /** Called for every STRUCTURED event (kind !== "other"). The caller persists + publishes. */
   onEvent: (workflow: string, event: AgentCiEvent) => void;
+  /** WSL-form gitdir of the worktree (root.ts derives it from the worktree `.git` file).
+   *  Only used in wsl mode; lets WSL git resolve HEAD in a Windows-created worktree. */
+  gitDirWsl?: string;
 }
 
 export interface AgentCiResult {
@@ -71,7 +75,11 @@ export async function runAgentCiWorkflows(input: RunAgentCiInput): Promise<Agent
 
   for (const wf of input.workflows) {
     const events: AgentCiEvent[] = [];
-    const { command, args } = buildAgentCiCommand(capability.mode, { cwd: commandCwd, workflow: wf });
+    const { command, args } = buildAgentCiCommand(capability.mode, {
+      cwd: commandCwd,
+      workflow: wf,
+      ...(input.gitDirWsl !== undefined ? { gitDirWsl: input.gitDirWsl } : {}),
+    });
     const { exitCode, timedOut } = await input.spawn({
       command,
       args,
@@ -110,5 +118,5 @@ export async function runAgentCiWorkflows(input: RunAgentCiInput): Promise<Agent
 }
 
 // Re-export the real defaults so root.ts wires them without importing exec directly.
-export { spawnAgentCiStream, detectAgentCiCapability };
+export { spawnAgentCiStream, detectAgentCiCapability, worktreeGitDirWsl };
 export type { AgentCiEvent } from "./agent-ci-events.js";

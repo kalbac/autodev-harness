@@ -8,7 +8,7 @@
 // so it is deliberately NOT unit-tested; every module it wires already has its
 // own unit tests against injected fakes (same status as src/index.ts).
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
@@ -39,7 +39,7 @@ import { ChatSessionManager } from "../orchestrator/chat-session-manager.js";
 import { ClaudeOrchestratorChatAdapter } from "../orchestrator/claude-orchestrator-chat-adapter.js";
 import type { OrchestratorChatAdapter } from "../orchestrator/chat-adapter.js";
 import { runGate as runGateCore, type GateDeps, type GateInput, type GateVerdict } from "../gate/gate.js";
-import { runAgentCiWorkflows, spawnAgentCiStream, detectAgentCiCapability } from "../gate/agent-ci.js";
+import { runAgentCiWorkflows, spawnAgentCiStream, detectAgentCiCapability, worktreeGitDirWsl } from "../gate/agent-ci.js";
 import type { AgentCiEvent } from "../gate/agent-ci-events.js";
 import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 import { CiEventBus } from "../api/ci-events.js";
@@ -263,6 +263,17 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
                 /* ignore */
               }
             };
+            // Derive the WSL-form gitdir so WSL git can resolve HEAD in a Windows-created
+            // worktree (its `.git` pointer is a Windows path). null/native -> no exports.
+            let gitDirWsl: string | undefined;
+            try {
+              const dotGit = join(wt.path, ".git");
+              if (statSync(dotGit).isFile()) {
+                gitDirWsl = worktreeGitDirWsl(readFileSync(dotGit, "utf8")) ?? undefined;
+              }
+            } catch {
+              /* best-effort: no gitdir derivation -> agent-ci runs without the exports */
+            }
             return runAgentCiWorkflows({
               cwd: wt.path,
               workflows: agentCi.workflows,
@@ -270,6 +281,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
               detectCapability: () => detectAgentCiCapability(),
               spawn: spawnAgentCiStream,
               onEvent,
+              ...(gitDirWsl !== undefined ? { gitDirWsl } : {}),
             });
           }
         : null,

@@ -118,4 +118,20 @@ describe("runAgentCiWorkflows (streaming)", () => {
     }))).rejects.toBeInstanceOf(AgentCiUnavailableError);
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it("wsl mode forwards gitDirWsl into the spawned command (GIT_DIR export)", async () => {
+    let capturedArgs: string[] = [];
+    const capturingSpawner: AgentCiSpawner = async ({ args, onLine }) => {
+      capturedArgs = args;
+      onLine('{"event":"run.finish","status":"passed"}');
+      return { exitCode: 0, timedOut: false };
+    };
+    await runAgentCiWorkflows(baseInput({
+      cwd: "D:\\a\\wt",
+      gitDirWsl: "/mnt/d/a/.git/worktrees/wt",
+      detectCapability: async () => ({ mode: "wsl", detail: "wsl" }),
+      spawn: capturingSpawner,
+    }));
+    expect(capturedArgs.join(" ")).toContain("export GIT_DIR='/mnt/d/a/.git/worktrees/wt'");
+  });
 });

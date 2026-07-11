@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   winToWslPath,
+  worktreeGitDirWsl,
   buildAgentCiCommand,
   detectAgentCiCapability,
   spawnAgentCiStream,
@@ -32,6 +33,44 @@ describe("buildAgentCiCommand", () => {
     expect(args[1]).toBe("bash");
     expect(args[2]).toBe("-lc");
     expect(args[3]).toBe("cd '/mnt/d/a' && npx @redwoodjs/agent-ci run --workflow 'ci.yml' --json");
+  });
+});
+
+describe("worktreeGitDirWsl", () => {
+  it("derives the /mnt gitdir from a Windows worktree .git file", () => {
+    expect(worktreeGitDirWsl("gitdir: D:/Projects/app/.git/worktrees/task1"))
+      .toBe("/mnt/d/Projects/app/.git/worktrees/task1");
+  });
+  it("handles backslash gitdir paths", () => {
+    expect(worktreeGitDirWsl("gitdir: D:\\Projects\\app\\.git\\worktrees\\t"))
+      .toBe("/mnt/d/Projects/app/.git/worktrees/t");
+  });
+  it("returns null for a POSIX gitdir (Linux/Mac -- native git resolves it)", () => {
+    expect(worktreeGitDirWsl("gitdir: /home/u/app/.git/worktrees/t")).toBeNull();
+  });
+  it("returns null when there is no gitdir pointer / null content", () => {
+    expect(worktreeGitDirWsl("ref: refs/heads/main")).toBeNull();
+    expect(worktreeGitDirWsl(null)).toBeNull();
+  });
+});
+
+describe("buildAgentCiCommand gitDirWsl", () => {
+  it("wsl: prepends GIT_DIR + GIT_WORK_TREE exports when gitDirWsl is given", () => {
+    const { args } = buildAgentCiCommand("wsl", { cwd: "/mnt/d/a/wt", workflow: "ci.yml", gitDirWsl: "/mnt/d/a/.git/worktrees/wt" });
+    expect(args[3]).toContain("export GIT_DIR='/mnt/d/a/.git/worktrees/wt'");
+    expect(args[3]).toContain("export GIT_WORK_TREE='/mnt/d/a/wt'");
+    expect(args[3]).toContain("cd '/mnt/d/a/wt'");
+    expect(args[3]).toContain("npx @redwoodjs/agent-ci run --workflow 'ci.yml' --json");
+  });
+  it("wsl: no exports when gitDirWsl is omitted (unchanged shape)", () => {
+    const { args } = buildAgentCiCommand("wsl", { cwd: "/mnt/d/a", workflow: "ci.yml" });
+    expect(args[3]).toBe("cd '/mnt/d/a' && npx @redwoodjs/agent-ci run --workflow 'ci.yml' --json");
+    expect(args[3]).not.toContain("GIT_DIR");
+  });
+  it("native: ignores gitDirWsl", () => {
+    const { command, args } = buildAgentCiCommand("native", { cwd: "/repo", workflow: "ci.yml", gitDirWsl: "/mnt/d/x" });
+    expect(command).toBe("npx");
+    expect(args.join(" ")).not.toContain("GIT_DIR");
   });
 });
 

@@ -33,6 +33,17 @@ export function winToWslPath(winPath: string): string | null {
   return `/mnt/${drive}/${rest}`;
 }
 
+/** From the content of a git worktree's `.git` FILE (`gitdir: <path>`), derive the WSL
+ *  form of that gitdir (`/mnt/<drive>/...`). Returns null when the content is not a
+ *  worktree gitdir pointer (a real `.git` dir has no such file) or the path can't be
+ *  mapped to WSL (already-POSIX on Linux/Mac, or UNC). Only meaningful on Windows+WSL. */
+export function worktreeGitDirWsl(dotGitFileContent: string | null): string | null {
+  if (dotGitFileContent === null) return null;
+  const m = /^gitdir:\s*(.+)$/m.exec(dotGitFileContent);
+  if (!m) return null;
+  return winToWslPath(m[1]!.trim());
+}
+
 function shSingleQuote(s: string): string {
   // POSIX single-quote escaping: ' -> '\''
   return s.replace(/'/g, "'\\''");
@@ -40,12 +51,17 @@ function shSingleQuote(s: string): string {
 
 export function buildAgentCiCommand(
   mode: "native" | "wsl",
-  opts: { cwd: string; workflow: string },
+  opts: { cwd: string; workflow: string; gitDirWsl?: string },
 ): { command: string; args: string[] } {
   if (mode === "native") {
     return { command: "npx", args: ["@redwoodjs/agent-ci", "run", "--workflow", opts.workflow, "--json"] };
   }
-  const script = `cd '${shSingleQuote(opts.cwd)}' && npx @redwoodjs/agent-ci run --workflow '${shSingleQuote(opts.workflow)}' --json`;
+  // WSL: a Windows-created worktree's `.git` gitdir pointer is a Windows path WSL git can't
+  // follow -- so point git at the WSL-form gitdir + work tree when we could derive them.
+  const gitEnv = opts.gitDirWsl
+    ? `export GIT_DIR='${shSingleQuote(opts.gitDirWsl)}' && export GIT_WORK_TREE='${shSingleQuote(opts.cwd)}' && `
+    : "";
+  const script = `cd '${shSingleQuote(opts.cwd)}' && ${gitEnv}npx @redwoodjs/agent-ci run --workflow '${shSingleQuote(opts.workflow)}' --json`;
   return { command: "wsl.exe", args: ["-e", "bash", "-lc", script] };
 }
 
