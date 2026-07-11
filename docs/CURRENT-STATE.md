@@ -19,8 +19,13 @@
 > **The live-prove earned its keep AGAIN** — it found TWO Windows↔WSL git-interop blockers unit tests could never see (agent-ci
 > couldn't resolve HEAD in a Windows-created worktree; agent-ci corrupts the shared `.git/config`), both fixed → **GOTCHAS 57→58**
 > (`[gate/agent-ci-worktree-wsl-git-interop]`). **PR #71 MERGED to main (`0e68aeb`), CI green 4/4 (ubuntu+windows × node 20/22).**
-> honest-unavailable path is unit-proven + same machinery (this box has WSL, so not driven live) — a candidate first live-check next
-> session on a no-WSL simulation. No open blockers.
+> **Operator re-ran the full pipeline himself in the browser (agentci-demo, slowed workflow) → confirmed working end-to-end.**
+> 3 operator-found UX polish bugs parked in FUTURE-BACKLOG (raw-json leak + plan-chip overflow in the pre-launch chat; near-invisible
+> "open CI run →" link in the SessionRail CI block). All s38 test projects + artifacts cleaned; registry back to just
+> `woodev-shipping-plugin-test`. **NEXT (s39) is NOT a build — it's a PHILOSOPHICAL/DIRECTION talk (operator's call, model = Fable 5):
+> the harness feels "not alive" (dead-air on launch, a transactional modal, a non-narrating inspector) — the original autodev-loop
+> felt alive because a LIVE narrating orchestrator was in the loop. Explore putting that live orchestrator presence back in without
+> losing the 4 wins (auto-orchestrate / universal / multi-OS / visibility). See `next-session-promt.md`.** No open code blockers.
 >
 > ## ✅ s37 — **agent-ci gate hardening SHIPPED** (optional local-CI-replay gate step), codex-CLEAN + LIVE-PROVEN end-to-end → **PR #69**
 > Implemented the s33 spec (`docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md`) subagent-driven (Sonnet

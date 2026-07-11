@@ -35,6 +35,16 @@ deferred until then (see below). Near-term product-UX backlog, roughly in build 
   + the plan chip, never the fenced JSON tool-output. Fix in `ui/src/views/ChatModal.tsx` (strip/omit
   fenced `json` blocks from the rendered assistant message, or have the backend not echo them into the
   chat stream). Polish, low risk. Screenshot in the s38 session.
+- **Pre-launch chat — proposed-plan chip overflows the viewport** (operator-found, s38 2026-07-12).
+  In the same "Discuss before launching" ModalChat, the "PROPOSED PLAN — PREVIEW ONLY" chip
+  (`Append end-to-end agent-ci gate validation summary line to notes.txt · edit`) runs off the right
+  edge of the modal instead of wrapping/truncating. Fix in `ui/src/views/ChatModal.tsx`: the plan chip
+  needs `max-w-full` + wrap or truncate-with-title. Polish, low risk.
+- **CI block "open CI run →" link is near-invisible** (operator-found, s38 2026-07-12). In the SessionRail
+  `CI` block, the `open CI run →` link uses `text-accent` which is too low-contrast against the block bg
+  (barely readable — screenshot). Fix in `ui/src/components/SessionRail.tsx`: bump the link to a legible
+  token (e.g. `text-foreground` + hover underline, or a proper link color) — mirror how other rail links
+  read. Polish, low risk.
 - **General UX polish pass** — the pilot's rough edges once the above land.
 - **i18n / l10n — Russian UI language support** (operator ask, s27 2026-07-06). Implement a real i18n
   layer (message catalogue + a language switch) so the UI can render in Russian (and stay

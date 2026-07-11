@@ -37,8 +37,21 @@ persists `core.worktree=/mnt`) → corrupts the main repo → conductor's post-g
 **`GIT_DIR` only** (never `GIT_WORK_TREE`) + **snapshot/restore `.git/config`** around the run. → gotcha
 `[gate/agent-ci-worktree-wsl-git-interop]` (GOTCHAS 57→58). Demo projects + daemon cleaned; the WSL `actions-runner` image kept.
 
-**Next.** Operator reviews; optional full-branch `/code-review`; then ONE PR → merge. honest-unavailable path is unit-proven +
-identical machinery (this box has WSL, so it wasn't driven live).
+**Merged + demoed.** Pushed → PR #71 → CI green 4/4 (ubuntu+windows × node 20/22) → **merged to main (`0e68aeb`)** per the
+standing grant (codex-clean + green CI). Then brought the daemon up and the operator **re-ran the full pipeline himself in the
+browser** (fresh `agentci-demo`, workflow slowed with `sleep` steps so the CI tree streams watchably) → **confirmed working
+end-to-end** (a second real commit landed). Found 3 UX polish bugs (parked in FUTURE-BACKLOG): the pre-launch chat leaks the raw
+```json decompose output + its plan chip overflows the viewport; the SessionRail CI block "open CI run →" link is near-invisible.
+All s38 test projects + artifacts cleaned; registry back to just `woodev-shipping-plugin-test`. honest-unavailable path is
+unit-proven + identical machinery (this box has WSL, so it wasn't driven live).
+
+**Operator reflection → s39 is a DIRECTION talk, not a build.** The engine works and the gate demonstrably catches real bugs, but
+the operator flagged the harness feels **"not alive"**: launch → 10-15s dead-air → a transactional modal he dislikes → 'Launch &
+Run' → more silence → a Session Inspector that shows state but doesn't NARRATE. The original autodev-loop (`D:\Projects\woodev_framework`)
+felt alive because a LIVE narrating orchestrator (Claude Code) was in the loop, watching + reporting. He wrapped it into the harness
+for 4 real wins (auto-orchestrate / universal / multi-OS / visibility) — but in gaining structure it lost the live-companion soul.
+**s39 opens on a philosophical/direction conversation (his call, model = Fable 5): how to put the live, streaming, narrating
+orchestrator presence back in without losing the 4 wins.** Framing + his exact words captured in `next-session-promt.md`.
 
 ---
 
