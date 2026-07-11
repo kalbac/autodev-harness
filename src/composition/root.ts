@@ -8,7 +8,7 @@
 // so it is deliberately NOT unit-tested; every module it wires already has its
 // own unit tests against injected fakes (same status as src/index.ts).
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
@@ -274,15 +274,40 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
             } catch {
               /* best-effort: no gitdir derivation -> agent-ci runs without the exports */
             }
-            return runAgentCiWorkflows({
-              cwd: wt.path,
-              workflows: agentCi.workflows,
-              timeoutMs: agentCi.timeoutMs,
-              detectCapability: () => detectAgentCiCapability(),
-              spawn: spawnAgentCiStream,
-              onEvent,
-              ...(gitDirWsl !== undefined ? { gitDirWsl } : {}),
-            });
+            // agent-ci MUTATES the repo's SHARED git config (flips core.bare=true, overwrites
+            // user.*) via the GIT_DIR it's pointed at -- which, for a linked worktree, is the
+            // MAIN repo's `.git/config`. That leaves the main tree "bare" and breaks the
+            // conductor's post-gate merge (`fatal: this operation must be run in a work tree`).
+            // Snapshot the config and restore it after the run -- the conductor is single-threaded
+            // per project, so nothing else touches it meanwhile. Applies to native + wsl alike.
+            const gitConfigPath = join(repoRoot, ".git", "config");
+            let savedGitConfig: string | null = null;
+            try {
+              savedGitConfig = readFileSync(gitConfigPath, "utf8");
+            } catch {
+              /* no readable config -> nothing to protect */
+            }
+            try {
+              return await runAgentCiWorkflows({
+                cwd: wt.path,
+                workflows: agentCi.workflows,
+                timeoutMs: agentCi.timeoutMs,
+                detectCapability: () => detectAgentCiCapability(),
+                spawn: spawnAgentCiStream,
+                onEvent,
+                ...(gitDirWsl !== undefined ? { gitDirWsl } : {}),
+              });
+            } finally {
+              // Restore the config even if agent-ci threw (an infra/timeout run can still have
+              // flipped core.bare before dying).
+              if (savedGitConfig !== null) {
+                try {
+                  writeFileSync(gitConfigPath, savedGitConfig);
+                } catch {
+                  /* best-effort restore */
+                }
+              }
+            }
           }
         : null,
       guardStillRed: async (guard: GuardRow) => {
