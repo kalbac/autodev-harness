@@ -1,6 +1,6 @@
 # CURRENT STATE — Autodev Harness
 
-> ## ✅ s38 — **agent-ci observability BUILT + codex-CLEAN + LIVE-PROVEN end-to-end through the daemon+browser** (happy DONE+commit AND red RETRY), branch `autodev/s38-agent-ci-observability`
+> ## ✅ s38 — **agent-ci observability SHIPPED + codex-CLEAN + LIVE-PROVEN end-to-end through the daemon+browser** (happy DONE+commit AND red RETRY) → **PR #71 MERGED (`0e68aeb`), CI green 4/4**
 > Executed the s38 plan (`docs/superpowers/plans/2026-07-11-agent-ci-observability.md`) subagent-driven (Sonnet workers +
 > spec/quality review per module + mandatory codex GPT-5.5 gate). Makes the off-by-default `gate.agentCi` step **cross-platform
 > + observable**: streaming refactor of `agent-ci.ts` (buffered→line-by-line typed `AgentCiEvent`), **WSL-proxy invocation on
@@ -18,8 +18,9 @@
 > screen red tree with `failing-check` red + "agent_ci_green ✗ → gate RETRY (failed: failing-check)" + CI block "failed (step …)".
 > **The live-prove earned its keep AGAIN** — it found TWO Windows↔WSL git-interop blockers unit tests could never see (agent-ci
 > couldn't resolve HEAD in a Windows-created worktree; agent-ci corrupts the shared `.git/config`), both fixed → **GOTCHAS 57→58**
-> (`[gate/agent-ci-worktree-wsl-git-interop]`). **NEXT: operator reviews → codex `/code-review` full-branch (optional) → one PR →
-> merge.** honest-unavailable path is unit-proven + same machinery (this box has WSL, so not driven live).
+> (`[gate/agent-ci-worktree-wsl-git-interop]`). **PR #71 MERGED to main (`0e68aeb`), CI green 4/4 (ubuntu+windows × node 20/22).**
+> honest-unavailable path is unit-proven + same machinery (this box has WSL, so not driven live) — a candidate first live-check next
+> session on a no-WSL simulation. No open blockers.
 >
 > ## ✅ s37 — **agent-ci gate hardening SHIPPED** (optional local-CI-replay gate step), codex-CLEAN + LIVE-PROVEN end-to-end → **PR #69**
 > Implemented the s33 spec (`docs/superpowers/specs/2026-07-08-agent-ci-gate-hardening-design.md`) subagent-driven (Sonnet
