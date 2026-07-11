@@ -27,6 +27,14 @@ deferred until then (see below). Near-term product-UX backlog, roughly in build 
   the heterogeneity policy) and the gate/worktree/branch fields. Should land relatively EARLY in the
   polish pass (it lowers the comprehension barrier for the whole settings surface), not deferred to the
   end. Copy source: distill from `docs/` (roles/adapters, heterogeneity §9, gate) into short field blurbs.
+- **Pre-launch chat leaks the raw decompose JSON** (operator-found, s38 2026-07-12). The "Discuss
+  before launching" ChatModal (s34 orchestrator chat) renders the orchestrator's RAW `` ```json ``
+  fenced decompose output (the `[{id,title,type,file_set}]` array) as literal text in the transcript,
+  right above the clean "PROPOSED PLAN — PREVIEW ONLY" chip. The raw JSON should be parsed + hidden
+  (it already IS parsed to build the plan chip) — the transcript should show only the assistant's prose
+  + the plan chip, never the fenced JSON tool-output. Fix in `ui/src/views/ChatModal.tsx` (strip/omit
+  fenced `json` blocks from the rendered assistant message, or have the backend not echo them into the
+  chat stream). Polish, low risk. Screenshot in the s38 session.
 - **General UX polish pass** — the pilot's rough edges once the above land.
 - **i18n / l10n — Russian UI language support** (operator ask, s27 2026-07-06). Implement a real i18n
   layer (message catalogue + a language switch) so the UI can render in Russian (and stay
