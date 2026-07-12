@@ -624,7 +624,15 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
       launch: (pid, intent) =>
         performLaunch({ pid, intent, onOrchestrate: httpDeps.onOrchestrate, inFlight: httpDeps.inFlight, log }),
       startNarrator,
-      mintThreadId: slugifyIntent,
+      // Thread ids become URL path segments (`/p/:id/t/:threadId`). slugifyIntent
+      // KEEPS dots (e.g. an intent naming `FAQ.md`), but a dotted last path
+      // segment makes the static server treat a reload/direct-nav as a file
+      // request -> SPA fallback 404s. Strip dots so thread URLs always resolve.
+      mintThreadId: (intent: string) =>
+        slugifyIntent(intent)
+          .replace(/\./g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-+|-+$/g, ""),
       log,
       now: () => Date.now(),
     });
