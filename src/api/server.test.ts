@@ -8,7 +8,9 @@ import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
-import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView } from "./server.js";
+import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView, type ProjectView } from "./server.js";
+import { ThreadEventBus } from "./thread-events.js";
+import type { ThreadMeta } from "../thread/thread-types.js";
 import type { RegisterResult, GitInitResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
@@ -35,6 +37,7 @@ function projectDeps(
     chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
     ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
     onCiCapability?: () => Promise<AgentCiCapability>;
+    threads?: ProjectView["threads"];
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -54,6 +57,7 @@ function projectDeps(
                 ...(one.chat !== undefined ? { chat: one.chat } : {}),
                 ...(one.ci !== undefined ? { ci: one.ci } : {}),
                 ...(one.onCiCapability !== undefined ? { onCiCapability: one.onCiCapability } : {}),
+                ...(one.threads !== undefined ? { threads: one.threads } : {}),
               },
             }
           : null,
@@ -2490,6 +2494,169 @@ describe("createApiServer / chat routes", () => {
     // project no longer resolves through the normal /chat routes.
     await handle.closeProjectChat("p1");
     expect(manager.hasOpenSession("p1")).toBe(false);
+  });
+});
+
+describe("createApiServer / thread routes", () => {
+  const meta = (over: Partial<ThreadMeta> = {}): ThreadMeta => ({
+    id: "th-1",
+    title: "t",
+    created_at: 1,
+    status: "chatting",
+    ...over,
+  });
+
+  /** A minimal fake `threads` capability built entirely from vi.fn spies. The
+   *  `bus` is a real ThreadEventBus (harmless, only touched by the SSE route). */
+  function makeFakeThreads(opts: {
+    list?: ThreadMeta[];
+    read?: (tid: string) => { meta: ThreadMeta; entries: unknown[] } | null;
+    startThreadId?: string;
+    confirmResult?: { accepted: boolean; reason?: string };
+    cancelResult?: boolean;
+  } = {}): {
+    cap: NonNullable<ProjectView["threads"]>;
+    spies: {
+      startThread: ReturnType<typeof vi.fn>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      confirm: ReturnType<typeof vi.fn>;
+      cancel: ReturnType<typeof vi.fn>;
+      narratorMessage: ReturnType<typeof vi.fn>;
+      list: ReturnType<typeof vi.fn>;
+      read: ReturnType<typeof vi.fn>;
+    };
+  } {
+    const startThread = vi.fn(async (_pid: string, _intent: string) => ({ threadId: opts.startThreadId ?? "th-1" }));
+    const sendMessage = vi.fn(async (_tid: string, _text: string) => {});
+    const confirm = vi.fn(async (_tid: string) => opts.confirmResult ?? { accepted: true });
+    const cancel = vi.fn(async (_tid: string) => opts.cancelResult ?? true);
+    const narratorMessage = vi.fn(async (_tid: string, _text: string) => true);
+    const list = vi.fn(async () => opts.list ?? []);
+    const read = vi.fn(async (tid: string) => (opts.read ? opts.read(tid) : null));
+    const readNdjson = vi.fn(async (_tid: string) => "");
+    const cap = {
+      store: { list, read, readNdjson },
+      bus: new ThreadEventBus(),
+      chat: { startThread, sendMessage, confirm, cancel },
+      narratorMessage,
+    } as unknown as NonNullable<ProjectView["threads"]>;
+    return { cap, spies: { startThread, sendMessage, confirm, cancel, narratorMessage, list, read } };
+  }
+
+  it("POST /threads creates a thread (201) and GET /threads lists it (200)", async () => {
+    const { cap, spies } = makeFakeThreads({ list: [meta({ id: "th-1" })], startThreadId: "th-1" });
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const createRes = await fetch(`http://127.0.0.1:${port}${p1("/threads")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "build X" }),
+    });
+    expect(createRes.status).toBe(201);
+    expect(await createRes.json()).toEqual({ threadId: "th-1" });
+    expect(spies.startThread).toHaveBeenCalledWith("p1", "build X");
+
+    const listRes = await fetch(`http://127.0.0.1:${port}${p1("/threads")}`);
+    expect(listRes.status).toBe(200);
+    const listJson = (await listRes.json()) as { threads: ThreadMeta[] };
+    expect(listJson.threads.map((t) => t.id)).toEqual(["th-1"]);
+  });
+
+  it("GET /threads/:tid returns meta+entries (200) and 404s on an unknown id", async () => {
+    const record = { meta: meta({ id: "th-1" }), entries: [{ ts: 1, type: "operator_msg", text: "hi" }] };
+    const { cap } = makeFakeThreads({ read: (tid) => (tid === "th-1" ? record : null) });
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const okRes = await fetch(`http://127.0.0.1:${port}${p1("/threads/th-1")}`);
+    expect(okRes.status).toBe(200);
+    expect(await okRes.json()).toEqual({ meta: record.meta, entries: record.entries });
+
+    const missRes = await fetch(`http://127.0.0.1:${port}${p1("/threads/nope")}`);
+    expect(missRes.status).toBe(404);
+  });
+
+  it("GET /threads/:tid rejects an unsafe id (400) before touching the store", async () => {
+    const { cap, spies } = makeFakeThreads();
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/threads/..evil")}`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid id" });
+    expect(spies.read).not.toHaveBeenCalled();
+  });
+
+  it("POST /threads/:tid/message routes a pre-launch (chatting) turn to chat.sendMessage", async () => {
+    const { cap, spies } = makeFakeThreads({ read: () => ({ meta: meta({ status: "chatting" }), entries: [] }) });
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/threads/th-1/message")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "make it faster" }),
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(spies.sendMessage).toHaveBeenCalledWith("th-1", "make it faster");
+    expect(spies.narratorMessage).not.toHaveBeenCalled();
+  });
+
+  it("POST /threads/:tid/message routes a mid-run (running) turn to narratorMessage", async () => {
+    const { cap, spies } = makeFakeThreads({
+      read: () => ({ meta: meta({ status: "running", run_id: "r1" }), entries: [] }),
+    });
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/threads/th-1/message")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "status?" }),
+    });
+    expect(res.status).toBe(202);
+    expect(spies.narratorMessage).toHaveBeenCalledWith("th-1", "status?");
+    expect(spies.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("POST /threads/:tid/confirm maps accept->202, in_flight->409, no_session->404", async () => {
+    for (const [result, expected] of [
+      [{ accepted: true }, 202],
+      [{ accepted: false, reason: "in_flight" }, 409],
+      [{ accepted: false, reason: "no_session" }, 404],
+    ] as const) {
+      const { cap } = makeFakeThreads({ confirmResult: result });
+      handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+      const port = await handle.listen(0);
+
+      const res = await fetch(`http://127.0.0.1:${port}${p1("/threads/th-1/confirm")}`, { method: "POST" });
+      expect(res.status).toBe(expected);
+      if (expected === 202) expect(await res.json()).toEqual({ accepted: true });
+
+      await handle.close();
+      handle = null;
+    }
+  });
+
+  it("DELETE /threads/:tid cancels the thread (200)", async () => {
+    const { cap, spies } = makeFakeThreads({ cancelResult: true });
+    handle = createApiServer(projectDeps({ repo, stateDir, threads: cap }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/threads/th-1")}`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cancelled: true });
+    expect(spies.cancel).toHaveBeenCalledWith("th-1");
+  });
+
+  it("GET /threads 404s when the threads capability is not configured", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/threads")}`);
+    expect(res.status).toBe(404);
   });
 });
 
