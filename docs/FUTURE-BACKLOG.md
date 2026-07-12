@@ -34,12 +34,14 @@ deferred until then (see below). Near-term product-UX backlog, roughly in build 
   (it already IS parsed to build the plan chip) — the transcript should show only the assistant's prose
   + the plan chip, never the fenced JSON tool-output. Fix in `ui/src/views/ChatModal.tsx` (strip/omit
   fenced `json` blocks from the rendered assistant message, or have the backend not echo them into the
-  chat stream). Polish, low risk. Screenshot in the s38 session.
+  chat stream). Polish, low risk. Screenshot in the s38 session. **ABSORBED by the s40
+  live-orchestrator spec (s39): the modal dies and fenced JSON is stripped server-side (spec §4.2).**
 - **Pre-launch chat — proposed-plan chip overflows the viewport** (operator-found, s38 2026-07-12).
   In the same "Discuss before launching" ModalChat, the "PROPOSED PLAN — PREVIEW ONLY" chip
   (`Append end-to-end agent-ci gate validation summary line to notes.txt · edit`) runs off the right
   edge of the modal instead of wrapping/truncating. Fix in `ui/src/views/ChatModal.tsx`: the plan chip
-  needs `max-w-full` + wrap or truncate-with-title. Polish, low risk.
+  needs `max-w-full` + wrap or truncate-with-title. Polish, low risk. **ABSORBED by the s40
+  live-orchestrator spec (s39): the chip ports to the thread view with the wrap fix (spec §4.6).**
 - **CI block "open CI run →" link is near-invisible** (operator-found, s38 2026-07-12). In the SessionRail
   `CI` block, the `open CI run →` link uses `text-accent` which is too low-contrast against the block bg
   (barely readable — screenshot). Fix in `ui/src/components/SessionRail.tsx`: bump the link to a legible
@@ -103,7 +105,11 @@ heavier package. Polish the product surface first; wrap it once it's real.
   prepended to the worker prompt (composes with, does not replace, the role matrix). Low priority — our
   differentiator is the gate, not persona breadth; this is a cheap quality lever, not a blocker.
 - **Orchestrator CHAT — a real conversation, not one-shot decompose (operator vision, discussed since
-  early design, resurfaced s32 2026-07-08 from the dedup live-prove's UX gap).** Today `handleIntent`
+  early design, resurfaced s32 2026-07-08 from the dedup live-prove's UX gap). ✅ SUPERSEDED (s39
+  2026-07-12): the deferred design conversation happened — doctrine accepted in `adr/004`, buildable
+  design in `superpowers/specs/2026-07-12-live-orchestrator-attended-presence-design.md` (s40 builds
+  it). The adr/003 tension flagged below is resolved R1-preservingly: launch consent stays explicit
+  (button or the operator's own words), and the gate stays out of the LLM's reach.** Today `handleIntent`
   (`src/orchestrator/orchestrator.ts`) is explicitly a **staged, TERMINATING pipeline** — one call per
   intent (snapshot → decompose → validate → enqueue → trigger → return), NOT an agentic loop; the doc
   comment says so verbatim. The operator's vision: launching a run should drop the operator into an
