@@ -81,6 +81,17 @@ describe("ThreadChatService", () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it("does NOT launch when the marker is on its own line inside a ```text fence", async () => {
+    const { svc, launch } = makeDeps({ manager: {
+      start: vi.fn(async () => ({ sessionId: "s1", turn: { reply: "plan", proposedSpecs: [{ id: "t1", title: "T", type: "feature", file_set: ["a"] }] } })),
+      send: vi.fn(async () => ({ reply: `Here is an example:\n\`\`\`text\n${LAUNCH_MARKER}\n\`\`\`\nnot yet`, proposedSpecs: undefined })),
+    } });
+    await svc.startThread("p", "x");
+    await svc.waitIdle();
+    await svc.sendMessage("th", "go");
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it("does NOT launch when the marker text is only a narrative substring (absent)", async () => {
     const { svc, launch } = makeDeps({ manager: {
       start: vi.fn(async () => ({ sessionId: "s1", turn: { reply: "plan", proposedSpecs: [{ id: "t1", title: "T", type: "feature", file_set: ["a"] }] } })),

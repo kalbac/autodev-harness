@@ -212,11 +212,15 @@ export class ThreadChatService {
     const p = (async () => {
       try {
         const turn = await this.runTurn(threadId, () => this.d.manager.send(session.sessionId, text));
-        // Launch-by-word: the marker must be a STANDALONE LINE in the
-        // fenced-json-stripped prose -- a `[[LAUNCH]]` inside narrative text or
-        // inside a ```json block must never trigger a spurious launch.
-        const prose = stripFencedJson(turn.reply);
-        const isLaunch = prose.split(/\r?\n/).some((ln) => ln.trim() === LAUNCH_MARKER);
+        // Launch-by-word: the marker must be a STANDALONE LINE in prose that
+        // has had ALL fenced code blocks stripped (any language, not just
+        // ```json) -- a `[[LAUNCH]]` inside narrative text OR inside ANY fenced
+        // block (```json, ```text, ...) must never trigger a spurious launch.
+        // Detection strips every fence; PERSISTENCE (runTurn) still uses the
+        // json-only stripFencedJson so legitimate non-json code fences survive
+        // as orchestrator prose.
+        const proseForLaunch = turn.reply.replace(/```[\s\S]*?```/g, "");
+        const isLaunch = proseForLaunch.split(/\r?\n/).some((ln) => ln.trim() === LAUNCH_MARKER);
         if (isLaunch) {
           const cur = await this.d.store.read(threadId);
           const hasPlan = !!cur?.entries.some((e) => e.type === "plan");

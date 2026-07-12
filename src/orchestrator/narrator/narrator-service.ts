@@ -31,6 +31,10 @@ export interface NarratorDeps {
   now: () => number;
   tickMs?: number; // default 1500
   windowMs?: number; // default 1200
+  /** How long to keep polling for the launched run to appear before failing
+   *  VISIBLY (error cell + meta.status=error + stop) instead of wedging the
+   *  thread in "running" forever. Default 60_000ms. */
+  discoveryTimeoutMs?: number;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
   /** Called once when the service stops (after teardown) so composition can
@@ -68,10 +72,30 @@ export class NarratorService {
         // Bind by intent AND timestamp — NO arbitrary fallback. Matching an
         // older, unrelated run would narrate the wrong session. The 2000ms skew
         // tolerates clock/rounding between the launch clock and the run's stamp.
+        // Intent is compared NORMALIZED (trim + collapse whitespace runs): the
+        // manifest stores the operator intent verbatim, so trailing/collapsed
+        // whitespace drift between it and finalIntent must not wedge discovery.
+        const norm = (s: string): string => s.trim().replace(/\s+/g, " ");
+        const wantIntent = norm(this.deps.finalIntent);
         const match = runs
-          .filter((r) => r.intent === this.deps.finalIntent && r.created_at >= this.deps.launchedAt - 2000)
+          .filter((r) => norm(r.intent ?? "") === wantIntent && r.created_at >= this.deps.launchedAt - 2000)
           .sort((a, b) => b.created_at - a.created_at)[0];
-        if (!match) return; // wait for the run to appear next tick
+        if (!match) {
+          // Bounded discovery: a run that never appears must fail VISIBLY, not
+          // wedge the thread in "running" forever. Only fires when discovery did
+          // NOT bind this tick (runId still null). Best-effort — guarded.
+          const timeoutMs = this.deps.discoveryTimeoutMs ?? 60_000;
+          if (this.deps.now() - this.deps.launchedAt > timeoutMs) {
+            try {
+              await this.appendCell({ kind: "run", ref: {}, summary: "could not locate the launched run", status: "error" });
+              await this.deps.store.setMeta(this.deps.threadId, { status: "error" });
+            } catch (err) {
+              safeLog(this.deps.log, "WARN", `[ts/fail-closed] discovery-timeout report failed: ${safeErrorText(err)}`);
+            }
+            this.stop();
+          }
+          return; // wait for the run to appear next tick (or we just stopped)
+        }
         this.runId = match.runId;
         await this.persist({ type: "run_link", runId: this.runId });
         await this.deps.store.setMeta(this.deps.threadId, { run_id: this.runId, status: "running" });

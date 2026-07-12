@@ -91,6 +91,62 @@ describe("NarratorService", () => {
     expect(appended.some((e) => e.type === "run_link" && e.runId === "new")).toBe(true);
   });
 
+  it("fails VISIBLY (error cell + meta.error + stop) when the run never appears within the discovery timeout", async () => {
+    const appended: any[] = [];
+    const store = {
+      append: vi.fn(async (_id: string, e: any) => { appended.push(e); }),
+      setMeta: vi.fn(async () => {}),
+      read: vi.fn(async () => ({ meta: {}, entries: appended.map((e, k) => ({ ts: k, ...e })) })),
+    };
+    const read = {
+      recentRuns: vi.fn(async () => [{ runId: "old", created_at: 500, intent: "other" }]), // never matches
+      runSnapshot: vi.fn(async () => null),
+    };
+    let tick: () => Promise<void> = async () => {};
+    let nowV = 1000;
+    const svc = new NarratorService({
+      projectId: "p", threadId: "th", finalIntent: "x", launchedAt: 1000,
+      store, bus: { broadcast: vi.fn() }, ciBus: { subscribe: vi.fn(), unsubscribe: vi.fn() },
+      read, narrate: vi.fn(async () => ""), log: () => {}, now: () => (nowV += 1000),
+      tickMs: 10, windowMs: 5, discoveryTimeoutMs: 5,
+      setInterval: ((fn: any) => { tick = fn; return 1 as any; }) as any,
+      clearInterval: (() => {}) as any,
+    } as any);
+    svc.start();
+    await tick(); // now advances past launchedAt + timeout -> visible failure
+    expect(appended.some((e) => e.type === "activity" && e.kind === "run" && e.status === "error")).toBe(true);
+    expect(store.setMeta).toHaveBeenCalledWith("th", expect.objectContaining({ status: "error" }));
+    const setMetaCalls = store.setMeta.mock.calls.length;
+    const appendCount = appended.length;
+    await tick(); // stopped -> no-op, no wedge
+    expect(store.setMeta.mock.calls.length).toBe(setMetaCalls);
+    expect(appended.length).toBe(appendCount);
+  });
+
+  it("binds a run whose intent differs only by trailing whitespace (normalized match)", async () => {
+    const appended: any[] = [];
+    const store = {
+      append: vi.fn(async (_id: string, e: any) => { appended.push(e); }),
+      setMeta: vi.fn(async () => {}),
+      read: vi.fn(async () => ({ meta: {}, entries: appended.map((e, k) => ({ ts: k, ...e })) })),
+    };
+    const read = {
+      recentRuns: vi.fn(async () => [{ runId: "r", created_at: 1500, intent: "x " }]), // trailing space
+      runSnapshot: vi.fn(async () => ({ runId: "r", tasks: [{ taskId: "t1", status: "pending", title: "T" }] })),
+    };
+    let tick: () => Promise<void> = async () => {};
+    const svc = new NarratorService({
+      projectId: "p", threadId: "th", finalIntent: "x", launchedAt: 1000,
+      store, bus: { broadcast: vi.fn() }, ciBus: { subscribe: vi.fn(), unsubscribe: vi.fn() },
+      read, narrate: vi.fn(async () => ""), log: () => {}, now: () => 6000, tickMs: 10, windowMs: 5,
+      setInterval: ((fn: any) => { tick = fn; return 1 as any; }) as any,
+      clearInterval: (() => {}) as any,
+    } as any);
+    svc.start();
+    await tick();
+    expect(appended.some((e) => e.type === "run_link" && e.runId === "r")).toBe(true);
+  });
+
   it("tick never throws when the log throws and runSnapshot rejects with a hostile error", async () => {
     const hostile = { get message(): string { throw new Error("nope"); } };
     const read = {
