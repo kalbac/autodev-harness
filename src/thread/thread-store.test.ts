@@ -66,6 +66,19 @@ describe("ThreadStore", () => {
     await expect(store.create({ id: "../evil", title: "X" })).rejects.toThrow();
   });
 
+  it("rejects creating an id that already exists (restart-safe)", async () => {
+    await store.create({ id: "th-dup", title: "X" });
+    await expect(store.create({ id: "th-dup", title: "X" })).rejects.toThrow(/already exists/);
+  });
+
+  it("append does not throw even when the injected log throws (fail-closed)", async () => {
+    const throwingLog = () => { throw new Error("logger down"); };
+    const s = new ThreadStore({ threadsRoot: join(dir, "threads-fc"), log: throwingLog, now: () => ++t });
+    await s.create({ id: "th-fc", title: "X" });
+    // A schema-invalid entry drives append into its catch, which logs.
+    await expect(s.append("th-fc", { type: "bogus" } as any)).resolves.toBeUndefined();
+  });
+
   it("tolerates a corrupt ndjson line on replay (skips it)", async () => {
     await store.create({ id: "th-a", title: "X" });
     await store.append("th-a", { type: "operator_msg", text: "ok" });

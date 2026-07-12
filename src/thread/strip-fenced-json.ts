@@ -10,7 +10,11 @@ const FENCE_CLOSE = "```";
  * live-stream output and replayed/batch output.
  */
 export function stripFencedJson(text: string): string {
-  return text.replace(/```json[\s\S]*?```/g, "");
+  return text
+    .replace(/```json[\s\S]*?```/g, "")
+    // Drop an unterminated trailing fence too (no closing ``` before EOF) so
+    // batch agrees with the streaming stripper, which never emits an open fence.
+    .replace(/```json[\s\S]*$/, "");
 }
 
 /**

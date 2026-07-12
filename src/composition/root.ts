@@ -587,6 +587,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
       narrate,
       log,
       now: () => Date.now(),
+      onStopped: () => { narrators.delete(a.threadId); },
     });
     narrators.set(a.threadId, svc);
     svc.start();

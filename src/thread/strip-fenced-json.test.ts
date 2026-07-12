@@ -13,6 +13,9 @@ describe("stripFencedJson (batch)", () => {
     const input = "```ts\nconst x = 1;\n```";
     expect(stripFencedJson(input)).toBe(input);
   });
+  it("drops an unterminated trailing ```json fence (matches streaming)", () => {
+    expect(stripFencedJson("x ```json\n{unclosed")).toBe("x ");
+  });
 });
 
 describe("StreamingFenceStripper agrees with batch", () => {
@@ -21,6 +24,7 @@ describe("StreamingFenceStripper agrees with batch", () => {
     "no fence here",
     "```json\n[]\n``` trailing",
     "pre ```json\n{a}\n``` mid ```json\n{b}\n``` post",
+    "x ```json\n{unclosed",
   ];
   for (const [i, text] of cases.entries()) {
     it(`case ${i}: char-by-char stream equals batch`, () => {

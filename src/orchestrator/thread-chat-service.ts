@@ -5,8 +5,9 @@ import type { ChatSessionManager, ChatStreamSink } from "./chat-session-manager.
 import type { ReadSnapshot } from "./adapter.js";
 import type { LaunchResult } from "./launch.js";
 import { stripFencedJson, StreamingFenceStripper } from "../thread/strip-fenced-json.js";
-import { containsLaunchMarker, stripLaunchMarker } from "../thread/launch-marker.js";
+import { LAUNCH_MARKER, stripLaunchMarker } from "../thread/launch-marker.js";
 import { toPlanPreview } from "../thread/plan-preview.js";
+import { safeErrorText, safeLog } from "../util/safe-log.js";
 import type { TaskSpec } from "./task-spec.js";
 
 /**
@@ -106,7 +107,13 @@ export class ThreadChatService {
     this.turnStrippers.set(threadId, new StreamingFenceStripper());
     try {
       const turn = await produce();
-      try { this.turnStrippers.get(threadId)?.end(); } catch { /* stripper finalize best-effort */ }
+      try {
+        // Flush the stripper's held-back lookbehind tail to the live stream:
+        // short/trailing non-fence text is buffered until end() and would
+        // otherwise reach only replay, never the live token stream.
+        const tail = this.turnStrippers.get(threadId)?.end() ?? "";
+        if (tail) this.d.bus.broadcast(threadId, JSON.stringify({ type: "token", text: tail }));
+      } catch { /* stripper finalize / broadcast best-effort */ }
       this.turnStrippers.delete(threadId);
 
       let text = stripFencedJson(turn.reply);
@@ -122,25 +129,31 @@ export class ThreadChatService {
     }
   }
 
-  /** Dedupe against ids WE created this process (not store.read -- see
-   *  createdIds doc). base -> base-2 -> base-3 ... capped so a pathological
-   *  collision can never loop forever. */
-  private uniqueId(intent: string): string {
+  /** Create a thread under a unique id. `store.create` is the collision
+   *  authority: it THROWS if the id already exists (restart-safe — a prior
+   *  thread dir is never overwritten), so we retry base -> base-2 -> base-3 ...
+   *  capped at ~50 so a pathological collision can never loop forever. The
+   *  first id that creates successfully wins. */
+  private async createUniqueThread(intent: string): Promise<string> {
     const base = this.d.mintThreadId(intent);
-    if (!this.createdIds.has(base)) return base;
-    for (let i = 2; i <= 50; i++) {
-      const candidate = `${base}-${i}`;
-      if (!this.createdIds.has(candidate)) return candidate;
+    const candidates = [base, ...Array.from({ length: 49 }, (_, k) => `${base}-${k + 2}`)];
+    let lastErr: unknown;
+    for (const id of candidates) {
+      try {
+        await this.d.store.create({ id, title: intent.slice(0, 80) });
+        this.createdIds.add(id);
+        return id;
+      } catch (err) {
+        lastErr = err;
+      }
     }
-    return base;
+    throw lastErr ?? new Error(`could not mint a unique thread id for base: ${base}`);
   }
 
   /** Start a thread + its chat session. Returns fast: the opening chat turn is
    *  kicked in the BACKGROUND (awaitable via waitIdle). */
   async startThread(projectId: string, intent: string): Promise<{ threadId: string }> {
-    const threadId = this.uniqueId(intent);
-    await this.d.store.create({ id: threadId, title: intent.slice(0, 80) });
-    this.createdIds.add(threadId);
+    const threadId = await this.createUniqueThread(intent);
     await this.persist(threadId, { type: "operator_msg", text: intent });
 
     const sink = this.makeSink(threadId);
@@ -159,7 +172,7 @@ export class ThreadChatService {
           return turn;
         });
       } catch (err) {
-        this.d.log("ERROR", `thread ${threadId}: opening turn failed: ${String((err as Error)?.message ?? err)}`);
+        safeLog(this.d.log, "ERROR", `thread ${threadId}: opening turn failed: ${safeErrorText(err)}`);
         await this.persist(threadId, {
           type: "orchestrator_msg",
           text: "(the orchestrator could not start -- see logs)",
@@ -172,36 +185,58 @@ export class ThreadChatService {
     return { threadId };
   }
 
-  /** Await the in-flight background turn(s). No arg -> await every thread's. */
+  /** Await the in-flight background turn(s). No arg -> await every thread's.
+   *  Swallows a rejected pending promise: a failed opening turn must not turn
+   *  a waitIdle() (used as a barrier before message/confirm) into a rejection. */
   async waitIdle(threadId?: string): Promise<void> {
     if (threadId !== undefined) {
-      await (this.pending.get(threadId) ?? Promise.resolve());
+      await (this.pending.get(threadId) ?? Promise.resolve()).catch(() => {});
       return;
     }
-    await Promise.all([...this.pending.values()]);
+    await Promise.all([...this.pending.values()].map((p) => p.catch(() => {})));
   }
 
   /** Pre-launch operator message: persist it, run the chat turn, and honor a
    *  launch-by-word marker (only with an existing plan and no run_link). */
   async sendMessage(threadId: string, text: string): Promise<void> {
+    // The opening turn is backgrounded; await it so the session is registered
+    // (or has failed) before we look it up -- otherwise input is silently dropped.
+    await this.waitIdle(threadId);
     await this.persist(threadId, { type: "operator_msg", text });
     const session = this.threadSessions.get(threadId);
     if (!session) {
-      this.d.log("WARN", `thread ${threadId}: message with no live chat session (post-launch?) -- ignoring`);
+      safeLog(this.d.log, "WARN", `thread ${threadId}: message with no live chat session (post-launch?) -- ignoring`);
       return;
     }
 
     const p = (async () => {
       try {
         const turn = await this.runTurn(threadId, () => this.d.manager.send(session.sessionId, text));
-        if (containsLaunchMarker(turn.reply)) {
+        // Launch-by-word: the marker must be a STANDALONE LINE in the
+        // fenced-json-stripped prose -- a `[[LAUNCH]]` inside narrative text or
+        // inside a ```json block must never trigger a spurious launch.
+        const prose = stripFencedJson(turn.reply);
+        const isLaunch = prose.split(/\r?\n/).some((ln) => ln.trim() === LAUNCH_MARKER);
+        if (isLaunch) {
           const cur = await this.d.store.read(threadId);
           const hasPlan = !!cur?.entries.some((e) => e.type === "plan");
           const hasRunLink = !!cur?.entries.some((e) => e.type === "run_link");
           if (hasPlan && !hasRunLink && this.threadSessions.has(threadId)) {
-            await this.confirm(threadId);
+            // Call the internal confirm: we are already inside this thread's
+            // pending turn, so the public confirm's waitIdle barrier would
+            // deadlock on our own promise.
+            await this.doConfirm(threadId);
           }
         }
+      } catch (err) {
+        // The HTTP route calls `void sendMessage(...)` after 202'ing, so a
+        // rejection would escape as an unhandled rejection. Fail closed: log,
+        // surface a visible error turn, and RESOLVE (never reject).
+        safeLog(this.d.log, "ERROR", `thread ${threadId}: message turn failed: ${safeErrorText(err)}`);
+        await this.persist(threadId, {
+          type: "orchestrator_msg",
+          text: "(the orchestrator hit an error on that turn -- see logs)",
+        });
       } finally {
         this.pending.delete(threadId);
       }
@@ -214,6 +249,16 @@ export class ThreadChatService {
    *  session, flip meta to running, and hand off to the narrator. Does NOT
    *  write a run_link (narrator discovers the runId asynchronously). */
   async confirm(threadId: string): Promise<{ accepted: boolean; reason?: string }> {
+    // Await the backgrounded opening turn so the session is registered before
+    // we look it up (otherwise a fast confirm returns a spurious no_session).
+    await this.waitIdle(threadId);
+    return this.doConfirm(threadId);
+  }
+
+  /** Confirm body without the waitIdle barrier -- callable from inside a
+   *  pending turn (launch-by-word) where awaiting our own promise would
+   *  deadlock. */
+  private async doConfirm(threadId: string): Promise<{ accepted: boolean; reason?: string }> {
     const session = this.threadSessions.get(threadId);
     if (!session) return { accepted: false, reason: "no_session" };
 

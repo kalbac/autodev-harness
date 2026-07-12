@@ -6,6 +6,7 @@ import {
   threadEntrySchema, threadMetaSchema,
   type ThreadEntry, type ThreadEntryInput, type ThreadMeta,
 } from "./thread-types.js";
+import { safeErrorText, safeLog } from "../util/safe-log.js";
 
 type Logger = (level: "INFO" | "WARN" | "ERROR", msg: string) => void;
 
@@ -48,6 +49,7 @@ export class ThreadStore {
     await mkdir(this.root, { recursive: true });
     const d = this.dir(input.id);
     if (existsSync(d) && lstatSync(d).isSymbolicLink()) throw new Error(`thread dir is a symlink: ${input.id}`);
+    if (existsSync(this.metaPath(input.id))) throw new Error(`thread already exists: ${input.id}`);
     await mkdir(d, { recursive: true });
     const meta: ThreadMeta = { id: input.id, title: input.title, created_at: this.now(), status: "chatting" };
     await writeFile(this.metaPath(input.id), JSON.stringify(meta, null, 2));
@@ -73,7 +75,7 @@ export class ThreadStore {
       await appendFile(this.ndjsonPath(id), line);
       s.bytes += line.length;
     } catch (err) {
-      this.log("WARN", `thread append failed for ${id}: ${String((err as Error)?.message ?? err)}`);
+      safeLog(this.log, "WARN", `thread append failed for ${id}: ${safeErrorText(err)}`);
     }
   }
 
@@ -115,7 +117,7 @@ export class ThreadStore {
       const next: ThreadMeta = threadMetaSchema.parse({ ...cur.meta, ...patch });
       await writeFile(this.metaPath(id), JSON.stringify(next, null, 2));
     } catch (err) {
-      this.log("WARN", `thread setMeta failed for ${id}: ${String((err as Error)?.message ?? err)}`);
+      safeLog(this.log, "WARN", `thread setMeta failed for ${id}: ${safeErrorText(err)}`);
     }
   }
 

@@ -5,6 +5,7 @@ import type { ThreadEntryInput } from "../../thread/thread-types.js";
 import { diffRunSnapshot, type ActivityCell, type RunSnapshot } from "./activity-map.js";
 import { coalesceMilestones, type PendingMilestone } from "./milestone.js";
 import { buildNarrationPrompt, buildMidRunReplyPrompt } from "./narration-prompt.js";
+import { safeErrorText, safeLog } from "../../util/safe-log.js";
 
 /**
  * NarratorService — the read-only post-launch narrator (adr/003 R1).
@@ -32,6 +33,10 @@ export interface NarratorDeps {
   windowMs?: number; // default 1200
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
+  /** Called once when the service stops (after teardown) so composition can
+   *  prune its narrators map — otherwise the map grows unbounded and
+   *  narratorMessage can find a stopped service. */
+  onStopped?: () => void;
 }
 
 export class NarratorService {
@@ -60,11 +65,14 @@ export class NarratorService {
       // 1. Discover the run (onOrchestrate is fire-and-forget so we find the runId ourselves).
       if (this.runId === null) {
         const runs = await this.deps.read.recentRuns();
-        if (runs.length === 0) return; // try again next tick
-        const sorted = [...runs].sort((a, b) => b.created_at - a.created_at);
-        const chosen = sorted.find((r) => r.created_at >= this.deps.launchedAt) ?? sorted[0];
-        if (!chosen) return; // try again next tick
-        this.runId = chosen.runId;
+        // Bind by intent AND timestamp — NO arbitrary fallback. Matching an
+        // older, unrelated run would narrate the wrong session. The 2000ms skew
+        // tolerates clock/rounding between the launch clock and the run's stamp.
+        const match = runs
+          .filter((r) => r.intent === this.deps.finalIntent && r.created_at >= this.deps.launchedAt - 2000)
+          .sort((a, b) => b.created_at - a.created_at)[0];
+        if (!match) return; // wait for the run to appear next tick
+        this.runId = match.runId;
         await this.persist({ type: "run_link", runId: this.runId });
         await this.deps.store.setMeta(this.deps.threadId, { run_id: this.runId, status: "running" });
         // do NOT return — read the first snapshot this same tick.
@@ -102,7 +110,7 @@ export class NarratorService {
           this.deps.ciBus.subscribe(taskId, sink);
           this.ciTaskSinks.set(taskId, sink);
         } catch (err) {
-          this.deps.log("WARN", `[ts/fail-closed] ci subscribe failed for ${taskId}: ${String((err as Error)?.message ?? err)}`);
+          safeLog(this.deps.log, "WARN", `[ts/fail-closed] ci subscribe failed for ${taskId}: ${safeErrorText(err)}`);
         }
       }
 
@@ -115,7 +123,7 @@ export class NarratorService {
           const prompt = buildNarrationPrompt(read?.entries ?? [], fire.map((f) => f.milestone));
           await this.narrateInto(prompt, fire.map((f) => f.milestone.kind).join(","));
         } catch (err) {
-          this.deps.log("WARN", `[ts/fail-closed] narration skipped: ${String((err as Error)?.message ?? err)}`);
+          safeLog(this.deps.log, "WARN", `[ts/fail-closed] narration skipped: ${safeErrorText(err)}`);
         }
       }
 
@@ -128,7 +136,7 @@ export class NarratorService {
         this.stop();
       }
     } catch (err) {
-      this.deps.log("WARN", `[ts/fail-closed] narrator tick failed: ${String((err as Error)?.message ?? err)}`);
+      safeLog(this.deps.log, "WARN", `[ts/fail-closed] narrator tick failed: ${safeErrorText(err)}`);
     } finally {
       this.inTick = false;
     }
@@ -142,7 +150,7 @@ export class NarratorService {
       const prompt = buildMidRunReplyPrompt(read?.entries ?? [], summary, text);
       await this.narrateInto(prompt, ""); // empty label → no milestone tag on the reply
     } catch (err) {
-      this.deps.log("WARN", `[ts/fail-closed] operator message failed: ${String((err as Error)?.message ?? err)}`);
+      safeLog(this.deps.log, "WARN", `[ts/fail-closed] operator message failed: ${safeErrorText(err)}`);
     }
   }
 
@@ -154,6 +162,7 @@ export class NarratorService {
       try { this.deps.ciBus.unsubscribe(taskId, sink); } catch { /* best-effort */ }
     }
     this.ciTaskSinks.clear();
+    try { this.deps.onStopped?.(); } catch { /* best-effort: pruning callback must never break teardown */ }
   }
 
   private stateSummary(): string {
