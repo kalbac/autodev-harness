@@ -1,5 +1,28 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ s40 — **live orchestrator ATTENDED PRESENCE SHIPPED** (thread-chat = main screen) — codex-CLEAN + LIVE-PROVEN end-to-end → **PR #72 MERGED (`4c34ee1`), CI 4/4**
+> Built the attended half of ADR-004 (spec `2026-07-12-live-orchestrator-attended-presence-design.md`) subagent-driven (Sonnet/Opus workers +
+> mandatory codex GPT-5.5 gate). **Chat is now the project's main screen; a thread = one intent/run on the blackboard.** Phases A–E, 30 commits:
+> thread primitives (entry/meta zod, `ThreadStore` append-only+capped+symlink-guarded, `ThreadEventBus`+SSE replay→live copying s38, batch+streaming
+> fenced-json strippers, launch marker); pre-launch (`ChatSessionManager.start` gains an optional sink so the **opening turn STREAMS** — kills the dead
+> air — + a `forwardToken` pre-registration fallback; `ThreadChatService` bridge: stream-through-stripper, persist stripped prose+plan, launch-by-word,
+> confirm; `performLaunch` extracted res-decoupled, R1 intact); post-launch read-only `NarratorService` (diff run snapshots → instant cells, coalesce
+> milestones, one-shot `claude -p` narration, mid-run Q&A, run-discovery w/ fail-visible timeout, prune-on-terminal); 7 routes + composition + shutdown;
+> UI (`ThreadView` main screen, `ThreadTranscript` MessageScroller+Bubble, `ActivityCell` Collapsible+Badge deep-links, `PlanChip` wrap-fix+Launch,
+> `ThreadList` sidebar, `NewRunComposer` start/send modes); `ChatModal` deleted; SessionRail CI-link + new-cell contrast fixed (polish #3). **Gate: 1071
+> tests/3 skip, root+ui typecheck+build green; codex GPT-5.5 ran a FULL cycle (fresh review → 9 findings fixed → 3 remaining → 2 fixed → 1 High → fixed →
+> CLEAN; R1 boundary confirmed intact; 2 run-binding Mediums declined-with-rationale, codex acknowledged).** **LIVE-PROVEN end-to-end through the REAL
+> daemon + Chrome** on a throwaway `s40-demo`: opening turn streamed token-by-token (no dead air), launch-by-word ("go for it" → `[[LAUNCH]]` stripped →
+> real run), self-narrating run (instant cells + milestone prose), **DONE with a real commit `08551a2` (critic CLEAN)**, merge cell deep-linked to
+> TaskDetail, mid-run "how is it going?" answered contextually, red path narrated (critic returned `broken` on an invented FAQ → escalate → narrated as
+> a story). **The live-prove earned its keep AGAIN — found 2 real bugs unit tests could NOT see:** (1) the chat PROMPT never taught the model to emit
+> `[[LAUNCH]]` (backend detected it but the model never sent it → launch-by-word dead); (2) a dotted thread-id (`FAQ.md`) broke the static SPA-fallback on
+> reload/direct-nav (404) → strip dots. Both fixed + re-confirmed codex CLEAN. **GOTCHAS 58→61** (`[chat/launch-marker-needs-prompt-contract]`,
+> `[ui/dotted-id-breaks-spa-reload]`, `[narrator/escalated-run-not-terminal]`). **Operator verdict: "намного лучше — есть ощущение живого чата" BUT the
+> browser demo did NOT convince him end-to-end** (he watched escalations/a hung run, not the clean happy DONE which ran via curl before he was looking).
+> **NEXT (s41): a run on a REAL project with a REAL task, operator-OBSERVABLE end-to-end in the browser** (not curl-driven happy-path); + chat POLISH
+> (the escalated-run-not-terminal idle-tick / "blocked" state, and general UX). The unattended-half autonomy brainstorm (ADR-004) is deferred behind that.
+>
 > ## 📝 s39 — DOCS-ONLY **direction session (Fable 5, operator's call): "not alive" resolved into a doctrine — ADR-004 ACCEPTED + the s40 attended-presence spec written (operator-approved, review waived)**
 > No code. The philosophical talk planned in s38 happened and CONVERGED. (1) Operator extended the slogan to **"Stop
 > babysitting and never let agents merge bullshit"** — the gate thesis is achieved (s37/s38), the autonomy half is the

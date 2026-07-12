@@ -4,6 +4,40 @@
 
 ---
 
+## s40 (2026-07-12) — live orchestrator ATTENDED PRESENCE shipped (thread-chat main screen), codex-CLEAN + live-proven → PR #72 MERGED (`4c34ee1`)
+
+Executed the s40 plan (`docs/superpowers/plans/2026-07-12-live-orchestrator-attended-presence.md`, written this session over the s39 spec)
+subagent-driven (Sonnet + Opus workers by complexity, mandatory codex GPT-5.5 gate). Built the **attended half of ADR-004**: chat is the project's
+main screen, a thread = one intent/run persisted on the blackboard. 30 commits across 6 phases:
+- **A — primitives:** thread entry/meta zod schemas, `ThreadStore` (append-only `.autodev/threads/<id>/`, byte-counter cap, symlink-guarded, best-effort),
+  `ThreadEventBus`+`handleThreadStream` (replay→live, copies s38 CI-stream incl. the disconnect-leak fix + flushHeaders), batch+streaming fenced-json
+  strippers (agreement-tested), launch marker.
+- **B — pre-launch:** surgical `ChatSessionManager.start(sink?)` so the OPENING TURN STREAMS (+ `forwardToken` pre-registration fallback — the real
+  dead-air killer; the s34 manager dropped opening tokens); `ThreadChatService` (thread↔session map, per-turn stripper→bus, persist stripped prose+plan,
+  launch-by-word with guards, confirm→narrator handoff); `performLaunch` extracted res-decoupled (R1 intact — still only `onOrchestrate`).
+- **C — narrator:** pure `diffRunSnapshot` + `coalesceMilestones`, prompt builders, `runOrchestratorOneShot` (`claude -p` stream-json), `NarratorService`
+  (read-only tick→instant cells + one-shot milestone narration + mid-run Q&A + run-discovery w/ fail-visible timeout + prune-on-terminal), `buildRunSnapshot`.
+- **D — transport:** 7 thread routes + `ProjectView.threads` + composition wiring + shutdown teardown.
+- **E — UI:** `ThreadView` main screen, `ThreadTranscript` (MessageScroller+Bubble), `ActivityCell` (Collapsible+Badge, deep-links), `PlanChip` (wrap-fix
+  + Launch), `ThreadList` sidebar, `NewRunComposer` start/send; `ChatModal` deleted; SessionRail + cell contrast fixed (polish #3).
+- **Gate:** 1071 tests/3 skip, root+ui typecheck+build green. **codex GPT-5.5 FULL cycle** — R1 review: 9 findings (1 sendMessage-rejection, launch-guard,
+  fail-closed loggers, wrong-run-binding, restart id-collision, stripper-tail, batch/stream fence disagreement, opening-race, narrator-map leak) → fixed →
+  3 remaining (launch fence bypass, run-binding heuristic ×2) → 2 fixed (unterminated-fence + normalize/timeout) → 1 High (unterminated fence) → fixed →
+  **CLEAN**. R1 boundary confirmed intact. 2 run-binding Mediums (hard run-id correlation) declined-with-rationale (verbatim-intent flow + s32 dedup +
+  fail-visible timeout; belongs to s41+ overnight) — codex acknowledged.
+- **LIVE-PROVEN** through the real daemon + Chrome (`s40-demo` throwaway): streaming opening turn, launch-by-word → real run → **DONE + commit `08551a2`**
+  (critic CLEAN), self-narration (cells + prose), deep-link merge→TaskDetail, mid-run Q&A, red-path escalation narrated (critic `broken` on an invented FAQ).
+  **Earned its keep — 2 unit-invisible bugs:** (1) `chat-prompt.ts` never taught the model the `[[LAUNCH]]` marker → launch-by-word was dead (backend
+  detected, model never emitted); (2) dotted thread-id (`FAQ.md`) → static SPA-fallback 404 on reload → strip dots in `mintThreadId`. Both fixed +
+  re-confirmed codex CLEAN, CI 4/4, merged.
+- **GOTCHAS 58→61:** `[chat/launch-marker-needs-prompt-contract]`, `[ui/dotted-id-breaks-spa-reload]`, `[narrator/escalated-run-not-terminal]`.
+- **Operator verdict:** "намного лучше — есть ощущение живого чата," but the browser demo did NOT show him a convincing end-to-end (he watched a hung run
+  + escalations; the clean DONE ran via curl before he was watching). **Lesson banked:** a live-prove has to be operator-OBSERVABLE end-to-end in the
+  browser, not a curl-driven happy path narrated after the fact. **NEXT (s41): a real-project real-task run, observable end-to-end + chat polish**
+  (escalated-run "blocked" state + idle-tick stop first); unattended-half autonomy brainstorm deferred behind it.
+
+---
+
 ## s39 — 2026-07-12 — **direction session (Fable 5): live-orchestrator doctrine → ADR-004 accepted + s40 attended-presence spec** — DOCS-ONLY
 
 **The talk (operator's call from s38, no building).** Operator opened with two clarifications: "never merge bullshit"
