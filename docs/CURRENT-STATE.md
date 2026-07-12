@@ -1,5 +1,27 @@
 # CURRENT STATE — Autodev Harness
 
+> ## 📝 s39 — DOCS-ONLY **direction session (Fable 5, operator's call): "not alive" resolved into a doctrine — ADR-004 ACCEPTED + the s40 attended-presence spec written (operator-approved, review waived)**
+> No code. The philosophical talk planned in s38 happened and CONVERGED. (1) Operator extended the slogan to **"Stop
+> babysitting and never let agents merge bullshit"** — the gate thesis is achieved (s37/s38), the autonomy half is the
+> missing piece. (2) Diagnosis agreed: felt-deadness AND no-autonomy share ONE root cause — wrapping the loop amputated
+> the live orchestrator into a one-shot decompose pipeline; ONE persistent-orchestrator component fixes both (narrator
+> when attended, worker when overnight). Doctrine fixed in **`adr/004` (accepted)**: pre-approval→post-review (decide
+> reversible forks + journal them instead of blocking overnight); 3 decision classes (decide / decide+flag / block —
+> class-3 blocking parks the TASK, never the queue; UI/UX taste stays class 3 always); a per-project **north-star**
+> concept doc as the check before any self-decision; **Overnight = explicit global top-bar toggle** (autonomy is a
+> function of operator presence); anti-drift becomes mandatory once unattended ships; adr/003 R1 re-affirmed (autonomy
+> above the gate, never through it). Then a full UX brainstorm (ASCII mockups, all decisions operator-picked): **chat =
+> the project's MAIN screen** (ChatModal dies), **thread = intent/run** (sidebar thread list), **prose + instant
+> activity-cells**, launch by chip-button AND by word (same R1 confirm path), SessionRail stays status-only, narrator =
+> **hybrid A+B** (live ChatSessionManager pre-launch — reused s34 machinery, opening turn MUST stream; event-driven
+> one-shot narration post-launch — threads persisted on the blackboard, SSE replay→live copied from the s38 CI pattern).
+> Spec: **`superpowers/specs/2026-07-12-live-orchestrator-attended-presence-design.md`** — attended presence ONLY;
+> overnight/decision-journal/morning-report/north-star = s41+ own brainstorm on ADR-004. s38 polish bugs #1/#2 die with
+> the modal (absorbed into the spec); #3 (CI-link contrast) remains. **NEXT (s40, operator picked Opus 4.8):
+> writing-plans over the spec → subagent-driven build (Sonnet workers + mandatory codex GPT-5.5 gate) → live-prove
+> through the real daemon+browser, operator-judged on the FELT criterion (no dead air; the run reads as a story).**
+> No open code blockers.
+>
 > ## ✅ s38 — **agent-ci observability SHIPPED + codex-CLEAN + LIVE-PROVEN end-to-end through the daemon+browser** (happy DONE+commit AND red RETRY) → **PR #71 MERGED (`0e68aeb`), CI green 4/4**
 > Executed the s38 plan (`docs/superpowers/plans/2026-07-11-agent-ci-observability.md`) subagent-driven (Sonnet workers +
 > spec/quality review per module + mandatory codex GPT-5.5 gate). Makes the off-by-default `gate.agentCi` step **cross-platform

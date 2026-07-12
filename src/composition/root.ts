@@ -30,8 +30,21 @@ import {
   createReadCapability,
   createRecordRunCapability,
   createReportCapability,
+  buildReadSnapshot,
+  slugifyIntent,
   type OrchestratorCapabilities,
 } from "../orchestrator/capabilities.js";
+import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { resolveOrchestratorExe } from "../config/roles.js";
+import { ThreadStore } from "../thread/thread-store.js";
+import { ThreadEventBus } from "../api/thread-events.js";
+import { ThreadChatService } from "../orchestrator/thread-chat-service.js";
+import { performLaunch } from "../orchestrator/launch.js";
+import { NarratorService } from "../orchestrator/narrator/narrator-service.js";
+import { runOrchestratorOneShot } from "../orchestrator/narrator/orchestrator-oneshot.js";
+import { buildRunSnapshot, type RunSnapshotReader } from "../orchestrator/narrator/run-snapshot.js";
+import type { RunSnapshot, TaskSnapshot } from "../orchestrator/narrator/activity-map.js";
+import type { QueueState } from "../blackboard/repository.js";
 import { ClaudeOrchestratorAdapter } from "../orchestrator/claude-orchestrator-adapter.js";
 import type { OrchestratorAdapter } from "../orchestrator/adapter.js";
 import { createOrchestrator, type OrchestratorResult } from "../orchestrator/orchestrator.js";
@@ -111,6 +124,31 @@ export interface ProjectRoot {
   /** Probe agent-ci's runtime capability (native/wsl/unavailable) for the UI, without
    *  actually running a workflow. */
   onCiCapability: () => Promise<AgentCiCapability>;
+  /** Build the live-orchestrator threads capability (adr/004): pre-launch chat
+   *  service + post-launch narrator registry, wired over THIS project's store /
+   *  bus / read-cap. Needs the HTTP-layer launch bits (`onOrchestrate` + an
+   *  in-flight guard set) since those live at the index/server layer. Memoized:
+   *  ONE `ThreadChatService` (holding the threadId->session map) is reused across
+   *  per-request ProjectView rebuilds, same as `chat` reuses one ChatSessionManager
+   *  -- so the FIRST httpDeps wins. Built LAZILY. */
+  buildThreads(httpDeps: {
+    onOrchestrate: ((intent: string) => Promise<unknown> | void) | undefined;
+    inFlight: Set<string>;
+  }): ThreadsCapability;
+  /** Stop every live narrator (clears its interval + CI subscriptions) and close
+   *  the thread SSE bus -- daemon-shutdown teardown, mirrors chat `closeAll()`. */
+  closeThreads(): void;
+}
+
+/** The threads capability object the HTTP `ProjectView.threads` consumes; also
+ *  carries a `closeThreads` so the ProjectView-scoped server shutdown can tear
+ *  its narrators + bus down without reaching back to the ProjectRoot. */
+export interface ThreadsCapability {
+  store: ThreadStore;
+  bus: ThreadEventBus;
+  chat: ThreadChatService;
+  narratorMessage: (threadId: string, text: string) => Promise<boolean>;
+  closeThreads: () => void;
 }
 
 export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
@@ -467,6 +505,151 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     return ciBus;
   };
 
+  // --- Live-orchestrator threads (adr/004) -------------------------------
+  // Composition glue only, same untested-by-design status as the chat/orchestrator
+  // wiring above: ThreadStore, ThreadEventBus, ThreadChatService, NarratorService
+  // and the one-shot narrator each have their own unit tests against fakes.
+  const runsDir = join(repoRoot, cfg.stateDir, "runs");
+  const threadReadCap = createReadCapability(repo);
+
+  let threadStore: ThreadStore | undefined;
+  let threadBus: ThreadEventBus | undefined;
+  const getThreadStore = (): ThreadStore =>
+    (threadStore ??= new ThreadStore({ threadsRoot: join(repoRoot, cfg.stateDir, "threads"), log }));
+  const getThreadBus = (): ThreadEventBus => (threadBus ??= new ThreadEventBus());
+
+  // Live narrator registry (threadId -> service): lets a mid-run operator message
+  // reach the right narrator, and lets shutdown stop every timer.
+  const narrators = new Map<string, NarratorService>();
+
+  /** Read `<runsDir>/<runId>.json` -> its taskIds. Tolerant: an unsafe id or any
+   *  read/parse failure yields null so the narrator simply waits for the next tick. */
+  const readOneRunManifest = async (runId: string): Promise<{ taskIds: string[] } | null> => {
+    try {
+      if (!isPathSafeId(runId)) return null;
+      const p = join(runsDir, `${runId}.json`);
+      if (!existsSync(p)) return null;
+      const parsed = JSON.parse(await readFile(p, "utf8")) as { taskIds?: unknown };
+      if (!Array.isArray(parsed.taskIds)) return null;
+      return { taskIds: parsed.taskIds.filter((x): x is string => typeof x === "string") };
+    } catch {
+      return null;
+    }
+  };
+
+  /** Compose a RunSnapshot: the run manifest gives the task ids, the live queues
+   *  give status+title per id (no single blackboard call returns this shape). */
+  const runSnapshot = async (runId: string): Promise<RunSnapshot | null> => {
+    const manifest = await readOneRunManifest(runId);
+    if (!manifest) return null;
+    const queues = await threadReadCap.queues();
+    const byId = new Map<string, { status: TaskSnapshot["status"]; title: string }>();
+    for (const state of Object.keys(queues) as QueueState[]) {
+      for (const t of queues[state]) byId.set(t.id, { status: state, title: t.title });
+    }
+    const reader: RunSnapshotReader = {
+      readRunManifest: async () => manifest,
+      readTaskStatus: async (id: string) => byId.get(id) ?? null,
+    };
+    return buildRunSnapshot(reader, runId);
+  };
+
+  // Narrator one-shot: SAME exe + model + isolation flags as the chat adapter
+  // (converse-only -- no tools, no MCP, hooks/plugins/CLAUDE.md off). The one-shot
+  // itself appends `-p --output-format stream-json --verbose <prompt>`.
+  const narrate = (prompt: string, onToken: (t: string) => void): Promise<string> =>
+    runOrchestratorOneShot({
+      exe: resolveOrchestratorExe(cfg),
+      cwd: repoRoot,
+      args: ["--model", cfg.roles.orchestrator.model, "--safe-mode", "--strict-mcp-config", "--tools", ""],
+      prompt,
+      onToken,
+    });
+
+  const startNarrator = (a: {
+    projectId: string;
+    threadId: string;
+    finalIntent: string;
+    launchedAt: number;
+  }): void => {
+    const svc = new NarratorService({
+      ...a,
+      store: getThreadStore(),
+      bus: getThreadBus(),
+      ciBus: getCiBus(),
+      read: {
+        // recentRuns() returns RunManifestSummary with the timestamp field `at`;
+        // the narrator expects `created_at`, so map it here.
+        recentRuns: async () =>
+          (await threadReadCap.recentRuns()).map((m) => ({ runId: m.runId, created_at: m.at, intent: m.intent })),
+        runSnapshot,
+      },
+      narrate,
+      log,
+      now: () => Date.now(),
+      onStopped: () => { narrators.delete(a.threadId); },
+    });
+    narrators.set(a.threadId, svc);
+    svc.start();
+  };
+
+  const closeThreads = (): void => {
+    for (const n of narrators.values()) {
+      try {
+        n.stop();
+      } catch {
+        /* best-effort teardown: a narrator stop failure must never block shutdown */
+      }
+    }
+    narrators.clear();
+    threadBus?.closeAll();
+  };
+
+  // Memoized so ONE ThreadChatService (holding the threadId->session map) is reused
+  // across per-request ProjectView rebuilds -- same rationale as getChatManager.
+  // The FIRST httpDeps wins (onOrchestrate/inFlight are stable per project).
+  let threadsCapability: ThreadsCapability | undefined;
+  const buildThreads = (httpDeps: {
+    onOrchestrate: ((intent: string) => Promise<unknown> | void) | undefined;
+    inFlight: Set<string>;
+  }): ThreadsCapability => {
+    if (threadsCapability) return threadsCapability;
+    const store = getThreadStore();
+    const bus = getThreadBus();
+    const chat = new ThreadChatService({
+      store,
+      bus,
+      manager: getChatManager(),
+      buildSnapshot: () => buildReadSnapshot(threadReadCap),
+      launch: (pid, intent) =>
+        performLaunch({ pid, intent, onOrchestrate: httpDeps.onOrchestrate, inFlight: httpDeps.inFlight, log }),
+      startNarrator,
+      // Thread ids become URL path segments (`/p/:id/t/:threadId`). slugifyIntent
+      // KEEPS dots (e.g. an intent naming `FAQ.md`), but a dotted last path
+      // segment makes the static server treat a reload/direct-nav as a file
+      // request -> SPA fallback 404s. Strip dots so thread URLs always resolve.
+      mintThreadId: (intent: string) =>
+        slugifyIntent(intent)
+          .replace(/\./g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-+|-+$/g, ""),
+      log,
+      now: () => Date.now(),
+    });
+    const narratorMessage = async (threadId: string, text: string): Promise<boolean> => {
+      const n = narrators.get(threadId);
+      if (!n) return false;
+      try {
+        await n.handleOperatorMessage(text);
+      } catch {
+        /* best-effort: a narrator reply failure must not fail the HTTP turn */
+      }
+      return true;
+    };
+    threadsCapability = { store, bus, chat, narratorMessage, closeThreads };
+    return threadsCapability;
+  };
+
   return {
     repoRoot,
     cfg,
@@ -499,6 +682,8 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
       };
     },
     onCiCapability: () => detectAgentCiCapability(),
+    buildThreads,
+    closeThreads,
   };
 }
 

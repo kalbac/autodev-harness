@@ -170,7 +170,7 @@ export function SessionRail({ projectId, onClose }: { projectId: string; onClose
                   <Link
                     to="/p/$projectId/ci/$taskId"
                     params={{ projectId, taskId: activeTaskId }}
-                    className="font-mono text-[11px] text-accent hover:underline"
+                    className="font-mono text-[11px] text-primary hover:underline"
                   >
                     open CI run →
                   </Link>

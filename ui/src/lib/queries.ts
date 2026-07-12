@@ -34,6 +34,8 @@ export const qk = {
   agentExtensions: (p: string) => ["agent-extensions", p] as const,
   ciStatus: (p: string, taskId: string) => ["ci-status", p, taskId] as const,
   ciCapability: (p: string) => ["ci-capability", p] as const,
+  threads: (p: string) => ["threads", p] as const,
+  thread: (p: string, tid: string) => ["thread", p, tid] as const,
 };
 
 /** Cross-run token totals for the session rail (s25). Token count only — cost was
@@ -346,5 +348,60 @@ export function useChatConfirm(projectId: string) {
 export function useChatCancel(projectId: string) {
   return useMutation({
     mutationFn: (sessionId: string) => api.deleteChat(projectId, sessionId),
+  });
+}
+
+/** Live orchestrator threads list (s40) — the sidebar's thread rail. */
+export const useThreads = (p: string) =>
+  useQuery({ queryKey: qk.threads(p), queryFn: () => api.getThreads(p), enabled: p !== "" });
+
+/** One thread's full persisted state (meta + entries) -- the initial paint before
+ *  `useThreadStream`'s SSE connection takes over for live updates. */
+export const useThread = (p: string, threadId: string) =>
+  useQuery({
+    queryKey: qk.thread(p, threadId),
+    queryFn: () => api.getThread(p, threadId),
+    enabled: p !== "" && threadId !== "",
+  });
+
+/** Start a new live thread; invalidates the threads list so the sidebar picks up the new row. */
+export function useCreateThread(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (intent: string) => api.createThread(projectId, intent),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.threads(projectId) }),
+  });
+}
+
+/** Send one operator message into a live thread. No cache invalidation -- the reply
+ *  arrives over `useThreadStream`'s SSE connection, same no-invalidation rationale as
+ *  `useChatMessage`. */
+export function useThreadMessage(projectId: string, threadId: string) {
+  return useMutation({
+    mutationFn: (message: string) => api.postThreadMessage(projectId, threadId, message),
+  });
+}
+
+/** Confirm a live thread's proposed plan: launches a run via the same `/orchestrate`
+ *  path, so it invalidates the same queries `useChatConfirm` does, plus the thread
+ *  itself (status flips to "running"). */
+export function useThreadConfirm(projectId: string, threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.postThreadConfirm(projectId, threadId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.runs(projectId) });
+      void qc.invalidateQueries({ queryKey: qk.state(projectId) });
+      void qc.invalidateQueries({ queryKey: qk.thread(projectId, threadId) });
+    },
+  });
+}
+
+/** Delete a thread; invalidates the threads list so the sidebar removes it. */
+export function useThreadCancel(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) => api.deleteThread(projectId, threadId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.threads(projectId) }),
   });
 }

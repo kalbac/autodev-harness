@@ -4,6 +4,41 @@
 
 ---
 
+## s39 — 2026-07-12 — **direction session (Fable 5): live-orchestrator doctrine → ADR-004 accepted + s40 attended-presence spec** — DOCS-ONLY
+
+**The talk (operator's call from s38, no building).** Operator opened with two clarifications: "never merge bullshit"
+is ACHIEVED (esp. with agent-ci), and the name *autodev* implies the missing half — unattended end-to-end progress;
+slogan extended to **"Stop babysitting and never let agents merge bullshit."** Converged diagnosis: felt-deadness and
+no-autonomy share one root cause — the live orchestrator was amputated into a one-shot decompose pipeline (`handleIntent`
+is a staged, terminating pipeline by design); ONE persistent-orchestrator component fixes both: **narrator when attended,
+worker when overnight**. Operator's pain named precisely: agents block overnight on questions they could decide
+themselves — flip **pre-approval → post-review** (decide reversible forks, journal them, review in the morning); the
+deterministic gate is what makes that safe. His additions: a "does this match the project concept?" self-check before
+any autonomous decision (→ per-project **north-star** doc), and an explicit **Overnight** toggle with wider privileges.
+
+**Doctrine → `adr/004` (accepted, sign-off in-session):** 6 tenets — one component/two modes; post-review; 3 decision
+classes (block parks the task, never the queue; operator UI/UX taste is always class 3); north-star check (anti-drift at
+decision granularity; run-level anti-drift becomes mandatory for autonomy); Overnight = global top-bar toggle (autonomy
+is a function of operator presence); adr/003 R1 boundary untouched.
+
+**UX brainstorm (superpowers:brainstorming, ASCII mockups, every fork operator-picked):** chat = the project's MAIN
+screen (ChatModal dies); thread = intent/run with a sidebar thread list (Claude Code Desktop IA); prose + instant
+machine activity-cells (cells deep-link to RunView/CiRunView/TaskDetail); launch via plan-chip button AND
+conversational word (both → the unchanged R1 confirm path; LAUNCH control-marker guarded by operator-turn + plan-exists);
+SessionRail stays status-only; narrator architecture = **hybrid A+B** — live `ChatSessionManager` pre-launch (s34
+machinery; the opening turn MUST stream — kills the 10-15s dead air) + event-driven one-shot narration post-launch over
+blackboard-persisted threads (`.autodev/threads/<id>/thread.ndjson`, SSE replay→live per the s38 CI pattern; narrator
+best-effort, restart-safe). **Spec:** `superpowers/specs/2026-07-12-live-orchestrator-attended-presence-design.md`
+(attended presence ONLY; operator approved in-chat and waived file review). s38 polish bugs #1/#2 absorbed (modal dies);
+FUTURE-BACKLOG "Orchestrator CHAT" marked superseded. Meta-note banked: the operator observed this session's
+recommendations matched his preferences "100%" — because they were READ from his recorded feedback, not guessed; that is
+the north-star mechanism demonstrated live.
+
+**Next (s40, operator picked Opus 4.8):** writing-plans over the spec → subagent-driven build → codex gate → live-prove
+through daemon+browser on the FELT criterion. Overnight/autonomy = s41+ brainstorm on ADR-004.
+
+---
+
 ## s38 — 2026-07-11 — **agent-ci observability** (cross-platform WSL invocation + live CI visibility) — BUILT, codex-CLEAN, LIVE-PROVEN end-to-end (happy DONE+commit AND red RETRY)
 
 **Scope.** Executed the s38 plan (`2026-07-11-agent-ci-observability.md`) subagent-driven (Sonnet workers + per-module

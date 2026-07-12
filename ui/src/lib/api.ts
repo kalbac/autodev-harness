@@ -325,6 +325,48 @@ export interface ChatTurn {
   proposedSpecs: ChatTaskSpecPreview[];
 }
 
+export type ThreadStatus = "chatting" | "running" | "done" | "error";
+
+/** Mirrors the daemon's thread registry entry — one row from `GET /projects/:id/threads`
+ *  (s40 live orchestrator presence). */
+export interface ThreadMeta {
+  id: string;
+  title: string;
+  created_at: number;
+  run_id?: string;
+  status: ThreadStatus;
+}
+
+export type ActivityKind = "worker" | "gate" | "agent_ci" | "critic" | "merge" | "escalation" | "run";
+export type ActivityStatus = "running" | "ok" | "warn" | "error";
+
+/** Narrower mirror (server-shape subset) of a plan spec inside a thread's persisted
+ *  "plan" entry -- same idiom as `ChatTaskSpecPreview` for the pre-launch chat. */
+export interface PlanSpecPreview {
+  id: string;
+  title: string;
+  type: string;
+  file_set: string[];
+}
+
+/** One persisted thread entry, as returned in `GET /threads/:tid`'s `entries` array
+ *  and replayed/streamed live over `GET /threads/:tid/stream`. The `token` SSE frame
+ *  (live-typing text) is NOT a member of this union -- it is a transient streaming
+ *  signal, not a persisted entry; see `useThreadStream`. */
+export type ThreadEntry =
+  | { ts: number; type: "operator_msg"; text: string }
+  | { ts: number; type: "orchestrator_msg"; text: string; milestone?: string }
+  | {
+      ts: number;
+      type: "activity";
+      kind: ActivityKind;
+      ref: { taskId?: string; runId?: string };
+      summary: string;
+      status: ActivityStatus;
+    }
+  | { ts: number; type: "plan"; specs: PlanSpecPreview[] }
+  | { ts: number; type: "run_link"; runId: string };
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -604,5 +646,86 @@ export const api = {
    *  ndjson log) before streaming live events. */
   ciEventsUrl(projectId: string, taskId: string): string {
     return projectPath(projectId, `/ci/${encodeURIComponent(taskId)}/stream`);
+  },
+
+  /** Live orchestrator threads (s40) -- list, newest-first (server order). */
+  getThreads: (projectId: string) => req<{ threads: ThreadMeta[] }>(projectPath(projectId, "/threads")),
+
+  /** Start a new live thread. `{threadId}` -- the orchestrator narrates asynchronously;
+   *  entries arrive over `threadStreamUrl`. */
+  createThread: (projectId: string, intent: string) =>
+    req<{ threadId: string }>(projectPath(projectId, "/threads"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent }),
+    }),
+
+  /** One thread's full persisted state: `meta` + `entries`. The SSE stream (`threadStreamUrl`)
+   *  replays these same entries on connect, then continues live. */
+  getThread: (projectId: string, threadId: string) =>
+    req<{ meta: ThreadMeta; entries: ThreadEntry[] }>(
+      projectPath(projectId, `/threads/${encodeURIComponent(threadId)}`),
+    ),
+
+  /** Send one operator message into a live thread. 202 accepted -- the reply streams over
+   *  `threadStreamUrl`, so (like `deleteChat`) there is no JSON body to parse on success. */
+  async postThreadMessage(projectId: string, threadId: string, message: string): Promise<void> {
+    const res = await fetch(projectPath(projectId, `/threads/${encodeURIComponent(threadId)}/message`), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+  },
+
+  /** Confirm a live thread's proposed plan -- 202 accepted, launches a run the same way
+   *  `postChatConfirm` does. */
+  async postThreadConfirm(projectId: string, threadId: string): Promise<void> {
+    const res = await fetch(projectPath(projectId, `/threads/${encodeURIComponent(threadId)}/confirm`), {
+      method: "POST",
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+  },
+
+  /** Delete a thread (registry + persisted log). */
+  async deleteThread(projectId: string, threadId: string): Promise<void> {
+    const res = await fetch(projectPath(projectId, `/threads/${encodeURIComponent(threadId)}`), {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (b?.error) msg = b.error;
+      } catch {
+        /* keep status line */
+      }
+      throw new ApiError(res.status, msg);
+    }
+  },
+
+  /** URL for the live thread's SSE connection -- the CALLER opens this with
+   *  `new EventSource(...)`, same idiom as `chatStreamUrl`/`ciEventsUrl`. On connect the
+   *  server replays the persisted `entries` before streaming live token + entry frames. */
+  threadStreamUrl(projectId: string, threadId: string): string {
+    return projectPath(projectId, `/threads/${encodeURIComponent(threadId)}/stream`);
   },
 };

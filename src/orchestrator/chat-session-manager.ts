@@ -118,6 +118,11 @@ export class ChatSessionManager {
     intent: string;
     state: ReadSnapshot;
     onToken: (text: string) => void;
+    /** Optional SSE sink to attach at session-creation time (rather than via
+     *  a later `attachStream()` call) so the OPENING turn's tokens can also
+     *  stream, not just later turns. Omitted by existing callers -> `null`,
+     *  byte-identical to prior behavior. */
+    sink?: ChatStreamSink;
   }): Promise<{ sessionId: string; turn: ChatTurnResult }> {
     if (this.projectsInFlight.has(input.projectId)) {
       throw new Error("a chat session is already open for this project");
@@ -129,17 +134,20 @@ export class ChatSessionManager {
     // just this opening turn) -- so this closure must look up the CURRENTLY
     // attached SSE sink fresh on every token, not capture one at start() time.
     // Before liveSessionId is assigned (i.e. during THIS opening turn), there is
-    // by definition no SSE client attached yet (the UI only learns the
-    // sessionId from this call's own return value), so tokens are correctly
-    // dropped for turn one -- this becomes live starting with the next turn.
+    // by definition no ManagedSession/sseRes to look up yet -- but the model
+    // streams the opening reply DURING this very await, so dropping those
+    // tokens would mean dead air for the whole first turn. `input.sink`, if the
+    // caller passed one, is the fallback target for exactly this pre-
+    // registration window; once `liveSessionId` is set, the live session's
+    // (possibly later-reattached) `sseRes` always takes priority over it.
     let liveSessionId: string | null = null;
     const forwardToken = (text: string): void => {
       input.onToken(text);
-      if (liveSessionId === null) return;
-      const s = this.sessions.get(liveSessionId);
-      if (!s?.sseRes) return;
+      const live = liveSessionId ? this.sessions.get(liveSessionId)?.sseRes : null;
+      const target = live ?? input.sink ?? null;
+      if (!target) return;
       try {
-        s.sseRes.write(JSON.stringify({ type: "token", text }));
+        target.write(JSON.stringify({ type: "token", text }));
       } catch {
         /* best-effort: a misbehaving sink must never crash mid-stream token delivery */
       }
@@ -199,7 +207,7 @@ export class ChatSessionManager {
         projectId: input.projectId,
         handle,
         lastActivityAt: this.now(),
-        sseRes: null,
+        sseRes: input.sink ?? null,
         turnInFlight: false,
       });
       return { sessionId: handle.sessionId, turn };

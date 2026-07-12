@@ -4,6 +4,7 @@ import { useProjects } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { useAppStore } from "@/lib/store";
 import { ProjectRow } from "./ProjectRow";
+import { ThreadList } from "./ThreadList";
 import { SidebarSettingsMenu } from "./SettingsPopover";
 import {
   Sidebar,
@@ -85,6 +86,9 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Live orchestrator threads for the active project (s40) */}
+        <ThreadList />
       </SidebarContent>
 
       {/* Settings + daemon status — native DropdownMenu (NavUser pattern) */}

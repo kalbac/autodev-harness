@@ -36,8 +36,12 @@ import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 import type { ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
 import { ChatSessionManager, type ChatStreamSink } from "../orchestrator/chat-session-manager.js";
+import { performLaunch } from "../orchestrator/launch.js";
 import type { ReadSnapshot } from "../orchestrator/adapter.js";
 import { CiEventBus, handleCiStream, handleCiCapability } from "./ci-events.js";
+import { handleThreadStream, ThreadEventBus } from "./thread-events.js";
+import type { ThreadStore } from "../thread/thread-store.js";
+import type { ThreadChatService } from "../orchestrator/thread-chat-service.js";
 import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 
 const QUEUE_STATES: readonly QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
@@ -233,6 +237,23 @@ export interface ProjectView {
   ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
   /** OPTIONAL agent-ci capability probe for `GET /projects/:id/ci/capability`. Unset -> 404. */
   onCiCapability?: () => Promise<AgentCiCapability>;
+  /**
+   * OPTIONAL live-orchestrator thread capability for `GET/POST/DELETE
+   * /projects/:id/threads*`. When unset, those routes 404 (mirrors `chat`/`ci`).
+   * `store` is the persisted thread log, `bus` the per-thread SSE fan-out,
+   * `chat` the pre-launch conversation service, and `narratorMessage` posts a
+   * mid-run operator turn once the thread has launched a real run.
+   */
+  threads?: {
+    store: ThreadStore;
+    bus: ThreadEventBus;
+    /** startThread(projectId,intent)->{threadId}; sendMessage(tid,text); confirm(tid)->{accepted,reason?}; cancel(tid)->boolean */
+    chat: ThreadChatService;
+    /** post-launch mid-run turn */
+    narratorMessage: (threadId: string, text: string) => Promise<boolean>;
+    /** Daemon-shutdown teardown: stop every live narrator + close the thread SSE bus. */
+    closeThreads: () => void;
+  };
 }
 
 export interface ApiServerDeps {
@@ -635,17 +656,6 @@ function flattenForLog(s: string, max = 200): string {
   return flat.length > max ? `${flat.slice(0, max)}...` : flat;
 }
 
-/** Fail-closed error -> string: never throws, even on an `Error` whose `message` getter
- *  or a value whose `toString` throws (gotcha [ts/fail-closed]). Used in best-effort
- *  background chains where a throwing error-format must not become an unhandled rejection. */
-function safeErrorText(err: unknown): string {
-  try {
-    return err instanceof Error ? String(err.message) : String(err);
-  } catch {
-    return "<unstringifiable error>";
-  }
-}
-
 /**
  * `"served"` -- response sent (200). `"missing"` -- nothing at this path (ENOENT);
  * eligible for SPA fallback. `"blocked"` -- something exists at this path but it is
@@ -798,6 +808,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   // itself closes. Built up lazily the same way, per-request, as CI-capable
   // projects are touched.
   const ciBusesByProject = new Map<string, CiEventBus>();
+
+  // Every project's threads capability a resolved `ProjectView` has exposed via
+  // `p.threads`, keyed by project id -- mirrors `chatManagersByProject` /
+  // `ciBusesByProject` so `close()` can stop every live narrator (its interval +
+  // CI subscriptions) and close its SSE bus before the http server shuts down.
+  const threadsByProject = new Map<string, NonNullable<ProjectView["threads"]>>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
@@ -1389,51 +1405,25 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * route -- the `p.onOrchestrate` 404 check is repeated here (not just in
    * `handleOrchestrate`) because this function is a second, independent entry
    * point that must enforce the same guard on its own.
+   *
+   * This is now a thin HTTP wrapper over `performLaunch` (the res-decoupled
+   * CORE in `src/orchestrator/launch.ts`) so a non-HTTP caller can reach the
+   * SAME launch semantics without a `ServerResponse`. This function's only job
+   * is to map `performLaunch`'s `LaunchResult` onto the EXACT status codes /
+   * error bodies the original inline implementation sent -- `"unsupported"` ->
+   * `404`, `"in_flight"` -> `409`, accepted -> `202 {accepted:true,intent}`.
    */
   async function launchOrchestrate(pid: string, p: ProjectView, intent: string, res: ServerResponse): Promise<void> {
-    if (!p.onOrchestrate) {
-      sendJson(res, 404, { error: "not found" });
-      return;
-    }
+    const r = await performLaunch({ pid, intent, onOrchestrate: p.onOrchestrate, inFlight: orchestrateInFlight, log });
 
-    if (orchestrateInFlight.has(pid)) {
-      sendJson(res, 409, { error: "an orchestrate run is already in progress" });
-      return;
-    }
-    orchestrateInFlight.add(pid);
-
-    // Fire-and-forget: NOT awaited, so the 202 below is sent before the run
-    // (which can take minutes) does anything. `Promise.resolve().then(...)`
-    // wraps the call so a SYNCHRONOUS throw from `p.onOrchestrate` becomes a
-    // rejection here rather than escaping this function's synchronous frame
-    // (which would otherwise crash out of the request handler after a 202 was
-    // already queued).
-    const onOrchestrate = p.onOrchestrate;
-    // `safeIntent` is flattened (control chars -> spaces, truncated) so an operator
-    // intent can never forge extra log lines. `safeLog` + `safeErrorText` keep this
-    // best-effort background chain from EVER producing an unhandled rejection after the
-    // 202 has been sent -- a throwing logger or a hostile error whose stringify throws
-    // must not escape (gotcha [ts/fail-closed]); the terminal `.catch` is the backstop.
-    const safeIntent = flattenForLog(intent);
-    const safeLog = (level: string, message: string): void => {
-      try {
-        log(level, message);
-      } catch {
-        /* a broken logger must never crash the post-202 background path */
+    if (!r.accepted) {
+      if (r.reason === "unsupported") {
+        sendJson(res, 404, { error: "not found" });
+      } else {
+        sendJson(res, 409, { error: "an orchestrate run is already in progress" });
       }
-    };
-    Promise.resolve()
-      .then(() => onOrchestrate(intent))
-      .then(() => safeLog("INFO", `api: orchestrate run completed for intent: ${safeIntent}`))
-      .catch((err: unknown) =>
-        safeLog("ERROR", `api: orchestrate run failed for intent "${safeIntent}": ${safeErrorText(err)}`),
-      )
-      .finally(() => {
-        orchestrateInFlight.delete(pid);
-      })
-      .catch(() => {
-        /* terminal backstop: nothing from this chain may surface as an unhandled rejection */
-      });
+      return;
+    }
 
     sendJson(res, 202, { accepted: true, intent });
   }
@@ -1607,6 +1597,191 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
     const cancelled = await p.chat.manager.cancel(sessionId);
     sendJson(res, cancelled ? 200 : 404, cancelled ? { cancelled: true } : { error: "session not found" });
+  }
+
+  // --- Live-orchestrator thread routes (mirror the chat + CI-stream idioms). A
+  // thread id is minted from a slug that KEEPS dots, so it is validated with
+  // `safeRunId` (= `isPathSafeId`, which permits dots) and NOT the dot-free
+  // `safeIdSegment` -- gotcha `[api/run-id-dot-validation-mismatch]`.
+  type ThreadsCap = NonNullable<ProjectView["threads"]>;
+
+  /** `GET /projects/:id/threads` -- list every persisted thread. */
+  async function handleThreadList(threads: ThreadsCap | undefined, res: ServerResponse): Promise<void> {
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const list = await threads.store.list();
+    sendJson(res, 200, { threads: list });
+  }
+
+  /** `POST /projects/:id/threads {intent}` -- start a new pre-launch thread. */
+  async function handleThreadCreate(
+    pid: string,
+    threads: ThreadsCap | undefined,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { intent?: unknown } | null;
+    const rawIntent = parsed?.intent;
+    if (typeof rawIntent !== "string") {
+      sendJson(res, 400, { error: "intent must be a string" });
+      return;
+    }
+    const intent = rawIntent.trim();
+    if (intent === "") {
+      sendJson(res, 400, { error: "intent must not be empty" });
+      return;
+    }
+    if (intent.length > MAX_INTENT_LENGTH) {
+      sendJson(res, 400, { error: `intent must be at most ${MAX_INTENT_LENGTH} characters` });
+      return;
+    }
+
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const { threadId } = await threads.chat.startThread(pid, intent);
+    sendJson(res, 201, { threadId });
+  }
+
+  /** `GET /projects/:id/threads/:tid` -- read one thread's meta + entries. */
+  async function handleThreadGet(threads: ThreadsCap | undefined, tid: string, res: ServerResponse): Promise<void> {
+    if (!safeRunId(tid)) {
+      sendJson(res, 400, { error: "invalid id" });
+      return;
+    }
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const r = await threads.store.read(tid);
+    if (!r) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendJson(res, 200, { meta: r.meta, entries: r.entries });
+  }
+
+  /**
+   * `POST /projects/:id/threads/:tid/message {message}` -- route one operator
+   * turn to the right target by phase: once a run has launched (status
+   * running/done/error, or `run_id` set) it is a mid-run NARRATOR turn;
+   * otherwise it is a pre-launch CHAT turn. Fire-and-forget: the reply streams
+   * back over SSE, so we do NOT await the turn (a 202 acknowledges receipt).
+   */
+  async function handleThreadMessage(
+    threads: ThreadsCap | undefined,
+    tid: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!safeRunId(tid)) {
+      sendJson(res, 400, { error: "invalid id" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { message?: unknown } | null;
+    const rawMessage = parsed?.message;
+    if (typeof rawMessage !== "string") {
+      sendJson(res, 400, { error: "message must be a string" });
+      return;
+    }
+    const message = rawMessage.trim();
+    if (message === "") {
+      sendJson(res, 400, { error: "message must not be empty" });
+      return;
+    }
+    if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+      sendJson(res, 400, { error: `message must be at most ${MAX_CHAT_MESSAGE_LENGTH} characters` });
+      return;
+    }
+
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const r = await threads.store.read(tid);
+    if (!r) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    if (r.meta.status === "running" || r.meta.status === "done" || r.meta.status === "error" || r.meta.run_id) {
+      void threads.narratorMessage(tid, message);
+    } else {
+      void threads.chat.sendMessage(tid, message);
+    }
+    sendJson(res, 202, { ok: true });
+  }
+
+  /**
+   * `POST /projects/:id/threads/:tid/confirm` -- promote the pre-launch chat to
+   * a real run. Takes no body. `reason === "in_flight"` -> 409, any other
+   * refusal (e.g. `no_session`) -> 404.
+   */
+  async function handleThreadConfirm(
+    threads: ThreadsCap | undefined,
+    tid: string,
+    _req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!safeRunId(tid)) {
+      sendJson(res, 400, { error: "invalid id" });
+      return;
+    }
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const r = await threads.chat.confirm(tid);
+    if (!r.accepted) {
+      sendJson(res, r.reason === "in_flight" ? 409 : 404, { error: r.reason ?? "not found" });
+      return;
+    }
+    sendJson(res, 202, { accepted: true });
+  }
+
+  /** `DELETE /projects/:id/threads/:tid` -- abandon a pre-launch conversation. */
+  async function handleThreadCancel(threads: ThreadsCap | undefined, tid: string, res: ServerResponse): Promise<void> {
+    if (!safeRunId(tid)) {
+      sendJson(res, 400, { error: "invalid id" });
+      return;
+    }
+    if (!threads) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const ok = await threads.chat.cancel(tid);
+    sendJson(res, 200, { cancelled: ok });
   }
 
   /**
@@ -2124,6 +2299,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       ensureWatcher(rawPid, p.stateDir);
       if (p.chat) chatManagersByProject.set(rawPid, p.chat.manager);
       if (p.ci) ciBusesByProject.set(rawPid, p.ci.bus);
+      if (p.threads) threadsByProject.set(rawPid, p.threads);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
@@ -2166,6 +2342,41 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         return void (await handleChatConfirm(rawPid, p, req, res));
       const chatCancelMatch = /^\/chat\/([^/]+)\/?$/.exec(sub);
       if (req.method === "DELETE" && chatCancelMatch) return void (await handleChatCancel(p, chatCancelMatch[1]!, res));
+
+      // Live-orchestrator thread routes. Literal `/threads` (list/create) is
+      // matched independently of, and before, the `:tid` regexes -- mirroring
+      // how the chat block orders `/chat` vs `/chat/:sid/...`. The single-segment
+      // `^\/threads\/([^/]+)\/?$` regex serves BOTH GET-get and DELETE-cancel,
+      // dispatched by method. Ids are decoded with `decodeURIComponent` and
+      // validated inside each handler with `safeRunId` (dot-permitting).
+      if (req.method === "GET" && (sub === "/threads" || sub === "/threads/"))
+        return void (await handleThreadList(p.threads, res));
+      if (req.method === "POST" && (sub === "/threads" || sub === "/threads/"))
+        return void (await handleThreadCreate(rawPid, p.threads, req, res));
+      const threadStreamMatch = /^\/threads\/([^/]+)\/stream\/?$/.exec(sub);
+      if (req.method === "GET" && threadStreamMatch) {
+        const tid = decodeURIComponent(threadStreamMatch[1]!);
+        if (!safeRunId(tid)) {
+          sendJson(res, 400, { error: "invalid id" });
+          return;
+        }
+        return void handleThreadStream(
+          p.threads ? { bus: p.threads.bus, readNdjson: (id) => p.threads!.store.readNdjson(id) } : undefined,
+          tid,
+          res,
+        );
+      }
+      const threadMessageMatch = /^\/threads\/([^/]+)\/message\/?$/.exec(sub);
+      if (req.method === "POST" && threadMessageMatch)
+        return void (await handleThreadMessage(p.threads, decodeURIComponent(threadMessageMatch[1]!), req, res));
+      const threadConfirmMatch = /^\/threads\/([^/]+)\/confirm\/?$/.exec(sub);
+      if (req.method === "POST" && threadConfirmMatch)
+        return void (await handleThreadConfirm(p.threads, decodeURIComponent(threadConfirmMatch[1]!), req, res));
+      const threadIdMatch = /^\/threads\/([^/]+)\/?$/.exec(sub);
+      if (req.method === "GET" && threadIdMatch)
+        return void (await handleThreadGet(p.threads, decodeURIComponent(threadIdMatch[1]!), res));
+      if (req.method === "DELETE" && threadIdMatch)
+        return void (await handleThreadCancel(p.threads, decodeURIComponent(threadIdMatch[1]!), res));
 
       if (req.method === "GET" && (sub === "/ci/capability" || sub === "/ci/capability/"))
         return void handleCiCapability(p.onCiCapability, res);
@@ -2280,6 +2491,16 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       for (const b of ciBusesByProject.values()) {
         try {
           b.closeAll();
+        } catch {
+          /* ignore -- best-effort teardown, must never block shutdown */
+        }
+      }
+
+      // Same reasoning: a live narrator's interval (and its CI subscriptions) plus
+      // any thread SSE sink would outlive the daemon -- stop/close them all first.
+      for (const t of threadsByProject.values()) {
+        try {
+          t.closeThreads();
         } catch {
           /* ignore -- best-effort teardown, must never block shutdown */
         }
