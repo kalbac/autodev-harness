@@ -66,7 +66,7 @@ export function ActivityCell({ projectId, entry }: { projectId: string; entry: A
   );
 }
 
-const linkClassName = "shrink-0 font-mono text-[11px] text-accent hover:underline";
+const linkClassName = "shrink-0 font-mono text-[11px] text-primary hover:underline";
 
 /** Renders the ONE deep-link this activity kind supports, when its ref carries
  *  the needed id -- `agent_ci`/`gate` -> the CI screen, `worker`/`escalation`/

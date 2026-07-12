@@ -100,7 +100,7 @@ function ThreadEntryRow({
         <Link
           to="/p/$projectId/runs/$runId"
           params={{ projectId, runId: entry.runId }}
-          className="flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-accent hover:underline"
+          className="flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-primary hover:underline"
         >
           <ArrowRight className="size-3" />
           run started — {entry.runId}

@@ -7,6 +7,7 @@ import type { ThreadStatus } from "@/lib/api";
 import { NewRunComposer } from "@/components/NewRunComposer";
 import { ProjectTopBar } from "@/components/ProjectTopBar";
 import { ThreadTranscript } from "@/components/ThreadTranscript";
+import { Spinner } from "@/components/ui/Feedback";
 
 /** Thread status → the inspector tone used to tint its badge. */
 const STATUS_TONE: Record<ThreadStatus, Tone> = {
@@ -46,6 +47,10 @@ export function ThreadView() {
   // paramThreadId always wins; on the home route pick the newest thread unless a
   // fresh compose was explicitly requested.
   const effectiveThreadId = paramThreadId ?? (forceFresh ? undefined : newestThreadId);
+  // On the home route (no paramThreadId, no explicit `?compose=new`), `newestThreadId`
+  // is undefined until `useThreads` resolves -- without this, the fresh-thread hero
+  // flashes for a frame before flipping to the newest thread once it loads.
+  const resolvingNewestThread = !paramThreadId && !forceFresh && threads.isLoading;
 
   // Hooks run unconditionally (rules-of-hooks); an undefined/"" threadId just
   // yields empty/disabled results.
@@ -87,6 +92,13 @@ export function ThreadView() {
             </div>
           </div>
         </>
+      ) : resolvingNewestThread ? (
+        // Still resolving whether this project has an existing thread to land on --
+        // a neutral loading state, never the fresh hero (which would otherwise flash
+        // before flipping to the newest thread once `useThreads` settles).
+        <div className="flex flex-1 items-center justify-center">
+          <Spinner className="text-muted-foreground" />
+        </div>
       ) : (
         // Fresh-thread state — orchestrator greeting + a start composer, never an
         // empty transcript.
