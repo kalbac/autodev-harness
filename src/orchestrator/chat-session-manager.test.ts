@@ -384,6 +384,29 @@ describe("ChatSessionManager", () => {
     expect(callerTokens).toEqual(["too-early"]); // caller onToken still fires regardless of any sink
   });
 
+  it("streams opening-turn tokens (emitted during startSession) to the start sink", async () => {
+    const { adapter } = makeFakeAdapter();
+    // Simulate the real adapter: onToken fires INCREMENTALLY while
+    // startSession() is still in flight (before liveSessionId is assigned),
+    // not just after it resolves -- this is when real opening-turn tokens
+    // actually arrive.
+    adapter.startSession = async (input) => {
+      input.onToken("Hel");
+      input.onToken("lo");
+      return { handle: { sessionId: "s1" }, turn: { reply: "Hello" } };
+    };
+
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+    const frames: string[] = [];
+    const sink = { write: (c: string) => frames.push(c), end: () => {} };
+
+    await mgr.start({ projectId: "p1", intent: "hi", state: emptyState, onToken: () => {}, sink });
+
+    const joined = frames.map((f) => JSON.parse(f).text ?? "").join("");
+    expect(joined).toBe("Hello");
+  });
+
   it("hasSession() is true for a live session, false for an unknown one, and false again after cancel()", async () => {
     const { adapter } = makeFakeAdapter();
     const mgr = new ChatSessionManager({ adapter, log: () => {} });
