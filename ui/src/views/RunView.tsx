@@ -108,7 +108,9 @@ function RunHeading({ projectId, manifest }: { projectId: string; manifest: RunM
   };
   const reRun = () => {
     setComposerSeed(manifest.intent);
-    void navigate({ to: "/p/$projectId", params: { projectId } });
+    // `?compose=new` forces the fresh-thread hero so the seeded start-composer
+    // mounts (otherwise home would stream the newest thread and never consume it).
+    void navigate({ to: "/p/$projectId", params: { projectId }, search: { compose: "new" } });
   };
 
   if (editing) {

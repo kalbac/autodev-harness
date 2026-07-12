@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { AppShell } from "./components/AppShell";
 import { HomeView } from "./views/HomeView";
+import { ThreadView } from "./views/ThreadView";
 import { RunView } from "./views/RunView";
 import { TaskDetailView } from "./views/TaskDetailView";
 import { BoardView } from "./views/BoardView";
@@ -62,12 +63,22 @@ const settingsRoute = createRoute({
   ),
 });
 
-const projectHomeRoute = createRoute({ getParentRoute: () => projectRoute, path: "/", component: HomeView });
+const projectHomeRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/",
+  component: HomeView,
+  // `?compose=new` forces the fresh-thread hero even when threads exist — set by
+  // the sidebar "New thread" action and RunView's re-run. Any other value is
+  // dropped so the URL stays clean.
+  validateSearch: (search: Record<string, unknown>): { compose?: "new" } =>
+    search.compose === "new" ? { compose: "new" } : {},
+});
 const projectSettingsRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/settings",
   component: ProjectSettingsView,
 });
+const projectThreadRoute = createRoute({ getParentRoute: () => projectRoute, path: "/t/$threadId", component: ThreadView });
 const runRoute = createRoute({ getParentRoute: () => projectRoute, path: "/runs/$runId", component: RunView });
 const taskRoute = createRoute({ getParentRoute: () => projectRoute, path: "/tasks/$taskId", component: TaskDetailView });
 const boardRoute = createRoute({ getParentRoute: () => projectRoute, path: "/board", component: BoardView });
@@ -80,6 +91,7 @@ const routeTree = rootRoute.addChildren([
   projectRoute.addChildren([
     projectHomeRoute,
     projectSettingsRoute,
+    projectThreadRoute,
     runRoute,
     taskRoute,
     boardRoute,
