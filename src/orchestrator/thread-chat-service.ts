@@ -219,7 +219,9 @@ export class ThreadChatService {
         // Detection strips every fence; PERSISTENCE (runTurn) still uses the
         // json-only stripFencedJson so legitimate non-json code fences survive
         // as orchestrator prose.
-        const proseForLaunch = turn.reply.replace(/```[\s\S]*?```/g, "");
+        const proseForLaunch = turn.reply
+          .replace(/```[\s\S]*?```/g, "") // closed fences
+          .replace(/```[\s\S]*$/g, ""); // an unterminated trailing fence (opening ``` -> EOF)
         const isLaunch = proseForLaunch.split(/\r?\n/).some((ln) => ln.trim() === LAUNCH_MARKER);
         if (isLaunch) {
           const cur = await this.d.store.read(threadId);
