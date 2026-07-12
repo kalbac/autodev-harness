@@ -198,6 +198,17 @@ async function main(): Promise<void> {
                 manager: root.chat,
                 buildSnapshot: () => buildReadSnapshot(createReadCapability(root.repo)),
               },
+              // Live-orchestrator threads (adr/004): pre-launch chat service +
+              // post-launch narrator. `onOrchestrate` reuses the SAME R1-thin
+              // launcher the /orchestrate route uses; the launch-guard set is a
+              // FRESH per-project Set (thread-launch single-flight is separate
+              // from the HTTP /orchestrate route's set -- acceptable because the
+              // orchestrator's handleIntent has its own intent-level dedup).
+              // buildThreads memoizes, so only the first Set is ever captured.
+              threads: root.buildThreads({
+                onOrchestrate: (intent: string) => root.orchestrator.handleIntent(intent),
+                inFlight: new Set<string>(),
+              }),
               ci: root.ci,
               onCiCapability: root.onCiCapability,
             },

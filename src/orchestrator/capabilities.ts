@@ -206,7 +206,7 @@ const RUN_SLUG_MAX_LEN = 40;
  * produces something unsafe (e.g. an intent built entirely of literal `.`
  * characters can slip a `..` past this collapse step).
  */
-function slugifyIntent(intent: string): string {
+export function slugifyIntent(intent: string): string {
   const collapsed = intent
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/-+/g, "-")

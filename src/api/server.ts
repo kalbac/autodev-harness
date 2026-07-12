@@ -251,6 +251,8 @@ export interface ProjectView {
     chat: ThreadChatService;
     /** post-launch mid-run turn */
     narratorMessage: (threadId: string, text: string) => Promise<boolean>;
+    /** Daemon-shutdown teardown: stop every live narrator + close the thread SSE bus. */
+    closeThreads: () => void;
   };
 }
 
@@ -806,6 +808,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   // itself closes. Built up lazily the same way, per-request, as CI-capable
   // projects are touched.
   const ciBusesByProject = new Map<string, CiEventBus>();
+
+  // Every project's threads capability a resolved `ProjectView` has exposed via
+  // `p.threads`, keyed by project id -- mirrors `chatManagersByProject` /
+  // `ciBusesByProject` so `close()` can stop every live narrator (its interval +
+  // CI subscriptions) and close its SSE bus before the http server shuts down.
+  const threadsByProject = new Map<string, NonNullable<ProjectView["threads"]>>();
 
   // One fs-watcher per BUILT project, attached the first time the project resolves.
   // Every project's changes broadcast on the single WS stream, tagged with the
@@ -2291,6 +2299,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       ensureWatcher(rawPid, p.stateDir);
       if (p.chat) chatManagersByProject.set(rawPid, p.chat.manager);
       if (p.ci) ciBusesByProject.set(rawPid, p.ci.bus);
+      if (p.threads) threadsByProject.set(rawPid, p.threads);
 
       if (req.method === "GET" && (sub === "/state" || sub === "/state/")) return void (await handleState(p, res));
       if (req.method === "GET" && (sub === "/config" || sub === "/config/")) {
@@ -2482,6 +2491,16 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       for (const b of ciBusesByProject.values()) {
         try {
           b.closeAll();
+        } catch {
+          /* ignore -- best-effort teardown, must never block shutdown */
+        }
+      }
+
+      // Same reasoning: a live narrator's interval (and its CI subscriptions) plus
+      // any thread SSE sink would outlive the daemon -- stop/close them all first.
+      for (const t of threadsByProject.values()) {
+        try {
+          t.closeThreads();
         } catch {
           /* ignore -- best-effort teardown, must never block shutdown */
         }
