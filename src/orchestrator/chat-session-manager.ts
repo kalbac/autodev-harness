@@ -118,6 +118,11 @@ export class ChatSessionManager {
     intent: string;
     state: ReadSnapshot;
     onToken: (text: string) => void;
+    /** Optional SSE sink to attach at session-creation time (rather than via
+     *  a later `attachStream()` call) so the OPENING turn's tokens can also
+     *  stream, not just later turns. Omitted by existing callers -> `null`,
+     *  byte-identical to prior behavior. */
+    sink?: ChatStreamSink;
   }): Promise<{ sessionId: string; turn: ChatTurnResult }> {
     if (this.projectsInFlight.has(input.projectId)) {
       throw new Error("a chat session is already open for this project");
@@ -199,7 +204,7 @@ export class ChatSessionManager {
         projectId: input.projectId,
         handle,
         lastActivityAt: this.now(),
-        sseRes: null,
+        sseRes: input.sink ?? null,
         turnInFlight: false,
       });
       return { sessionId: handle.sessionId, turn };

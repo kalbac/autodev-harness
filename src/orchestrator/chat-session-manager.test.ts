@@ -339,6 +339,51 @@ describe("ChatSessionManager", () => {
     expect(payload).toContain("hello");
   });
 
+  it("a sink provided to start() is wired in at session creation, so a token on the captured onToken reaches it without a separate attachStream() call", async () => {
+    const { adapter } = makeFakeAdapter();
+    // Same capture trick as the "onToken forwarding stays live for later
+    // turns" test above: ClaudeChatProcess binds onToken ONCE and reuses it
+    // for the session's whole lifetime, so grabbing it here simulates a
+    // token arriving on that same reference at the earliest moment a sink
+    // set at start() time could possibly receive one -- right after the
+    // session is registered, with no attachStream() call in between.
+    let capturedOnToken: ((text: string) => void) | undefined;
+    adapter.startSession = async (input) => {
+      capturedOnToken = input.onToken;
+      return { handle: { sessionId: "s1" }, turn: { reply: "hi" } };
+    };
+
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+
+    const tokens: string[] = [];
+    const sink = { write: (c: string) => tokens.push(c), end: () => {} };
+
+    await mgr.start({ projectId: "p1", intent: "hi", state: emptyState, onToken: () => {}, sink });
+    expect(capturedOnToken).toBeTruthy();
+
+    // No attachStream() call anywhere above -- the sink came in via start().
+    capturedOnToken!("hello");
+    expect(tokens.join("")).toContain('"token"');
+    expect(tokens.join("")).toContain("hello");
+  });
+
+  it("start() with no sink behaves exactly as before -- sseRes stays null and a token on the captured onToken is dropped until attachStream() is called", async () => {
+    const { adapter } = makeFakeAdapter();
+    let capturedOnToken: ((text: string) => void) | undefined;
+    adapter.startSession = async (input) => {
+      capturedOnToken = input.onToken;
+      return { handle: { sessionId: "s1" }, turn: { reply: "hi" } };
+    };
+
+    const mgr = new ChatSessionManager({ adapter, log: () => {} });
+    const callerTokens: string[] = [];
+    // No `sink` field at all -- existing callers (e.g. handleChatStart).
+    await mgr.start({ projectId: "p1", intent: "hi", state: emptyState, onToken: (t) => callerTokens.push(t) });
+
+    expect(() => capturedOnToken!("too-early")).not.toThrow();
+    expect(callerTokens).toEqual(["too-early"]); // caller onToken still fires regardless of any sink
+  });
+
   it("hasSession() is true for a live session, false for an unknown one, and false again after cancel()", async () => {
     const { adapter } = makeFakeAdapter();
     const mgr = new ChatSessionManager({ adapter, log: () => {} });
