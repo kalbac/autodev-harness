@@ -36,6 +36,7 @@ import type { AgentExtensions } from "../detect/agent-extensions.js";
 import { buildRunUsageSummary, isTokenUsageDoc, type TokenUsageDoc } from "../usage/usage.js";
 import type { ApplyOnAcceptResult } from "../apply/apply-on-accept.js";
 import { ChatSessionManager, type ChatStreamSink } from "../orchestrator/chat-session-manager.js";
+import { performLaunch } from "../orchestrator/launch.js";
 import type { ReadSnapshot } from "../orchestrator/adapter.js";
 import { CiEventBus, handleCiStream, handleCiCapability } from "./ci-events.js";
 import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
@@ -633,17 +634,6 @@ function staticContentType(absPath: string): string {
 function flattenForLog(s: string, max = 200): string {
   const flat = Array.from(s, (ch) => { const c = ch.codePointAt(0) ?? 0; return c < 0x20 || c === 0x7f ? " " : ch; }).join("").replace(/ {2,}/g, " ");
   return flat.length > max ? `${flat.slice(0, max)}...` : flat;
-}
-
-/** Fail-closed error -> string: never throws, even on an `Error` whose `message` getter
- *  or a value whose `toString` throws (gotcha [ts/fail-closed]). Used in best-effort
- *  background chains where a throwing error-format must not become an unhandled rejection. */
-function safeErrorText(err: unknown): string {
-  try {
-    return err instanceof Error ? String(err.message) : String(err);
-  } catch {
-    return "<unstringifiable error>";
-  }
 }
 
 /**
@@ -1389,51 +1379,25 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * route -- the `p.onOrchestrate` 404 check is repeated here (not just in
    * `handleOrchestrate`) because this function is a second, independent entry
    * point that must enforce the same guard on its own.
+   *
+   * This is now a thin HTTP wrapper over `performLaunch` (the res-decoupled
+   * CORE in `src/orchestrator/launch.ts`) so a non-HTTP caller can reach the
+   * SAME launch semantics without a `ServerResponse`. This function's only job
+   * is to map `performLaunch`'s `LaunchResult` onto the EXACT status codes /
+   * error bodies the original inline implementation sent -- `"unsupported"` ->
+   * `404`, `"in_flight"` -> `409`, accepted -> `202 {accepted:true,intent}`.
    */
   async function launchOrchestrate(pid: string, p: ProjectView, intent: string, res: ServerResponse): Promise<void> {
-    if (!p.onOrchestrate) {
-      sendJson(res, 404, { error: "not found" });
-      return;
-    }
+    const r = await performLaunch({ pid, intent, onOrchestrate: p.onOrchestrate, inFlight: orchestrateInFlight, log });
 
-    if (orchestrateInFlight.has(pid)) {
-      sendJson(res, 409, { error: "an orchestrate run is already in progress" });
-      return;
-    }
-    orchestrateInFlight.add(pid);
-
-    // Fire-and-forget: NOT awaited, so the 202 below is sent before the run
-    // (which can take minutes) does anything. `Promise.resolve().then(...)`
-    // wraps the call so a SYNCHRONOUS throw from `p.onOrchestrate` becomes a
-    // rejection here rather than escaping this function's synchronous frame
-    // (which would otherwise crash out of the request handler after a 202 was
-    // already queued).
-    const onOrchestrate = p.onOrchestrate;
-    // `safeIntent` is flattened (control chars -> spaces, truncated) so an operator
-    // intent can never forge extra log lines. `safeLog` + `safeErrorText` keep this
-    // best-effort background chain from EVER producing an unhandled rejection after the
-    // 202 has been sent -- a throwing logger or a hostile error whose stringify throws
-    // must not escape (gotcha [ts/fail-closed]); the terminal `.catch` is the backstop.
-    const safeIntent = flattenForLog(intent);
-    const safeLog = (level: string, message: string): void => {
-      try {
-        log(level, message);
-      } catch {
-        /* a broken logger must never crash the post-202 background path */
+    if (!r.accepted) {
+      if (r.reason === "unsupported") {
+        sendJson(res, 404, { error: "not found" });
+      } else {
+        sendJson(res, 409, { error: "an orchestrate run is already in progress" });
       }
-    };
-    Promise.resolve()
-      .then(() => onOrchestrate(intent))
-      .then(() => safeLog("INFO", `api: orchestrate run completed for intent: ${safeIntent}`))
-      .catch((err: unknown) =>
-        safeLog("ERROR", `api: orchestrate run failed for intent "${safeIntent}": ${safeErrorText(err)}`),
-      )
-      .finally(() => {
-        orchestrateInFlight.delete(pid);
-      })
-      .catch(() => {
-        /* terminal backstop: nothing from this chain may surface as an unhandled rejection */
-      });
+      return;
+    }
 
     sendJson(res, 202, { accepted: true, intent });
   }
