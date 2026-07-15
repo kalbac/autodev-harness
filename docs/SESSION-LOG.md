@@ -4,7 +4,7 @@
 
 ---
 
-## s42 (2026-07-15) — two s41 structural findings FIXED + codex-gated + verified (autonomous overnight); branch `autodev/s42-critic-correctness-gate`, NOT merged
+## s42 (2026-07-15) — two s41 structural findings FIXED + codex-gated + verified + MERGED (autonomous overnight) — PR #73 (`ffefeb7`), CI 4/4
 
 Operator picked priorities **#1 (design talk: critic→CI / testless-repo blindspot) then #2 (reply-B rework)**, then granted full autonomy for the night with one hard rule: *don't claim done until it's verified working end-to-end*. Ran the design talk, then implemented both — subagent-gated (codex GPT-5.5) + TDD + verified.
 
@@ -14,7 +14,7 @@ Operator picked priorities **#1 (design talk: critic→CI / testless-repo blinds
 
 **Gate:** 1082 tests / 3 skip, root typecheck + build green. New gotcha `[critic/codex]` (codex's inline-embedded diff strips string quotes → false "invalid syntax" blocker — hit TWICE this session; verify against typecheck/build/tests, decline). GOTCHAS 65→66; `[gate/critic-before-ci-blocks-testless-repos]` + `[rework/reply-b-drops-critic-feedback]` marked RESOLVED.
 
-**Deliberately NOT done (overnight rule "stop before expensive unsupervised live runs"):** the full LLM reply-B→rework→clean **daemon** cycle (needs an unattended worker+critic run; the fix's data path is fully proven without it) — flagged for an operator-attended live-prove. **NOT merged:** branch awaits push → PR → green CI → merge. **Next:** merge (agent-owned after gate+green CI) or operator-attended reply-B daemon proof; then chat polish (`[narrator/escalated-run-not-terminal]`), then unattended autonomy (ADR-004).
+**Deliberately NOT done (overnight rule "stop before expensive unsupervised live runs"):** the full LLM reply-B→rework→clean **daemon** cycle (needs an unattended worker+critic run; the fix's data path is fully proven without it) — flagged for an operator-attended live-prove. **Merged:** PR #73 → main (`ffefeb7`), CI green 4/4 (ubuntu+windows × node 20/22), branch deleted. **Next:** operator-attended reply-B daemon proof if wanted; then chat polish (`[narrator/escalated-run-not-terminal]`), then unattended autonomy (ADR-004).
 
 ---
 
