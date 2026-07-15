@@ -5,11 +5,15 @@
  * Assembles, in order:
  * 1. Adversarial framing: the DEFAULT ASSUMPTION is that the diff BREAKS a
  *    contract — the critic must actively try to prove that, not rubber-stamp
- *    the change.
+ *    the change. Clean-blockers are a broken contract, a fabricated proof, or
+ *    a logic/regression flaw — NOT a missing brand-new test (ADR-005: the
+ *    critic is a correctness gate; coverage is enforced mechanically by the
+ *    machine gate's contract zones + guards, never by the LLM critic).
  * 2. An explicit fencing instruction: do NOT try to read `worker-report.md`
  *    or the commit message; judge ONLY the diff shown below.
  * 3. An ordered checklist: (1) which contract zones the diff touches,
- *    (2) whether each touch has a guard/test covering it, (3) fabricated-proof
+ *    (2) whether an EXISTING test covers each touch — diagnostic only, a
+ *    missing new test is not a `broken` verdict, (3) fabricated-proof
  *    detection — a test edited to match a changed contract value is itself
  *    BROKEN, (4) logic/regression risk independent of contracts.
  * 4. A statement that the response MUST be a single JSON object matching the
@@ -43,8 +47,24 @@ export function buildCriticPrompt(diff: string): string {
     "",
     "Assume, by default, that this diff BREAKS a contract somewhere. Your job",
     "is to actively try to PROVE that — not to rubber-stamp the change. Only",
-    "conclude `clean` if you cannot find a broken contract, a missing guard,",
-    "or a fabricated proof after genuinely trying.",
+    "conclude `clean` if, after genuinely trying, you cannot find a broken",
+    "contract, a fabricated proof, or a logic/regression flaw. A correct change",
+    "that merely LACKS a brand-new test is NOT a reason to withhold `clean` —",
+    "coverage is enforced mechanically by the gate, not by you (see below).",
+    "",
+  );
+
+  sections.push(
+    "## Coverage gaps are not defects — but correctness IS your job",
+    "",
+    "Do NOT fail a diff because a correct behavioral change lacks a NEW test",
+    "locking it. That is a coverage gap, not a defect, and coverage is enforced",
+    "MECHANICALLY — by the machine gate (declared contract zones + mutation-",
+    "verified, operator-blessed guards) and by the repo's existing CI — never by",
+    "you. Judge whether THIS diff is CORRECT. If a behavioral touch is uncovered,",
+    "NOTE it in `notes` as information for the operator — do NOT lower the verdict",
+    "for it. (A test EDITED to match a changed contract value is a different thing",
+    "entirely: that is a fabricated proof — see the checklist — and IS `broken`.)",
     "",
   );
 
@@ -62,8 +82,9 @@ export function buildCriticPrompt(diff: string): string {
     "## Checklist (work through this in order)",
     "",
     "1. Which contract zones does this diff touch?",
-    "2. For each touched zone, is there a guard/test that actually covers",
-    "   the touch?",
+    "2. For each touched zone, NOTE whether an existing test covers it — for",
+    "   the operator's information only. A MISSING new test is NOT, by itself,",
+    "   a `broken` verdict (coverage is the machine gate's job, see above).",
     "3. Fabricated-proof detection: was any test edited to match a changed",
     "   contract value rather than to genuinely verify the contract? A test",
     "   edited this way is itself BROKEN — treat it as evidence of a broken",
