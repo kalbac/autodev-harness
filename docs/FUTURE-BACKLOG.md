@@ -2,9 +2,10 @@
 
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
-## Evaluate `gpt-5.6-sol` as the critic model (operator steer, s43 2026-07-16)
+## Evaluate `gpt-5.6` (Sol / Terra / Luna) as the critic model (operator steer, s43 2026-07-16)
 
-OpenAI shipped **gpt-5.6 "Sol"**; it is provisioned on our account. The critic is a
+OpenAI shipped **gpt-5.6** in three variants — **Sol / Terra / Luna** — all provisioned on our
+account. The critic is a
 configurable role (adr/003 role-matrix), so swapping `roles.critic.model` is a **config
 change, no code** — and Sol stays in the OpenAI/codex family, so the worker(claude)/critic
 heterogeneity rule ("never Claude-on-Claude") is preserved.
@@ -18,12 +19,15 @@ calibrated on `gpt-5.5`. Promotion protocol:
    logic-regression) and (b) does NOT false-block correct clean changes (must not regress ADR-005).
    If it drifts, keep `gpt-5.5`. Track TOKENS, not cost (operator rule).
 
-**BLOCKER found empirically (s43):** our installed **codex CLI is too old to invoke Sol** — a
-codex run pinned to `gpt-5.6-sol` returns `400 invalid_request_error: "The 'gpt-5.6-sol' model
-requires a newer version of Codex. Please upgrade to the latest app or CLI"`. So step 0 is
-**upgrade the codex CLI/app**, THEN calibrate. Also note: something made `gpt-5.6-sol` the codex
-DEFAULT model — a critic run that doesn't explicitly pin `gpt-5.5` will silently fail the gate
-with that 400 until the CLI is upgraded (watch for this; pin the critic model explicitly).
+**Codex-CLI blocker — RESOLVED (operator, end of s43):** during s43 a codex run pinned to
+`gpt-5.6-sol` failed `400 invalid_request_error: "The 'gpt-5.6-sol' model requires a newer version
+of Codex"` — the installed CLI was too old. **The operator upgraded the codex CLI at end of s43, so
+Sol/Terra/Luna are now invokable.** Next critic run CAN try one of them (per the calibration
+protocol above). Open question to settle FIRST: **which of Sol/Terra/Luna** is the right critic
+tier (they are presumably different sizes/latencies — treat them as three separate candidates and
+calibrate whichever the operator picks). Watch-out carried over: something had made `gpt-5.6-sol`
+the codex DEFAULT — so **explicitly pin the critic model** in every gate run until we deliberately
+promote one, otherwise the gate silently drifts onto an unvetted model.
 
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 
