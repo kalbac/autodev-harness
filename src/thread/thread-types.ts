@@ -36,7 +36,7 @@ export type ThreadEntryInput =
   | Omit<Extract<ThreadEntry, { type: "plan" }>, "ts">
   | Omit<Extract<ThreadEntry, { type: "run_link" }>, "ts">;
 
-export const threadStatusSchema = z.enum(["chatting", "running", "done", "error"]);
+export const threadStatusSchema = z.enum(["chatting", "running", "done", "error", "blocked"]);
 export type ThreadStatus = z.infer<typeof threadStatusSchema>;
 
 export const threadMetaSchema = z

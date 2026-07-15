@@ -15,6 +15,7 @@ const STATUS_TONE: Record<ThreadStatus, Tone> = {
   running: "working",
   done: "clean",
   error: "broken",
+  blocked: "uncertain",
 };
 
 /**

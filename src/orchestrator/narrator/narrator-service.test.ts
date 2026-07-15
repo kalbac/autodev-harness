@@ -189,4 +189,62 @@ describe("NarratorService", () => {
     expect(h.appended.some((e) => e.type === "operator_msg" && e.text === "how is it going?")).toBe(true);
     expect(h.appended.some((e) => e.type === "orchestrator_msg")).toBe(true);
   });
+
+  // [narrator/escalated-run-not-terminal]: an escalated task is NOT terminal, so the
+  // run parks awaiting the operator. It must stop `blocked` (distinct from running),
+  // not idle-tick `running` forever.
+  it("parks `blocked` with a 'waiting on you' note when a task escalates and nothing progresses", async () => {
+    const onStopped = vi.fn();
+    const h = harness([
+      { runId: "r", tasks: [{ taskId: "t1", status: "active", title: "T" }] },
+      { runId: "r", tasks: [{ taskId: "t1", status: "escalated", title: "T" }] },
+    ], { onStopped });
+    h.svc.start();
+    await h.advance(); // discover + active
+    await h.advance(); // active -> escalated -> blocked + stop
+    expect(h.store.setMeta).toHaveBeenCalledWith("th", expect.objectContaining({ status: "blocked" }));
+    expect(h.appended.some((e) => e.type === "orchestrator_msg" && /waiting on your reply/i.test(e.text))).toBe(true);
+    expect(onStopped).toHaveBeenCalledTimes(1);
+    // never mislabels a parked run as done/error
+    expect(h.store.setMeta).not.toHaveBeenCalledWith("th", expect.objectContaining({ status: "done" }));
+  });
+
+  it("does NOT block while a task is still active (only parks when nothing progresses)", async () => {
+    const h = harness([{ runId: "r", tasks: [{ taskId: "t1", status: "active", title: "T" }] }]);
+    h.svc.start();
+    await h.advance();
+    expect(h.store.setMeta).not.toHaveBeenCalledWith("th", expect.objectContaining({ status: "blocked" }));
+  });
+
+  it("does NOT block when one task is escalated but ANOTHER is still active", async () => {
+    const h = harness([{
+      runId: "r",
+      tasks: [
+        { taskId: "t1", status: "escalated", title: "A" },
+        { taskId: "t2", status: "active", title: "B" },
+      ],
+    }]);
+    h.svc.start();
+    await h.advance();
+    expect(h.store.setMeta).not.toHaveBeenCalledWith("th", expect.objectContaining({ status: "blocked" }));
+  });
+
+  // Re-arm after reply-B: the run is already bound, so discovery is skipped and the
+  // first snapshot is a SILENT baseline (no duplicate "run started", no run_link) —
+  // only post-reply transitions narrate.
+  it("re-arm (boundRunId): skips discovery, silent baseline, narrates only later transitions -> done", async () => {
+    const h = harness([
+      { runId: "r", tasks: [{ taskId: "t1", status: "pending", title: "T" }] }, // baseline (silent)
+      { runId: "r", tasks: [{ taskId: "t1", status: "active", title: "T" }] },  // -> worker cell
+      { runId: "r", tasks: [{ taskId: "t1", status: "done", title: "T" }] },    // -> done + stop
+    ], { boundRunId: "r" });
+    h.svc.start();
+    await h.advance(); // baseline: adopt pending silently
+    expect(h.appended.some((e) => e.type === "run_link")).toBe(false); // discovery skipped
+    expect(h.appended.some((e) => e.type === "activity" && e.kind === "run" && e.summary === "run started")).toBe(false);
+    await h.advance(); // pending -> active -> worker cell
+    expect(h.appended.some((e) => e.type === "activity" && e.kind === "worker")).toBe(true);
+    await h.advance(); // active -> done -> terminal
+    expect(h.store.setMeta).toHaveBeenCalledWith("th", expect.objectContaining({ status: "done" }));
+  });
 });

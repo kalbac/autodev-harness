@@ -138,6 +138,10 @@ export interface ProjectRoot {
   /** Stop every live narrator (clears its interval + CI subscriptions) and close
    *  the thread SSE bus -- daemon-shutdown teardown, mirrors chat `closeAll()`. */
   closeThreads(): void;
+  /** Re-arm the narrator for a thread parked `blocked` on an escalation, once the
+   *  operator's reply re-queues `taskId` ([narrator/escalated-run-not-terminal]).
+   *  Fire-and-forget from the reply path; best-effort (never throws). */
+  rearmNarratorForTask(projectId: string, taskId: string): Promise<void>;
 }
 
 /** The threads capability object the HTTP `ProjectView.threads` consumes; also
@@ -571,7 +575,13 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     threadId: string;
     finalIntent: string;
     launchedAt: number;
+    /** Re-arm mode: skip discovery, narrate from this already-bound run. */
+    boundRunId?: string;
   }): void => {
+    // Defensive: never leave two live narrators for one thread (a re-arm after a
+    // `blocked` park, or a rare double-fire). Stop any lingering one first; its
+    // onStopped prunes the map before the new svc re-registers below.
+    narrators.get(a.threadId)?.stop();
     const svc = new NarratorService({
       ...a,
       store: getThreadStore(),
@@ -591,6 +601,39 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     });
     narrators.set(a.threadId, svc);
     svc.start();
+  };
+
+  /** Re-arm a narrator for a thread that parked `blocked` on an escalation, once
+   *  the operator's reply re-queues its task ([narrator/escalated-run-not-terminal]).
+   *  Finds the blocked thread whose run manifest owns `taskId`, flips it back to
+   *  `running`, and starts a fresh narrator bound to the SAME run (baseline-silent
+   *  so it narrates only post-reply progress). Best-effort: a failure here must
+   *  never affect the reply/gate path (called fire-and-forget from onReplyRework). */
+  const rearmNarratorForTask = async (projectId: string, taskId: string): Promise<void> => {
+    try {
+      const store = getThreadStore();
+      for (const meta of await store.list()) {
+        if (meta.status !== "blocked" || meta.run_id === undefined) continue;
+        const manifest = await readOneRunManifest(meta.run_id);
+        if (!manifest || !manifest.taskIds.includes(taskId)) continue;
+        await store.setMeta(meta.id, { status: "running" });
+        startNarrator({
+          projectId,
+          threadId: meta.id,
+          finalIntent: meta.title,
+          launchedAt: Date.now(),
+          boundRunId: meta.run_id,
+        });
+        // Observability (codex #3): a successful re-arm is the positive signal —
+        // its ABSENCE for a thread that should have resumed is the diagnostic for
+        // the stale/corrupt-run_id edge. We deliberately do NOT warn on the
+        // zero-match case: a curl/direct /orchestrate run legitimately owns no
+        // thread, so "no blocked thread for this task" is normal, not an error.
+        log("INFO", `narrator: re-armed blocked thread ${meta.id} (run ${meta.run_id}) after reply-B on ${taskId}`);
+      }
+    } catch (err) {
+      try { log("WARN", `[ts/fail-closed] rearm narrator failed for ${taskId}: ${String(err)}`); } catch { /* logger must never break the reply path */ }
+    }
   };
 
   const closeThreads = (): void => {
@@ -684,6 +727,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     onCiCapability: () => detectAgentCiCapability(),
     buildThreads,
     closeThreads,
+    rearmNarratorForTask,
   };
 }
 

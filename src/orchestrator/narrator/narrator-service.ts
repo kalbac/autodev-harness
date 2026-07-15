@@ -41,6 +41,13 @@ export interface NarratorDeps {
    *  prune its narrators map — otherwise the map grows unbounded and
    *  narratorMessage can find a stopped service. */
   onStopped?: () => void;
+  /** Re-arm mode ([narrator/escalated-run-not-terminal]): when set, the run is
+   *  ALREADY known (a prior narrator bound it, then parked `blocked` on an
+   *  escalation), so discovery is skipped and this runId is used directly. The
+   *  first snapshot is taken as a silent BASELINE (no duplicate "run started"
+   *  and no re-narration of transitions that already happened) — only NEW
+   *  transitions after the operator's reply are narrated. */
+  boundRunId?: string;
 }
 
 export class NarratorService {
@@ -49,10 +56,18 @@ export class NarratorService {
   private pending: PendingMilestone[] = [];
   private stopped = false;
   private inTick = false;
+  private baseline = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly ciTaskSinks = new Map<string, CiStreamSink>();
 
-  constructor(private readonly deps: NarratorDeps) {}
+  constructor(private readonly deps: NarratorDeps) {
+    // Re-arm mode: the run is already bound (skip discovery) and the first
+    // snapshot is a silent baseline. See NarratorDeps.boundRunId.
+    if (deps.boundRunId !== undefined) {
+      this.runId = deps.boundRunId;
+      this.baseline = true;
+    }
+  }
 
   start(): void {
     const set = this.deps.setInterval ?? setInterval;
@@ -106,6 +121,15 @@ export class NarratorService {
       const snap = await this.deps.read.runSnapshot(this.runId);
       if (snap === null) return;
 
+      // Re-arm baseline: adopt the first post-reply snapshot SILENTLY so only
+      // transitions that happen AFTER the operator's reply are narrated (no
+      // duplicate "run started", no re-narration of the pre-escalation history).
+      if (this.baseline) {
+        this.baseline = false;
+        this.lastSnapshot = snap;
+        return;
+      }
+
       // 3. Diff → instant cells (no LLM) + milestones (coalesced later).
       const { cells, milestones } = diffRunSnapshot(this.lastSnapshot, snap);
       for (const cell of cells) await this.appendCell(cell);
@@ -151,12 +175,29 @@ export class NarratorService {
         }
       }
 
-      // 6. Terminal check — stop when every task is terminal.
+      // 6. Terminal / parked check.
+      //    - Every task terminal (done|quarantine) -> the run finished (done/error).
+      //    - Otherwise, if NOTHING is progressing (no active/pending task) the run
+      //      is PARKED on an escalation awaiting the operator's A/B reply
+      //      ([narrator/escalated-run-not-terminal]): stop the idle tick loop and
+      //      surface a distinct `blocked` status instead of spinning `running`
+      //      forever. Composition re-arms a fresh narrator when the operator replies.
       const allTerminal = snap.tasks.length > 0 &&
         snap.tasks.every((t) => t.status === "done" || t.status === "quarantine");
+      const anyProgressing = snap.tasks.some((t) => t.status === "active" || t.status === "pending");
       if (allTerminal) {
         const allDone = snap.tasks.every((t) => t.status === "done");
         await this.deps.store.setMeta(this.deps.threadId, { status: allDone ? "done" : "error" });
+        this.stop();
+      } else if (snap.tasks.length > 0 && !anyProgressing) {
+        // Not all-terminal AND nothing progressing => at least one task sits in
+        // `escalated`, parked for the operator. Emit one "waiting on you" note,
+        // mark the thread `blocked`, and stop the idle loop.
+        await this.persist({
+          type: "orchestrator_msg",
+          text: "Blocked — waiting on your reply to the escalation before this run can continue.",
+        });
+        await this.deps.store.setMeta(this.deps.threadId, { status: "blocked" });
         this.stop();
       }
     } catch (err) {

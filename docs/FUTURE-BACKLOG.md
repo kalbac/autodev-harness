@@ -2,6 +2,33 @@
 
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
+## Evaluate `gpt-5.6` (Sol / Terra / Luna) as the critic model (operator steer, s43 2026-07-16)
+
+OpenAI shipped **gpt-5.6** in three variants — **Sol / Terra / Luna** — all provisioned on our
+account. The critic is a
+configurable role (adr/003 role-matrix), so swapping `roles.critic.model` is a **config
+change, no code** — and Sol stays in the OpenAI/codex family, so the worker(claude)/critic
+heterogeneity rule ("never Claude-on-Claude") is preserved.
+
+**Do NOT blind-swap it into the gate.** The critic IS the "never merge bullshit" gate; it is
+calibrated on `gpt-5.5`. Promotion protocol:
+1. Run Sol on the SAME diffs `gpt-5.5` already judged (known verdicts: method-id parsing bug →
+   `broken 0.72`, its fix → `clean 0.79`, correct getter w/o test → `clean 0.82` [ADR-005],
+   load-order silent-skip → `broken 0.76`). Compare verdict + confidence side-by-side.
+2. Promote only if Sol (a) still catches the real bugs (broken-contract / fabrication /
+   logic-regression) and (b) does NOT false-block correct clean changes (must not regress ADR-005).
+   If it drifts, keep `gpt-5.5`. Track TOKENS, not cost (operator rule).
+
+**Codex-CLI blocker — RESOLVED (operator, end of s43):** during s43 a codex run pinned to
+`gpt-5.6-sol` failed `400 invalid_request_error: "The 'gpt-5.6-sol' model requires a newer version
+of Codex"` — the installed CLI was too old. **The operator upgraded the codex CLI at end of s43, so
+Sol/Terra/Luna are now invokable.** Next critic run CAN try one of them (per the calibration
+protocol above). Open question to settle FIRST: **which of Sol/Terra/Luna** is the right critic
+tier (they are presumably different sizes/latencies — treat them as three separate candidates and
+calibrate whichever the operator picks). Watch-out carried over: something had made `gpt-5.6-sol`
+the codex DEFAULT — so **explicitly pin the critic model** in every gate run until we deliberately
+promote one, otherwise the gate silently drifts onto an unvetted model.
+
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 
 The current dashboard is a **working pilot**, NOT the final product UX. The full end-to-end skeleton
