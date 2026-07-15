@@ -1742,3 +1742,77 @@ describe("run -- MaxSessionHours graceful exit", () => {
     expect(claimCalls.count).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// N. Reply-B rework carries the critic's objection to the re-run
+//    ([rework/reply-b-drops-critic-feedback], s42)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- reply-B rework feedback", () => {
+  it("persists critic-feedback.md on a contract-risk escalation (durable objection for a re-run)", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic } = makeCritic([
+      {
+        result: {
+          verdict: {
+            verdict: "broken",
+            broken_contracts: [{ zone: "z", file: "a.ts", line: 1, evidence: "load-order silent skip" }],
+            notes: "The add_filter under a load-time class_exists can silently skip.",
+            confidence: 0.8,
+          },
+          rateLimited: false,
+        },
+      },
+    ]);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    const feedback = state.runtimeFiles.get(task.id)?.get("critic-feedback.md");
+    expect(feedback).toBeDefined();
+    expect(feedback).toMatch(/class_exists can silently skip/i);
+  });
+
+  it("feeds an existing critic-feedback.md to the worker at round 0 on a re-claim (reply-B rework)", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    // Pre-seed the persisted objection as if a prior escalation + reply-B happened.
+    await repo.writeRuntimeFile(task.id, "critic-feedback.md", "Prior objection: fix the load order.");
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }],
+      repo,
+    );
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(workerCalls.length).toBe(1);
+    expect(workerCalls[0]!.criticFeedback).toBe("Prior objection: fix the load order.");
+    void state;
+  });
+
+  it("passes no critic feedback to a fresh task's first worker run (no file present)", async () => {
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }],
+      repo,
+    );
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(workerCalls.length).toBe(1);
+    expect(workerCalls[0]!.criticFeedback).toBeUndefined();
+  });
+});

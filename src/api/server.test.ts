@@ -34,6 +34,7 @@ function projectDeps(
     config?: ProjectConfigView;
     onScanExtensions?: () => Promise<AgentExtensions | null>;
     onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
+    onReplyRework?: () => void;
     chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
     ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
     onCiCapability?: () => Promise<AgentCiCapability>;
@@ -54,6 +55,7 @@ function projectDeps(
                 ...(one.config !== undefined ? { config: one.config } : {}),
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
                 ...(one.onApplyOnAccept !== undefined ? { onApplyOnAccept: one.onApplyOnAccept } : {}),
+                ...(one.onReplyRework !== undefined ? { onReplyRework: one.onReplyRework } : {}),
                 ...(one.chat !== undefined ? { chat: one.chat } : {}),
                 ...(one.ci !== undefined ? { ci: one.ci } : {}),
                 ...(one.onCiCapability !== undefined ? { onCiCapability: one.onCiCapability } : {}),
@@ -479,6 +481,89 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     expect(existsSync(join(stateDir, "queue", "pending", "esc-b.md"))).toBe(true);
   });
 
+  it("choice B triggers onReplyRework (drain) after re-queuing to pending/", async () => {
+    seedTask("escalated", "esc-b2");
+    let reworkCalls = 0;
+    handle = createApiServer(projectDeps({ repo, stateDir, onReplyRework: () => void reworkCalls++ }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-b2/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-b2.md"))).toBe(true);
+    expect(reworkCalls).toBe(1);
+  });
+
+  it("choice A does NOT trigger onReplyRework (quarantine is terminal)", async () => {
+    seedTask("escalated", "esc-a2");
+    let reworkCalls = 0;
+    handle = createApiServer(projectDeps({ repo, stateDir, onReplyRework: () => void reworkCalls++ }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-a2/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+    expect(reworkCalls).toBe(0);
+  });
+
+  it("choice B on a drift-style escalation (no queue task) does NOT trigger onReplyRework", async () => {
+    let reworkCalls = 0;
+    handle = createApiServer(projectDeps({ repo, stateDir, onReplyRework: () => void reworkCalls++ }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/drift-b/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    // The reply is recorded (200) but there was no escalated queue task to move,
+    // so there is nothing to drain -- the hook must NOT fire.
+    expect(res.status).toBe(200);
+    expect(reworkCalls).toBe(0);
+  });
+
+  it("a synchronously-throwing onReplyRework does NOT break the 200 reply response", async () => {
+    seedTask("escalated", "esc-throw");
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onReplyRework: () => {
+          throw new Error("boom");
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-throw/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-throw.md"))).toBe(true);
+  });
+
+  it("choice B with NO onReplyRework wired (read-only deployment) still re-queues and returns 200", async () => {
+    seedTask("escalated", "esc-b3");
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-b3/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-b3.md"))).toBe(true);
+  });
+
   it("a replied escalation no longer blocks a same-file_set pending task", async () => {
     seedTask("escalated", "esc-lock");
     seedTask("pending", "p-blocked");
@@ -497,6 +582,36 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
 
     const claimed = await scheduler.claimNextTask();
     expect(claimed?.id).toBe("p-blocked");
+  });
+
+  it("INTEGRATION (real repo+scheduler): critic-feedback.md persists across reply-B -> re-claim so a rework re-run can read it", async () => {
+    // The escalation persisted the critic's objection into the per-task runtime
+    // dir (conductor.ts, part a). Prove on the REAL FileBlackboardRepository --
+    // not a fake -- that the runtime file survives the escalated -> pending ->
+    // active (re-claim) queue transition, since runtimeDir is keyed by task id
+    // independent of queue state. This is the gap a fake repo cannot exercise
+    // ([rework/reply-b-drops-critic-feedback]).
+    seedTask("escalated", "esc-rework");
+    await repo.writeRuntimeFile("esc-rework", "critic-feedback.md", "Fix the load order: hook on plugins_loaded.");
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-rework/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+
+    // reply-B released it to pending/; the real scheduler re-claims it (-> active).
+    const scheduler = createScheduler(repo);
+    const claimed = await scheduler.claimNextTask();
+    expect(claimed?.id).toBe("esc-rework");
+
+    // The objection is still readable after the full transition -- the re-run's
+    // round-0 read (conductor.ts, part b) would hand this to the worker prompt.
+    const feedback = await repo.readRuntimeFile("esc-rework", "critic-feedback.md");
+    expect(feedback).toBe("Fix the load order: hook on plugins_loaded.");
   });
 
   it("a reply to an escalation with no queue task (drift-style) still records the reply and returns 200", async () => {

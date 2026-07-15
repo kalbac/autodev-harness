@@ -31,10 +31,9 @@ describe("buildCriticPrompt", () => {
     expect(prompt).toMatch(/commit message/i);
   });
 
-  it("includes all four checklist concerns", () => {
+  it("still names the three real defect concerns: contract zones, fabrication, and logic/regression", () => {
     const prompt = buildCriticPrompt(diff);
     expect(prompt).toMatch(/contract zones/i);
-    expect(prompt).toMatch(/guard.*test/i);
     expect(prompt).toMatch(/fabricated.proof/i);
     expect(prompt).toMatch(/logic.*regression/i);
   });
@@ -46,5 +45,24 @@ describe("buildCriticPrompt", () => {
     expect(prompt).toContain("broken_contracts");
     expect(prompt).toContain("notes");
     expect(prompt).toContain("confidence");
+  });
+
+  // ADR-005: the critic is a correctness gate, not a coverage gate. Coverage
+  // (a NEW test locking new behavior) is enforced mechanically by the machine
+  // gate (contract zones + mutation-verified guards) + agent-ci, never by the
+  // critic. A correct change that merely lacks a brand-new test is `clean`.
+  it("does NOT treat a missing new test as a clean-blocker", () => {
+    const prompt = buildCriticPrompt(diff);
+    // the assume-broken clean-blocker enumeration must not list a missing guard/test
+    expect(prompt).not.toMatch(/missing guard/i);
+    // and it must positively state that coverage is enforced mechanically, not by the critic
+    expect(prompt).toMatch(/coverage is enforced/i);
+    expect(prompt).toMatch(/lacks a (brand-new|new) test/i);
+  });
+
+  it("still treats a fabricated proof (a test edited to match a changed value) as broken", () => {
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/fabricated.proof/i);
+    expect(prompt).toMatch(/broken/i);
   });
 });

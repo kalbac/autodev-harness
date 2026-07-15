@@ -4,6 +4,51 @@
 
 ---
 
+## s42 (2026-07-15) — two s41 structural findings FIXED + codex-gated + verified (autonomous overnight); branch `autodev/s42-critic-correctness-gate`, NOT merged
+
+Operator picked priorities **#1 (design talk: critic→CI / testless-repo blindspot) then #2 (reply-B rework)**, then granted full autonomy for the night with one hard rule: *don't claim done until it's verified working end-to-end*. Ran the design talk, then implemented both — subagent-gated (codex GPT-5.5) + TDD + verified.
+
+**#1 — critic is a correctness gate, coverage is mechanical (ADR-005 + spec, commits `5fed5f0` docs, `21c8019` fix).** Design talk converged on a reframe: the critic conflated *correctness* (only an adversarial reader can catch — regressions, logic, fabricated proofs) with *coverage* (a new test locking new behavior — already the mechanical gate's job via zones + mutation-verified blessed guards). The old "missing guard → not clean" was a fuzzy LLM duplicate that (a) is redundant where a zone is declared and (b) is **unverifiable theater + blocks correct work** in a test-less repo. Decision (operator delegated it): **narrow the critic to correctness+fabrication; coverage is exclusively the mechanical gate + agent-ci.** Prompt-only change to `src/critic/prompt.ts`. **Rejected** reordering CI before the critic (the ordering problem was a symptom, not a defect; agent-ci is expensive + off-by-default). **Proven END-TO-END on the REAL codex critic** (the fix IS the prompt — unit tests can't prove it): correct getter, no test → **clean 0.82** (was `broken 0.73` live in s41); real load-order silent-skip → **broken 0.76** (gate stays real). codex gate: 1 false-positive blocker (mis-parsed inline diff) declined + 1 minor (heading too absolute) applied + re-verified E2E.
+
+**#2 — reply-B rework carries the critic's objection (spec + commit `3fd977b`).** (a) escalation branch now writes `critic-feedback.md`; (b) round-0 read unconditional (fresh claim → no file → undefined; task ids unique per decompose); (c) reply-B fires best-effort `onReplyRework`→`conductor.run({drain})` so the reworked task actually runs (R1-thin trigger, only for B on a real move, guarded against a throwing hook). **Verified:** 3 conductor + 5 server unit tests + a **REAL repo+scheduler integration test** (feedback survives escalated→pending→re-claim — the gap fakes can't cover) + existing worker-adapter forwarding coverage + a **live daemon boot-smoke** (new dist assembles the ProjectView with onReplyRework, serves on :4320). codex gate: same inline-diff false-positive blocker declined + a genuine `major` (unguarded fire-and-forget hook could break the 200) applied (try/catch at the server boundary + a throwing-hook test).
+
+**Gate:** 1082 tests / 3 skip, root typecheck + build green. New gotcha `[critic/codex]` (codex's inline-embedded diff strips string quotes → false "invalid syntax" blocker — hit TWICE this session; verify against typecheck/build/tests, decline). GOTCHAS 65→66; `[gate/critic-before-ci-blocks-testless-repos]` + `[rework/reply-b-drops-critic-feedback]` marked RESOLVED.
+
+**Deliberately NOT done (overnight rule "stop before expensive unsupervised live runs"):** the full LLM reply-B→rework→clean **daemon** cycle (needs an unattended worker+critic run; the fix's data path is fully proven without it) — flagged for an operator-attended live-prove. **NOT merged:** branch awaits push → PR → green CI → merge. **Next:** merge (agent-owned after gate+green CI) or operator-attended reply-B daemon proof; then chat polish (`[narrator/escalated-run-not-terminal]`), then unattended autonomy (ADR-004).
+
+---
+
+## s41 (2026-07-13) — first REAL CI run on a real task, operator-observable → DONE + commit (`3609a2c`); 4 findings; no production code
+
+Ran a genuine task on the one real registered project (`woodev-shipping-plugin-test`, a WooCommerce shipping plugin) THROUGH the browser thread UI,
+operator watching. Goal: an operator-observable end-to-end DONE (s40 lesson: no curl-narrated happy paths). It took **4 attempts** to reach a clean DONE —
+that IS the story: the live-prove earned its keep with 4 real findings.
+
+**Setup (committed to the test repo `autodev/main` / local `.autodev/`):**
+- Authored `.github/workflows/ci.yml` (php -l; no composer.json exists so composer-based CI was a no-go), then reshaped it to **agent-ci-runnable**:
+  `container: php:8.3-cli`, NO `actions/checkout` (empirically verified in WSL — `setup-php` and `checkout` both fail under agent-ci; container-php-no-checkout
+  runs green because agent-ci mounts the workspace). Commits `40460a2` → `3bb2a9e`.
+- Enabled `gate.agentCi` (`.autodev/config.yaml`: `checkCommand: null`, `agentCi.enabled: true`, `workflows: [.github/workflows/ci.yml]`); roles sonnet/sonnet/codex.
+- Neutralized `.serena` churn (skip-worktree + exclude); filled GOAL.md; verified WSL Ubuntu + docker-desktop (Docker 29.4.0) + node-in-WSL → capability `wsl`.
+
+**The 4-attempt arc (all watched live):**
+1. **WC_Integration feature** → worker wrote a clean self-contained integration → **critic `broken 0.78`** (real: `add_filter` under a load-time `class_exists` can
+   silently skip; text-domain) → escalated. Operator chose reply-**B**. **Finding 1** `[rework/reply-b-drops-critic-feedback]`: reply-B never conveys the critic's
+   objection to the re-run (no `critic-feedback.md` on the contract-risk escalation branch; round-0 re-claim doesn't read it) → would loop; also doesn't auto-drain.
+2. **Refined (deferred `plugins_loaded`)** → load-order fixed → **critic `broken 0.78` again**: the file is **dead code** (nothing requires it; no autoloader) — correct refusal.
+3. Operator steer: critic is proven, **CI is the priority** (never ran on a real task). **Trivial correct getter** → **critic `broken 0.73`** "missing coverage/guard for a new
+   public contract." **Finding 2** `[gate/critic-before-ci-blocks-testless-repos]`: the critic HARD-demands a guard/test (prompt-level, not effort-tunable) and CI is gated
+   BEHIND critic-clean → in a test-less repo no feature reaches CI.
+4. **Behavior-neutral docblock** → nothing to guard → **critic CLEAN** → gate → **agent-ci replayed the real `ci.yml` GREEN (5/5, `run-finish: passed`, ~2.6s)** →
+   **COMMIT + MERGE → DONE** (`3609a2c`). CI observability worked live (CI block running→passed, `AGENT_CI ci: event` cells, `open CI run →`, merge cell, DONE badge).
+
+**Findings 3–4** (from the WSL de-risking): `[gate/agent-ci-needs-github-remote-slug]` (agent-ci needs a GitHub remote or `GITHUB_REPO`; worked via `origin=kalbac/...`),
+`[gate/agent-ci-workflow-container-no-checkout]` (the workflow-shape matrix above). RE-CONFIRMED live: `[narrator/escalated-run-not-terminal]`. **GOTCHAS 61→65.**
+No harness production code changed — deliverable = the findings + a working CI-gate recipe. **Next (s42):** design talk on critic→CI ordering (finding 2), then fix
+finding 1, then chat polish (`blocked` state), then the deferred unattended-autonomy brainstorm.
+
+---
+
 ## s40 (2026-07-12) — live orchestrator ATTENDED PRESENCE shipped (thread-chat main screen), codex-CLEAN + live-proven → PR #72 MERGED (`4c34ee1`)
 
 Executed the s40 plan (`docs/superpowers/plans/2026-07-12-live-orchestrator-attended-presence.md`, written this session over the s39 spec)
