@@ -1,6 +1,17 @@
 # `[gate/critic-before-ci-blocks-testless-repos]`
 
-**The agent-ci CI step is downstream of a critic-clean verdict, and the critic hard-demands a guard/test for any behavioral change — so in a repo with no reachable test infra, no FEATURE task can ever reach (let alone pass) CI.**
+> **RESOLVED s42 (ADR-005, commit `21c8019`).** The critic was narrowed from a coverage gate
+> to a **correctness + fabrication** gate: "a missing guard/test" is no longer a clean-blocker.
+> Coverage enforcement is exclusively the deterministic machine gate's job (contract zones +
+> mutation-verified, blessed guards) + agent-ci against the repo's existing tests. Broken
+> contracts, fabricated proofs (a test edited to match a changed value), and logic/regression
+> stay hard `broken`. Reordering CI before the critic was **rejected** (agent-ci is expensive +
+> off-by-default; the critic is cheap; the ordering problem was a symptom of the unsatisfiable
+> critic, not a defect). Proven end-to-end on the REAL codex critic: a correct getter with no
+> new test → `clean 0.82` (was `broken 0.73` in s41); a real load-order silent-skip bug →
+> `broken 0.76`. See `docs/adr/005-critic-is-a-correctness-gate-coverage-is-mechanical.md`.
+
+**The agent-ci CI step is downstream of a critic-clean verdict, and the critic hard-demands a guard/test for any behavioral change — so in a repo with no reachable test infra, no FEATURE task can ever reach (let alone pass) CI.** (Historical description of the s41 blindspot; resolved s42 — see the note above.)
 
 Two facts combine:
 

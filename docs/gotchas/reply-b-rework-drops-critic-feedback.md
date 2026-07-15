@@ -1,6 +1,19 @@
 # `[rework/reply-b-drops-critic-feedback]`
 
-**Escalation reply "B" (reject & require rework) resets the task to `pending` but never conveys the critic's objection to the next run — so the worker repeats itself and re-escalates identically.**
+> **RESOLVED s42 (commit `3fd977b`).** Three-part fix: (a) the critic-escalation branch in
+> `conductor.ts` now writes `critic-feedback.md` (same content shape as the in-loop retry
+> branch) so the objection is durable across the escalation→reply-B→re-claim boundary; (b) the
+> worker-feedback read is now **unconditional** (was `round > 0` only), so a re-claimed reworked
+> task gets the objection at round 0 — a fresh task's first claim has no file → `undefined`
+> (unchanged); (c) `server.ts` + `index.ts` fire a best-effort `onReplyRework()` →
+> `conductor.run({ drain: true })` after a reply-B move so the reworked task actually runs
+> instead of sitting inert (R1-thin trigger; only for B, only on a real move, guarded against a
+> throwing hook). Proven by 3 conductor + 5 server unit tests + a REAL repo+scheduler
+> integration test (feedback survives escalated→pending→re-claim) + a live daemon boot-smoke.
+> The full LLM reply-B→rework→clean daemon cycle was deliberately NOT run unattended (overnight
+> autonomy: stop before expensive unsupervised live runs) — ready for an operator-attended run.
+
+**Escalation reply "B" (reject & require rework) resets the task to `pending` but never conveys the critic's objection to the next run — so the worker repeats itself and re-escalates identically.** (Historical description; resolved s42 — see the note above.)
 
 Two independent gaps compound (both in `src/conductor/conductor.ts`):
 

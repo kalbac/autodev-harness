@@ -4,6 +4,20 @@
 
 ---
 
+## s42 (2026-07-15) — two s41 structural findings FIXED + codex-gated + verified (autonomous overnight); branch `autodev/s42-critic-correctness-gate`, NOT merged
+
+Operator picked priorities **#1 (design talk: critic→CI / testless-repo blindspot) then #2 (reply-B rework)**, then granted full autonomy for the night with one hard rule: *don't claim done until it's verified working end-to-end*. Ran the design talk, then implemented both — subagent-gated (codex GPT-5.5) + TDD + verified.
+
+**#1 — critic is a correctness gate, coverage is mechanical (ADR-005 + spec, commits `5fed5f0` docs, `21c8019` fix).** Design talk converged on a reframe: the critic conflated *correctness* (only an adversarial reader can catch — regressions, logic, fabricated proofs) with *coverage* (a new test locking new behavior — already the mechanical gate's job via zones + mutation-verified blessed guards). The old "missing guard → not clean" was a fuzzy LLM duplicate that (a) is redundant where a zone is declared and (b) is **unverifiable theater + blocks correct work** in a test-less repo. Decision (operator delegated it): **narrow the critic to correctness+fabrication; coverage is exclusively the mechanical gate + agent-ci.** Prompt-only change to `src/critic/prompt.ts`. **Rejected** reordering CI before the critic (the ordering problem was a symptom, not a defect; agent-ci is expensive + off-by-default). **Proven END-TO-END on the REAL codex critic** (the fix IS the prompt — unit tests can't prove it): correct getter, no test → **clean 0.82** (was `broken 0.73` live in s41); real load-order silent-skip → **broken 0.76** (gate stays real). codex gate: 1 false-positive blocker (mis-parsed inline diff) declined + 1 minor (heading too absolute) applied + re-verified E2E.
+
+**#2 — reply-B rework carries the critic's objection (spec + commit `3fd977b`).** (a) escalation branch now writes `critic-feedback.md`; (b) round-0 read unconditional (fresh claim → no file → undefined; task ids unique per decompose); (c) reply-B fires best-effort `onReplyRework`→`conductor.run({drain})` so the reworked task actually runs (R1-thin trigger, only for B on a real move, guarded against a throwing hook). **Verified:** 3 conductor + 5 server unit tests + a **REAL repo+scheduler integration test** (feedback survives escalated→pending→re-claim — the gap fakes can't cover) + existing worker-adapter forwarding coverage + a **live daemon boot-smoke** (new dist assembles the ProjectView with onReplyRework, serves on :4320). codex gate: same inline-diff false-positive blocker declined + a genuine `major` (unguarded fire-and-forget hook could break the 200) applied (try/catch at the server boundary + a throwing-hook test).
+
+**Gate:** 1082 tests / 3 skip, root typecheck + build green. New gotcha `[critic/codex]` (codex's inline-embedded diff strips string quotes → false "invalid syntax" blocker — hit TWICE this session; verify against typecheck/build/tests, decline). GOTCHAS 65→66; `[gate/critic-before-ci-blocks-testless-repos]` + `[rework/reply-b-drops-critic-feedback]` marked RESOLVED.
+
+**Deliberately NOT done (overnight rule "stop before expensive unsupervised live runs"):** the full LLM reply-B→rework→clean **daemon** cycle (needs an unattended worker+critic run; the fix's data path is fully proven without it) — flagged for an operator-attended live-prove. **NOT merged:** branch awaits push → PR → green CI → merge. **Next:** merge (agent-owned after gate+green CI) or operator-attended reply-B daemon proof; then chat polish (`[narrator/escalated-run-not-terminal]`), then unattended autonomy (ADR-004).
+
+---
+
 ## s41 (2026-07-13) — first REAL CI run on a real task, operator-observable → DONE + commit (`3609a2c`); 4 findings; no production code
 
 Ran a genuine task on the one real registered project (`woodev-shipping-plugin-test`, a WooCommerce shipping plugin) THROUGH the browser thread UI,
