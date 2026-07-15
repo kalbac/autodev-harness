@@ -1,5 +1,29 @@
 # CURRENT STATE — Autodev Harness
 
+> ## ✅ s41 — **first REAL CI run on a real task, operator-observable end-to-end → DONE + commit** (`3609a2c`); + 4 real findings (no code shipped; docs + config only)
+> Ran a genuine task on the one registered real project (`woodev-shipping-plugin-test`, a WooCommerce shipping plugin), driven THROUGH the browser thread UI,
+> operator watching live. **The live-prove earned its keep massively — 4 real findings, and it took 4 attempts to reach a clean DONE, which IS the story.**
+> Setup (all committed to the test repo's `autodev/main` / local `.autodev`): wrote a genuinely-working **`.github/workflows/ci.yml`** (php -l), then reshaped
+> it to be **agent-ci-runnable** (`container: php:8.3-cli`, no checkout — verified green in WSL 3×); enabled **`gate.agentCi`** (checkCommand→null, allowlist ci.yml);
+> neutralized `.serena` churn; seeded GOAL.md. **The arc the operator watched:**
+> - **Attempt 1 (WC_Integration feature):** streaming discussion → launch → worker wrote a clean self-contained integration → **critic `broken 0.78`** (real load-order
+>   concern: `add_filter` under a load-time `class_exists` can silently skip; + text-domain) → **escalated**. Operator chose reply-**B (rework)**. **Finding 1:** reply-B
+>   doesn't carry critic feedback → would loop.
+> - **Attempt 2 (refined, deferred `plugins_loaded`):** worker fixed load-order → **critic `broken 0.78` again**: the file is **dead code** (nothing `require`s it; no autoloader),
+>   critic correctly refuses. Root cause = my "single self-contained file, don't touch others" scoping. **Gate proven real twice.**
+> - **Operator steer:** "критик мы давно доказали — важно CI ПРОВЕРИТЬ (ни разу не гонялся на реальной задаче)."
+> - **Attempt 3 (trivial correct getter):** **critic `broken 0.73`** — "missing coverage/guard for a new public contract." **Finding 2:** the critic HARD-demands a
+>   guard/test (prompt-level, `src/critic/prompt.ts:46,65`, not effort-tunable), and **CI is gated behind critic-clean** → in a test-less repo NO feature reaches CI.
+> - **Attempt 4 (behavior-neutral docblock):** nothing to guard → **critic CLEAN** → gate → **agent-ci replayed the real `ci.yml` GREEN (5/5, `run-finish: passed`, 2.6s)**
+>   → **COMMIT + MERGE → DONE** (`3609a2c` on `autodev/main`). **CI observability worked live** (CI block `running`→`passed`, `AGENT_CI ci: event` cells, `open CI run →`).
+> **The 4 findings → GOTCHAS 61→65:** `[rework/reply-b-drops-critic-feedback]`, `[gate/critic-before-ci-blocks-testless-repos]`, `[gate/agent-ci-needs-github-remote-slug]`
+> (agent-ci needs a GitHub remote/`GITHUB_REPO` — worked here via `origin=kalbac/...`), `[gate/agent-ci-workflow-container-no-checkout]` (setup-php & checkout both fail
+> under agent-ci; container-php-no-checkout works). Also RE-CONFIRMED live: `[narrator/escalated-run-not-terminal]` (escalated threads hang `running`).
+> **NEXT (s42) — priorities (operator to order):** (1) **DESIGN talk: critic→CI ordering + testless-repo blindspot** (finding 2, the operator flagged it — run CI as an
+> earlier/independent gate step, or soften the "missing guard" demand when there's no test harness?); (2) **fix `[rework/reply-b-drops-critic-feedback]`** (concrete, high-ROI);
+> (3) **chat polish** — the `[narrator/escalated-run-not-terminal]` `blocked` state (still un-built from s41 handoff) + general UX; (4) **unattended-half autonomy brainstorm**
+> (ADR-004, still deferred). No production code shipped this session — the value was the live-prove findings + a working CI-gate config recipe.
+>
 > ## ✅ s40 — **live orchestrator ATTENDED PRESENCE SHIPPED** (thread-chat = main screen) — codex-CLEAN + LIVE-PROVEN end-to-end → **PR #72 MERGED (`4c34ee1`), CI 4/4**
 > Built the attended half of ADR-004 (spec `2026-07-12-live-orchestrator-attended-presence-design.md`) subagent-driven (Sonnet/Opus workers +
 > mandatory codex GPT-5.5 gate). **Chat is now the project's main screen; a thread = one intent/run on the blackboard.** Phases A–E, 30 commits:
