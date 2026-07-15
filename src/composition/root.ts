@@ -624,6 +624,12 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
           launchedAt: Date.now(),
           boundRunId: meta.run_id,
         });
+        // Observability (codex #3): a successful re-arm is the positive signal —
+        // its ABSENCE for a thread that should have resumed is the diagnostic for
+        // the stale/corrupt-run_id edge. We deliberately do NOT warn on the
+        // zero-match case: a curl/direct /orchestrate run legitimately owns no
+        // thread, so "no blocked thread for this task" is normal, not an error.
+        log("INFO", `narrator: re-armed blocked thread ${meta.id} (run ${meta.run_id}) after reply-B on ${taskId}`);
       }
     } catch (err) {
       try { log("WARN", `[ts/fail-closed] rearm narrator failed for ${taskId}: ${String(err)}`); } catch { /* logger must never break the reply path */ }

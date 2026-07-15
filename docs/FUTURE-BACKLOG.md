@@ -2,6 +2,29 @@
 
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
+## Evaluate `gpt-5.6-sol` as the critic model (operator steer, s43 2026-07-16)
+
+OpenAI shipped **gpt-5.6 "Sol"**; it is provisioned on our account. The critic is a
+configurable role (adr/003 role-matrix), so swapping `roles.critic.model` is a **config
+change, no code** — and Sol stays in the OpenAI/codex family, so the worker(claude)/critic
+heterogeneity rule ("never Claude-on-Claude") is preserved.
+
+**Do NOT blind-swap it into the gate.** The critic IS the "never merge bullshit" gate; it is
+calibrated on `gpt-5.5`. Promotion protocol:
+1. Run Sol on the SAME diffs `gpt-5.5` already judged (known verdicts: method-id parsing bug →
+   `broken 0.72`, its fix → `clean 0.79`, correct getter w/o test → `clean 0.82` [ADR-005],
+   load-order silent-skip → `broken 0.76`). Compare verdict + confidence side-by-side.
+2. Promote only if Sol (a) still catches the real bugs (broken-contract / fabrication /
+   logic-regression) and (b) does NOT false-block correct clean changes (must not regress ADR-005).
+   If it drifts, keep `gpt-5.5`. Track TOKENS, not cost (operator rule).
+
+**BLOCKER found empirically (s43):** our installed **codex CLI is too old to invoke Sol** — a
+codex run pinned to `gpt-5.6-sol` returns `400 invalid_request_error: "The 'gpt-5.6-sol' model
+requires a newer version of Codex. Please upgrade to the latest app or CLI"`. So step 0 is
+**upgrade the codex CLI/app**, THEN calibrate. Also note: something made `gpt-5.6-sol` the codex
+DEFAULT model — a critic run that doesn't explicitly pin `gpt-5.5` will silently fail the gate
+with that 400 until the CLI is upgraded (watch for this; pin the critic model explicitly).
+
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 
 The current dashboard is a **working pilot**, NOT the final product UX. The full end-to-end skeleton
