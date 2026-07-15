@@ -196,8 +196,13 @@ async function main(): Promise<void> {
               // forget + best-effort (the conductor logs its own run errors to
               // conductor.log; a rejection here must never surface to the reply
               // response). See [rework/reply-b-drops-critic-feedback].
-              onReplyRework: () => {
+              onReplyRework: (taskId: string) => {
                 void root.conductor.run({ drain: true }).catch(() => {});
+                // Re-arm the narrator for a thread parked `blocked` on this
+                // task's escalation so the re-run is narrated live again
+                // ([narrator/escalated-run-not-terminal]). Fire-and-forget +
+                // best-effort: the reply's 200 must not depend on it.
+                void root.rearmNarratorForTask(id, taskId).catch(() => {});
               },
               // Pre-launch chat (adr/003-safe -- see chat-adapter.ts): `manager` is
               // the project's lazily-built ChatSessionManager (composition/root.ts);

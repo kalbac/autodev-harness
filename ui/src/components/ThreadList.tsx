@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, CheckSquare, MessageSquare, Plus } from "lucide-react";
+import { AlertTriangle, CheckSquare, MessageSquare, PauseCircle, Plus } from "lucide-react";
 import { useThreads } from "@/lib/queries";
 import { useProjectId } from "@/lib/useProjectId";
 import { toneVar } from "@/lib/status";
@@ -79,6 +79,10 @@ function ThreadGlyph({ status }: { status: ThreadStatus }) {
     return <CheckSquare className="size-4" strokeWidth={2.5} style={{ color: toneVar.clean }} />;
   if (status === "error")
     return <AlertTriangle className="size-4" strokeWidth={2.5} style={{ color: toneVar.broken }} />;
+  if (status === "blocked")
+    // Parked on an escalation, awaiting the operator's reply — same "needs you"
+    // tone as the escalated queue column.
+    return <PauseCircle className="size-4" strokeWidth={2.5} style={{ color: toneVar.uncertain }} />;
   // chatting
   return <MessageSquare className="size-4 text-muted-foreground" strokeWidth={2} />;
 }

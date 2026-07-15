@@ -34,7 +34,7 @@ function projectDeps(
     config?: ProjectConfigView;
     onScanExtensions?: () => Promise<AgentExtensions | null>;
     onApplyOnAccept?: (taskId: string) => Promise<{ ok: true; hash: string } | { ok: false; reason: string }>;
-    onReplyRework?: () => void;
+    onReplyRework?: (taskId: string) => void;
     chat?: { manager: ChatSessionManager; buildSnapshot: () => Promise<ReadSnapshot> };
     ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
     onCiCapability?: () => Promise<AgentCiCapability>;
@@ -483,8 +483,8 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
 
   it("choice B triggers onReplyRework (drain) after re-queuing to pending/", async () => {
     seedTask("escalated", "esc-b2");
-    let reworkCalls = 0;
-    handle = createApiServer(projectDeps({ repo, stateDir, onReplyRework: () => void reworkCalls++ }));
+    const reworkArgs: string[] = [];
+    handle = createApiServer(projectDeps({ repo, stateDir, onReplyRework: (taskId) => void reworkArgs.push(taskId) }));
     const port = await handle.listen(0);
 
     const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-b2/reply`, {
@@ -494,7 +494,8 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     });
     expect(res.status).toBe(200);
     expect(existsSync(join(stateDir, "queue", "pending", "esc-b2.md"))).toBe(true);
-    expect(reworkCalls).toBe(1);
+    // the replied task id flows to the hook (drain + narrator re-arm keyed on it)
+    expect(reworkArgs).toEqual(["esc-b2"]);
   });
 
   it("choice A does NOT trigger onReplyRework (quarantine is terminal)", async () => {

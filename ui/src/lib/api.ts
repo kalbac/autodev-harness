@@ -325,7 +325,7 @@ export interface ChatTurn {
   proposedSpecs: ChatTaskSpecPreview[];
 }
 
-export type ThreadStatus = "chatting" | "running" | "done" | "error";
+export type ThreadStatus = "chatting" | "running" | "done" | "error" | "blocked";
 
 /** Mirrors the daemon's thread registry entry — one row from `GET /projects/:id/threads`
  *  (s40 live orchestrator presence). */

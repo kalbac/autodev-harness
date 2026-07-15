@@ -234,8 +234,12 @@ export interface ProjectView {
    * outcome to the response. Wired to `conductor.run({ drain: true })` at the
    * composition root. Without it a reply-B rework sits inert until an unrelated
    * `handleIntent` triggers the pool ([rework/reply-b-drops-critic-feedback]).
+   *
+   * Receives the replied task id so the composition root can ALSO re-arm the
+   * narrator for a thread parked `blocked` on this task's escalation
+   * ([narrator/escalated-run-not-terminal]).
    */
-  onReplyRework?: () => void;
+  onReplyRework?: (taskId: string) => void;
   /**
    * OPTIONAL pre-launch chat capability for `POST/GET/DELETE
    * /projects/:id/chat*`. When unset, those routes 404 (mirrors
@@ -985,7 +989,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // wiring returns a caught promise, so a rejection is swallowed there; this
       // catch covers a synchronous throw at the call boundary.
       try {
-        p.onReplyRework?.();
+        p.onReplyRework?.(id);
       } catch (err) {
         log("WARN", `api: onReplyRework threw (ignored) for ${id}: ${String(err)}`);
       }
