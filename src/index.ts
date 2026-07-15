@@ -189,6 +189,16 @@ async function main(): Promise<void> {
                   isolationFlags: workerIsolationFlags(c),
                 }),
               onApplyOnAccept: (taskId: string) => root.applyOnAccept(taskId),
+              // Reply-B (rework) re-queued a task to pending/. Trigger a bounded
+              // drain so it actually runs (carrying the critic's persisted
+              // objection) instead of waiting for an unrelated pool trigger.
+              // R1-thin: a pure `trigger` of the already-enqueued pool. Fire-and-
+              // forget + best-effort (the conductor logs its own run errors to
+              // conductor.log; a rejection here must never surface to the reply
+              // response). See [rework/reply-b-drops-critic-feedback].
+              onReplyRework: () => {
+                void root.conductor.run({ drain: true }).catch(() => {});
+              },
               // Pre-launch chat (adr/003-safe -- see chat-adapter.ts): `manager` is
               // the project's lazily-built ChatSessionManager (composition/root.ts);
               // `buildSnapshot` gives the chat's opening turn the SAME ReadSnapshot

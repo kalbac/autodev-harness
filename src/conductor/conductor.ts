@@ -290,8 +290,17 @@ export function createConductor(deps: ConductorDeps): Conductor {
         const baseline = snapshotFingerprints(wt.path, basePaths);
 
         // WORKER
+        // Read any persisted critic objection. Within a task's own retry loop
+        // this is the feedback the previous round wrote; on a RE-CLAIM after an
+        // escalation + reply-B (rework) it is the objection persisted at
+        // escalation time, so the re-run's worker sees it even at round 0
+        // (round starts at 0 on every fresh claim). Fixes
+        // [rework/reply-b-drops-critic-feedback]: a fresh task's first claim has
+        // no such file -> undefined (behavior unchanged); a reply-B re-claim
+        // reads the durable objection. Task ids are unique per decompose, so the
+        // only round-0-with-feedback case is a genuine re-claim (no cross-task bleed).
         const criticFeedback =
-          round > 0 ? (await repo.readRuntimeFile(task.id, "critic-feedback.md")) ?? undefined : undefined;
+          (await repo.readRuntimeFile(task.id, "critic-feedback.md")) ?? undefined;
         const wr = await worker.run({
           task,
           worktreePath: wt.path,
@@ -445,6 +454,17 @@ export function createConductor(deps: ConductorDeps): Conductor {
           if (cr.verdict) {
             await persistCriticVerdict(cr.verdict);
           }
+          // Persist the critic's objection as durable rework feedback so a
+          // reply-B (rework) re-run reads it at round 0 on re-claim
+          // ([rework/reply-b-drops-critic-feedback]). Without this the escalation
+          // branch wrote only critic-verdict.json (not read by the worker), so a
+          // reworked task reproduced the same diff. Same content shape as the
+          // in-loop retry branch below (notes, or a generic fallback).
+          await repo.writeRuntimeFile(
+            task.id,
+            "critic-feedback.md",
+            cr.verdict?.notes ?? "critic returned no parseable verdict; make the smallest, clearest change and retry.",
+          );
           const escType: EscalationType = cr.verdict?.verdict === "broken" ? "disagreement" : "uncertain";
           await repo.moveTask(task.id, "active", "escalated");
           await escalate(

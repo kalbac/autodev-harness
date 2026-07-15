@@ -225,6 +225,18 @@ export interface ProjectView {
    */
   onApplyOnAccept?: (taskId: string) => Promise<ApplyOnAcceptResult>;
   /**
+   * OPTIONAL fire-and-forget drain trigger, invoked after a reply **B** (rework)
+   * releases a task back to `pending/`. When unset (read-only deployment), the
+   * reworked task simply waits for the next pool trigger (mirrors
+   * `onOrchestrate`). An R1-thin "trigger" of the ALREADY-enqueued pool (the
+   * escalated→pending move did the enqueue) — no decompose, no gate/worker/critic
+   * handle crosses the boundary. The server never awaits it and never surfaces its
+   * outcome to the response. Wired to `conductor.run({ drain: true })` at the
+   * composition root. Without it a reply-B rework sits inert until an unrelated
+   * `handleIntent` triggers the pool ([rework/reply-b-drops-critic-feedback]).
+   */
+  onReplyRework?: () => void;
+  /**
    * OPTIONAL pre-launch chat capability for `POST/GET/DELETE
    * /projects/:id/chat*`. When unset, those routes 404 (mirrors
    * `onOrchestrate`). `manager` is the project's `ChatSessionManager`;
@@ -940,8 +952,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     //     releases the lock without claiming repo-completion (it is not in doneIds and
     //     not in the scheduler lock set, which is active+escalated only).
     const target: QueueState = choice === "A" ? "quarantine" : "pending";
+    let moved = false;
     try {
       await p.repo.moveTask(id, "escalated", target);
+      moved = true;
       log("INFO", `api: escalation ${id} reply ${choice} -> moved escalated/ -> ${target}/`);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
@@ -954,6 +968,26 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         log("ERROR", `api: escalation ${id} reply recorded but lock release failed: ${String(err)}`);
         sendJson(res, 500, { error: "reply recorded but failed to release the escalation lock", id, choice });
         return;
+      }
+    }
+
+    // Reply B (rework) re-queued the task to pending/. Trigger a drain so the
+    // reworked task actually runs (with the critic's now-persisted objection --
+    // see conductor.ts [rework/reply-b-drops-critic-feedback]) instead of sitting
+    // inert until an unrelated pool trigger. Fire-and-forget, best-effort: only
+    // when the task really moved to pending (not an ENOENT no-op), and never for
+    // A (quarantine is terminal). The response is already decided.
+    if (choice === "B" && moved) {
+      // Guard the call itself so NO hook implementation (even a hypothetical
+      // synchronously-throwing one) can break the already-decided 200 response.
+      // The contract "never surfaces its outcome to the response" is enforced
+      // by the server here, not left to every caller's wiring. The production
+      // wiring returns a caught promise, so a rejection is swallowed there; this
+      // catch covers a synchronous throw at the call boundary.
+      try {
+        p.onReplyRework?.();
+      } catch (err) {
+        log("WARN", `api: onReplyRework threw (ignored) for ${id}: ${String(err)}`);
       }
     }
 
