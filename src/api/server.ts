@@ -982,6 +982,23 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     // when the task really moved to pending (not an ENOENT no-op), and never for
     // A (quarantine is terminal). The response is already decided.
     if (choice === "B" && moved) {
+      // Reset the circuit-breaker attempt budget BEFORE the drain re-claims the
+      // task. A round-exhausted escalation carries an `attempts` counter at/over
+      // cfg.loop.maxAttempts; without this reset the reply-B drain re-claims it
+      // and the conductor's poison-pill re-escalates it to quarantine in ~80ms
+      // with no worker run ([rework/reply-b-poisons-maxrounds-exhausted-task]).
+      // An explicit reply-B (rework) is a deliberate "give it another real try"
+      // signal -- distinct from the automatic retry loop the poison-pill bounds --
+      // so the budget starts fresh (0 -> next claim increments to 1). Best-effort:
+      // a setAttempts failure must not break the already-decided 200 response
+      // (same never-surface discipline as the onReplyRework guard below). Only on
+      // choice B + a real move (never A -> quarantine is terminal, never the
+      // ENOENT drift no-op).
+      try {
+        await p.repo.setAttempts(id, 0);
+      } catch (err) {
+        log("WARN", `api: reply-B attempt-budget reset failed (ignored) for ${id}: ${String(err)}`);
+      }
       // Guard the call itself so NO hook implementation (even a hypothetical
       // synchronously-throwing one) can break the already-decided 200 response.
       // The contract "never surfaces its outcome to the response" is enforced

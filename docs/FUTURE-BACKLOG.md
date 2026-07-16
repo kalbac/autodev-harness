@@ -2,32 +2,30 @@
 
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
-## Evaluate `gpt-5.6` (Sol / Terra / Luna) as the critic model (operator steer, s43 2026-07-16)
+## ✅ RESOLVED (s44 2026-07-16) — Evaluate `gpt-5.6` (Sol / Terra / Luna) as the critic model
 
-OpenAI shipped **gpt-5.6** in three variants — **Sol / Terra / Luna** — all provisioned on our
-account. The critic is a
-configurable role (adr/003 role-matrix), so swapping `roles.critic.model` is a **config
-change, no code** — and Sol stays in the OpenAI/codex family, so the worker(claude)/critic
-heterogeneity rule ("never Claude-on-Claude") is preserved.
+Calibrated all three vs the `gpt-5.5` baseline on the 4 known cases, 3 rounds each (the exact
+production invocation, real `buildCriticPrompt`, effort `high`). **Promoted `gpt-5.6-luna`**
+(12/12 correct — matches 5.5 exactly, sharper on the real bugs, cheapest of the family). **sol**
+deterministically false-blocks the correct method-id fix (worst gate profile, most expensive);
+**terra** unreliably catches the real method-id bug (~1-in-3 miss). Applied: schema critic default
+`gpt-5.5`→`gpt-5.6-luna`, detect catalog offers the 5.6 variants, test-repo config pinned to luna.
+Full methodology + results table: **`docs/wiki/critic-model-calibration-s44.md`**. Re-run that set
+before promoting any future critic model. Carried rule: **always pin `roles.critic.model` explicitly**
+(the CLI default is sol — an un-pinned gate drifts onto it).
 
-**Do NOT blind-swap it into the gate.** The critic IS the "never merge bullshit" gate; it is
-calibrated on `gpt-5.5`. Promotion protocol:
-1. Run Sol on the SAME diffs `gpt-5.5` already judged (known verdicts: method-id parsing bug →
-   `broken 0.72`, its fix → `clean 0.79`, correct getter w/o test → `clean 0.82` [ADR-005],
-   load-order silent-skip → `broken 0.76`). Compare verdict + confidence side-by-side.
-2. Promote only if Sol (a) still catches the real bugs (broken-contract / fabrication /
-   logic-regression) and (b) does NOT false-block correct clean changes (must not regress ADR-005).
-   If it drifts, keep `gpt-5.5`. Track TOKENS, not cost (operator rule).
+## Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
 
-**Codex-CLI blocker — RESOLVED (operator, end of s43):** during s43 a codex run pinned to
-`gpt-5.6-sol` failed `400 invalid_request_error: "The 'gpt-5.6-sol' model requires a newer version
-of Codex"` — the installed CLI was too old. **The operator upgraded the codex CLI at end of s43, so
-Sol/Terra/Luna are now invokable.** Next critic run CAN try one of them (per the calibration
-protocol above). Open question to settle FIRST: **which of Sol/Terra/Luna** is the right critic
-tier (they are presumably different sizes/latencies — treat them as three separate candidates and
-calibrate whichever the operator picks). Watch-out carried over: something had made `gpt-5.6-sol`
-the codex DEFAULT — so **explicitly pin the critic model** in every gate run until we deliberately
-promote one, otherwise the gate silently drifts onto an unvetted model.
+`src/api/server.ts` has **10** best-effort `catch (err) { log("WARN"/"ERROR", ... String(err)) }`
+sites (lock-release, commit-on-accept, digest read, run-manifest listing, the s44 reply-B
+attempt-budget reset, the adjacent onReplyRework guard, ...). Per the documented `[ts/fail-closed]`
+gotcha, a throwing `deps.log` (or a crafted rejection whose `String(err)` throws) inside such a
+catch could re-throw and break an already-decided response. The conductor already solved this with
+a `safeLog` wrapper. Practical risk is ~nil today (the default `log` is a no-op; production `log` is
+the daemon logger; `String(Error)` never throws), so it is NOT a defect in any single diff — but
+server.ts should adopt the same `safeLog` pattern across all 10 sites for uniform fail-closed
+hygiene. Surfaced by the s44 gpt-5.6-luna gate as a Medium against the reply-B fix; declined for that
+scoped diff (it is the file's convention, not a regression) and tracked here as the file-wide fix.
 
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 

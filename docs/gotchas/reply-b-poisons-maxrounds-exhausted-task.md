@@ -36,14 +36,19 @@ This is **conductor attempt-budget behaviour**, NOT a blocked-state defect — t
 narrator handled it correctly (thread went `blocked` → reply-B re-armed it `running` → the poison
 → quarantine made the run terminal → narrator set `error` + stopped, no wedge).
 
-## Fix (candidate, deferred)
+## Fix — RESOLVED s44
 
-Reset the task's attempt/round budget when the operator explicitly replies **B** (rework) — the
-operator asking for rework is a deliberate "give it another real try" signal, distinct from the
-automatic retry loop the poison-pill is meant to bound. Alternatively, surface the poison outcome
-honestly in the reply response / thread ("this task is out of retries — rework won't re-run it;
-use apply-on-accept (C) or fix the intent") rather than silently re-escalating. Scope: touches the
-conductor's claim/poison path (`src/conductor`), so TDD + codex gate.
+Reset the task's attempt budget when the operator explicitly replies **B** (rework). The reply
+handler (`src/api/server.ts`, the `POST /escalations/:id/reply` choice-B branch) now calls
+`repo.setAttempts(id, 0)` right after the successful `escalated → pending` move and BEFORE the
+`onReplyRework` drain trigger, so the re-claim increments `0 → 1` (under `cfg.loop.maxAttempts`)
+and reaches the worker instead of tripping the poison-pill. Scoped to choice **B** + a real move
+(never **A** → quarantine is terminal, never the ENOENT drift no-op); best-effort like the
+adjacent hook guard (a `setAttempts` failure never breaks the decided 200). The automatic in-loop
+retry poison-pill is unchanged — only the deliberate operator "try again" signal resets the budget.
+Covered by 2 unit tests (B resets to 0 / A leaves it untouched) + a real repo+scheduler integration
+test (reply-B on an attempts=maxAttempts task re-claims fresh, not poisoned). Fix landed on the
+`gpt-5.6-luna`-gated s44 branch and live-proven through the daemon+browser.
 
 ## Related
 

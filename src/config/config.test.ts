@@ -17,7 +17,7 @@ describe("loadConfig", () => {
     expect(cfg.roles.worker.ladder).toEqual(["opus", "sonnet", "haiku"]);
     expect(cfg.gate.checkCommand).toBe("npm test");
     expect(cfg.allowedBranchPattern).toBe("^autodev/");
-    expect(cfg.roles.critic.model).toBe("gpt-5.5");
+    expect(cfg.roles.critic.model).toBe("gpt-5.6-luna");
     expect(cfg.policy.heterogeneity).toBe("warn");
   });
 
