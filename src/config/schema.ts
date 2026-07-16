@@ -21,7 +21,7 @@ const WorkerRoleSchema = z.object({
 // critic role (single-model).
 const CriticRoleSchema = z.object({
   adapter: z.string().default("codex"),
-  model: z.string().default("gpt-5.5"),
+  model: z.string().default("gpt-5.6-luna"),
   effort: z.string().default("high"),
   exe: z.string().optional(),
   retryMax: z.number().int().nonnegative().default(1),
