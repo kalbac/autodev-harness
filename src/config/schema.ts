@@ -185,6 +185,22 @@ export const HarnessConfigSchema = z.object({
     })
     .default({}),
 
+  // Unattended overnight autonomy (spec 2026-07-17). Fully inert unless
+  // `overnight.enabled` -- attended (the default) behaves exactly as before:
+  // escalations park and wait for the operator. When enabled, the overnight
+  // supervisor auto-reworks retryable escalations (reply-B) up to
+  // `maxAutoReworks` times, then parks. Above the gate only (ADR-004 tenet 6).
+  autonomy: z
+    .object({
+      overnight: z
+        .object({
+          enabled: z.boolean().default(false),
+          maxAutoReworks: z.number().int().nonnegative().default(2),
+        })
+        .default({ enabled: false, maxAutoReworks: 2 }),
+    })
+    .default({ overnight: { enabled: false, maxAutoReworks: 2 } }),
+
   dirtyFenceIgnore: z
     .array(z.string())
     .default([
