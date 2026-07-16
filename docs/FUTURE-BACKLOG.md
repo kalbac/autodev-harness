@@ -14,6 +14,19 @@ Full methodology + results table: **`docs/wiki/critic-model-calibration-s44.md`*
 before promoting any future critic model. Carried rule: **always pin `roles.critic.model` explicitly**
 (the CLI default is sol — an un-pinned gate drifts onto it).
 
+## Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
+
+`src/api/server.ts` has **10** best-effort `catch (err) { log("WARN"/"ERROR", ... String(err)) }`
+sites (lock-release, commit-on-accept, digest read, run-manifest listing, the s44 reply-B
+attempt-budget reset, the adjacent onReplyRework guard, ...). Per the documented `[ts/fail-closed]`
+gotcha, a throwing `deps.log` (or a crafted rejection whose `String(err)` throws) inside such a
+catch could re-throw and break an already-decided response. The conductor already solved this with
+a `safeLog` wrapper. Practical risk is ~nil today (the default `log` is a no-op; production `log` is
+the daemon logger; `String(Error)` never throws), so it is NOT a defect in any single diff — but
+server.ts should adopt the same `safeLog` pattern across all 10 sites for uniform fail-closed
+hygiene. Surfaced by the s44 gpt-5.6-luna gate as a Medium against the reply-B fix; declined for that
+scoped diff (it is the file's convention, not a regression) and tracked here as the file-wide fix.
+
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 
 The current dashboard is a **working pilot**, NOT the final product UX. The full end-to-end skeleton
