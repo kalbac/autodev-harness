@@ -498,6 +498,44 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     expect(reworkArgs).toEqual(["esc-b2"]);
   });
 
+  it("choice B resets the task's attempt budget so the rework re-claim is not immediately poisoned ([rework/reply-b-poisons-maxrounds-exhausted-task])", async () => {
+    seedTask("escalated", "esc-b-attempts");
+    // The task escalated after exhausting its attempt budget (circuit breaker
+    // counter at/over cfg.loop.maxAttempts). Without a reset, the reply-B drain
+    // re-claims it and the conductor's poison-pill re-escalates it to quarantine
+    // in ~80ms with no worker run. An explicit reply-B (rework) is a deliberate
+    // "give it another real try" signal -> the budget must be reset.
+    await repo.setAttempts("esc-b-attempts", 3);
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-b-attempts/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-b-attempts.md"))).toBe(true);
+    // Fresh budget: the next claim increments 0 -> 1, well under maxAttempts.
+    expect(await repo.getAttempts("esc-b-attempts")).toBe(0);
+  });
+
+  it("choice A does NOT reset the attempt budget (accept is terminal, no re-run)", async () => {
+    seedTask("escalated", "esc-a-attempts");
+    await repo.setAttempts("esc-a-attempts", 3);
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-a-attempts/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "A" }),
+    });
+    expect(res.status).toBe(200);
+    // The budget is untouched -- A quarantines, there is no re-run to budget for.
+    expect(await repo.getAttempts("esc-a-attempts")).toBe(3);
+  });
+
   it("choice A does NOT trigger onReplyRework (quarantine is terminal)", async () => {
     seedTask("escalated", "esc-a2");
     let reworkCalls = 0;
@@ -613,6 +651,33 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     // round-0 read (conductor.ts, part b) would hand this to the worker prompt.
     const feedback = await repo.readRuntimeFile("esc-rework", "critic-feedback.md");
     expect(feedback).toBe("Fix the load order: hook on plugins_loaded.");
+  });
+
+  it("INTEGRATION (real repo+scheduler): reply-B on an attempt-exhausted escalation re-claims fresh, not poisoned ([rework/reply-b-poisons-maxrounds-exhausted-task])", async () => {
+    // The round-exhausted escalation carries an attempt counter at the circuit-
+    // breaker ceiling. Prove on the REAL repo+scheduler that reply-B releases it
+    // to pending AND resets the budget, so the re-claim the conductor performs
+    // increments 0 -> 1 (under cfg.loop.maxAttempts, default 3) and reaches the
+    // worker -- instead of tripping the poison-pill to quarantine with no run.
+    seedTask("escalated", "esc-exhausted");
+    await repo.setAttempts("esc-exhausted", 3); // at/over the default maxAttempts
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-exhausted/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+
+    // Real scheduler re-claims the released task...
+    const scheduler = createScheduler(repo);
+    const claimed = await scheduler.claimNextTask();
+    expect(claimed?.id).toBe("esc-exhausted");
+    // ...with a fresh budget: the conductor's next `getAttempts + 1` = 1, which is
+    // <= maxAttempts, so the circuit breaker does NOT poison it.
+    expect(await repo.getAttempts("esc-exhausted")).toBe(0);
   });
 
   it("a reply to an escalation with no queue task (drift-style) still records the reply and returns 200", async () => {
