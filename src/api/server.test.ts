@@ -1938,13 +1938,29 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     expect(await res.text()).toContain("index");
   });
 
-  it("a missing asset WITH an extension 404s (no SPA fallback)", async () => {
+  it("a missing asset under /assets/ 404s (never SPA-fallbacks -- a stale bundle must not be masked as HTML)", async () => {
     const uiDir = seedUiDir();
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/missing.js`);
+    const res = await fetch(`http://127.0.0.1:${port}/assets/missing.js`);
     expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("index");
+  });
+
+  it("SPA fallback: a client route whose id segment contains a DOT still serves index.html on reload ([ui/dotted-id-breaks-spa-reload])", async () => {
+    // Run/task/thread ids are slugified from filenames/intents and keep dots
+    // (`run-...-OVERVIEW.md-...`). A reload / direct-nav of such a route hits the
+    // static server; the old "any segment has an extension -> asset -> 404"
+    // heuristic wrongly 404'd it. It is NOT under /assets/, so it must fall back.
+    const uiDir = seedUiDir();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/p/demo/runs/run-add-a-docs-FAQ.md-with-an-answer`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("index");
   });
 
   it("API routes still win over static/SPA when uiDir is set", async () => {
@@ -2013,20 +2029,29 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
+    // The WHATWG URL parser normalizes the `%2e%2e` dot-segment away before the
+    // request is even sent, so the server sees `/secret2.txt` -- a path CONTAINED
+    // inside uiDir (resolveStaticPath resolves it to `<uiDir>/secret2.txt`, which
+    // does not exist). Since it is not under /assets/, the SPA fallback now serves
+    // index.html (200) rather than 404 -- the security-relevant guarantee is that
+    // the real secret one dir ABOVE uiDir is never read, which containment upholds
+    // regardless of the status code. (Literal-`..` and %2f-slash traversals are still
+    // rejected outright by resolveStaticPath -- see the sibling traversal tests.)
     const res = await fetch(`http://127.0.0.1:${port}/%2e%2e/secret2.txt`);
-    expect([400, 404]).toContain(res.status);
+    expect([200, 400, 404]).toContain(res.status);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not-via-encoded-dots");
   });
 
-  it("an encoded-dot missing asset (/missing%2ejs -> missing.js) 404s, never SPA-fallbacks to index", async () => {
+  it("an encoded-path missing asset under /assets/ (/assets/missing%2ejs) 404s, never SPA-fallbacks to index", async () => {
     const uiDir = seedUiDir();
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
-    // Decodes to `missing.js` -- an ASSET path with no file. The SPA-vs-asset
-    // heuristic must use the DECODED extension, so this 404s (not a route 200).
-    const res = await fetch(`http://127.0.0.1:${port}/missing%2ejs`);
+    // Decodes to `/assets/missing.js` -- a missing bundle under the asset dir. The
+    // asset check runs on the DECODED resolved path, so the encoded dot cannot
+    // sneak it out of the /assets/ 404 guarantee into an index.html route 200.
+    const res = await fetch(`http://127.0.0.1:${port}/assets/missing%2ejs`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain("index");
   });

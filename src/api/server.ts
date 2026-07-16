@@ -2490,16 +2490,23 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         const result = await tryServeStaticFile(resolved, canonicalUiDir, res, log);
         if (result === "served") return;
 
-        // SPA fallback: serve index.html only for a truly-missing path that looks
-        // like a client route -- i.e. NO segment of the resolved-relative path carries
-        // a file extension. Checking EVERY segment on the DECODED, resolved path (not
-        // errno, not just the last segment) is deliberately cross-platform: it treats
-        // `/missing.js`, `/missing%2ejs` (decoded), AND `/assets/app.js/foo` (a path
-        // under a file -- ENOTDIR on POSIX but ENOENT on Windows) all as assets -> 404,
-        // never a route. A "blocked" result (dir, symlink escape, oversize) is never
-        // eligible either.
-        const relSegments = resolved.slice(canonicalUiDir.length).split(sep);
-        if (result === "missing" && !relSegments.some((s) => s.includes("."))) {
+        // SPA fallback: serve index.html for any truly-MISSING path that is NOT an
+        // immutable build asset, so a client-side route resolves on reload / direct-nav
+        // -- INCLUDING a route whose id segment carries a dot. Run/task/thread ids are
+        // slugified from filenames/intents and KEEP dots (`run-...-OVERVIEW.md-...`); the
+        // previous "any resolved segment has an extension -> asset -> 404" heuristic
+        // wrongly 404'd those on a reload while an in-app click (client routing) worked
+        // (`[ui/dotted-id-breaks-spa-reload]`). The ONLY paths that must 404 and never be
+        // masked as HTML are the content-hashed bundles under `/assets/`: a missing
+        // hashed asset is a real (stale-build) error a stale index.html must surface
+        // loudly. A "blocked" result -- a directory, a symlink escape, an oversize file,
+        // or a path UNDER a file (ENOTDIR) -- is NEVER "missing" (see tryServeStaticFile),
+        // so it stays 404 and is never fallback-eligible; only ENOENT reaches here. The
+        // asset check reads the DECODED, resolved-relative first segment case-insensitively
+        // so `/assets/x%2ejs` (decoded) and a mixed-case `/ASSETS/x` both count as assets.
+        const relSegments = resolved.slice(canonicalUiDir.length).split(sep).filter(Boolean);
+        const isImmutableAsset = relSegments[0]?.toLowerCase() === "assets";
+        if (result === "missing" && !isImmutableAsset) {
           const indexPath = resolveStaticPath(canonicalUiDir, "/index.html");
           if (indexPath !== null && (await tryServeStaticFile(indexPath, canonicalUiDir, res, log)) === "served") {
             return;
