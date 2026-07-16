@@ -603,6 +603,116 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     expect(existsSync(join(stateDir, "queue", "pending", "esc-b3.md"))).toBe(true);
   });
 
+  it("a throwing injected logger never breaks the reply-B 200 or the escalated->pending move ([ts/fail-closed])", async () => {
+    // reply logs on the HAPPY path (the "recorded escalation reply" INFO fires
+    // before any move), so a throwing `deps.log` that was routed raw would abort
+    // handleReply before the 200 -- and the terminal error backstop would re-throw
+    // logging that too, leaving the client hung with no response. The fail-closed
+    // `log` wrapper must contain it so the request still completes normally.
+    seedTask("escalated", "esc-badlog");
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir }, { log: throwingLog }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-badlog/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-badlog.md"))).toBe(true);
+    // Non-vacuous AND call-site-specific: the happy-path "recorded escalation reply"
+    // INFO (which fires before any move) really was reached and threw, and the
+    // wrapper swallowed it so the 200 still went out.
+    expect(logged.some((l) => l.startsWith("INFO:") && l.includes("recorded escalation reply"))).toBe(true);
+  });
+
+  it("a throwing logger AND a hostile-error onReplyRework together still return 200 and re-queue ([ts/fail-closed] rule-of-thumb)", async () => {
+    // The gotcha's rule of thumb: inject a throwing logger AND a throwing primary
+    // dep together. Here onReplyRework throws an Error whose `message` getter also
+    // throws, so BOTH the best-effort catch's `log(...)` and the `safeErrorText`
+    // that builds its message must be fail-closed -- otherwise the throw escapes
+    // the very catch meant to swallow it, before the 200 is sent.
+    seedTask("escalated", "esc-badlog-hostile");
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    const hostileErr = new Error("placeholder");
+    Object.defineProperty(hostileErr, "message", {
+      get(): string {
+        throw new Error("message getter boom");
+      },
+    });
+    handle = createApiServer(
+      projectDeps(
+        {
+          repo,
+          stateDir,
+          onReplyRework: () => {
+            throw hostileErr;
+          },
+        },
+        { log: throwingLog },
+      ),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-badlog-hostile/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-badlog-hostile.md"))).toBe(true);
+    // Both fail-closed guards were exercised at the specific onReplyRework catch:
+    // safeErrorText turned the hostile error into the literal fallback while building
+    // the WARN message, and the wrapper then swallowed the throwing logger.
+    expect(
+      logged.some((l) => l.startsWith("WARN:") && l.includes("onReplyRework threw") && l.includes("<unstringifiable error>")),
+    ).toBe(true);
+  });
+
+  it("the terminal error backstop survives a throwing logger: a rejected handler still 500s the client instead of hanging ([ts/fail-closed])", async () => {
+    // A handler rejection that reaches the top-level `handleRequest(...).catch`
+    // backstop logs via the SAME fail-closed `log` wrapper before sending the 500.
+    // A `deps.projects.get` that throws is not caught inside handleRequest, so it
+    // propagates to that backstop; with a raw throwing logger the backstop's own
+    // ERROR log would re-throw and the 500 would never be sent (client hangs).
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    handle = createApiServer(
+      projectDeps(
+        { repo, stateDir },
+        {
+          projects: {
+            list: async () => [],
+            get: async () => {
+              throw new Error("resolve boom");
+            },
+          },
+          log: throwingLog,
+        },
+      ),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
+    // Call-site-specific: the terminal backstop's own "unhandled error" ERROR log
+    // was reached and threw, and the wrapper contained it so the 500 still went out.
+    expect(logged.some((l) => l.startsWith("ERROR:") && l.includes("unhandled error"))).toBe(true);
+  });
+
   it("a replied escalation no longer blocks a same-file_set pending task", async () => {
     seedTask("escalated", "esc-lock");
     seedTask("pending", "p-blocked");
