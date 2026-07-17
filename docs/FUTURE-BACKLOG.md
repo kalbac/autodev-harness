@@ -14,7 +14,15 @@ Full methodology + results table: **`docs/wiki/critic-model-calibration-s44.md`*
 before promoting any future critic model. Carried rule: **always pin `roles.critic.model` explicitly**
 (the CLI default is sol — an un-pinned gate drifts onto it).
 
-## Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
+## ✅ RESOLVED (s45 2026-07-17) — Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
+
+Shipped as `2c00ba7`: made the base `log` binding in `createApiServer` fail-closed (one
+try/catch wrapper so every call site — the ~10 best-effort catches, happy-path INFO logs, AND
+the terminal `handleRequest` error backstop — is contained), added a module-level
+`safeErrorText(err)` (never throws while stringifying), and swapped the 9 failure-path
+`${String(err)}` interpolations to `safeErrorText(err)`. 3 TDD regression tests (red-verified:
+they hang without the fix). codex gpt-5.6-luna APPROVE. Original backlog text below for history.
+
 
 `src/api/server.ts` has **10** best-effort `catch (err) { log("WARN"/"ERROR", ... String(err)) }`
 sites (lock-release, commit-on-accept, digest read, run-manifest listing, the s44 reply-B

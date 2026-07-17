@@ -122,8 +122,9 @@ unit-testable and easy for the operator to re-tune later.
 ### Decision journal
 
 Append-only NDJSON at **`.autodev/decision-journal.ndjson`** (one per project, mirroring the
-`agent-ci-events.ndjson` idiom). One line per autonomous action, appended BEFORE the action so a
-crash mid-action still leaves an audit trail:
+`agent-ci-events.ndjson` idiom). One line per autonomous action, journaled AFTER the action
+completes so the log records a *completed* action, never an intent (revised from the original
+"journal-before" design during the codex review — see "Post-review hardening" below):
 
 ```json
 {"ts":"<iso>","runId":"<id>","taskId":"<id>","escalationType":"disagreement","decision":"auto-rework","reworkCount":1,"reason":"critic broken -- re-running with feedback","reversible":true}
@@ -198,9 +199,40 @@ Fully deterministic → unit-testable end to end; no live LLM needed for the cor
 - **Escalation detection is a post-drain sweep**, not real-time — fine for a batch overnight loop; a
   real-time reactor is unnecessary complexity here.
 
+## Post-review hardening (codex gpt-5.6-luna, s45 — 4 review passes)
+
+The independent critic gate materially hardened the budget/journal accounting beyond this
+design's first cut. The shipped code differs from the sketch above in these ways (all
+correctness, no scope change):
+
+- **`parseReworkCount(raw, max)` fail-closed** — an absent counter file is a fresh `0`, but
+  ANY corrupt value (empty, `NaN`, negative, non-integer, partially-numeric `"1garbage"`)
+  returns `max` so a damaged/tampered counter PARKS the task instead of being granted a
+  fresh quota.
+- **Saga ordering with compensation** — the auto-rework is `setReworkCount(next)` FIRST,
+  then requeue in a try that rolls the counter back on failure, then `seen.set`, then
+  journal. See gotcha `[autonomy/budget-saga-order]`: two non-atomic blackboard files can't
+  be committed together, so every partial-failure interleaving is ordered to fail toward
+  LESS unattended spend (early park), never a false-park or a lying journal line or a
+  cross-run over-budget.
+- **In-memory `seen` tally** — `max(persisted, seen)` is the effective count; `seen` advances
+  on every requeue so the loop terminates even if the persisted counter never advances, and
+  the count is read once per task per iteration (closing a split-read race).
+- **`runOpts` threaded** — `runOrSupervise(runOpts)` passes the operator's `ConductorRunOptions`
+  into the supervisor drain (`{...runOpts, drain:true}`) and the non-overnight branch, so no
+  run option is silently dropped when overnight is enabled.
+- **Guarded rollback WARN** — a double-fault rollback failure is logged (guarded), not silently
+  swallowed, so the operator has a signal the runtime store may be damaged.
+
+Live-proven end-to-end through the real daemon: a zero-LLM park proof (blocked + budget-exhausted
+disagreement → two correct `park` journal lines) AND a bounded auto-rework proof (a seeded
+disagreement task → auto-rework journal line → worker re-ran reading the critic feedback →
+critic clean → real commit `d67674e`).
+
 ## Related
 
 - `adr/004-live-orchestrator-presence-and-post-review-autonomy.md` — the doctrine (tenets 1-6).
+- `docs/gotchas/budget-saga-order-on-file-blackboard.md` — the saga-ordering lesson from this slice.
 - `adr/003-roles-are-a-configurable-vendor-matrix.md` — R1 boundary (autonomy above the gate).
 - `gotchas/reply-b-poisons-maxrounds-exhausted-task.md` — the s44 reply-B attempt-budget reset the
   supervisor reuses.
