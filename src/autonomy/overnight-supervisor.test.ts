@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isRetryable, superviseOvernight, type OvernightSupervisorDeps } from "./overnight-supervisor.js";
+import { isRetryable, parseReworkCount, superviseOvernight, type OvernightSupervisorDeps } from "./overnight-supervisor.js";
 import type { EscalationType } from "../escalate/escalate.js";
 import type { DecisionJournalEntry } from "./decision-journal.js";
 
@@ -9,6 +9,20 @@ describe("isRetryable (reason-routing table)", () => {
 
   for (const t of retryable) it(`routes ${t} -> auto-rework`, () => expect(isRetryable(t)).toBe(true));
   for (const t of park) it(`routes ${t} -> park`, () => expect(isRetryable(t)).toBe(false));
+});
+
+describe("parseReworkCount (fail-closed budget)", () => {
+  it("absent file (null) -> 0 (fresh budget)", () => expect(parseReworkCount(null, 2)).toBe(0));
+  it("a clean non-negative integer parses through", () => {
+    expect(parseReworkCount("0", 2)).toBe(0);
+    expect(parseReworkCount("2", 2)).toBe(2);
+    expect(parseReworkCount(" 3 ", 2)).toBe(3);
+  });
+  it("fails CLOSED (-> maxAutoReworks, parks) on any corrupt value", () => {
+    for (const bad of ["", "NaN", "-1", "1.5", "1garbage", "garbage", "0x10", "1e3", "  "]) {
+      expect(parseReworkCount(bad, 2)).toBe(2);
+    }
+  });
 });
 
 /** A scriptable fake: `escalatedByDrain[i]` is the escalated-id list returned AFTER the
@@ -88,5 +102,50 @@ describe("superviseOvernight", () => {
     await superviseOvernight(deps);
     expect(requeued).toEqual(["y"]);            // one rework
     expect(journal.map((e) => e.decision)).toEqual(["auto-rework"]); // cleared -> no park
+  });
+
+  it("terminates even if setReworkCount never persists (in-memory progress guarantees no spin)", async () => {
+    // Worst case: the task is ALWAYS still escalated and the persisted counter NEVER
+    // advances (getReworkCount always 0, setReworkCount a no-op). Without the in-memory
+    // `seen` tally this loops forever; with it, it stops after exactly maxAutoReworks.
+    const requeued: string[] = [];
+    const journal: DecisionJournalEntry[] = [];
+    const deps: OvernightSupervisorDeps = {
+      enabled: true,
+      maxAutoReworks: 2,
+      drain: async () => {},
+      listEscalated: async () => [{ id: "z" }],
+      readEscalationType: async () => "disagreement",
+      getReworkCount: async () => 0,
+      setReworkCount: async () => {}, // no-op: never persists
+      requeueForRework: async (id) => void requeued.push(id),
+      writeDecision: async (e) => void journal.push(e),
+      now: () => "2026-07-17T00:00:00.000Z",
+    };
+    await superviseOvernight(deps); // must RETURN, not hang
+    expect(requeued).toEqual(["z", "z"]);
+    expect(journal.filter((e) => e.decision === "auto-rework")).toHaveLength(2);
+    expect(journal.some((e) => e.decision === "park")).toBe(true);
+  });
+
+  it("does NOT journal an auto-rework whose requeue fails (journal records completed actions only)", async () => {
+    // Act-first, journal-after: a requeue failure must leave NO false "auto-rework" line.
+    const journal: DecisionJournalEntry[] = [];
+    const deps: OvernightSupervisorDeps = {
+      enabled: true,
+      maxAutoReworks: 2,
+      drain: async () => {},
+      listEscalated: async () => [{ id: "f" }],
+      readEscalationType: async () => "disagreement",
+      getReworkCount: async () => 0,
+      setReworkCount: async () => {},
+      requeueForRework: async () => {
+        throw new Error("move failed");
+      },
+      writeDecision: async (e) => void journal.push(e),
+      now: () => "2026-07-17T00:00:00.000Z",
+    };
+    await expect(superviseOvernight(deps)).rejects.toThrow("move failed");
+    expect(journal).toEqual([]);
   });
 });

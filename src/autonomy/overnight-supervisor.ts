@@ -11,6 +11,22 @@ export function isRetryable(type: EscalationType): boolean {
   return RETRYABLE.has(type);
 }
 
+/**
+ * Parse a persisted `auto-rework-count` runtime value, FAIL-CLOSED. An absent file
+ * (null) means "never reworked" -> 0 (a fresh budget). ANY other unreadable value --
+ * empty, non-numeric, partially-numeric (`"1garbage"`), negative, or non-integer -- is
+ * treated as budget-EXHAUSTED (`maxAutoReworks`), so a corrupted or tampered counter
+ * PARKS the task rather than silently granting a fresh auto-rework quota. A safety
+ * budget must degrade toward LESS unattended spend, not more.
+ */
+export function parseReworkCount(raw: string | null, maxAutoReworks: number): number {
+  if (raw === null) return 0;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return maxAutoReworks; // reject "", "NaN", "-1", "1.5", "1garbage"
+  const n = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(n) && n >= 0 ? n : maxAutoReworks;
+}
+
 export interface OvernightSupervisorDeps {
   /** From cfg.autonomy.overnight -- when false, superviseOvernight is a no-op. */
   enabled: boolean;
@@ -43,20 +59,39 @@ export interface OvernightSupervisorDeps {
 export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise<void> {
   if (!deps.enabled) return;
 
+  // In-memory per-run rework tally. The loop's TERMINATION guarantee rests on this,
+  // NOT the runtime file: `seen` advances by 1 on every requeue regardless of whether
+  // the persisted counter's read/write behaves, so a stuck / externally-rewritten /
+  // never-persisting file cannot spin the loop. `getReworkCount` (the persisted value)
+  // is still honored so the budget survives across supervise() invocations; the
+  // effective count is the max of the two. One read per task per iteration also closes
+  // the split-read race (a filter read of 1 then a separate `next` read of 2).
+  const seen = new Map<string, number>();
+  const effectiveCount = async (id: string): Promise<number> =>
+    Math.max(await deps.getReworkCount(id), seen.get(id) ?? 0);
+
   for (;;) {
     await deps.drain();
     const escalated = await deps.listEscalated();
-    const actionable: { id: string; type: EscalationType }[] = [];
+    const actionable: { id: string; type: EscalationType; count: number }[] = [];
     for (const { id } of escalated) {
       const type = await deps.readEscalationType(id);
       if (type === null || !isRetryable(type)) continue;
-      if ((await deps.getReworkCount(id)) >= deps.maxAutoReworks) continue;
-      actionable.push({ id, type });
+      const count = await effectiveCount(id);
+      if (count >= deps.maxAutoReworks) continue;
+      actionable.push({ id, type, count });
     }
     if (actionable.length === 0) break;
 
-    for (const { id, type } of actionable) {
-      const next = (await deps.getReworkCount(id)) + 1;
+    for (const { id, type, count } of actionable) {
+      const next = count + 1;
+      // Act FIRST, journal AFTER: the journal must record a COMPLETED auto-rework, never
+      // a mere intent -- if setReworkCount/requeue throws, no false "done" line is left
+      // behind. `seen` advances so termination still holds even if the persisted write
+      // silently no-ops.
+      await deps.setReworkCount(id, next);
+      await deps.requeueForRework(id);
+      seen.set(id, next);
       await deps.writeDecision({
         ts: deps.now(),
         taskId: id,
@@ -66,8 +101,6 @@ export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise
         reason: `${type}: re-running with critic feedback`,
         reversible: true,
       });
-      await deps.setReworkCount(id, next);
-      await deps.requeueForRework(id);
     }
   }
 
@@ -82,7 +115,7 @@ export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise
       taskId: id,
       escalationType: type,
       decision: "park",
-      reworkCount: await deps.getReworkCount(id),
+      reworkCount: await effectiveCount(id),
       reason: isRetryable(type)
         ? `${type}: auto-rework budget exhausted -- parked for morning review`
         : `${type}: needs operator -- parked for morning review`,

@@ -283,13 +283,10 @@ async function main(): Promise<void> {
     for (const t of result.enqueued) root.log("INFO", `  - ${t.id} -> ${t.path}`);
     return;
   }
-  // Overnight autonomy (spec 2026-07-17): when enabled, the run drives the escalation
-  // supervisor (drain + auto-rework/park sweep); otherwise the plain bounded run as before.
-  if (root.cfg.autonomy.overnight.enabled) {
-    await root.runOrSupervise();
-  } else {
-    await root.conductor.run(command.runOpts);
-  }
+  // Overnight autonomy (spec 2026-07-17): runOrSupervise drives the escalation supervisor
+  // (drain + auto-rework/park sweep) when overnight is enabled, else a plain bounded run.
+  // Either way it receives the operator's `runOpts` so no run option is silently dropped.
+  await root.runOrSupervise(command.runOpts);
 }
 
 main().catch((err) => {

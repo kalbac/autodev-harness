@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
-import { superviseOvernight, type OvernightSupervisorDeps } from "./overnight-supervisor.js";
+import { superviseOvernight, parseReworkCount, type OvernightSupervisorDeps } from "./overnight-supervisor.js";
 import { serializeDecision } from "./decision-journal.js";
 import { appendFile, readFile } from "node:fs/promises";
 
@@ -74,11 +74,7 @@ function realDeps(over: Partial<OvernightSupervisorDeps> = {}): OvernightSupervi
       const md = await readFile(join(escalationsDir, `${id}.md`), "utf8").catch(() => null);
       return md ? (parseEscalation(md)?.type ?? null) : null;
     },
-    getReworkCount: async (id) => {
-      const s = await repo.readRuntimeFile(id, "auto-rework-count");
-      const n = s === null ? 0 : Number.parseInt(s, 10);
-      return Number.isFinite(n) && n >= 0 ? n : 0;
-    },
+    getReworkCount: async (id) => parseReworkCount(await repo.readRuntimeFile(id, "auto-rework-count"), 2),
     setReworkCount: async (id, n) => repo.writeRuntimeFile(id, "auto-rework-count", String(n)),
     requeueForRework: async (id) => {
       await repo.setAttempts(id, 0);
@@ -113,6 +109,19 @@ describe("superviseOvernight (real repo + parseEscalation)", () => {
     await superviseOvernight(realDeps());
     expect(existsSync(join(stateDir, "queue", "escalated", "esc-blk.md"))).toBe(true);
     expect(existsSync(join(stateDir, "queue", "pending", "esc-blk.md"))).toBe(false);
+    const journal = readFileSync(join(stateDir, "decision-journal.ndjson"), "utf8").trim().split("\n");
+    expect(journal).toHaveLength(1);
+    expect(JSON.parse(journal[0]!).decision).toBe("park");
+  });
+
+  it("FAIL-CLOSED: a corrupt auto-rework-count runtime file parks a retryable escalation (no fresh quota)", async () => {
+    seedTask("escalated", "esc-corrupt");
+    seedEscalation("esc-corrupt", "disagreement");
+    // A damaged/tampered counter must NOT grant a fresh auto-rework quota -> park.
+    await repo.writeRuntimeFile("esc-corrupt", "auto-rework-count", "garbage");
+    await superviseOvernight(realDeps());
+    expect(existsSync(join(stateDir, "queue", "escalated", "esc-corrupt.md"))).toBe(true); // parked, never requeued
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-corrupt.md"))).toBe(false);
     const journal = readFileSync(join(stateDir, "decision-journal.ndjson"), "utf8").trim().split("\n");
     expect(journal).toHaveLength(1);
     expect(JSON.parse(journal[0]!).decision).toBe("park");
