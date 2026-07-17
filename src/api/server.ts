@@ -672,6 +672,22 @@ function flattenForLog(s: string, max = 200): string {
   return flat.length > max ? `${flat.slice(0, max)}...` : flat;
 }
 
+/** Fail-closed error -> string: never throws, even on an `Error` whose `message`
+ *  getter (or a value whose `toString`) itself throws (gotcha `[ts/fail-closed]`).
+ *  Used on every best-effort/failure log path so building the log message can never
+ *  re-introduce a throw through the very `catch` meant to swallow it. Preserves the
+ *  full `String(err)` rendering (error name/class + message + any custom `toString`)
+ *  that these log sites emitted before -- only the throwing case degrades, to a safe
+ *  literal. (Same fail-closed intent as `safeErrorText` in `src/orchestrator/launch.ts`,
+ *  which keeps only `.message` for its narrower background-chain use.) */
+function safeErrorText(err: unknown): string {
+  try {
+    return String(err);
+  } catch {
+    return "<unstringifiable error>";
+  }
+}
+
 /**
  * `"served"` -- response sent (200). `"missing"` -- nothing at this path (ENOENT);
  * eligible for SPA fallback. `"blocked"` -- something exists at this path but it is
@@ -795,7 +811,19 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 /** Creates (but does not start) the thin API server. Call `.listen()` to bind. */
 export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const now = deps.now ?? (() => Date.now());
-  const log = deps.log ?? ((): void => {});
+  // Fail-closed logger (gotcha `[ts/fail-closed]`): a broken/throwing injected
+  // `deps.log` must NEVER turn a request handler's best-effort catch path -- or
+  // even a happy-path INFO log, or the terminal error backstop below -- into a
+  // re-throw that aborts the response. Every `log(...)` call in this server routes
+  // through this wrapper, so the guarantee is structural, not per-call-site.
+  const rawLog = deps.log ?? ((): void => {});
+  const log = (level: string, message: string): void => {
+    try {
+      rawLog(level, message);
+    } catch {
+      /* a broken logger must never break a request */
+    }
+  };
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
 
   // Single-flight guard for POST /projects/:id/orchestrate: an orchestrate run
@@ -882,7 +910,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         digestTail = await readDigestTail(digestPath);
       } catch (err) {
         // digest.md is a best-effort convenience surface -- never fail /state over it.
-        log("WARN", `api: failed reading digest.md: ${String(err)}`);
+        log("WARN", `api: failed reading digest.md: ${safeErrorText(err)}`);
       }
     }
 
@@ -969,7 +997,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         log("INFO", `api: escalation ${id} reply recorded; no escalated queue task to release`);
       } else {
         // The lock is still held -- surface it, do not silently 200.
-        log("ERROR", `api: escalation ${id} reply recorded but lock release failed: ${String(err)}`);
+        log("ERROR", `api: escalation ${id} reply recorded but lock release failed: ${safeErrorText(err)}`);
         sendJson(res, 500, { error: "reply recorded but failed to release the escalation lock", id, choice });
         return;
       }
@@ -997,7 +1025,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       try {
         await p.repo.setAttempts(id, 0);
       } catch (err) {
-        log("WARN", `api: reply-B attempt-budget reset failed (ignored) for ${id}: ${String(err)}`);
+        log("WARN", `api: reply-B attempt-budget reset failed (ignored) for ${id}: ${safeErrorText(err)}`);
       }
       // Guard the call itself so NO hook implementation (even a hypothetical
       // synchronously-throwing one) can break the already-decided 200 response.
@@ -1008,7 +1036,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       try {
         p.onReplyRework?.(id);
       } catch (err) {
-        log("WARN", `api: onReplyRework threw (ignored) for ${id}: ${String(err)}`);
+        log("WARN", `api: onReplyRework threw (ignored) for ${id}: ${safeErrorText(err)}`);
       }
     }
 
@@ -1056,7 +1084,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         log("INFO", `api: commit-on-accept ${id} committed; no escalated queue task to move`);
       } else {
         // Committed in git but the queue move failed -- surface it, write NO reply.
-        log("ERROR", `api: commit-on-accept ${id} committed ${outcome.hash} but move escalated/->done/ failed: ${String(err)}`);
+        log("ERROR", `api: commit-on-accept ${id} committed ${outcome.hash} but move escalated/->done/ failed: ${safeErrorText(err)}`);
         sendJson(res, 500, { error: "change committed but failed to move the task to done", id, commit: outcome.hash });
         return;
       }
@@ -1075,7 +1103,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       try {
         await p.repo.markDone(id, outcome.hash);
       } catch (err) {
-        log("WARN", `api: commit-on-accept ${id} markDone bookkeeping failed (ignored): ${String(err)}`);
+        log("WARN", `api: commit-on-accept ${id} markDone bookkeeping failed (ignored): ${safeErrorText(err)}`);
       }
     }
     sendJson(res, 200, reply);
@@ -1948,7 +1976,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // Any OTHER readdir failure (ENOTDIR if runs/ is a file, EACCES, ...) must
       // also degrade to [] rather than 500 the dashboard's run list.
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        log("WARN", `api: cannot list run manifests: ${String(err)}`);
+        log("WARN", `api: cannot list run manifests: ${safeErrorText(err)}`);
       }
       return [];
     }
@@ -2181,7 +2209,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       // "task not started" case (-> []); any other readdir failure (ENOTDIR,
       // EACCES, ...) also degrades to [] rather than a 500.
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        log("WARN", `api: cannot list runtime files for ${id}: ${String(err)}`);
+        log("WARN", `api: cannot list runtime files for ${id}: ${safeErrorText(err)}`);
       }
       sendJson(res, 200, []);
     }
@@ -2462,16 +2490,23 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         const result = await tryServeStaticFile(resolved, canonicalUiDir, res, log);
         if (result === "served") return;
 
-        // SPA fallback: serve index.html only for a truly-missing path that looks
-        // like a client route -- i.e. NO segment of the resolved-relative path carries
-        // a file extension. Checking EVERY segment on the DECODED, resolved path (not
-        // errno, not just the last segment) is deliberately cross-platform: it treats
-        // `/missing.js`, `/missing%2ejs` (decoded), AND `/assets/app.js/foo` (a path
-        // under a file -- ENOTDIR on POSIX but ENOENT on Windows) all as assets -> 404,
-        // never a route. A "blocked" result (dir, symlink escape, oversize) is never
-        // eligible either.
-        const relSegments = resolved.slice(canonicalUiDir.length).split(sep);
-        if (result === "missing" && !relSegments.some((s) => s.includes("."))) {
+        // SPA fallback: serve index.html for any truly-MISSING path that is NOT an
+        // immutable build asset, so a client-side route resolves on reload / direct-nav
+        // -- INCLUDING a route whose id segment carries a dot. Run/task/thread ids are
+        // slugified from filenames/intents and KEEP dots (`run-...-OVERVIEW.md-...`); the
+        // previous "any resolved segment has an extension -> asset -> 404" heuristic
+        // wrongly 404'd those on a reload while an in-app click (client routing) worked
+        // (`[ui/dotted-id-breaks-spa-reload]`). The ONLY paths that must 404 and never be
+        // masked as HTML are the content-hashed bundles under `/assets/`: a missing
+        // hashed asset is a real (stale-build) error a stale index.html must surface
+        // loudly. A "blocked" result -- a directory, a symlink escape, an oversize file,
+        // or a path UNDER a file (ENOTDIR) -- is NEVER "missing" (see tryServeStaticFile),
+        // so it stays 404 and is never fallback-eligible; only ENOENT reaches here. The
+        // asset check reads the DECODED, resolved-relative first segment case-insensitively
+        // so `/assets/x%2ejs` (decoded) and a mixed-case `/ASSETS/x` both count as assets.
+        const relSegments = resolved.slice(canonicalUiDir.length).split(sep).filter(Boolean);
+        const isImmutableAsset = relSegments[0]?.toLowerCase() === "assets";
+        if (result === "missing" && !isImmutableAsset) {
           const indexPath = resolveStaticPath(canonicalUiDir, "/index.html");
           if (indexPath !== null && (await tryServeStaticFile(indexPath, canonicalUiDir, res, log)) === "served") {
             return;
@@ -2485,7 +2520,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
   const httpServer = createServer((req, res) => {
     handleRequest(req, res).catch((err: unknown) => {
-      log("ERROR", `api: unhandled error for ${req.method ?? "?"} ${req.url ?? "?"}: ${String(err)}`);
+      log("ERROR", `api: unhandled error for ${req.method ?? "?"} ${req.url ?? "?"}: ${safeErrorText(err)}`);
       if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
       else res.end();
     });

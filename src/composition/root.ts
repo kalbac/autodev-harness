@@ -70,9 +70,12 @@ import { escalate as escalateCore, type EscalationInput } from "../escalate/esca
 import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { snapshot } from "../util/fingerprint.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
-import { createConductor, type Conductor, type ConductorDeps } from "../conductor/conductor.js";
+import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { HarnessConfig } from "../config/schema.js";
+import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supervisor.js";
+import { serializeDecision } from "../autonomy/decision-journal.js";
+import { parseEscalation } from "../escalate/escalate.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -142,6 +145,11 @@ export interface ProjectRoot {
    *  operator's reply re-queues `taskId` ([narrator/escalated-run-not-terminal]).
    *  Fire-and-forget from the reply path; best-effort (never throws). */
   rearmNarratorForTask(projectId: string, taskId: string): Promise<void>;
+  /** Overnight-aware run entry (spec 2026-07-17): when `cfg.autonomy.overnight.enabled`,
+   *  drives the `superviseOvernight` loop (drain + reason-route + auto-rework/park each
+   *  sweep); otherwise a plain bounded drain, identical to the pre-existing `run` verb.
+   *  Never touches the critic/gate/commit -- only the reply-B requeue + journal. */
+  runOrSupervise(runOpts?: ConductorRunOptions): Promise<void>;
 }
 
 /** The threads capability object the HTTP `ProjectView.threads` consumes; also
@@ -693,6 +701,50 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     return threadsCapability;
   };
 
+  // Overnight escalation supervisor (spec 2026-07-17). Above-gate: it only drives the
+  // reply-B triple (setAttempts + move) and reads escalation artifacts -- never the gate.
+  // Reuses the `escalationsDir` already built for the escalate() wiring above.
+  const decisionJournalPath = join(repoRoot, cfg.stateDir, "decision-journal.ndjson");
+  const buildSupervisorDeps = (runOpts?: ConductorRunOptions) => ({
+    enabled: cfg.autonomy.overnight.enabled,
+    maxAutoReworks: cfg.autonomy.overnight.maxAutoReworks,
+    // Each supervisor drain honors the operator's run options (e.g. maxIterations) --
+    // `drain: true` is the supervisor's inherent mode (it must sweep the whole queue),
+    // but the other bounds are NOT silently dropped when overnight is enabled.
+    drain: () => conductor.run({ ...runOpts, drain: true }).then(() => undefined),
+    listEscalated: async () => (await repo.listTasks("escalated")).map((t) => ({ id: t.id })),
+    readEscalationType: async (taskId: string) => {
+      const md = await readFile(join(escalationsDir, `${taskId}.md`), "utf8").catch(() => null);
+      return md ? (parseEscalation(md)?.type ?? null) : null;
+    },
+    // Fail-closed: a corrupt/absent counter is handled by parseReworkCount -- absent -> 0
+    // (fresh), corrupt -> maxAutoReworks (park), so a damaged counter never grants a
+    // fresh unattended quota.
+    getReworkCount: async (taskId: string) =>
+      parseReworkCount(await repo.readRuntimeFile(taskId, "auto-rework-count"), cfg.autonomy.overnight.maxAutoReworks),
+    setReworkCount: (taskId: string, n: number) => repo.writeRuntimeFile(taskId, "auto-rework-count", String(n)),
+    requeueForRework: async (taskId: string) => {
+      await repo.setAttempts(taskId, 0);
+      await repo.moveTask(taskId, "escalated", "pending");
+    },
+    writeDecision: (entry: Parameters<typeof serializeDecision>[0]) =>
+      appendFile(decisionJournalPath, serializeDecision(entry), "utf8"),
+    now: () => new Date().toISOString(),
+    log,
+  });
+
+  /** Overnight-aware run entry: when overnight autonomy is on, drive the supervisor
+   *  loop (which internally drains + sweeps escalations, honoring `runOpts`); otherwise
+   *  a plain bounded run with the operator's exact `runOpts` (byte-identical to the
+   *  pre-existing `run` verb). */
+  const runOrSupervise = async (runOpts?: ConductorRunOptions): Promise<void> => {
+    if (cfg.autonomy.overnight.enabled) {
+      await superviseOvernight(buildSupervisorDeps(runOpts));
+    } else {
+      await conductor.run(runOpts);
+    }
+  };
+
   return {
     repoRoot,
     cfg,
@@ -728,6 +780,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
     buildThreads,
     closeThreads,
     rearmNarratorForTask,
+    runOrSupervise,
   };
 }
 

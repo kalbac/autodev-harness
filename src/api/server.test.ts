@@ -603,6 +603,116 @@ describe("createApiServer / POST /escalations/:id/reply", () => {
     expect(existsSync(join(stateDir, "queue", "pending", "esc-b3.md"))).toBe(true);
   });
 
+  it("a throwing injected logger never breaks the reply-B 200 or the escalated->pending move ([ts/fail-closed])", async () => {
+    // reply logs on the HAPPY path (the "recorded escalation reply" INFO fires
+    // before any move), so a throwing `deps.log` that was routed raw would abort
+    // handleReply before the 200 -- and the terminal error backstop would re-throw
+    // logging that too, leaving the client hung with no response. The fail-closed
+    // `log` wrapper must contain it so the request still completes normally.
+    seedTask("escalated", "esc-badlog");
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir }, { log: throwingLog }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-badlog/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-badlog.md"))).toBe(true);
+    // Non-vacuous AND call-site-specific: the happy-path "recorded escalation reply"
+    // INFO (which fires before any move) really was reached and threw, and the
+    // wrapper swallowed it so the 200 still went out.
+    expect(logged.some((l) => l.startsWith("INFO:") && l.includes("recorded escalation reply"))).toBe(true);
+  });
+
+  it("a throwing logger AND a hostile-error onReplyRework together still return 200 and re-queue ([ts/fail-closed] rule-of-thumb)", async () => {
+    // The gotcha's rule of thumb: inject a throwing logger AND a throwing primary
+    // dep together. Here onReplyRework throws an Error whose `message` getter also
+    // throws, so BOTH the best-effort catch's `log(...)` and the `safeErrorText`
+    // that builds its message must be fail-closed -- otherwise the throw escapes
+    // the very catch meant to swallow it, before the 200 is sent.
+    seedTask("escalated", "esc-badlog-hostile");
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    const hostileErr = new Error("placeholder");
+    Object.defineProperty(hostileErr, "message", {
+      get(): string {
+        throw new Error("message getter boom");
+      },
+    });
+    handle = createApiServer(
+      projectDeps(
+        {
+          repo,
+          stateDir,
+          onReplyRework: () => {
+            throw hostileErr;
+          },
+        },
+        { log: throwingLog },
+      ),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/escalations")}/esc-badlog-hostile/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice: "B" }),
+    });
+    expect(res.status).toBe(200);
+    expect(existsSync(join(stateDir, "queue", "pending", "esc-badlog-hostile.md"))).toBe(true);
+    // Both fail-closed guards were exercised at the specific onReplyRework catch:
+    // safeErrorText turned the hostile error into the literal fallback while building
+    // the WARN message, and the wrapper then swallowed the throwing logger.
+    expect(
+      logged.some((l) => l.startsWith("WARN:") && l.includes("onReplyRework threw") && l.includes("<unstringifiable error>")),
+    ).toBe(true);
+  });
+
+  it("the terminal error backstop survives a throwing logger: a rejected handler still 500s the client instead of hanging ([ts/fail-closed])", async () => {
+    // A handler rejection that reaches the top-level `handleRequest(...).catch`
+    // backstop logs via the SAME fail-closed `log` wrapper before sending the 500.
+    // A `deps.projects.get` that throws is not caught inside handleRequest, so it
+    // propagates to that backstop; with a raw throwing logger the backstop's own
+    // ERROR log would re-throw and the 500 would never be sent (client hangs).
+    const logged: string[] = [];
+    const throwingLog = (level: string, msg: string): void => {
+      logged.push(`${level}:${msg}`);
+      throw new Error("logger down");
+    };
+    handle = createApiServer(
+      projectDeps(
+        { repo, stateDir },
+        {
+          projects: {
+            list: async () => [],
+            get: async () => {
+              throw new Error("resolve boom");
+            },
+          },
+          log: throwingLog,
+        },
+      ),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/state")}`);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
+    // Call-site-specific: the terminal backstop's own "unhandled error" ERROR log
+    // was reached and threw, and the wrapper contained it so the 500 still went out.
+    expect(logged.some((l) => l.startsWith("ERROR:") && l.includes("unhandled error"))).toBe(true);
+  });
+
   it("a replied escalation no longer blocks a same-file_set pending task", async () => {
     seedTask("escalated", "esc-lock");
     seedTask("pending", "p-blocked");
@@ -1828,13 +1938,29 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     expect(await res.text()).toContain("index");
   });
 
-  it("a missing asset WITH an extension 404s (no SPA fallback)", async () => {
+  it("a missing asset under /assets/ 404s (never SPA-fallbacks -- a stale bundle must not be masked as HTML)", async () => {
     const uiDir = seedUiDir();
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/missing.js`);
+    const res = await fetch(`http://127.0.0.1:${port}/assets/missing.js`);
     expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("index");
+  });
+
+  it("SPA fallback: a client route whose id segment contains a DOT still serves index.html on reload ([ui/dotted-id-breaks-spa-reload])", async () => {
+    // Run/task/thread ids are slugified from filenames/intents and keep dots
+    // (`run-...-OVERVIEW.md-...`). A reload / direct-nav of such a route hits the
+    // static server; the old "any segment has an extension -> asset -> 404"
+    // heuristic wrongly 404'd it. It is NOT under /assets/, so it must fall back.
+    const uiDir = seedUiDir();
+    handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/p/demo/runs/run-add-a-docs-FAQ.md-with-an-answer`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("index");
   });
 
   it("API routes still win over static/SPA when uiDir is set", async () => {
@@ -1903,20 +2029,29 @@ describe("createApiServer / static UI serving (uiDir set)", () => {
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
+    // The WHATWG URL parser normalizes the `%2e%2e` dot-segment away before the
+    // request is even sent, so the server sees `/secret2.txt` -- a path CONTAINED
+    // inside uiDir (resolveStaticPath resolves it to `<uiDir>/secret2.txt`, which
+    // does not exist). Since it is not under /assets/, the SPA fallback now serves
+    // index.html (200) rather than 404 -- the security-relevant guarantee is that
+    // the real secret one dir ABOVE uiDir is never read, which containment upholds
+    // regardless of the status code. (Literal-`..` and %2f-slash traversals are still
+    // rejected outright by resolveStaticPath -- see the sibling traversal tests.)
     const res = await fetch(`http://127.0.0.1:${port}/%2e%2e/secret2.txt`);
-    expect([400, 404]).toContain(res.status);
+    expect([200, 400, 404]).toContain(res.status);
     const text = await res.text();
     expect(text).not.toContain("leak-me-not-via-encoded-dots");
   });
 
-  it("an encoded-dot missing asset (/missing%2ejs -> missing.js) 404s, never SPA-fallbacks to index", async () => {
+  it("an encoded-path missing asset under /assets/ (/assets/missing%2ejs) 404s, never SPA-fallbacks to index", async () => {
     const uiDir = seedUiDir();
     handle = createApiServer(projectDeps({ repo, stateDir }, { uiDir }));
     const port = await handle.listen(0);
 
-    // Decodes to `missing.js` -- an ASSET path with no file. The SPA-vs-asset
-    // heuristic must use the DECODED extension, so this 404s (not a route 200).
-    const res = await fetch(`http://127.0.0.1:${port}/missing%2ejs`);
+    // Decodes to `/assets/missing.js` -- a missing bundle under the asset dir. The
+    // asset check runs on the DECODED resolved path, so the encoded dot cannot
+    // sneak it out of the /assets/ 404 guarantee into an index.html route 200.
+    const res = await fetch(`http://127.0.0.1:${port}/assets/missing%2ejs`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain("index");
   });

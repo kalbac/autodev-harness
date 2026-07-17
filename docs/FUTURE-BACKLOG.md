@@ -14,7 +14,15 @@ Full methodology + results table: **`docs/wiki/critic-model-calibration-s44.md`*
 before promoting any future critic model. Carried rule: **always pin `roles.critic.model` explicitly**
 (the CLI default is sol — an un-pinned gate drifts onto it).
 
-## Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
+## ✅ RESOLVED (s45 2026-07-17) — Harden server.ts best-effort catches with a `safeLog` wrapper (`[ts/fail-closed]`, s44)
+
+Shipped as `2c00ba7`: made the base `log` binding in `createApiServer` fail-closed (one
+try/catch wrapper so every call site — the ~10 best-effort catches, happy-path INFO logs, AND
+the terminal `handleRequest` error backstop — is contained), added a module-level
+`safeErrorText(err)` (never throws while stringifying), and swapped the 9 failure-path
+`${String(err)}` interpolations to `safeErrorText(err)`. 3 TDD regression tests (red-verified:
+they hang without the fix). codex gpt-5.6-luna APPROVE. Original backlog text below for history.
+
 
 `src/api/server.ts` has **10** best-effort `catch (err) { log("WARN"/"ERROR", ... String(err)) }`
 sites (lock-release, commit-on-accept, digest read, run-manifest listing, the s44 reply-B
@@ -26,6 +34,35 @@ the daemon logger; `String(Error)` never throws), so it is NOT a defect in any s
 server.ts should adopt the same `safeLog` pattern across all 10 sites for uniform fail-closed
 hygiene. Surfaced by the s44 gpt-5.6-luna gate as a Medium against the reply-B fix; declined for that
 scoped diff (it is the file's convention, not a regression) and tracked here as the file-wide fix.
+
+## Chat-runtime migration → TanStack AI + AG-UI (operator find, s45 2026-07-16)
+
+The operator surfaced shadcn's two AI helper pages
+(`ui.shadcn.com/docs/helpers/ai-sdk`, `.../tanstack-ai`). **Recon verdict:** both are
+**offline conversation TEST-fixtures**, not runtime chat infra — they replay a predefined,
+deterministic conversation through a `useChat` hook (no model / API / token spend) for building
+chat components, reproducible demos, and deterministic streaming tests. Each is **gated on adopting
+its underlying `useChat` runtime**: `ai-sdk` needs Vercel AI SDK (`ai` + `@ai-sdk/react`);
+`tanstack-ai` needs TanStack AI (`@tanstack/ai-react` + `@tanstack/ai-client` + the **AG-UI**
+event model). Our s40 chat is a **custom** SSE stack (raw `EventSource` + hand-rolled
+`useChatStart/Message/Confirm`, `NarratorService`/`ThreadChatService`, own fenced-json strippers);
+we use `@tanstack/react-query` + `@tanstack/react-router` + `@shadcn/react` but **no `useChat`
+runtime** — so the helpers plug into nothing we have today.
+
+**The real candidate (not the helper, the runtime):** migrate the chat runtime onto **TanStack AI +
+AG-UI** (same family as our Router+Query; Vercel AI SDK is a foreign ecosystem → rejected on
+stack-fit). Payoff: (a) a **standard message-part model** (text / reasoning / tool-call / data /
+step-boundaries) via AG-UI — richer than our "stripped-prose + activity-cells", and a natural fit
+for the narrator/orchestrator chat; (b) a **robust `useChat` streaming state** replacing our manual
+SSE+invalidation plumbing that has bitten us twice (`[chat/onToken-bound-once]` s34,
+`[chat/launch-marker-needs-prompt-contract]` s40); (c) **then** these offline helpers give
+**deterministic chat tests + demos for free** — directly attacking the pain that s34/s40 chat
+features needed expensive live browser/curl proofs because unit tests couldn't see streaming bugs.
+
+**Cost/risk:** a real re-architecture of the s40 chat — backend SSE → AG-UI events; frontend
+`ThreadView`/`ThreadTranscript` → `useChat`. Its **own brainstorm → spec → plan** cycle, not a
+bolt-on. Sequence vs the unattended-autonomy work TBD (operator flagged it might even slot before
+the autonomy build). Prefer TanStack AI over Vercel AI SDK. Low urgency, high strategic value.
 
 ## Web UI: pilot → product (operator steer, s25 2026-07-05)
 
