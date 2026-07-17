@@ -85,24 +85,28 @@ export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise
 
     for (const { id, type, count } of actionable) {
       const next = count + 1;
-      // The COMMIT POINT is `requeueForRework` (the move escalated->pending that actually
-      // triggers the re-run). Order everything around it so a partial failure never
-      // mis-accounts:
-      //   1. requeue FIRST -- if it throws, NOTHING was consumed: budget not incremented,
-      //      no journal line, task stays escalated for a clean retry (fixes the codex-D
-      //      "budget spent on a rework that never happened -> false park" gap).
-      //   2. advance `seen` -- in-memory termination guarantee, right after the real action.
-      //   3. persist the budget -- if THIS throws, the rework already happened (task is in
-      //      pending); worst case the persisted counter lags and the task gets one extra
-      //      rework later (fail-OPEN toward re-running, never a false park).
-      //   4. journal LAST -- records a completed action; if it throws, the rework still
-      //      happened and the budget is correct, only the audit line is missing (honest).
-      // Three separate fs ops can't be truly atomic on the blackboard; this ordering makes
-      // every partial-failure interleaving fail SAFE (toward re-running, never a false park
-      // or a lying journal entry).
-      await deps.requeueForRework(id);
-      seen.set(id, next);
+      // A rework consumes budget (a runtime file) AND triggers work (the escalated->pending
+      // move) -- two separate blackboard files that cannot be committed atomically. This
+      // saga ordering keeps the budget DURABLY enforced while never false-parking:
+      //   1. Persist the budget FIRST. If the counter write persistently fails it throws
+      //      HERE, before any requeue -- so no rework (and no over-budget) can ever happen
+      //      under runtime-file failure; the per-task cap stays enforceable across runs.
+      //   2. Requeue (the actual re-run trigger). If it throws AFTER the counter was
+      //      persisted, ROLL THE COUNTER BACK so the task is retried cleanly on a later run
+      //      instead of being false-parked as "budget exhausted" for a rework that never
+      //      happened. A doubly-faulted rollback leaves the counter one high -> the task
+      //      parks one rework EARLY (less unattended spend -- the safe direction for a budget).
+      //   3. Advance `seen` (in-memory termination guard) only after the real action.
+      //   4. Journal LAST -- a completed action, never a mere intent; a journal failure
+      //      leaves the rework + budget correct with only the audit line missing (honest).
       await deps.setReworkCount(id, next);
+      try {
+        await deps.requeueForRework(id);
+      } catch (err) {
+        await Promise.resolve(deps.setReworkCount(id, count)).catch(() => {}); // compensate; best-effort
+        throw err;
+      }
+      seen.set(id, next);
       await deps.writeDecision({
         ts: deps.now(),
         taskId: id,

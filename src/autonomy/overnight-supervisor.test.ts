@@ -128,21 +128,21 @@ describe("superviseOvernight", () => {
     expect(journal.some((e) => e.decision === "park")).toBe(true);
   });
 
-  it("a failed requeue consumes NO budget and writes NO journal line (requeue is the commit point)", async () => {
-    // codex-D: the commit point is requeueForRework. If it throws, nothing was consumed --
-    // the persisted budget must NOT be incremented (else a later run false-parks the task
-    // as "budget exhausted" for a rework that never happened) and no "auto-rework" line is
-    // journaled.
+  it("a failed requeue ROLLS BACK the budget and writes NO journal line (no false park)", async () => {
+    // codex-D: budget is persisted BEFORE the requeue. If the requeue throws, the counter
+    // is rolled back to its original value so a later run retries cleanly instead of
+    // false-parking the task as "budget exhausted" for a rework that never happened; no
+    // "auto-rework" line is journaled.
     const journal: DecisionJournalEntry[] = [];
-    const setCalls: Array<[string, number]> = [];
+    const persisted = new Map<string, number>();
     const deps: OvernightSupervisorDeps = {
       enabled: true,
       maxAutoReworks: 2,
       drain: async () => {},
       listEscalated: async () => [{ id: "f" }],
       readEscalationType: async () => "disagreement",
-      getReworkCount: async () => 0,
-      setReworkCount: async (id, n) => void setCalls.push([id, n]),
+      getReworkCount: async (id) => persisted.get(id) ?? 0,
+      setReworkCount: async (id, n) => void persisted.set(id, n),
       requeueForRework: async () => {
         throw new Error("move failed");
       },
@@ -150,7 +150,32 @@ describe("superviseOvernight", () => {
       now: () => "2026-07-17T00:00:00.000Z",
     };
     await expect(superviseOvernight(deps)).rejects.toThrow("move failed");
-    expect(setCalls).toEqual([]); // budget NOT consumed -- requeue never succeeded
+    expect(persisted.get("f") ?? 0).toBe(0); // rolled back to original -- NOT consumed
     expect(journal).toEqual([]); // no false "auto-rework" line
+  });
+
+  it("a persistent counter-write failure aborts BEFORE any requeue (no over-budget rework)", async () => {
+    // codex-D (cross-run over-budget): persisting the budget first means a counter write
+    // that fails throws before the requeue, so no rework -- and therefore no over-budget --
+    // can happen while the runtime file is unwritable.
+    let requeues = 0;
+    const journal: DecisionJournalEntry[] = [];
+    const deps: OvernightSupervisorDeps = {
+      enabled: true,
+      maxAutoReworks: 2,
+      drain: async () => {},
+      listEscalated: async () => [{ id: "g" }],
+      readEscalationType: async () => "disagreement",
+      getReworkCount: async () => 0,
+      setReworkCount: async () => {
+        throw new Error("counter write failed");
+      },
+      requeueForRework: async () => void requeues++,
+      writeDecision: async (e) => void journal.push(e),
+      now: () => "2026-07-17T00:00:00.000Z",
+    };
+    await expect(superviseOvernight(deps)).rejects.toThrow("counter write failed");
+    expect(requeues).toBe(0); // no rework was triggered -> no over-budget
+    expect(journal).toEqual([]);
   });
 });
