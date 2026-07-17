@@ -128,9 +128,13 @@ describe("superviseOvernight", () => {
     expect(journal.some((e) => e.decision === "park")).toBe(true);
   });
 
-  it("does NOT journal an auto-rework whose requeue fails (journal records completed actions only)", async () => {
-    // Act-first, journal-after: a requeue failure must leave NO false "auto-rework" line.
+  it("a failed requeue consumes NO budget and writes NO journal line (requeue is the commit point)", async () => {
+    // codex-D: the commit point is requeueForRework. If it throws, nothing was consumed --
+    // the persisted budget must NOT be incremented (else a later run false-parks the task
+    // as "budget exhausted" for a rework that never happened) and no "auto-rework" line is
+    // journaled.
     const journal: DecisionJournalEntry[] = [];
+    const setCalls: Array<[string, number]> = [];
     const deps: OvernightSupervisorDeps = {
       enabled: true,
       maxAutoReworks: 2,
@@ -138,7 +142,7 @@ describe("superviseOvernight", () => {
       listEscalated: async () => [{ id: "f" }],
       readEscalationType: async () => "disagreement",
       getReworkCount: async () => 0,
-      setReworkCount: async () => {},
+      setReworkCount: async (id, n) => void setCalls.push([id, n]),
       requeueForRework: async () => {
         throw new Error("move failed");
       },
@@ -146,6 +150,7 @@ describe("superviseOvernight", () => {
       now: () => "2026-07-17T00:00:00.000Z",
     };
     await expect(superviseOvernight(deps)).rejects.toThrow("move failed");
-    expect(journal).toEqual([]);
+    expect(setCalls).toEqual([]); // budget NOT consumed -- requeue never succeeded
+    expect(journal).toEqual([]); // no false "auto-rework" line
   });
 });

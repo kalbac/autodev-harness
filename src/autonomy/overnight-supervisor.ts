@@ -85,13 +85,24 @@ export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise
 
     for (const { id, type, count } of actionable) {
       const next = count + 1;
-      // Act FIRST, journal AFTER: the journal must record a COMPLETED auto-rework, never
-      // a mere intent -- if setReworkCount/requeue throws, no false "done" line is left
-      // behind. `seen` advances so termination still holds even if the persisted write
-      // silently no-ops.
-      await deps.setReworkCount(id, next);
+      // The COMMIT POINT is `requeueForRework` (the move escalated->pending that actually
+      // triggers the re-run). Order everything around it so a partial failure never
+      // mis-accounts:
+      //   1. requeue FIRST -- if it throws, NOTHING was consumed: budget not incremented,
+      //      no journal line, task stays escalated for a clean retry (fixes the codex-D
+      //      "budget spent on a rework that never happened -> false park" gap).
+      //   2. advance `seen` -- in-memory termination guarantee, right after the real action.
+      //   3. persist the budget -- if THIS throws, the rework already happened (task is in
+      //      pending); worst case the persisted counter lags and the task gets one extra
+      //      rework later (fail-OPEN toward re-running, never a false park).
+      //   4. journal LAST -- records a completed action; if it throws, the rework still
+      //      happened and the budget is correct, only the audit line is missing (honest).
+      // Three separate fs ops can't be truly atomic on the blackboard; this ordering makes
+      // every partial-failure interleaving fail SAFE (toward re-running, never a false park
+      // or a lying journal entry).
       await deps.requeueForRework(id);
       seen.set(id, next);
+      await deps.setReworkCount(id, next);
       await deps.writeDecision({
         ts: deps.now(),
         taskId: id,
