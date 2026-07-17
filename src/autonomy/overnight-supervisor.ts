@@ -103,7 +103,21 @@ export async function superviseOvernight(deps: OvernightSupervisorDeps): Promise
       try {
         await deps.requeueForRework(id);
       } catch (err) {
-        await Promise.resolve(deps.setReworkCount(id, count)).catch(() => {}); // compensate; best-effort
+        // Compensate: roll the budget back. Best-effort, but NOT silent -- if the rollback
+        // ALSO fails (double fault), surface a WARN so the operator has a signal that the
+        // runtime store may be damaged and this task could park one rework early. The log
+        // is guarded so a throwing logger can never mask the original requeue error we rethrow.
+        await Promise.resolve(deps.setReworkCount(id, count)).catch(() => {
+          try {
+            deps.log?.(
+              "WARN",
+              `overnight: rework-count rollback failed for ${id} after a requeue failure; ` +
+                `the persisted counter may be one high and the task could park one rework early`,
+            );
+          } catch {
+            /* a broken logger must never replace the original requeue error */
+          }
+        });
         throw err;
       }
       seen.set(id, next);
