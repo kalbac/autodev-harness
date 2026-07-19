@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
-import { buildProjectRoot, supervisorRunOpts, shouldSupervise } from "./root.js";
+import { FileBlackboardRepository } from "../blackboard/file-repository.js";
+import { buildProjectRoot, supervisorRunOpts, shouldSupervise, buildOrchestratorCapabilities } from "./root.js";
 
 let repoRoot: string;
 
@@ -135,5 +136,49 @@ describe("shouldSupervise (overnight truth table)", () => {
       return true;
     }, false);
     expect(reads).toBe(0);
+  });
+});
+
+describe("orchestrator trigger routing", () => {
+  it("routes the orchestrator's trigger through the injected run entry, not conductor.run", async () => {
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger();
+
+    expect(calls).toEqual([{ once: true }]);
+  });
+
+  it("forwards explicit trigger opts through the run entry unchanged", async () => {
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({ maxIterations: 3, drain: true });
+
+    expect(calls).toEqual([{ maxIterations: 3, drain: true }]);
   });
 });

@@ -542,7 +542,15 @@ export async function buildProjectRoot(
   // (when only serve/orchestrate called buildOrchestrator). The laziness keeps
   // the ProjectRoot interface unchanged; only `run` benefits.
   let orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> } | undefined;
-  const getOrchestrator = () => (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, conductor, log }));
+  // `runEntry: runOrSupervise` is a direct reference, not a thunk -- and that is
+  // safe here even though `runOrSupervise` is declared LATER in this function
+  // (const, ~line 789): getOrchestrator's body only runs on first `handleIntent`,
+  // which can only happen after buildProjectRoot has fully returned (this object
+  // is the only place `orchestrator` is exposed), i.e. strictly after the
+  // `runOrSupervise` const has already been initialized. See gotcha
+  // [refactor/extraction-eagerness] -- verified, not assumed.
+  const getOrchestrator = () =>
+    (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, runEntry: runOrSupervise, log }));
 
   // Chat manager is built LAZILY on first access, same rationale as the
   // orchestrator above: the `run` CLI verb never opens a chat, so a config
@@ -834,27 +842,25 @@ export async function buildProjectRoot(
 }
 
 /**
- * Build the orchestrator layer (adr/003 R1/R2) over an already-wired
- * conductor. Reused by BOTH the `orchestrate` CLI verb (decompose one intent,
- * run once, exit) and the `serve` verb (`POST /orchestrate` calls
- * `handleIntent` per request, via `ApiServerDeps.onOrchestrate`).
- *
- * The orchestrator receives EXACTLY the four capabilities (+recordRun) and
- * nothing else — `trigger` is a closure over `conductor.run`, the ONLY
- * enforcement handle it sees, and it can only START the (bounded) loop, never
- * sequence/skip/gate/commit. There is no worker/critic/gate/worktree handle
- * in its dependency surface, so it — and therefore anything built on top of
- * it, including the HTTP layer's `onOrchestrate` closure — physically cannot
- * talk past the gate (adr/003 R1).
+ * Builds the orchestrator's exact capability surface (adr/003 R1): `enqueue`,
+ * `trigger`, `read`, `report`, `recordRun` and nothing else. Extracted out of
+ * `buildOrchestrator` so `trigger`'s routing is directly unit-testable
+ * (see root.test.ts's "orchestrator trigger routing" suite) without spinning
+ * up a real `OrchestratorAdapter` (which would spawn a real `claude`/`codex`
+ * process). This is composition glue, same pattern as the individual capability
+ * builders in orchestrator/capabilities.ts.
  */
-function buildOrchestrator(ctx: {
+export function buildOrchestratorCapabilities(ctx: {
   cfg: HarnessConfig;
   repoRoot: string;
   repo: FileBlackboardRepository;
-  conductor: Conductor;
+  /** The overnight-aware run entry (`runOrSupervise`). Still the orchestrator's
+   *  ONLY enforcement handle and still only STARTS a bounded loop -- adr/003 R1
+   *  is unchanged; overnight merely decides WHICH bounded loop starts. */
+  runEntry: (opts?: ConductorRunOptions) => Promise<void>;
   log: Logger;
-}): { handleIntent(intent: string): Promise<OrchestratorResult> } {
-  const { cfg, repoRoot, repo, conductor, log } = ctx;
+}): OrchestratorCapabilities {
+  const { cfg, repoRoot, repo, runEntry, log } = ctx;
 
   const existingIds = async (): Promise<string[]> => {
     const states = ["pending", "active", "done", "escalated", "quarantine"] as const;
@@ -862,13 +868,13 @@ function buildOrchestrator(ctx: {
     return all.flat().map((t) => t.id);
   };
 
-  const caps: OrchestratorCapabilities = {
+  return {
     enqueue: createEnqueueCapability({ repoRoot, stateDir: cfg.stateDir, existingIds }),
     // Bounded default: an argless `trigger()` must NOT start the unbounded
     // run loop (`{}` = run-until-session-cap). The orchestrator always passes
     // `{maxIterations}`, but the capability itself defaults to a single pass so
     // no caller can accidentally launch an unbounded run through this handle.
-    trigger: (opts) => conductor.run(opts ?? { once: true }),
+    trigger: (opts) => runEntry(opts ?? { once: true }),
     read: createReadCapability(repo),
     report: createReportCapability(repo, log),
     recordRun: createRecordRunCapability({
@@ -877,6 +883,33 @@ function buildOrchestrator(ctx: {
       log,
     }),
   };
+}
+
+/**
+ * Build the orchestrator layer (adr/003 R1/R2) over the daemon's overnight-aware
+ * run entry. Reused by BOTH the `orchestrate` CLI verb (decompose one intent,
+ * run once, exit) and the `serve` verb (`POST /orchestrate` calls
+ * `handleIntent` per request, via `ApiServerDeps.onOrchestrate`).
+ *
+ * The orchestrator receives EXACTLY the four capabilities (+recordRun) and
+ * nothing else — `trigger` is a closure over `runEntry` (`runOrSupervise`),
+ * the ONLY enforcement handle it sees, and it can only START a bounded loop,
+ * never sequence/skip/gate/commit -- overnight autonomy only decides WHICH
+ * bounded loop starts. There is no worker/critic/gate/worktree handle in its
+ * dependency surface, so it — and therefore anything built on top of it,
+ * including the HTTP layer's `onOrchestrate` closure — physically cannot talk
+ * past the gate (adr/003 R1).
+ */
+function buildOrchestrator(ctx: {
+  cfg: HarnessConfig;
+  repoRoot: string;
+  repo: FileBlackboardRepository;
+  runEntry: (opts?: ConductorRunOptions) => Promise<void>;
+  log: Logger;
+}): { handleIntent(intent: string): Promise<OrchestratorResult> } {
+  const { cfg, repoRoot, log } = ctx;
+
+  const caps: OrchestratorCapabilities = buildOrchestratorCapabilities(ctx);
 
   const adapter = ((): OrchestratorAdapter => {
     switch (cfg.roles.orchestrator.adapter) {
