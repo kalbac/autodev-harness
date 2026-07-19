@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
-import { buildProjectRoot } from "./root.js";
+import { buildProjectRoot, supervisorRunOpts } from "./root.js";
 
 let repoRoot: string;
 
@@ -84,5 +84,23 @@ describe("buildProjectRoot", () => {
     expect(root.plannerConfigured).toBe(true);
     // The parsed cfg carries the resolved planner values (raw is only the presence gate).
     expect(root.cfg.roles.planner).toMatchObject({ adapter: "codex", model: "o3" });
+  });
+});
+
+describe("supervisorRunOpts", () => {
+  it("strips `once` so the supervisor's drain is a real drain", () => {
+    // conductor.run breaks on `once` BEFORE it evaluates `drain`
+    // (conductor.ts:705 vs :719), so `{once:true, drain:true}` runs ONE
+    // iteration -- which would silently reduce the overnight sweep to a
+    // single task.
+    expect(supervisorRunOpts({ once: true })).toEqual({});
+  });
+
+  it("keeps every other bound", () => {
+    expect(supervisorRunOpts({ once: true, maxIterations: 5 })).toEqual({ maxIterations: 5 });
+  });
+
+  it("handles an absent options object", () => {
+    expect(supervisorRunOpts(undefined)).toEqual({});
   });
 });

@@ -87,6 +87,18 @@ function splitCommand(cmd: string): { c: string; a: string[] } {
   return { c, a: parts.slice(1) };
 }
 
+/**
+ * The run options the overnight supervisor may inherit. `once` is DROPPED:
+ * `conductor.run` evaluates `once` before `drain` (conductor.ts:705 vs :719), so
+ * an inherited `once: true` would collapse the supervisor's queue-wide drain into
+ * a single iteration. Every other bound (maxIterations, ...) is preserved -- the
+ * operator's limits still apply, only the incompatible one is removed.
+ */
+export function supervisorRunOpts(runOpts: ConductorRunOptions | undefined): ConductorRunOptions {
+  const { once: _once, ...rest } = runOpts ?? {};
+  return rest;
+}
+
 /** Everything the daemon knows about ONE project. Built once per project by the
  *  hub (serve) or once for cwd (CLI verbs). Untested glue by design — every
  *  wired piece is unit-tested; typecheck + the full suite cover this file
@@ -739,7 +751,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
    *  pre-existing `run` verb). */
   const runOrSupervise = async (runOpts?: ConductorRunOptions): Promise<void> => {
     if (cfg.autonomy.overnight.enabled) {
-      await superviseOvernight(buildSupervisorDeps(runOpts));
+      await superviseOvernight(buildSupervisorDeps(supervisorRunOpts(runOpts)));
     } else {
       await conductor.run(runOpts);
     }
