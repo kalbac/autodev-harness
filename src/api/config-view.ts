@@ -26,6 +26,7 @@ export function buildProjectConfigView(cfg: HarnessConfig, plannerConfigured: bo
     allowedBranchPattern: cfg.allowedBranchPattern,
     gate: { checkCommand: cfg.gate.checkCommand, agentCi: { enabled: cfg.gate.agentCi.enabled } },
     worktree: { provision: cfg.worktree.provision },
+    autonomy: { overnight: { enabled: cfg.autonomy.overnight.enabled } },
     roles: {
       orchestrator: {
         adapter: orch.adapter,

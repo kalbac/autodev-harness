@@ -182,6 +182,9 @@ export interface ProjectConfigView {
    *  (all false = current inherit-everything behavior). The UI renders these as
    *  the clean-room / MCP / skills toggles. */
   isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
+  /** Per-project overnight-autonomy opt-in. Effective autonomy is this ANDed with
+   *  daemon-global operator presence (GET /settings). */
+  autonomy: { overnight: { enabled: boolean } };
   /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
   policy: { heterogeneity: "warn" | "off" };
   /** The heterogeneity warnings the daemon computes at wire-time (empty when

@@ -3682,6 +3682,7 @@ describe("GET /projects/:id/config", () => {
       planner: { adapter: "codex", model: "o3", effort: "high" },
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
+    autonomy: { overnight: { enabled: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
@@ -3742,6 +3743,7 @@ describe("PATCH /projects/:id/config", () => {
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
+    autonomy: { overnight: { enabled: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };

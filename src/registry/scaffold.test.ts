@@ -194,6 +194,36 @@ describe("isolation write path (M1a)", () => {
   });
 });
 
+describe("autonomy write path (spec 2026-07-19)", () => {
+  it("accepts an autonomy opt-in in the write form", () => {
+    const parsed = ScaffoldFormSchema.safeParse({ autonomy: { overnight: { enabled: true } } });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects an unknown autonomy sub-key", () => {
+    expect(ScaffoldFormSchema.safeParse({ autonomy: { overnight: { enable: true } } }).success).toBe(false);
+  });
+
+  it("does not accept maxAutoReworks from the form (YAML-only field)", () => {
+    expect(ScaffoldFormSchema.safeParse({ autonomy: { overnight: { maxAutoReworks: 5 } } }).success).toBe(false);
+  });
+
+  it("mergeConfigYaml merges the opt-in into an existing config, preserving a hand-set maxAutoReworks", () => {
+    // Closest analogue to the isolation merge test above: proves the PATCH write
+    // path actually persists autonomy.overnight.enabled rather than silently
+    // dropping it (mergeConfigYaml only applies keys it explicitly handles).
+    const existing = "antiDrift:\n  model: custom-model\nautonomy:\n  overnight:\n    maxAutoReworks: 5\n";
+    const text = mergeConfigYaml(existing, ScaffoldFormSchema.parse({ autonomy: { overnight: { enabled: true } } }));
+    const parsed = parseYaml(text) as {
+      antiDrift: { model: string };
+      autonomy: { overnight: { enabled: boolean; maxAutoReworks: number } };
+    };
+    expect(parsed.antiDrift.model).toBe("custom-model"); // survives untouched
+    expect(parsed.autonomy.overnight.maxAutoReworks).toBe(5); // hand-set YAML-only field preserved
+    expect(parsed.autonomy.overnight.enabled).toBe(true); // updated by the form
+  });
+});
+
 describe("scaffoldProject", () => {
   it("creates the full skeleton on a fresh repo: queue dirs, runtime, escalations, runs, worktrees, stubs, config", async () => {
     const res = await scaffoldProject(repo, ScaffoldFormSchema.parse({}));

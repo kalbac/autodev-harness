@@ -68,6 +68,15 @@ export const ScaffoldFormSchema = z
       })
       .strict()
       .optional(),
+    // Overnight autonomy opt-in (spec 2026-07-19). ONLY `enabled` is writable from
+    // the UI; `maxAutoReworks` stays a YAML-only field (YAGNI -- the operator edits
+    // it directly on the rare occasion it needs tuning).
+    autonomy: z
+      .object({
+        overnight: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -198,6 +207,17 @@ export function mergeConfigYaml(existingRawText: string, form: ScaffoldForm): st
     merged["isolation"] = {
       ...rawIso,
       worker: { ...rawWorker, ...pruneUndefined(form.isolation.worker) },
+    };
+  }
+  if (form.autonomy?.overnight !== undefined) {
+    const rawAutonomy = (raw["autonomy"] as Record<string, unknown> | undefined) ?? {};
+    const rawOvernight = (rawAutonomy["overnight"] as Record<string, unknown> | undefined) ?? {};
+    merged["autonomy"] = {
+      ...rawAutonomy,
+      // `maxAutoReworks` is YAML-only (not in the form) -- spreading rawOvernight
+      // FIRST then the form's pruned fields means a hand-set value survives the
+      // merge untouched; only `enabled` is ever overwritten from here.
+      overnight: { ...rawOvernight, ...pruneUndefined(form.autonomy.overnight) },
     };
   }
 
