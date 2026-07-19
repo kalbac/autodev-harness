@@ -10,6 +10,7 @@
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
@@ -76,6 +77,7 @@ import type { HarnessConfig } from "../config/schema.js";
 import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supervisor.js";
 import { serializeDecision } from "../autonomy/decision-journal.js";
 import { parseEscalation } from "../escalate/escalate.js";
+import { loadSettings, defaultSettingsFile } from "../settings/settings.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -97,6 +99,28 @@ function splitCommand(cmd: string): { c: string; a: string[] } {
 export function supervisorRunOpts(runOpts: ConductorRunOptions | undefined): ConductorRunOptions {
   const { once: _once, ...rest } = runOpts ?? {};
   return rest;
+}
+
+/** Reads daemon-global operator presence. Injected so tests never touch `~`, and
+ *  called FRESH per run so a toggle click takes effect on the next trigger with
+ *  no cache to invalidate (unlike `cfg`, which a live ProjectRoot captures once
+ *  -- see hub.ts:26). */
+export type PresenceReader = () => Promise<boolean>;
+
+/**
+ * Overnight autonomy runs on the AND of daemon-global operator presence and the
+ * project's own opt-in (spec 2026-07-19). Order matters twice over: the project
+ * opt-in is checked first so the common attended case does no file IO, and ANY
+ * presence-read failure resolves to `false` -- the system must never fall INTO
+ * autonomy by accident.
+ */
+export async function shouldSupervise(presence: PresenceReader, projectOptIn: boolean): Promise<boolean> {
+  if (!projectOptIn) return false;
+  try {
+    return await presence();
+  } catch {
+    return false;
+  }
 }
 
 /** Everything the daemon knows about ONE project. Built once per project by the
@@ -157,10 +181,12 @@ export interface ProjectRoot {
    *  operator's reply re-queues `taskId` ([narrator/escalated-run-not-terminal]).
    *  Fire-and-forget from the reply path; best-effort (never throws). */
   rearmNarratorForTask(projectId: string, taskId: string): Promise<void>;
-  /** Overnight-aware run entry (spec 2026-07-17): when `cfg.autonomy.overnight.enabled`,
-   *  drives the `superviseOvernight` loop (drain + reason-route + auto-rework/park each
-   *  sweep); otherwise a plain bounded drain, identical to the pre-existing `run` verb.
-   *  Never touches the critic/gate/commit -- only the reply-B requeue + journal. */
+  /** Overnight-aware run entry (spec 2026-07-17, presence AND spec 2026-07-19): when
+   *  `cfg.autonomy.overnight.enabled` AND daemon-global operator presence is set (read
+   *  fresh per call via `shouldSupervise`/`PresenceReader`), drives the `superviseOvernight`
+   *  loop (drain + reason-route + auto-rework/park each sweep); otherwise a plain bounded
+   *  drain, identical to the pre-existing `run` verb. Never touches the critic/gate/commit
+   *  -- only the reply-B requeue + journal. */
   runOrSupervise(runOpts?: ConductorRunOptions): Promise<void>;
 }
 
@@ -175,11 +201,22 @@ export interface ThreadsCapability {
   closeThreads: () => void;
 }
 
-export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
+export async function buildProjectRoot(
+  repoRoot: string,
+  opts?: { presence?: PresenceReader },
+): Promise<ProjectRoot> {
   const { cfg, raw } = await loadConfigWithRaw(repoRoot);
   const plannerConfigured = isPlannerExplicitlyConfigured(raw);
 
   const log = createLogger(join(repoRoot, cfg.stateDir, "conductor.log"));
+
+  // Read-through: the daemon-global presence flag is NOT cached on the ProjectRoot
+  // (unlike `cfg`, captured once above) -- see the PresenceReader doc comment. The
+  // production default is only constructed here, where `log` is already in scope
+  // for loadSettings' never-throws error logging.
+  const presence: PresenceReader =
+    opts?.presence ??
+    (async () => (await loadSettings(defaultSettingsFile(homedir()), log)).overnight.enabled);
 
   // --- Core dependencies -----------------------------------------------
   const repo = new FileBlackboardRepository(repoRoot, cfg.stateDir);
@@ -750,7 +787,7 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
    *  a plain bounded run with the operator's exact `runOpts` (byte-identical to the
    *  pre-existing `run` verb). */
   const runOrSupervise = async (runOpts?: ConductorRunOptions): Promise<void> => {
-    if (cfg.autonomy.overnight.enabled) {
+    if (await shouldSupervise(presence, cfg.autonomy.overnight.enabled)) {
       await superviseOvernight(buildSupervisorDeps(supervisorRunOpts(runOpts)));
     } else {
       await conductor.run(runOpts);

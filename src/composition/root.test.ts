@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
-import { buildProjectRoot, supervisorRunOpts } from "./root.js";
+import { buildProjectRoot, supervisorRunOpts, shouldSupervise } from "./root.js";
 
 let repoRoot: string;
 
@@ -102,5 +102,38 @@ describe("supervisorRunOpts", () => {
 
   it("handles an absent options object", () => {
     expect(supervisorRunOpts(undefined)).toEqual({});
+  });
+});
+
+describe("shouldSupervise (overnight truth table)", () => {
+  const cases: { presence: boolean; optIn: boolean; expected: boolean }[] = [
+    { presence: false, optIn: false, expected: false },
+    { presence: false, optIn: true, expected: false },
+    { presence: true, optIn: false, expected: false },
+    { presence: true, optIn: true, expected: true },
+  ];
+  for (const { presence, optIn, expected } of cases) {
+    it(`presence=${presence} optIn=${optIn} -> ${expected}`, async () => {
+      expect(await shouldSupervise(async () => presence, optIn)).toBe(expected);
+    });
+  }
+
+  it("falls back to a plain run when the presence read throws", async () => {
+    // Fail-direction: never fall INTO autonomy by accident.
+    expect(
+      await shouldSupervise(async () => {
+        throw new Error("unreadable");
+      }, true),
+    ).toBe(false);
+  });
+
+  it("does not read presence when the project has not opted in", async () => {
+    // Cheap short-circuit AND: no file read for the overwhelmingly common case.
+    let reads = 0;
+    await shouldSupervise(async () => {
+      reads++;
+      return true;
+    }, false);
+    expect(reads).toBe(0);
   });
 });
