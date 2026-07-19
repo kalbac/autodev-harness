@@ -36,6 +36,7 @@ export const qk = {
   ciCapability: (p: string) => ["ci-capability", p] as const,
   threads: (p: string) => ["threads", p] as const,
   thread: (p: string, tid: string) => ["thread", p, tid] as const,
+  settings: ["settings"] as const,
 };
 
 /** Cross-run token totals for the session rail (s25). Token count only — cost was
@@ -233,6 +234,8 @@ export const useUpdateProjectConfig = (projectId: string) => {
     onSuccess: (data) => {
       qc.setQueryData(qk.config(projectId), data); // optimistic: server already returned the fresh view
       void qc.invalidateQueries({ queryKey: qk.projects });
+      // The opt-in may have changed -> the sidebar's "N of M projects" is stale.
+      void qc.invalidateQueries({ queryKey: qk.settings });
     },
   });
 };
@@ -258,6 +261,21 @@ export const useFsDirs = (path?: string) =>
 /** Is git installed (daemon-global). Short staleTime; the New Project screen reads it once on load. */
 export const useSystemGit = () =>
   useQuery({ queryKey: ["system-git"], queryFn: api.getSystemGit, staleTime: 30_000 });
+
+/** Daemon-global operator presence + opt-in counts. */
+export const useSettings = () => useQuery({ queryKey: qk.settings, queryFn: api.getSettings });
+
+/** Flip operator presence. The server returns the fresh view (counts included),
+ *  so it goes straight into the cache; on failure the cache is invalidated so the
+ *  switch snaps back to the daemon's real state rather than a hopeful one. */
+export const useUpdateSettings = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (next: { overnight: { enabled: boolean } }) => api.updateSettings(next),
+    onSuccess: (data) => qc.setQueryData(qk.settings, data),
+    onError: () => void qc.invalidateQueries({ queryKey: qk.settings }),
+  });
+};
 
 /** `git init` a non-git folder; invalidates the folder listing so the row re-renders as a git repo. */
 export const useGitInit = () => {
