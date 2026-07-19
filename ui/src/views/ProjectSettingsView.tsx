@@ -53,6 +53,9 @@ interface EditDraft {
   isolationCleanRoom: boolean;
   isolationMcp: boolean;
   isolationSkills: boolean;
+  /** Overnight autonomy opt-in (spec 2026-07-19). Effective only when the global
+   *  presence switch is also on. */
+  autonomyOvernight: boolean;
 }
 
 function draftFrom(config: ProjectConfigView): EditDraft {
@@ -75,6 +78,7 @@ function draftFrom(config: ProjectConfigView): EditDraft {
     isolationCleanRoom: config.isolation.worker.cleanRoom,
     isolationMcp: config.isolation.worker.mcp,
     isolationSkills: config.isolation.worker.skills,
+    autonomyOvernight: config.autonomy.overnight.enabled,
   };
 }
 
@@ -158,6 +162,12 @@ function buildDiff(config: ProjectConfigView, draft: EditDraft): ProjectConfigFo
   if (draft.isolationMcp !== config.isolation.worker.mcp) isolationWorker.mcp = draft.isolationMcp;
   if (draft.isolationSkills !== config.isolation.worker.skills) isolationWorker.skills = draft.isolationSkills;
   if (Object.keys(isolationWorker).length > 0) diff.isolation = { worker: isolationWorker };
+
+  // Overnight opt-in: same send-only-changed contract -- an untouched toggle
+  // sends no `autonomy` key, so the backend never rewrites it.
+  if (draft.autonomyOvernight !== config.autonomy.overnight.enabled) {
+    diff.autonomy = { overnight: { enabled: draft.autonomyOvernight } };
+  }
 
   return diff;
 }
@@ -316,7 +326,7 @@ function ConfigSections({
    *  text fields. Non-null = a successfully loaded catalog to build selects from. */
   detectedAgents: DetectedAgent[] | null;
 }) {
-  const { gate, allowedBranchPattern, stateDir, worktree, roles, isolation } = config;
+  const { gate, allowedBranchPattern, stateDir, worktree, roles, isolation, autonomy } = config;
   const editable = editing && draft;
 
   const supportedOptions = detectedAgents ? supportedAgentOptions(detectedAgents) : [];
@@ -572,6 +582,19 @@ function ConfigSections({
               value={isolation.worker.cleanRoom ? "on (via Clean-room)" : isolation.worker.skills ? "on" : "off"}
             />
           </>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Autonomy">
+        {editable ? (
+          <ToggleRow
+            label="Overnight autonomy"
+            description="Allow this project to run unattended when overnight mode is on. Both must be set: this opt-in AND the global Overnight switch in the sidebar. A run already in flight keeps the config it started with."
+            checked={draft.autonomyOvernight}
+            onChange={(v) => onDraftChange({ autonomyOvernight: v })}
+          />
+        ) : (
+          <SettingsRow label="Overnight autonomy" value={autonomy.overnight.enabled ? "on" : "off"} />
         )}
       </SettingsSection>
     </>
