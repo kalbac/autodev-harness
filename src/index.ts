@@ -26,6 +26,8 @@ import { createLogger } from "./util/log.js";
 import { createGit } from "./util/git.js";
 import { ensureAutodevBranch } from "./util/ensure-branch.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
+import { loadSettings, saveSettings, defaultSettingsFile } from "./settings/settings.js";
+import { countOptedIn } from "./settings/opt-in-count.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
  * silently disable the limit (NaN would make the conductor's `iterations >= max`
@@ -127,6 +129,7 @@ async function main(): Promise<void> {
     // serve is DAEMON-GLOBAL: no cwd binding, no detectRepoRoot (spec §3b).
     const log = createLogger(join(homedir(), ".autodev", "daemon.log"));
     const registryFile = process.env["AUTODEV_REGISTRY"] ?? join(homedir(), ".autodev", "projects.json");
+    const settingsFile = defaultSettingsFile(homedir());
 
     const hub = createProjectHub<ProjectRoot>({
       loadEntries: async () => (await loadRegistry(registryFile, log)).projects,
@@ -260,6 +263,20 @@ async function main(): Promise<void> {
         detectAgents: () => detectAgents({}),
         initGit: (path) => admin.initGit(path),
         detectGit: () => detectGit({}),
+      },
+      settings: {
+        read: async () => {
+          const s = await loadSettings(settingsFile, log);
+          const { projects } = await loadRegistry(registryFile, log);
+          const counts = await countOptedIn(projects.map((p) => p.path));
+          return { overnight: s.overnight, optedInProjects: counts.optedIn, totalProjects: counts.total };
+        },
+        write: async (next) => {
+          await saveSettings(settingsFile, next);
+          const { projects } = await loadRegistry(registryFile, log);
+          const counts = await countOptedIn(projects.map((p) => p.path));
+          return { overnight: next.overnight, optedInProjects: counts.optedIn, totalProjects: counts.total };
+        },
       },
       ...(uiDir !== undefined ? { uiDir } : {}),
       log,
