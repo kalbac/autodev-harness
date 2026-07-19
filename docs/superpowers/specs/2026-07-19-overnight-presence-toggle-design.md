@@ -232,8 +232,11 @@ by accident.
   including an unreadable project.
 - **Whitelist / projection:** `PATCH /projects/:id/config` carrying `autonomy` now returns
   200 (a regression test against today's 400); `buildProjectConfigView` projects it.
-- **UI:** all three sub-line states; the collapsed variant; the switch reverts on mutation
-  failure.
+- **UI:** the `ui/` workspace has **no test runner** (scripts are `dev`/`build`/`typecheck`/
+  `preview`; there is not a single `*.test.tsx`). Standing up one is out of scope for this
+  slice, so UI verification is what every prior UI session used: `typecheck` + `build` +
+  the browser live-prove below, which must exercise all three sub-line states and the
+  collapsed rail explicitly rather than assuming them.
 - **Integration:** a real settings file + a real `ProjectRoot` — `trigger` reaches the
   supervisor and returns to the plain path after a toggle.
 - **Live-prove (the real bar, operator-observable in the browser):** daemon + Chrome on
