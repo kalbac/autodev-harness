@@ -6,6 +6,7 @@ import { useAppStore } from "@/lib/store";
 import { ProjectRow } from "./ProjectRow";
 import { ThreadList } from "./ThreadList";
 import { SidebarSettingsMenu } from "./SettingsPopover";
+import { OvernightToggle } from "./OvernightToggle";
 import {
   Sidebar,
   SidebarHeader,
@@ -91,8 +92,9 @@ export function AppSidebar() {
         <ThreadList />
       </SidebarContent>
 
-      {/* Settings + daemon status — native DropdownMenu (NavUser pattern) */}
+      {/* Operator presence (global) + settings/daemon status */}
       <SidebarFooter>
+        <OvernightToggle />
         <SidebarSettingsMenu
           projectId={activeProjectId}
           projectName={activeProject?.name}
