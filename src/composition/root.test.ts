@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "../util/native.js";
-import { buildProjectRoot } from "./root.js";
+import { FileBlackboardRepository } from "../blackboard/file-repository.js";
+import { buildProjectRoot, supervisorRunOpts, shouldSupervise, buildOrchestratorCapabilities } from "./root.js";
 
 let repoRoot: string;
 
@@ -84,5 +85,157 @@ describe("buildProjectRoot", () => {
     expect(root.plannerConfigured).toBe(true);
     // The parsed cfg carries the resolved planner values (raw is only the presence gate).
     expect(root.cfg.roles.planner).toMatchObject({ adapter: "codex", model: "o3" });
+  });
+});
+
+describe("supervisorRunOpts", () => {
+  it("strips `once` so the supervisor's drain is a real drain", () => {
+    // conductor.run breaks on `once` BEFORE it evaluates `drain`
+    // (conductor.ts:705 vs :719), so `{once:true, drain:true}` runs ONE
+    // iteration -- which would silently reduce the overnight sweep to a
+    // single task.
+    expect(supervisorRunOpts({ once: true })).toEqual({});
+  });
+
+  it("keeps every other bound", () => {
+    expect(supervisorRunOpts({ once: true, maxIterations: 5 })).toEqual({ maxIterations: 5 });
+  });
+
+  it("handles an absent options object", () => {
+    expect(supervisorRunOpts(undefined)).toEqual({});
+  });
+});
+
+describe("shouldSupervise (overnight truth table)", () => {
+  const cases: { presence: boolean; optIn: boolean; expected: boolean }[] = [
+    { presence: false, optIn: false, expected: false },
+    { presence: false, optIn: true, expected: false },
+    { presence: true, optIn: false, expected: false },
+    { presence: true, optIn: true, expected: true },
+  ];
+  for (const { presence, optIn, expected } of cases) {
+    it(`presence=${presence} optIn=${optIn} -> ${expected}`, async () => {
+      expect(await shouldSupervise(async () => presence, optIn)).toBe(expected);
+    });
+  }
+
+  it("falls back to a plain run when the presence read throws", async () => {
+    // Fail-direction: never fall INTO autonomy by accident.
+    expect(
+      await shouldSupervise(async () => {
+        throw new Error("unreadable");
+      }, true),
+    ).toBe(false);
+  });
+
+  it("does not read presence when the project has not opted in", async () => {
+    // Cheap short-circuit AND: no file read for the overwhelmingly common case.
+    let reads = 0;
+    await shouldSupervise(async () => {
+      reads++;
+      return true;
+    }, false);
+    expect(reads).toBe(0);
+  });
+});
+
+describe("orchestrator trigger routing", () => {
+  it("routes the orchestrator's trigger through the injected run entry, not conductor.run", async () => {
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger();
+
+    expect(calls).toEqual([{ once: true }]);
+  });
+
+  it("treats an EMPTY opts object as the bounded default, not an unbounded run", async () => {
+    // `{}` means run-until-session-cap in the conductor. `opts ?? {once:true}`
+    // only guards `undefined`, so `trigger({})` used to slip past the bounded
+    // default the comment promises -- and this handle now starts an UNATTENDED
+    // loop, so the fail direction must be bounded.
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({});
+
+    expect(calls).toEqual([{ once: true }]);
+  });
+
+  it("treats opts carrying no ACTUAL bound as the bounded default", async () => {
+    // A key-count check waves through any non-empty object, including one whose
+    // bound fields are all explicitly FALSE -- which is run-until-session-cap.
+    // The allow-list must look at values, not keys. (`{maxIterations: undefined}`
+    // is the other shape of this hole; `exactOptionalPropertyTypes` already
+    // rejects it at compile time, so it is exercised via an untyped caller.)
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({ once: false, drain: false });
+    // NaN/Infinity type-check as `number` but bound nothing: conductor.ts:705
+    // compares `iterations >= maxIterations`, which is always false for NaN and
+    // never true for Infinity.
+    await caps.trigger({ maxIterations: Number.NaN });
+    await caps.trigger({ maxIterations: Number.POSITIVE_INFINITY });
+    await (caps.trigger as (o: unknown) => Promise<void>)({ maxIterations: undefined });
+
+    expect(calls).toEqual([{ once: true }, { once: true }, { once: true }, { once: true }]);
+  });
+
+  it("forwards explicit trigger opts through the run entry unchanged", async () => {
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({ maxIterations: 3, drain: true });
+
+    expect(calls).toEqual([{ maxIterations: 3, drain: true }]);
   });
 });

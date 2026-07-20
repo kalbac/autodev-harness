@@ -3292,6 +3292,109 @@ describe("GET /system/git", () => {
   });
 });
 
+describe("GET /settings", () => {
+  it("404s without a settings port", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+    expect((await fetch(`http://127.0.0.1:${port}/settings`)).status).toBe(404);
+  });
+
+  it("200s with the settings plus opt-in counts", async () => {
+    handle = createApiServer(
+      projectDeps(
+        { repo, stateDir },
+        {
+          settings: {
+            read: async () => ({ overnight: { enabled: true }, optedInProjects: 1, totalProjects: 3 }),
+            write: async () => ({ overnight: { enabled: true }, optedInProjects: 1, totalProjects: 3 }),
+          },
+        },
+      ),
+    );
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/settings`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      overnight: { enabled: true },
+      optedInProjects: 1,
+      totalProjects: 3,
+    });
+  });
+});
+
+describe("PATCH /settings", () => {
+  const okPort = () => ({
+    read: async () => ({ overnight: { enabled: false }, optedInProjects: 0, totalProjects: 0 }),
+    write: async (s: { overnight: { enabled: boolean } }) => ({
+      overnight: { enabled: s.overnight.enabled },
+      optedInProjects: 0,
+      totalProjects: 0,
+    }),
+  });
+
+  it("writes and returns the same shape as GET", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }, { settings: okPort() }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ overnight: { enabled: true } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      overnight: { enabled: true },
+      optedInProjects: 0,
+      totalProjects: 0,
+    });
+  });
+
+  it("400s on an unknown key", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }, { settings: okPort() }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ overnight: { enabled: true }, bogus: 1 }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("invalid_settings");
+  });
+
+  it("400s on a wrongly-typed value", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }, { settings: okPort() }));
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ overnight: { enabled: "yes" } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("500s when the write fails", async () => {
+    handle = createApiServer(
+      projectDeps(
+        { repo, stateDir },
+        {
+          settings: {
+            read: okPort().read,
+            write: async () => {
+              throw new Error("disk on fire");
+            },
+          },
+        },
+      ),
+    );
+    const port = await handle.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ overnight: { enabled: true } }),
+    });
+    expect(res.status).toBe(500);
+  });
+});
+
 describe("POST /projects", () => {
   it("404s when no admin port is configured", async () => {
     handle = createApiServer(projectDeps({ repo, stateDir }));
@@ -3579,6 +3682,7 @@ describe("GET /projects/:id/config", () => {
       planner: { adapter: "codex", model: "o3", effort: "high" },
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
+    autonomy: { overnight: { enabled: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
@@ -3639,6 +3743,7 @@ describe("PATCH /projects/:id/config", () => {
       critic: { adapter: "codex", model: "gpt-5.5", effort: "high" },
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
+    autonomy: { overnight: { enabled: false } },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };

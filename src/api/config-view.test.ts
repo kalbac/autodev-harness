@@ -93,4 +93,14 @@ describe("buildProjectConfigView", () => {
     expect(view.roles.worker).toEqual({ adapter: "claude", ladder: ["sonnet"] });
     expect(view.roles.critic).toEqual({ adapter: "codex", model: "gpt-5.6-luna", effort: "high" });
   });
+
+  it("projects the overnight autonomy opt-in", () => {
+    const cfg = HarnessConfigSchema.parse({ autonomy: { overnight: { enabled: true, maxAutoReworks: 2 } } });
+    expect(buildProjectConfigView(cfg, false).autonomy).toEqual({ overnight: { enabled: true } });
+  });
+
+  it("projects the default opt-in as false", () => {
+    const cfg = HarnessConfigSchema.parse({});
+    expect(buildProjectConfigView(cfg, false).autonomy).toEqual({ overnight: { enabled: false } });
+  });
 });

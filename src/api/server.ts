@@ -25,6 +25,7 @@ import { existsSync, constants } from "node:fs";
 import { join, resolve, sep, extname } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { watch as chokidarWatch } from "chokidar";
+import { z } from "zod";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
 import { isPathSafeId } from "../orchestrator/task-spec.js";
@@ -181,6 +182,9 @@ export interface ProjectConfigView {
    *  (all false = current inherit-everything behavior). The UI renders these as
    *  the clean-room / MCP / skills toggles. */
   isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
+  /** Per-project overnight-autonomy opt-in. Effective autonomy is this ANDed with
+   *  daemon-global operator presence (GET /settings). */
+  autonomy: { overnight: { enabled: boolean } };
   /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
   policy: { heterogeneity: "warn" | "off" };
   /** The heterogeneity warnings the daemon computes at wire-time (empty when
@@ -272,6 +276,14 @@ export interface ProjectView {
   };
 }
 
+/** The body of BOTH GET and PATCH /settings: the stored settings plus honest
+ *  opt-in counts, so one response can be written straight into the UI cache. */
+export interface GlobalSettingsView {
+  overnight: { enabled: boolean };
+  optedInProjects: number;
+  totalProjects: number;
+}
+
 export interface ApiServerDeps {
   projects: {
     /** Sidebar list: registry + build status. Must never throw (an empty daemon lists []). */
@@ -308,6 +320,12 @@ export interface ApiServerDeps {
     initGit(path: string): Promise<GitInitResult>;
     /** Is `git` installed / on PATH (best-effort, never throws). */
     detectGit(): Promise<DetectGitResult>;
+  };
+  /** Daemon-global settings (spec 2026-07-19). Absent -> the routes 404, exactly
+   *  like the admin-gated routes. */
+  settings?: {
+    read(): Promise<GlobalSettingsView>;
+    write(next: { overnight: { enabled: boolean } }): Promise<GlobalSettingsView>;
   };
   /** Injected watcher factory so tests can drive change events without a real fs watch.
    *  Default (production) uses chokidar watching a project's `stateDir`. Must be swappable. */
@@ -808,6 +826,12 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(text);
 }
 
+/** `.strict()`: an unknown key is a loud 400, never a silent drop (same
+ *  philosophy as ScaffoldFormSchema and the root config schema). */
+const SettingsFormSchema = z
+  .object({ overnight: z.object({ enabled: z.boolean() }).strict() })
+  .strict();
+
 /** Creates (but does not start) the thin API server. Call `.listen()` to bind. */
 export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   const now = deps.now ?? (() => Date.now());
@@ -1250,6 +1274,50 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
     sendJson(res, 200, await deps.admin.detectGit());
+  }
+
+  /** GET /settings — daemon-global operator presence + opt-in counts. */
+  async function handleGetSettings(res: ServerResponse): Promise<void> {
+    if (!deps.settings) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendJson(res, 200, await deps.settings.read());
+  }
+
+  /** PATCH /settings — set operator presence. Returns the same shape as GET so the
+   *  UI can cache the response without a refetch. */
+  async function handlePatchSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!deps.settings) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = SettingsFormSchema.safeParse(body);
+    if (!parsed.success) {
+      sendJson(res, 400, { error: parsed.error.message, code: "invalid_settings" });
+      return;
+    }
+    try {
+      sendJson(res, 200, await deps.settings.write(parsed.data));
+    } catch (err) {
+      sendJson(res, 500, { error: `failed writing settings: ${String(err)}` });
+    }
   }
 
   /** GET /projects/:id/agent-extensions — best-effort visibility scan of what the
@@ -2315,6 +2383,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     }
     if (req.method === "GET" && (url.pathname === "/system/git" || url.pathname === "/system/git/")) {
       return void (await handleSystemGit(res));
+    }
+    if (req.method === "GET" && (url.pathname === "/settings" || url.pathname === "/settings/")) {
+      return void (await handleGetSettings(res));
+    }
+    if (req.method === "PATCH" && (url.pathname === "/settings" || url.pathname === "/settings/")) {
+      return void (await handlePatchSettings(req, res));
     }
 
     // Every project-scoped route lives under `/projects/:id/...`. Resolve the

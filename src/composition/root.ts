@@ -10,6 +10,7 @@
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
@@ -76,6 +77,7 @@ import type { HarnessConfig } from "../config/schema.js";
 import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supervisor.js";
 import { serializeDecision } from "../autonomy/decision-journal.js";
 import { parseEscalation } from "../escalate/escalate.js";
+import { loadSettings, defaultSettingsFile } from "../settings/settings.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -85,6 +87,40 @@ function splitCommand(cmd: string): { c: string; a: string[] } {
   const c = parts[0];
   if (!c) throw new Error(`splitCommand: empty command: ${JSON.stringify(cmd)}`);
   return { c, a: parts.slice(1) };
+}
+
+/**
+ * The run options the overnight supervisor may inherit. `once` is DROPPED:
+ * `conductor.run` evaluates `once` before `drain` (conductor.ts:705 vs :719), so
+ * an inherited `once: true` would collapse the supervisor's queue-wide drain into
+ * a single iteration. Every other bound (maxIterations, ...) is preserved -- the
+ * operator's limits still apply, only the incompatible one is removed.
+ */
+export function supervisorRunOpts(runOpts: ConductorRunOptions | undefined): ConductorRunOptions {
+  const { once: _once, ...rest } = runOpts ?? {};
+  return rest;
+}
+
+/** Reads daemon-global operator presence. Injected so tests never touch `~`, and
+ *  called FRESH per run so a toggle click takes effect on the next trigger with
+ *  no cache to invalidate (unlike `cfg`, which a live ProjectRoot captures once
+ *  -- see hub.ts:26). */
+export type PresenceReader = () => Promise<boolean>;
+
+/**
+ * Overnight autonomy runs on the AND of daemon-global operator presence and the
+ * project's own opt-in (spec 2026-07-19). Order matters twice over: the project
+ * opt-in is checked first so the common attended case does no file IO, and ANY
+ * presence-read failure resolves to `false` -- the system must never fall INTO
+ * autonomy by accident.
+ */
+export async function shouldSupervise(presence: PresenceReader, projectOptIn: boolean): Promise<boolean> {
+  if (!projectOptIn) return false;
+  try {
+    return await presence();
+  } catch {
+    return false;
+  }
 }
 
 /** Everything the daemon knows about ONE project. Built once per project by the
@@ -145,10 +181,12 @@ export interface ProjectRoot {
    *  operator's reply re-queues `taskId` ([narrator/escalated-run-not-terminal]).
    *  Fire-and-forget from the reply path; best-effort (never throws). */
   rearmNarratorForTask(projectId: string, taskId: string): Promise<void>;
-  /** Overnight-aware run entry (spec 2026-07-17): when `cfg.autonomy.overnight.enabled`,
-   *  drives the `superviseOvernight` loop (drain + reason-route + auto-rework/park each
-   *  sweep); otherwise a plain bounded drain, identical to the pre-existing `run` verb.
-   *  Never touches the critic/gate/commit -- only the reply-B requeue + journal. */
+  /** Overnight-aware run entry (spec 2026-07-17, presence AND spec 2026-07-19): when
+   *  `cfg.autonomy.overnight.enabled` AND daemon-global operator presence is set (read
+   *  fresh per call via `shouldSupervise`/`PresenceReader`), drives the `superviseOvernight`
+   *  loop (drain + reason-route + auto-rework/park each sweep); otherwise a plain bounded
+   *  drain, identical to the pre-existing `run` verb. Never touches the critic/gate/commit
+   *  -- only the reply-B requeue + journal. */
   runOrSupervise(runOpts?: ConductorRunOptions): Promise<void>;
 }
 
@@ -163,11 +201,22 @@ export interface ThreadsCapability {
   closeThreads: () => void;
 }
 
-export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
+export async function buildProjectRoot(
+  repoRoot: string,
+  opts?: { presence?: PresenceReader },
+): Promise<ProjectRoot> {
   const { cfg, raw } = await loadConfigWithRaw(repoRoot);
   const plannerConfigured = isPlannerExplicitlyConfigured(raw);
 
   const log = createLogger(join(repoRoot, cfg.stateDir, "conductor.log"));
+
+  // Read-through: the daemon-global presence flag is NOT cached on the ProjectRoot
+  // (unlike `cfg`, captured once above) -- see the PresenceReader doc comment. The
+  // production default is only constructed here, where `log` is already in scope
+  // for loadSettings' never-throws error logging.
+  const presence: PresenceReader =
+    opts?.presence ??
+    (async () => (await loadSettings(defaultSettingsFile(homedir()), log)).overnight.enabled);
 
   // --- Core dependencies -----------------------------------------------
   const repo = new FileBlackboardRepository(repoRoot, cfg.stateDir);
@@ -493,7 +542,15 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
   // (when only serve/orchestrate called buildOrchestrator). The laziness keeps
   // the ProjectRoot interface unchanged; only `run` benefits.
   let orchestrator: { handleIntent(intent: string): Promise<OrchestratorResult> } | undefined;
-  const getOrchestrator = () => (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, conductor, log }));
+  // `runEntry: runOrSupervise` is a direct reference, not a thunk -- and that is
+  // safe here even though `runOrSupervise` is declared LATER in this function
+  // (const, ~line 789): getOrchestrator's body only runs on first `handleIntent`,
+  // which can only happen after buildProjectRoot has fully returned (this object
+  // is the only place `orchestrator` is exposed), i.e. strictly after the
+  // `runOrSupervise` const has already been initialized. See gotcha
+  // [refactor/extraction-eagerness] -- verified, not assumed.
+  const getOrchestrator = () =>
+    (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, runEntry: runOrSupervise, log }));
 
   // Chat manager is built LAZILY on first access, same rationale as the
   // orchestrator above: the `run` CLI verb never opens a chat, so a config
@@ -738,8 +795,8 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
    *  a plain bounded run with the operator's exact `runOpts` (byte-identical to the
    *  pre-existing `run` verb). */
   const runOrSupervise = async (runOpts?: ConductorRunOptions): Promise<void> => {
-    if (cfg.autonomy.overnight.enabled) {
-      await superviseOvernight(buildSupervisorDeps(runOpts));
+    if (await shouldSupervise(presence, cfg.autonomy.overnight.enabled)) {
+      await superviseOvernight(buildSupervisorDeps(supervisorRunOpts(runOpts)));
     } else {
       await conductor.run(runOpts);
     }
@@ -785,27 +842,49 @@ export async function buildProjectRoot(repoRoot: string): Promise<ProjectRoot> {
 }
 
 /**
- * Build the orchestrator layer (adr/003 R1/R2) over an already-wired
- * conductor. Reused by BOTH the `orchestrate` CLI verb (decompose one intent,
- * run once, exit) and the `serve` verb (`POST /orchestrate` calls
- * `handleIntent` per request, via `ApiServerDeps.onOrchestrate`).
+ * Does this opts object actually carry a bound? `ConductorRunOptions` has exactly
+ * three bounding fields, and an opts object without any of them is
+ * run-until-session-cap. An explicit allow-list on the VALUE (not on key
+ * presence) is required: `{maxIterations: undefined}` is type-valid and has a
+ * key, so a key-count check would wave it through as an unbounded run. Nor is
+ * `once: false`/`drain: false` a bound.
  *
- * The orchestrator receives EXACTLY the four capabilities (+recordRun) and
- * nothing else — `trigger` is a closure over `conductor.run`, the ONLY
- * enforcement handle it sees, and it can only START the (bounded) loop, never
- * sequence/skip/gate/commit. There is no worker/critic/gate/worktree handle
- * in its dependency surface, so it — and therefore anything built on top of
- * it, including the HTTP layer's `onOrchestrate` closure — physically cannot
- * talk past the gate (adr/003 R1).
+ * This backs `trigger`'s bounded default. The orchestrator always passes a real
+ * bound, so this only ever catches a caller that specified none -- but that
+ * handle now starts an UNATTENDED loop, so the fail direction must be bounded.
+ * Keep in sync with `ConductorRunOptions` (conductor.ts): a new bounding field
+ * must be added here, and the compiler will not tell you.
  */
-function buildOrchestrator(ctx: {
+export function hasBound(opts: ConductorRunOptions | undefined): boolean {
+  if (!opts) return false;
+  // `Number.isFinite`, not `typeof === "number"`: the conductor bounds a run with
+  // `iterations >= opts.maxIterations` (conductor.ts:705), and that comparison is
+  // ALWAYS false for NaN and never true for Infinity -- either value type-checks
+  // as a bound and runs unbounded. `0` and negatives are genuinely bounded there
+  // (the comparison holds on the first iteration), so they stay accepted.
+  return opts.once === true || opts.drain === true || Number.isFinite(opts.maxIterations);
+}
+
+/**
+ * Builds the orchestrator's exact capability surface (adr/003 R1): `enqueue`,
+ * `trigger`, `read`, `report`, `recordRun` and nothing else. Extracted out of
+ * `buildOrchestrator` so `trigger`'s routing is directly unit-testable
+ * (see root.test.ts's "orchestrator trigger routing" suite) without spinning
+ * up a real `OrchestratorAdapter` (which would spawn a real `claude`/`codex`
+ * process). This is composition glue, same pattern as the individual capability
+ * builders in orchestrator/capabilities.ts.
+ */
+export function buildOrchestratorCapabilities(ctx: {
   cfg: HarnessConfig;
   repoRoot: string;
   repo: FileBlackboardRepository;
-  conductor: Conductor;
+  /** The overnight-aware run entry (`runOrSupervise`). Still the orchestrator's
+   *  ONLY enforcement handle and still only STARTS a bounded loop -- adr/003 R1
+   *  is unchanged; overnight merely decides WHICH bounded loop starts. */
+  runEntry: (opts?: ConductorRunOptions) => Promise<void>;
   log: Logger;
-}): { handleIntent(intent: string): Promise<OrchestratorResult> } {
-  const { cfg, repoRoot, repo, conductor, log } = ctx;
+}): OrchestratorCapabilities {
+  const { cfg, repoRoot, repo, runEntry, log } = ctx;
 
   const existingIds = async (): Promise<string[]> => {
     const states = ["pending", "active", "done", "escalated", "quarantine"] as const;
@@ -813,13 +892,9 @@ function buildOrchestrator(ctx: {
     return all.flat().map((t) => t.id);
   };
 
-  const caps: OrchestratorCapabilities = {
+  return {
     enqueue: createEnqueueCapability({ repoRoot, stateDir: cfg.stateDir, existingIds }),
-    // Bounded default: an argless `trigger()` must NOT start the unbounded
-    // run loop (`{}` = run-until-session-cap). The orchestrator always passes
-    // `{maxIterations}`, but the capability itself defaults to a single pass so
-    // no caller can accidentally launch an unbounded run through this handle.
-    trigger: (opts) => conductor.run(opts ?? { once: true }),
+    trigger: (opts) => runEntry(hasBound(opts) ? opts : { once: true }),
     read: createReadCapability(repo),
     report: createReportCapability(repo, log),
     recordRun: createRecordRunCapability({
@@ -828,6 +903,33 @@ function buildOrchestrator(ctx: {
       log,
     }),
   };
+}
+
+/**
+ * Build the orchestrator layer (adr/003 R1/R2) over the daemon's overnight-aware
+ * run entry. Reused by BOTH the `orchestrate` CLI verb (decompose one intent,
+ * run once, exit) and the `serve` verb (`POST /orchestrate` calls
+ * `handleIntent` per request, via `ApiServerDeps.onOrchestrate`).
+ *
+ * The orchestrator receives EXACTLY the four capabilities (+recordRun) and
+ * nothing else — `trigger` is a closure over `runEntry` (`runOrSupervise`),
+ * the ONLY enforcement handle it sees, and it can only START a bounded loop,
+ * never sequence/skip/gate/commit -- overnight autonomy only decides WHICH
+ * bounded loop starts. There is no worker/critic/gate/worktree handle in its
+ * dependency surface, so it — and therefore anything built on top of it,
+ * including the HTTP layer's `onOrchestrate` closure — physically cannot talk
+ * past the gate (adr/003 R1).
+ */
+function buildOrchestrator(ctx: {
+  cfg: HarnessConfig;
+  repoRoot: string;
+  repo: FileBlackboardRepository;
+  runEntry: (opts?: ConductorRunOptions) => Promise<void>;
+  log: Logger;
+}): { handleIntent(intent: string): Promise<OrchestratorResult> } {
+  const { cfg, repoRoot, log } = ctx;
+
+  const caps: OrchestratorCapabilities = buildOrchestratorCapabilities(ctx);
 
   const adapter = ((): OrchestratorAdapter => {
     switch (cfg.roles.orchestrator.adapter) {

@@ -130,6 +130,9 @@ export interface ProjectConfigView {
   /** Server-computed warnings (rendered verbatim) — non-empty when worker &
    *  critic share an adapter family AND `policy.heterogeneity === "warn"`. */
   heterogeneityWarnings: string[];
+  /** Per-project overnight-autonomy opt-in. Effective autonomy is this ANDed with
+   *  daemon-global operator presence (GET /settings). */
+  autonomy: { overnight: { enabled: boolean } };
 }
 
 /** Body for `PATCH /projects/:id/config` — a partial config write. Only the
@@ -150,6 +153,9 @@ export interface ProjectConfigForm {
    *  in `src/registry/scaffold.ts`); omitted fields — including the whole
    *  `isolation` key — are left untouched. */
   isolation?: { worker?: { cleanRoom?: boolean; mcp?: boolean; skills?: boolean } };
+  /** Only `enabled` is writable from the UI; omitted fields — including the
+   *  whole `autonomy` key — are left untouched (see `ScaffoldFormSchema`). */
+  autonomy?: { overnight?: { enabled?: boolean } };
 }
 
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
@@ -182,6 +188,14 @@ export interface RegisterProjectInput {
 export interface SystemGitStatus {
   installed: boolean;
   version?: string;
+}
+
+/** Daemon-global settings + honest opt-in counts. Returned by BOTH GET and
+ *  PATCH /settings, so a mutation response can be cached without a refetch. */
+export interface GlobalSettingsView {
+  overnight: { enabled: boolean };
+  optedInProjects: number;
+  totalProjects: number;
 }
 
 /** Mirrors the success body of `POST /fs/git-init` (s30). */
@@ -415,6 +429,17 @@ export const api = {
 
   /** Daemon-global: is git installed. 404s when the daemon has no admin port. */
   getSystemGit: () => req<SystemGitStatus>("/system/git"),
+
+  /** Daemon-global operator presence. 404s when the daemon has no settings port. */
+  getSettings: () => req<GlobalSettingsView>("/settings"),
+
+  /** Set operator presence. Returns the same shape as getSettings. */
+  updateSettings: (next: { overnight: { enabled: boolean } }) =>
+    req<GlobalSettingsView>("/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(next),
+    }),
 
   /** `git init` + `^autodev/` branch for a non-git folder. 200 {branch,untrackedCount} / 409 / 400. */
   gitInit: (path: string) =>
