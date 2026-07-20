@@ -842,6 +842,25 @@ export async function buildProjectRoot(
 }
 
 /**
+ * Does this opts object actually carry a bound? `ConductorRunOptions` has exactly
+ * three bounding fields, and an opts object without any of them is
+ * run-until-session-cap. An explicit allow-list on the VALUE (not on key
+ * presence) is required: `{maxIterations: undefined}` is type-valid and has a
+ * key, so a key-count check would wave it through as an unbounded run. Nor is
+ * `once: false`/`drain: false` a bound.
+ *
+ * This backs `trigger`'s bounded default. The orchestrator always passes a real
+ * bound, so this only ever catches a caller that specified none -- but that
+ * handle now starts an UNATTENDED loop, so the fail direction must be bounded.
+ * Keep in sync with `ConductorRunOptions` (conductor.ts): a new bounding field
+ * must be added here, and the compiler will not tell you.
+ */
+export function hasBound(opts: ConductorRunOptions | undefined): opts is ConductorRunOptions {
+  if (!opts) return false;
+  return opts.once === true || opts.drain === true || typeof opts.maxIterations === "number";
+}
+
+/**
  * Builds the orchestrator's exact capability surface (adr/003 R1): `enqueue`,
  * `trigger`, `read`, `report`, `recordRun` and nothing else. Extracted out of
  * `buildOrchestrator` so `trigger`'s routing is directly unit-testable
@@ -870,13 +889,7 @@ export function buildOrchestratorCapabilities(ctx: {
 
   return {
     enqueue: createEnqueueCapability({ repoRoot, stateDir: cfg.stateDir, existingIds }),
-    // Bounded default: neither an argless `trigger()` nor an EMPTY `trigger({})`
-    // may start the unbounded run loop (`{}` = run-until-session-cap). `??` alone
-    // guards only `undefined`, which left `{}` as a hole; since this handle now
-    // starts an UNATTENDED loop, the fail direction must be bounded. The
-    // orchestrator always passes real opts, so this only ever catches a caller
-    // that specified no bound at all.
-    trigger: (opts) => runEntry(opts && Object.keys(opts).length > 0 ? opts : { once: true }),
+    trigger: (opts) => runEntry(hasBound(opts) ? opts : { once: true }),
     read: createReadCapability(repo),
     report: createReportCapability(repo, log),
     recordRun: createRecordRunCapability({

@@ -83,6 +83,14 @@ describe("saveSettings", () => {
     expect(await loadSettings(file)).toEqual({ overnight: { enabled: true } });
   });
 
+  it("fails loudly instead of recursively deleting a directory at the tmp path", async () => {
+    const tmp = `${file}.tmp`;
+    await mkdir(tmp);
+    await writeFile(join(tmp, "keep.txt"), "not ours to delete", "utf8");
+    await expect(saveSettings(file, { overnight: { enabled: true } })).rejects.toThrow();
+    expect(await readFile(join(tmp, "keep.txt"), "utf8")).toBe("not ours to delete");
+  });
+
   it("serializes concurrent writes (last write wins, no interleaving)", async () => {
     await Promise.all([
       saveSettings(file, { overnight: { enabled: true } }),

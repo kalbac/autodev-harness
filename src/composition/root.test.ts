@@ -186,6 +186,33 @@ describe("orchestrator trigger routing", () => {
     expect(calls).toEqual([{ once: true }]);
   });
 
+  it("treats opts carrying no ACTUAL bound as the bounded default", async () => {
+    // A key-count check waves through any non-empty object, including one whose
+    // bound fields are all explicitly FALSE -- which is run-until-session-cap.
+    // The allow-list must look at values, not keys. (`{maxIterations: undefined}`
+    // is the other shape of this hole; `exactOptionalPropertyTypes` already
+    // rejects it at compile time, so it is exercised via an untyped caller.)
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({ once: false, drain: false });
+    await (caps.trigger as (o: unknown) => Promise<void>)({ maxIterations: undefined });
+
+    expect(calls).toEqual([{ once: true }, { once: true }]);
+  });
+
   it("forwards explicit trigger opts through the run entry unchanged", async () => {
     writeConfig(repoRoot, "");
     const root = await buildProjectRoot(repoRoot);

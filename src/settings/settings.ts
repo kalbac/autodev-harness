@@ -83,8 +83,11 @@ export async function saveSettings(file: string, settings: GlobalSettings): Prom
     // would be followed transparently and clobber whatever it points at. `rm`
     // unlinks the symlink itself (it does not follow), which also clears a stale
     // tmp left by a crashed write; `wx` then refuses to write through anything
-    // that reappeared in between.
-    await rm(tmp, { force: true, recursive: true });
+    // that reappeared in between. Deliberately NOT `recursive`: a directory
+    // sitting at the tmp path is an anomaly that must fail LOUDLY, not get
+    // silently deleted -- recursive removal is destructive behaviour this write
+    // path has no business performing.
+    await rm(tmp, { force: true });
     await writeFile(tmp, JSON.stringify(GlobalSettingsSchema.parse(settings), null, 2) + "\n", {
       encoding: "utf8",
       flag: "wx",
