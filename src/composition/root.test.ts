@@ -208,9 +208,14 @@ describe("orchestrator trigger routing", () => {
     });
 
     await caps.trigger({ once: false, drain: false });
+    // NaN/Infinity type-check as `number` but bound nothing: conductor.ts:705
+    // compares `iterations >= maxIterations`, which is always false for NaN and
+    // never true for Infinity.
+    await caps.trigger({ maxIterations: Number.NaN });
+    await caps.trigger({ maxIterations: Number.POSITIVE_INFINITY });
     await (caps.trigger as (o: unknown) => Promise<void>)({ maxIterations: undefined });
 
-    expect(calls).toEqual([{ once: true }, { once: true }]);
+    expect(calls).toEqual([{ once: true }, { once: true }, { once: true }, { once: true }]);
   });
 
   it("forwards explicit trigger opts through the run entry unchanged", async () => {

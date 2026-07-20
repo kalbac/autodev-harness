@@ -58,11 +58,18 @@ two keys, is type-valid, and is just as unbounded. Key presence is not a bound.
 **value**:
 
 ```ts
-export function hasBound(opts: ConductorRunOptions | undefined): opts is ConductorRunOptions {
+export function hasBound(opts: ConductorRunOptions | undefined): boolean {
   if (!opts) return false;
-  return opts.once === true || opts.drain === true || typeof opts.maxIterations === "number";
+  return opts.once === true || opts.drain === true || Number.isFinite(opts.maxIterations);
 }
 ```
+
+Note `Number.isFinite`, not `typeof === "number"`. The conductor bounds a run with
+`iterations >= opts.maxIterations`, and that comparison is **always false for
+`NaN`** and **never true for `Infinity`** — both type-check as `number` and both
+run unbounded. `0` and negatives, by contrast, are genuinely bounded (the
+comparison holds on the first iteration), so rejecting them would be wrong. The
+correct predicate follows from how the value is *consumed*, not from its type.
 
 `exactOptionalPropertyTypes` closes the `{maxIterations: undefined}` shape for
 typed callers, but the allow-list must not depend on that — an untyped or
@@ -75,10 +82,11 @@ imagined, not against the values the type actually permits.** When the guarded
 thing is spend (here: an unattended run loop), write the guard as an allow-list of
 known-safe values and let everything else fall to the safe side.
 
-Both were caught by the codex gate, not by tests or typecheck — the first as a
-finding on this diff, the second as a re-critic finding on the *fix* for the
-first. Three codex rounds were needed to converge. Self-certifying either round
-would have shipped an unbounded unattended run.
+Both were caught by the codex gate, not by tests or typecheck. It took **four**
+codex rounds to converge, and rounds 2, 3 and 4 were all findings on the *fix for
+the previous round's finding* — `??` → key-count → `typeof number` → `isFinite`,
+each repair leaking a narrower version of the same hole. Self-certifying at any
+round would have shipped an unbounded unattended run.
 
 ## Related
 

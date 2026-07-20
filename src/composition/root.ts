@@ -855,9 +855,14 @@ export async function buildProjectRoot(
  * Keep in sync with `ConductorRunOptions` (conductor.ts): a new bounding field
  * must be added here, and the compiler will not tell you.
  */
-export function hasBound(opts: ConductorRunOptions | undefined): opts is ConductorRunOptions {
+export function hasBound(opts: ConductorRunOptions | undefined): boolean {
   if (!opts) return false;
-  return opts.once === true || opts.drain === true || typeof opts.maxIterations === "number";
+  // `Number.isFinite`, not `typeof === "number"`: the conductor bounds a run with
+  // `iterations >= opts.maxIterations` (conductor.ts:705), and that comparison is
+  // ALWAYS false for NaN and never true for Infinity -- either value type-checks
+  // as a bound and runs unbounded. `0` and negatives are genuinely bounded there
+  // (the comparison holds on the first iteration), so they stay accepted.
+  return opts.once === true || opts.drain === true || Number.isFinite(opts.maxIterations);
 }
 
 /**
