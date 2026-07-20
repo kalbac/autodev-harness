@@ -8,7 +8,7 @@
  * `registry.ts` -- a daemon must not die over a bad settings file, and every
  * ambiguity resolves toward PRESENCE (attended), i.e. toward LESS unattended spend.
  */
-import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, lstat, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
@@ -79,7 +79,16 @@ export async function saveSettings(file: string, settings: GlobalSettings): Prom
     }
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    await writeFile(tmp, JSON.stringify(GlobalSettingsSchema.parse(settings), null, 2) + "\n", "utf8");
+    // The tmp path needs the SAME guard as the target: a stale `.tmp` symlink
+    // would be followed transparently and clobber whatever it points at. `rm`
+    // unlinks the symlink itself (it does not follow), which also clears a stale
+    // tmp left by a crashed write; `wx` then refuses to write through anything
+    // that reappeared in between.
+    await rm(tmp, { force: true, recursive: true });
+    await writeFile(tmp, JSON.stringify(GlobalSettingsSchema.parse(settings), null, 2) + "\n", {
+      encoding: "utf8",
+      flag: "wx",
+    });
     await rename(tmp, file);
   };
   const next = writeChain.then(run, run);

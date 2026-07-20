@@ -870,11 +870,13 @@ export function buildOrchestratorCapabilities(ctx: {
 
   return {
     enqueue: createEnqueueCapability({ repoRoot, stateDir: cfg.stateDir, existingIds }),
-    // Bounded default: an argless `trigger()` must NOT start the unbounded
-    // run loop (`{}` = run-until-session-cap). The orchestrator always passes
-    // `{maxIterations}`, but the capability itself defaults to a single pass so
-    // no caller can accidentally launch an unbounded run through this handle.
-    trigger: (opts) => runEntry(opts ?? { once: true }),
+    // Bounded default: neither an argless `trigger()` nor an EMPTY `trigger({})`
+    // may start the unbounded run loop (`{}` = run-until-session-cap). `??` alone
+    // guards only `undefined`, which left `{}` as a hole; since this handle now
+    // starts an UNATTENDED loop, the fail direction must be bounded. The
+    // orchestrator always passes real opts, so this only ever catches a caller
+    // that specified no bound at all.
+    trigger: (opts) => runEntry(opts && Object.keys(opts).length > 0 ? opts : { once: true }),
     read: createReadCapability(repo),
     report: createReportCapability(repo, log),
     recordRun: createRecordRunCapability({

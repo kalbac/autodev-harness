@@ -161,6 +161,31 @@ describe("orchestrator trigger routing", () => {
     expect(calls).toEqual([{ once: true }]);
   });
 
+  it("treats an EMPTY opts object as the bounded default, not an unbounded run", async () => {
+    // `{}` means run-until-session-cap in the conductor. `opts ?? {once:true}`
+    // only guards `undefined`, so `trigger({})` used to slip past the bounded
+    // default the comment promises -- and this handle now starts an UNATTENDED
+    // loop, so the fail direction must be bounded.
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    const repo = new FileBlackboardRepository(repoRoot, root.cfg.stateDir);
+    const calls: unknown[] = [];
+
+    const caps = buildOrchestratorCapabilities({
+      cfg: root.cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        calls.push(opts);
+      },
+      log: root.log,
+    });
+
+    await caps.trigger({});
+
+    expect(calls).toEqual([{ once: true }]);
+  });
+
   it("forwards explicit trigger opts through the run entry unchanged", async () => {
     writeConfig(repoRoot, "");
     const root = await buildProjectRoot(repoRoot);

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadSettings, saveSettings, DEFAULT_SETTINGS } from "./settings.js";
@@ -59,6 +60,27 @@ describe("saveSettings", () => {
   it("refuses to write when the target exists but is not a regular file", async () => {
     await mkdir(file);
     await expect(saveSettings(file, { overnight: { enabled: true } })).rejects.toThrow(/not a regular file/i);
+  });
+
+  it("overwrites a stale tmp file left behind by a crashed write", async () => {
+    await writeFile(`${file}.tmp`, "junk from a crashed write", "utf8");
+    await saveSettings(file, { overnight: { enabled: true } });
+    expect(await loadSettings(file)).toEqual({ overnight: { enabled: true } });
+  });
+
+  it("never follows a symlinked tmp path (the guard covers tmp, not just the target)", async () => {
+    const victim = join(dir, "victim.txt");
+    await writeFile(victim, "do not clobber", "utf8");
+    try {
+      symlinkSync(victim, `${file}.tmp`, "file");
+    } catch {
+      // Windows without Developer Mode cannot create file symlinks; the guard is
+      // still proven on POSIX CI (the matrix runs ubuntu-latest too).
+      return;
+    }
+    await saveSettings(file, { overnight: { enabled: true } });
+    expect(await readFile(victim, "utf8")).toBe("do not clobber");
+    expect(await loadSettings(file)).toEqual({ overnight: { enabled: true } });
   });
 
   it("serializes concurrent writes (last write wins, no interleaving)", async () => {
