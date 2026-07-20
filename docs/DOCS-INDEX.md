@@ -6,8 +6,9 @@
 
 | Doc | Purpose |
 |---|---|
-| `VISION.md` | Mission anchor — slogan, single-source-of-truth rule, tier plan |
-| `CURRENT-STATE.md` | Phase status, known issues, **NEXT ACTIONS** |
+| `PRINCIPLES.md` | The invariants + *why* they exist (the constitution) — read before removing any guard |
+| `VISION.md` | Mission anchor — slogan, single-source-of-truth rule, roles matrix |
+| `CURRENT-STATE.md` | Live phase status, known issues, **NEXT ACTIONS** |
 | `GOTCHAS.md` | Index of mistakes-to-avoid |
 
 ## Operational

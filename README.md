@@ -2,27 +2,60 @@
 
 > **Let agents code, but never let them merge bullshit.**
 
-A fork of [Agent Orchestrator](https://github.com/AgentWrapper/agent-orchestrator)
-that fuses AO's minimalist, process-visible UI with the proven adversarial-critic
-discipline of our `autodev-loop`.
+Autodev Harness is an execution layer for autonomous AI software development. An LLM
+proposes the work; a **deterministic gate** and an **independent critic** decide what
+is allowed to merge. The value is not a smarter model — it is a system that does not
+need to *trust* the model: it moves acceptance from "the agent said DONE" to a
+verifiable engineering process.
 
-- **AO gives us:** session supervision, git-worktree isolation, a kanban board,
-  PR tracking, a clean Electron UI.
-- **autodev-loop gives us:** an independent GPT-5.5 **critic gate**, contract-zone
-  guards, **model routing by task complexity**, and anti-drift checks.
-- **The harness is the symbiosis:** agents ship code fast, and an independent critic
-  plus a machine gate refuse to let broken work merge.
+It is **our own Node + TypeScript build** (not a fork), assembling the best ideas from
+four donor tools — [Agent Orchestrator](https://github.com/AgentWrapper/agent-orchestrator),
+OpenHands, Open Design, and Aider — on top of the proven `autodev-loop` critic
+discipline.
+
+## The core idea
+
+- **Intelligence is separated from execution authority.** The worker writes code; it
+  has no authority to declare its own work correct.
+- **An independent critic** reviews the diff (never Claude-on-Claude), and a
+  **mechanical gate** (contract zones, mutation-verified guards, CI) enforces what
+  cannot be argued with. The gate is deterministic — an LLM cannot talk past it.
+- **Roles are a configurable model matrix** — orchestrator, worker, critic, planner.
+  No vendor is bound to a role; the current models are just the first fillers, and the
+  harness keeps its value when the underlying models change.
+- **The file-blackboard (`.autodev/`) is the single source of truth** for queue,
+  runtime, and done state.
+
+See [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) for the invariants and *why* each exists.
 
 ## Status
 
-**Day zero — planning/bootstrap.** The fork has not been cloned yet. See
-[`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the next concrete steps.
+**Active development.** A working Node daemon + web dashboard: the attended
+live-orchestrator presence (chat as the project's main screen) is shipped, and the
+unattended-autonomy half is partly built. See
+[`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for live status and next steps.
 
-## Start here
+## Running it
 
-- [`docs/VISION.md`](docs/VISION.md) — mission, architecture rule, tier plan (the anchor)
-- [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) — what to do next
-- [`docs/adr/001-fork-ao-not-wait.md`](docs/adr/001-fork-ao-not-wait.md) — why we forked
+```bash
+npm install
+npm run build        # backend → dist/
+npm run build:ui     # dashboard → ui/dist
+
+node dist/index.js serve   # daemon + dashboard on :4319
+# or
+node dist/index.js run     # headless run from a project directory
+```
+
+Requires Node ≥ 20. For development without a build: `npm run dev` (backend, via tsx)
+and `npm run dev:ui` (dashboard).
+
+## Start here (docs)
+
+- [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) — the invariants and why they exist (the constitution)
+- [`docs/VISION.md`](docs/VISION.md) — mission and architecture rule (the anchor)
+- [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) — where we are, what to do next
+- [`docs/DOCS-INDEX.md`](docs/DOCS-INDEX.md) — navigation hub for everything else
 
 ## For AI agents
 

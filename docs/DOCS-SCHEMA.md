@@ -5,8 +5,9 @@
 ## Principles
 
 - **Single source of truth per fact.** Phase status lives in `CURRENT-STATE.md`
-  only; mission in `VISION.md` only; history in `SESSION-LOG.md` only. Do not
-  duplicate a fact across files — link instead.
+  only; mission in `VISION.md` only; the *why* of the invariants in `PRINCIPLES.md`
+  only; history in `SESSION-LOG.md` only. Do not duplicate a fact across files —
+  link instead.
 - **Absolute dates** (`DD.MM.YYYY` or ISO), never relative ("yesterday", "next week").
 - Every doc ends with a `## Related` section linking neighbours.
 - English for all docs.
@@ -15,11 +16,20 @@
 
 | File | Holds | Never holds |
 |---|---|---|
+| `PRINCIPLES.md` | The invariants + *why* they exist (the constitution) | Status, tactics, history |
 | `VISION.md` | Immutable mission, slogan, architecture rule | Tactics, status |
-| `CURRENT-STATE.md` | Live status + NEXT ACTIONS (≤3 lines "last session") | Full history |
+| `CURRENT-STATE.md` | Live status + NEXT ACTIONS + recent-session one-liners | Full session narratives |
 | `SESSION-LOG.md` | Full history, newest on top | Status tables |
 | `GOTCHAS.md` | Index only | Gotcha bodies (those go to `gotchas/{slug}.md`) |
 | `adr/NNN-*.md` | One decision + tradeoffs | Status |
+
+### CURRENT-STATE is a snapshot, not a log
+
+The #1 drift we already hit: CURRENT-STATE grew into a second SESSION-LOG (139 KB by
+s46). To prevent recurrence: at session end the previous session's live block is
+**replaced**, not appended. The new full narrative goes to `SESSION-LOG.md`;
+CURRENT-STATE keeps only the live status + a one-line pointer per recent session. Target
+≤ ~150 lines.
 
 ## Compilation protocol (session end)
 

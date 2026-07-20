@@ -42,7 +42,7 @@
 ## Review discipline (unchanged — the project's whole point)
 
 Substantial work follows: sonnet-5 implementer (TDD) → controller spec-check →
-**independent codex GPT-5.5 review gate** → fix subagent with a regression test.
+**independent codex gpt-5.6-luna review gate** (pin the model) → fix subagent with a regression test.
 Self-critique is never the gate. Re-critic in-place fixes; a mechanical
 critic-advised fix is gated by its regression test. See `CLAUDE.md`.
 
