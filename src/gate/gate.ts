@@ -67,6 +67,11 @@ export interface GateDeps {
    *  AgentCiUnavailableError (Windows-without-WSL) propagates OUT of runGate on purpose --
    *  do NOT wrap in try/catch here; the conductor escalates a gate throw. */
   runAgentCi: ((taskId: string) => Promise<{ green: boolean; reasons: string[] }>) | null;
+  /** Config-level (trusted-root, worker-inaccessible) human-only path globs (adr/006
+   *  Phase 1, closing Finding 2 -- `contract.constitutionPaths` was previously dead
+   *  config). Unioned with `inv.constitution.path_globs` for the constitution check.
+   *  Optional so the existing gate unit tests keep compiling unchanged. */
+  constitutionPaths?: string[];
   /** Optional: persist gate-verdict.json. Omit in unit tests. */
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
 }
@@ -151,10 +156,14 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     }
   }
 
-  // 2. constitution (always human)
-  const constitutionTouched = changedFiles.filter((f) =>
-    inv.constitution.path_globs.some((g) => globMatch(g, f)),
-  );
+  // 2. constitution (always human). Union of the INVARIANTS constitution globs and
+  // `deps.constitutionPaths` (the previously-dead `contract.constitutionPaths` config
+  // field -- adr/006 Phase 1, Finding 2). Both sources are trusted-root reads as of
+  // Phase 1; they stay distinct because one is per-repo contract text and the other is
+  // gate config. Filtering `changedFiles` (not concatenating two glob-filtered
+  // lists) is what keeps a file matching BOTH lists appearing exactly ONCE.
+  const constitutionGlobs = [...inv.constitution.path_globs, ...(deps.constitutionPaths ?? [])];
+  const constitutionTouched = changedFiles.filter((f) => constitutionGlobs.some((g) => globMatch(g, f)));
   if (constitutionTouched.length > 0) {
     reasons.push(`constitution path(s) changed: ${constitutionTouched.join(", ")}`);
   }

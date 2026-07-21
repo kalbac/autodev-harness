@@ -9,13 +9,14 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { detectRepoRoot } from "./config/config.js";
+import { detectRepoRoot, loadConfig } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
 import { buildProjectConfigView } from "./api/config-view.js";
 import { buildProjectRoot, type ProjectRoot } from "./composition/root.js";
 import { buildReadSnapshot, createReadCapability } from "./orchestrator/capabilities.js";
 import { loadRegistry } from "./registry/registry.js";
 import { createProjectAdmin } from "./registry/admin.js";
+import { ensureContractStubs } from "./registry/scaffold.js";
 import { listDirs } from "./fsbrowse/fsbrowse.js";
 import { detectAgents } from "./detect/detect-agents.js";
 import { detectGit } from "./detect/detect-git.js";
@@ -154,6 +155,23 @@ async function main(): Promise<void> {
           if (r.switched) log("INFO", `serve: ${entry.path} -> branch ${r.branch}`);
         } catch (err) {
           log("WARN", `serve: ensure-branch failed for ${entry.path}: ${String(err)}`);
+        }
+        // Self-healing contract-stub migration (adr/006 Phase 1 Finding 2): an
+        // already-scaffolded project from BEFORE the fail-closed loader shipped
+        // has `contract.guardsFile`/`invariantsFile` CONFIGURED but the file was
+        // never written -- root.ts's loaders now THROW on that combination,
+        // escalating every task as "broken -- operator config". Own try/catch,
+        // same isolation as the branch-ensure step above -- `ensureContractStubs`
+        // is itself best-effort/never-throws, but `loadConfig` (to get `cfg`) can.
+        // NOTE: this only runs under `serve` -- the bare `run` CLI verb is NOT
+        // healed (kept out of scope; an operator hitting this via `run` still
+        // gets the actionable fail-closed throw naming the missing path, which
+        // is self-diagnosing).
+        try {
+          const cfg = await loadConfig(entry.path);
+          await ensureContractStubs(entry.path, cfg, log);
+        } catch (err) {
+          log("WARN", `serve: ensureContractStubs failed for ${entry.path}: ${String(err)}`);
         }
       }
     } catch (err) {

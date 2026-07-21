@@ -1,10 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { runNative } from "../util/native.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
-import { buildProjectRoot, supervisorRunOpts, shouldSupervise, buildOrchestratorCapabilities } from "./root.js";
+import {
+  buildProjectRoot,
+  supervisorRunOpts,
+  shouldSupervise,
+  buildOrchestratorCapabilities,
+  loadInvariantsFrom,
+  loadGuardPairsFrom,
+} from "./root.js";
+import { HarnessConfigSchema } from "../config/schema.js";
 
 let repoRoot: string;
 
@@ -237,5 +245,258 @@ describe("orchestrator trigger routing", () => {
     await caps.trigger({ maxIterations: 3, drain: true });
 
     expect(calls).toEqual([{ maxIterations: 3, drain: true }]);
+  });
+});
+
+// --- adr/006 Phase 1: oracle definition-integrity (loader-focused) -----------
+// `loadInvariantsFrom`/`loadGuardPairsFrom` are hoisted OUT of the `buildProjectRoot`
+// closure (module scope, cfg/raw/root passed explicitly) precisely so this trusted-root
+// / fail-closed behavior is unit-testable without spinning up the full ProjectRoot
+// (worker/critic adapters, worktrees, a queued task) -- the spec's "focused loader test"
+// alternative to a full root.test.ts wiring test. `gateDeps(wt)` and `zonesTouchedInDiff`
+// both call these SAME functions with `repoRoot`, so proving the loader reads whichever
+// root it is given is what proves the wiring fix.
+
+/** A MACHINE-INVARIANTS INVARIANTS.md declaring exactly one auto_guardable zone. */
+function invariantsMdWithZone(zoneId: string): string {
+  return [
+    "# INVARIANTS",
+    "",
+    "<!-- BEGIN MACHINE-INVARIANTS -->",
+    "```json",
+    JSON.stringify(
+      {
+        version: 1,
+        updated: "2026-01-01",
+        contract_zones: [
+          {
+            id: zoneId,
+            why: "test zone",
+            auto_guardable: true,
+            path_globs: [],
+            grep_patterns: [],
+            exact_strings: ["value-x"],
+          },
+        ],
+        constitution: { path_globs: [] },
+      },
+      null,
+      2,
+    ),
+    "```",
+    "<!-- END MACHINE-INVARIANTS -->",
+    "",
+  ].join("\n");
+}
+
+/** A MACHINE-INVARIANTS INVARIANTS.md declaring ZERO zones (the scaffold-stub shape). */
+const EMPTY_INVARIANTS_MD = [
+  "# INVARIANTS",
+  "",
+  "<!-- BEGIN MACHINE-INVARIANTS -->",
+  "```json",
+  JSON.stringify({ version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } }, null, 2),
+  "```",
+  "<!-- END MACHINE-INVARIANTS -->",
+  "",
+].join("\n");
+
+/** A 7-column GUARDS.md pipe table with exactly one mutation-verified, blessed row. */
+function guardsMdRow(contractId: string, recipeRelPath: string): string {
+  return [
+    "# GUARDS",
+    "",
+    "| contract_id | contract_value | guard_test | recipe | mutation_verified | blessed_by | date |",
+    "|---|---|---|---|---|---|---|",
+    `| ${contractId} | \`value-x\` | \`T_${contractId}\` | \`${recipeRelPath}\` | yes (red on flip) | maksim | 2026-01-01 |`,
+    "",
+  ].join("\n");
+}
+
+describe("loadInvariantsFrom / loadGuardPairsFrom (adr/006 Phase 1 — trusted-root reads)", () => {
+  let trustedRoot: string;
+  let worktreeRoot: string;
+
+  beforeEach(() => {
+    trustedRoot = mkdtempSync(join(tmpdir(), "adh-trusted-"));
+    worktreeRoot = mkdtempSync(join(tmpdir(), "adh-wt-"));
+  });
+
+  afterEach(() => {
+    rmSync(trustedRoot, { recursive: true, force: true });
+    rmSync(worktreeRoot, { recursive: true, force: true });
+  });
+
+  it("5. reads INVARIANTS from the root it is GIVEN, not any other root (trusted-root symmetry)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "INVARIANTS.md"), invariantsMdWithZone("zone-x"));
+    writeFileSync(join(worktreeRoot, "INVARIANTS.md"), EMPTY_INVARIANTS_MD);
+
+    const fromTrusted = await loadInvariantsFrom(cfg, {}, trustedRoot);
+    const fromWorktree = await loadInvariantsFrom(cfg, {}, worktreeRoot);
+
+    // A worktree carrying an INVARIANTS.md declaring NO zones must never mask the
+    // trusted root's zone, and vice versa -- these are two genuinely different roots.
+    expect(fromTrusted.contract_zones.map((z) => z.id)).toEqual(["zone-x"]);
+    expect(fromWorktree.contract_zones).toEqual([]);
+  });
+
+  it("6. loadGuardPairsFrom selects guard pairs from the root it is GIVEN, not the worktree's (guardStillRed selection)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "GUARDS.md"), guardsMdRow("c-trusted", "recipe-trusted.json"));
+    writeFileSync(
+      join(trustedRoot, "recipe-trusted.json"),
+      JSON.stringify({ zone_id: "zone-x", canonical_value: "value-x" }),
+    );
+    writeFileSync(join(worktreeRoot, "GUARDS.md"), guardsMdRow("c-worktree", "recipe-worktree.json"));
+    writeFileSync(
+      join(worktreeRoot, "recipe-worktree.json"),
+      JSON.stringify({ zone_id: "zone-x", canonical_value: "value-x" }),
+    );
+
+    const fromTrusted = await loadGuardPairsFrom(cfg, {}, trustedRoot);
+    const fromWorktree = await loadGuardPairsFrom(cfg, {}, worktreeRoot);
+
+    // guardStillRed's guard-pair SELECTION reads `repoRoot` (this function's `root` arg)
+    // -- a worktree carrying a DIFFERENT guard table must not leak into the selection.
+    expect(fromTrusted.map((p) => p.guard.contract_id)).toEqual(["c-trusted"]);
+    expect(fromWorktree.map((p) => p.guard.contract_id)).toEqual(["c-worktree"]);
+  });
+
+  it("7. fail-closed: contract.invariantsFile configured + absent at the trusted root REJECTS, naming the path", async () => {
+    const cfg = HarnessConfigSchema.parse({ contract: { invariantsFile: "custom/INVARIANTS.md" } });
+    const raw = { contract: { invariantsFile: "custom/INVARIANTS.md" } };
+    // trustedRoot deliberately has NO custom/INVARIANTS.md on disk.
+
+    let thrown: unknown;
+    try {
+      await loadInvariantsFrom(cfg, raw, trustedRoot);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    // Names the CONFIGURED relative path (self-diagnosing per the spec's migration note)...
+    expect(String(thrown)).toContain("custom/INVARIANTS.md");
+    // ...and the trusted root it was expected at, not a vague "file missing".
+    expect(String(thrown)).toContain(trustedRoot);
+  });
+
+  it("8. not configured + absent at the trusted root resolves to ZERO zones, no throw", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    // trustedRoot has no INVARIANTS.md and raw carries no contract.invariantsFile key.
+
+    const inv = await loadInvariantsFrom(cfg, {}, trustedRoot);
+
+    expect(inv.contract_zones).toEqual([]);
+  });
+
+  it("9. same fail-closed / not-configured pair for guardsFile", async () => {
+    const configuredCfg = HarnessConfigSchema.parse({ contract: { guardsFile: "custom/GUARDS.md" } });
+    const configuredRaw = { contract: { guardsFile: "custom/GUARDS.md" } };
+
+    let thrown: unknown;
+    try {
+      await loadGuardPairsFrom(configuredCfg, configuredRaw, trustedRoot);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String(thrown)).toContain("custom/GUARDS.md");
+    expect(String(thrown)).toContain(trustedRoot);
+
+    const notConfiguredCfg = HarnessConfigSchema.parse({});
+    const pairs = await loadGuardPairsFrom(notConfiguredCfg, {}, trustedRoot);
+    expect(pairs).toEqual([]);
+  });
+
+  // --- codex M-finding: `join(root, cfg.contract.X)` alone does not ENFORCE trusted-root
+  // containment -- a `..` escape or a symlinked intermediate directory resolves outside
+  // `root` while still passing the old `existsSync` + `readFile` path, silently handing the
+  // gate a worker-controlled definition. These three prove containment is now checked, not
+  // just assumed from the lexical `join`.
+
+  it("fail-closed: contract.invariantsFile configured with a '..' escape REJECTS instead of silently reading the sibling file (codex M1)", async () => {
+    // A sibling dir NEXT TO trustedRoot (same tmp parent) carries an attacker-controlled
+    // INVARIANTS.md declaring a zone the gate must never trust.
+    const outside = mkdtempSync(join(tmpdir(), "adh-escape-"));
+    try {
+      writeFileSync(join(outside, "INVARIANTS.md"), invariantsMdWithZone("attacker-zone"));
+      // join(trustedRoot, "..", basename(outside), "INVARIANTS.md") normalizes to
+      // <tmpParent>/<basename(outside)>/INVARIANTS.md == outside/INVARIANTS.md, since both
+      // trustedRoot and outside were minted under the SAME tmpdir() parent.
+      const escapePath = join("..", basename(outside), "INVARIANTS.md");
+      const cfg = HarnessConfigSchema.parse({ contract: { invariantsFile: escapePath } });
+      const raw = { contract: { invariantsFile: escapePath } };
+
+      let thrown: unknown;
+      try {
+        await loadInvariantsFrom(cfg, raw, trustedRoot);
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Before the containment fix, `join(trustedRoot, escapePath)` resolved to a REAL,
+      // EXISTING file (the attacker's), so the old existsSync+readFile path returned its
+      // zone silently -- no throw at all. The fix must throw, naming the escaping path.
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).toContain(escapePath);
+      expect(String(thrown)).toContain(trustedRoot);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("fail-closed: contract.guardsFile configured behind an INTERMEDIATE symlinked directory REJECTS (realpath containment, not just lexical join) (codex M1)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "adh-linkout-"));
+    try {
+      writeFileSync(join(outside, "GUARDS.md"), guardsMdRow("c-attacker", "recipe-attacker.json"));
+      writeFileSync(
+        join(outside, "recipe-attacker.json"),
+        JSON.stringify({ zone_id: "zone-x", canonical_value: "value-x" }),
+      );
+      // `linked -> outside` inside trustedRoot: lexically "trustedRoot/linked/GUARDS.md"
+      // looks contained, but the directory component is a link out of the trusted root.
+      symlinkSync(outside, join(trustedRoot, "linked"), process.platform === "win32" ? "junction" : "dir");
+      const cfg = HarnessConfigSchema.parse({ contract: { guardsFile: "linked/GUARDS.md" } });
+      const raw = { contract: { guardsFile: "linked/GUARDS.md" } };
+
+      let thrown: unknown;
+      try {
+        await loadGuardPairsFrom(cfg, raw, trustedRoot);
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).toContain("linked/GUARDS.md");
+      expect(String(thrown)).toContain(trustedRoot);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("a GUARD ROW's recipe path escaping the trusted root is SKIPPED, not thrown -- per-row best-effort stays unchanged (codex M1)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "adh-reclink-"));
+    try {
+      writeFileSync(
+        join(outside, "recipe-outside.json"),
+        JSON.stringify({ zone_id: "zone-x", canonical_value: "value-x" }),
+      );
+      symlinkSync(outside, join(trustedRoot, "reclink"), process.platform === "win32" ? "junction" : "dir");
+      // The GUARDS.md file itself is a legitimate, in-root, non-configured file; only its
+      // ONE row's `recipe` column walks through the symlinked `reclink` directory.
+      writeFileSync(join(trustedRoot, "GUARDS.md"), guardsMdRow("c-escaped-recipe", "reclink/recipe-outside.json"));
+      const cfg = HarnessConfigSchema.parse({});
+
+      const pairs = await loadGuardPairsFrom(cfg, {}, trustedRoot);
+
+      // The escaping row is DROPPED -- no exception -- leaving its zone uncovered, which
+      // escalates elsewhere in the gate (fail-safe direction); this is NOT the whole-file
+      // configured-but-absent case, so it must never throw here.
+      expect(pairs.map((p) => p.guard.contract_id)).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

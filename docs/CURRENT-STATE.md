@@ -5,21 +5,22 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (entering s49)
+## Where we are (leaving s49)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced (s48 = Authority Model docs merged, `c6c2343`;
-s46 = PR #77, `680b9fa`).
+~5 slices). `main` is clean and synced through s48 (`22585ef`).
 
-**s48 was the Authority Model audit + `adr/006` (docs only, no product code — operator
-scoped it narrow).** The audit found the write-authority boundary **half-closed**: the
-task contract + gate config are already worker-inaccessible, but the machine gate reads
-its zone/guard/CI **definitions from the worktree** (5 findings, codex-luna-reviewed).
-Enforcement is deferred to a phased plan in `adr/006`. Next priority: **Profiles / WP-WC
-Qualification Layer** (depends on the Authority Model), with the `adr/006` Phase-1
-enforcement fix as a parallel gated task (see NEXT ACTIONS).
+**s49 built `adr/006` Phase 1 — the first Authority-Model enforcement increment.** The
+machine gate no longer reads its oracle *definitions* (contract zones, guards, recipes,
+the constitution path list) from the worktree the worker just wrote; it reads them from
+the trusted root and only *executes* against the worktree. Fail-closed on a
+configured-but-unreadable oracle; `contract.constitutionPaths` is wired (was dead
+config); realpath containment on both the read and the stub-write path. Four codex
+`gpt-5.6-luna` rounds, live-proven end-to-end. Next priority is unchanged: **Profiles /
+WP-WC Qualification Layer** (Track A) — the Authority Model prerequisite it depends on
+is now materially closer.
 
 ## Phase status
 
@@ -37,6 +38,35 @@ enforcement fix as a parallel gated task (see NEXT ACTIONS).
 - ⬜ Morning report (batch-narrate `.autodev/decision-journal.ndjson`, reuses the s40 narrator)
 - ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
 - ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
+
+## What s49 delivered (`adr/006` Phase 1 — oracle definition integrity)
+
+- **`gateDeps` reads definitions from `repoRoot`** — `loadInvariants`, `loadGuardPairs`,
+  and `guardStillRed`'s guard-pair *selection* (the codex-flagged bypass a loader-only
+  refactor would leave). Execution (check command, success commands, agent-ci, the
+  mutation run) stays against `wt.path`. Symmetric with `zonesTouchedInDiff` at last.
+- **Fail closed** — a contract file *explicitly configured in the raw YAML* but absent,
+  escaping the trusted root, or reached through a symlink now throws (→ escalate).
+  Not-configured + absent stays legitimate. Needs the RAW config: zod defaults both keys.
+- **`contract.constitutionPaths` wired** (Finding 2 — dead since the schema shipped),
+  unioned + deduped with the INVARIANTS constitution globs.
+- **`src/util/path-contain.ts`** — realpath containment shared by the oracle read path
+  and the stub-write path (a lexical `join` clamps neither `..` nor a symlinked
+  ancestor); win32-only case folding; full trailing-separator normalization.
+- **Migration** — the scaffold always configured `guardsFile` but never wrote it, so
+  fail-closed alone would have bricked every existing project. `ensureContractStubs`
+  (serve startup) heals `GUARDS.md` only, and only when verified git-ignored +
+  realpath-contained. `INVARIANTS.md` is deliberately never healed.
+- **4 codex `gpt-5.6-luna` rounds**, each finding a narrower leak in the previous fix
+  (lexical containment → healed invariants = vacuous pass → lexical check re-leaked into
+  the write path → unverified git-ignore assumption). TOCTOU-on-read declined as a
+  documented accepted residual. 1207 tests green.
+- **Live-proven** on `woodev-shipping-plugin-test`: the startup migration self-healed
+  the real project (INFO log), then a zone declared ONLY at the trusted root escalated a
+  real task — `decision: ESCALATE`, `zone 'shipping-method-ids' touched … needs guard` —
+  with no INVARIANTS file in the worktree at all. Pre-Phase-1 that run committed vacuously.
+- **Docs** — `AGENTS.md` merge policy reconciled (attended = operator's merge word;
+  unattended = standing auto-merge grant); GOTCHAS 71→72.
 
 ## What s48 delivered (Authority Model audit + `adr/006`)
 
@@ -75,12 +105,7 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-- **`adr/006` Phase-1 (queued gated task) — definition integrity:** move the gate's
-  `loadInvariants`/`loadGuardPairs` (incl. `guardStillRed`'s reload) to the trusted root;
-  wire `contract.constitutionPaths`; fail closed on a configured-but-unreadable oracle.
-  Touches the contract-zone contour → full TDD → luna critic → live-prove. Records the
-  "new zone no longer self-enforces in the same run" behavior-change gotcha.
-- **s49+ (priority) — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build
+- **s50 (priority) — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build
   (depends on the Authority Model; can interleave with Phase-1). Fold in the `adr/004`
   north-star concept. Phase-2/3 protected-paths land here.
 - **Remaining `adr/004` slices** (after/interleaved, each own brainstorm→spec→plan):
@@ -92,11 +117,14 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## Open questions
 
-- **s45 PR status** — `autodev/s45-carried-items` (overnight escalation supervisor): confirm whether it merged or is still pending.
-- **Merge policy reconciliation** — `AGENTS.md` grants a standing "agent merges without waiting"; recent practice (s44+) is the operator's in-turn "merge PR #N". Pick one and make the docs agree.
+- **`adr/006` Phase 2 (executable-input protected paths)** — when? It is the half Phase 1
+  deliberately leaves open (guard test files, `success_command` scripts, workflow
+  implementations still run from the worktree). Phase 3 folds into Profiles.
+- *(closed s49)* s45 PR status → PR #76 merged 17.07. Merge policy → reconciled in `AGENTS.md`.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
+- **s49** — `adr/006` Phase 1 shipped: oracle definitions read from the trusted root, fail-closed, `constitutionPaths` wired, realpath containment, `GUARDS.md` migration; 4 luna rounds; live-proven (trusted-root zone escalated a real task). GOTCHAS 71→72. `AGENTS.md` merge policy reconciled.
 - **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Merged to `main` (`c6c2343`).
 - **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Merged to `main` (`7759346`).
 - **s46** — overnight presence toggle (`adr/004` slice 2): global settings store + sidebar UI + daemon wiring; 4-pass luna gate; live-proven. PR #77 merged (`680b9fa`), CI 4/4. GOTCHAS 69→70.

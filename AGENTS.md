@@ -15,15 +15,23 @@
 - Net: Russian is for the human conversation; English is for everything written to
   disk or dispatched to another agent.
 
-## Git ownership — the agent drives everything, no waiting
+## Git ownership — the agent drives everything
 
 - **The agent performs ALL git and GitHub operations itself** — commits, branches,
-  pushes, PRs, **and merges** (`gh pr merge`). This is a standing grant: do NOT wait
-  for operator confirmation on a merge. Gate a merge only on the machine bar
-  (codex-clean where required + green CI), then merge and move on.
-- **Never** hand a GH operation back to the operator as a manual step, and never
-  pause a completed, gated, green batch to ask "should I merge?" — just merge.
-- The operator is interrupted ONLY at genuine forks where his input is 100% required
+  pushes, PRs, and merges (`gh pr merge`). Never hand a git/GH step back to the
+  operator as manual work.
+- **When to merge depends on presence** (reconciled s49 — docs previously granted a
+  blanket auto-merge that attended practice did not follow):
+  - **Attended** (the operator is in the session): the agent prepares everything —
+    branch, commits, PR, gate, green CI — and the final **merge-to-main happens on the
+    operator's in-turn word** ("мержи PR #N"). Do not auto-merge behind him.
+  - **Unattended / overnight** (the autonomy path, `adr/004`): the standing grant
+    applies — gate on the machine bar (codex-clean where required + green CI), then
+    merge and move on, no waiting.
+- Everything *up to* the merge is unconditionally the agent's: never pause a batch to
+  ask whether to open a PR, push, or re-run the gate. The merge word is the ONLY
+  attended checkpoint.
+- The operator is interrupted ONLY at that checkpoint and at genuine forks where his input is 100% required
   (real UI/UX design decisions, scope changes, expensive unsupervised live runs) —
   never for routine git/GH mechanics.
 - If the Claude Code permission classifier blocks a `gh` command in-session, that is
