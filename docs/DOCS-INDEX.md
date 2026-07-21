@@ -6,8 +6,9 @@
 
 | Doc | Purpose |
 |---|---|
-| `VISION.md` | Mission anchor — slogan, single-source-of-truth rule, tier plan |
-| `CURRENT-STATE.md` | Phase status, known issues, **NEXT ACTIONS** |
+| `PRINCIPLES.md` | The invariants + *why* they exist (the constitution) — read before removing any guard |
+| `VISION.md` | Mission anchor — slogan, single-source-of-truth rule, roles matrix |
+| `CURRENT-STATE.md` | Live phase status, known issues, **NEXT ACTIONS** |
 | `GOTCHAS.md` | Index of mistakes-to-avoid |
 
 ## Operational
@@ -24,7 +25,8 @@
 | Dir / doc | Purpose |
 |---|---|
 | `adr/` | Architecture Decision Records (`adr/README.md` = template + index) |
-| `wiki/` | Deep-dive topic references |
+| `wiki/` | **Architecture Notes — rationale (*why*, not API)** + deep-dive references |
+| `wiki/architecture-review-external-2026-07.md` | External agent review — risks + priorities; seed for the Authority-Model → Profiles thrust |
 | `wiki/openhands-analysis.md` | OpenHands analysis — intelligence-pattern donor, ranked "what to steal" |
 | `wiki/opendesign-analysis.md` | Open Design analysis — UX/extensibility donor (agent auto-detect, model router, skills/plugins/MCP) |
 | `gotchas/` | Atomic gotcha detail files |
