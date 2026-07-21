@@ -4,7 +4,7 @@
 
 ---
 
-## s49 (2026-07-21) — `adr/006` PHASE 1 SHIPPED: oracle definition integrity — 4 codex-luna rounds, live-proven end-to-end
+## s49 (2026-07-21) — `adr/006` PHASE 1 SHIPPED: oracle definition integrity — 4 codex-luna rounds, live-proven end-to-end — PR #78 MERGED (`cc0db6f`, CI 4/4)
 
 Attended build session. Operator chose Track B (the narrow enforcement fix) before Track A (Profiles), and approved reconciling the merge-policy doc contradiction. Started by pushing s48's two unpushed docs commits and closing an open question: PR #76 (s45) was already MERGED (17.07).
 - **The change.** `gateDeps` now binds `loadInvariants`/`loadGuardPairs` — and `guardStillRed`'s guard-pair **selection** — to `repoRoot`, the trusted root the worker never writes; check command / success commands / agent-ci / the mutation *run* stay against `wt.path`. The gate is finally symmetric with `zonesTouchedInDiff`. **Fail-closed:** a contract file explicitly configured in the RAW yaml but absent / escaping the root / behind a symlink throws → escalate; not-configured + absent stays legitimate (needs `isContractFileConfigured` on the pre-defaults raw object — zod defaults both keys, so parsed `cfg` cannot tell the two apart). **`contract.constitutionPaths` wired** into the gate's constitution check (unioned + deduped) — dead config since the schema shipped.

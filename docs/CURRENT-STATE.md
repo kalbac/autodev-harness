@@ -10,7 +10,7 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced through s48 (`22585ef`).
+~5 slices). `main` is clean and synced (s49 = PR #78 merged, `cc0db6f`, CI 4/4).
 
 **s49 built `adr/006` Phase 1 — the first Authority-Model enforcement increment.** The
 machine gate no longer reads its oracle *definitions* (contract zones, guards, recipes,
