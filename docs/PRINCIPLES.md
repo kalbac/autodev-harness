@@ -183,6 +183,48 @@ evidence.
 **Enforced by.** `AGENT-RULES.md` (verify-before-done); the gate applies to our own
 code.
 
+## 14. The worker does not write its own oracle
+
+**Principle.** The worker may propose a diff; it holds **no authority to modify the
+oracle** — the tests, assertions, contract zones, guards, CI config, protected-path
+list, or acceptance criteria that *define* what "pass" means. Oracle definitions the
+gate trusts are read from a root the worker cannot write; a legitimate oracle change
+is blessed by the operator, never silently trusted because it rode in on a feature
+diff.
+
+**Why.** This is the write-authority half of Principle 2, and it is distinct: #2
+says the worker cannot self-*certify* (declare its own diff correct); this says the
+worker cannot re-*define* the standard it is certified against. Once self-certifying
+is closed, the rational reward-hacking target becomes the checks themselves —
+weaken a test, gut a zone, soften `ci.yml`, drop a file from the human-only list. A
+gate that reads its oracle from the same tree the worker just wrote can be talked
+past not by argument but by edit. The s48 audit found this boundary half-open: the
+task contract and gate config are already worker-inaccessible, but the machine gate
+read its zone/guard/CI *definitions* from the worktree.
+
+**Enforced by.** `adr/006` (capability-based Authority Model): oracle definitions
+read from a trusted root, oracle execution against the worktree, oracle
+modifications require an operator capability. Enforcement is phased — see the ADR.
+
+## 15. The gate proves only formalized properties
+
+**Principle.** The mechanical gate can only prove what has been **formalized** into
+it — a declared contract zone, a mutation-verified guard, an executable CI check.
+It does not prove business-logic correctness, requirement completeness, or UX. The
+corollary is the harness's growth path: **the better the spec and acceptance oracle,
+the stronger the harness.** More proven properties come from formalizing more, not
+from a smarter model.
+
+**Why.** It keeps "never merge bullshit" honest about its own scope. A green gate
+means "every formalized property held," not "this is good software" — conflating the
+two would let the guarantee overclaim. It also names the durable investment: the
+asset is the harness's set of independently-provable properties (hence Profiles /
+qualification layers, which formalize a project type's oracle), not the worker.
+
+**Enforced by.** `adr/006` (protected oracle) + the Profiles thrust
+(`architecture-review-external-2026-07.md` risk 3/7); every gate verdict is scoped
+to its declared zones/guards/CI, never a blanket "correct."
+
 ---
 
 ## Related

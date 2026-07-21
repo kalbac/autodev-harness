@@ -5,17 +5,22 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (entering s48)
+## Where we are (entering s49)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced (s46 = PR #77 merged, `680b9fa`, CI 4/4).
+~5 slices). `main` is clean (s46 = PR #77 merged, `680b9fa`). **s48 docs (Authority
+Model) are committed on `autodev/s48-authority-model`, not yet merged** — a docs batch
+awaiting the operator's merge word.
 
-**s47 was a docs-consolidation + external-feedback session.** The docs cleanup shipped
-(see below), and an external agent review (`wiki/architecture-review-external-2026-07.md`)
-surfaced a new strategic thrust: **Authority Model → Profiles / Qualification Layer**.
-That thrust — not more autonomy polish — is judged the next priority (see NEXT ACTIONS).
+**s48 was the Authority Model audit + `adr/006` (docs only, no product code — operator
+scoped it narrow).** The audit found the write-authority boundary **half-closed**: the
+task contract + gate config are already worker-inaccessible, but the machine gate reads
+its zone/guard/CI **definitions from the worktree** (5 findings, codex-luna-reviewed).
+Enforcement is deferred to a phased plan in `adr/006`. Next priority: **Profiles / WP-WC
+Qualification Layer** (depends on the Authority Model), with the `adr/006` Phase-1
+enforcement fix as a parallel gated task (see NEXT ACTIONS).
 
 ## Phase status
 
@@ -34,18 +39,26 @@ That thrust — not more autonomy polish — is judged the next priority (see NE
 - ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
 - ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
 
-## What s47 delivered (docs consolidation)
+## What s48 delivered (Authority Model audit + `adr/006`)
 
-- **Fixed the stale foundation** — README/CLAUDE/VISION/AGENT-RULES no longer tell the
-  superseded "fork AO / Go / Electron / day-zero" story; AGENT-RULES had the
-  single-source-of-truth rule inverted → corrected to the blackboard.
-- **Slimmed CURRENT-STATE** 139 KB → ~8 KB (snapshot, not a log; replace-not-append
-  discipline in `DOCS-SCHEMA`).
-- **Added `PRINCIPLES.md`** — the constitution (13 invariants + *why*), per the external
-  review's advice; wired into `DOCS-INDEX`/`DOCS-SCHEMA`. Made `wiki/`'s role explicit
-  (Architecture Notes — rationale, not API) and saved the external review there.
+- **Audit** (`wiki/authority-model-audit-2026-07.md`) — traced worker write-scope vs the
+  oracle in code. **Sound (5 items):** task contract + gate config live in git-excluded
+  `.autodev` (worker-inaccessible); the fence bounds writes to `file_set`; routing reads
+  main-root INVARIANTS. **5 holes:** (1) the gate reads oracle *definitions* from the
+  worktree; (2) `contract.constitutionPaths` is dead config; (3) scaffold points contract
+  files at git-excluded `.autodev/…` → absent from worktree → gate zone checks vacuous
+  (verified live); (4) no capability/protected-paths model; (5) missing oracle fails open.
+- **`adr/006`** — capability-based Authority Model: oracle *definitions* from a trusted
+  root, *execution* against the worktree, *changes* via operator bless. Phased enforcement
+  (not built s48): Phase-1 definition integrity · Phase-2 executable-input protected-paths ·
+  Phase-3 profiles.
+- **`PRINCIPLES.md` +2** — #14 "worker does not write its own oracle" (write-authority,
+  distinct from #2) + #15 "gate proves only formalized properties" (review risk 3). 15 total.
+- **codex `gpt-5.6-luna` reviewed the audit + ADR** — corrected an overstated CI claim,
+  scoped the "sound" framing (executable-input tampering ≠ closed by trusted-root reads),
+  and flagged the `guardStillRed` bypass + fail-open. All folded in.
 
-## The new thrust — Authority Model → Profiles (from the external review)
+## The thrust — Authority Model → Profiles (from the external review)
 
 `wiki/architecture-review-external-2026-07.md` details it. The chain, order load-bearing:
 
@@ -53,10 +66,9 @@ That thrust — not more autonomy polish — is judged the next priority (see NE
 Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Evaluation Corpus
 ```
 
-- **Authority Model** — "the worker must never control its own oracle". Acceptance
-  criteria, hidden tests, gate config, CI, protected paths, release config must be
-  **outside the worker's write authority**, by capability not role name. We have pieces
-  (orchestrator forbidden-paths, contract-zones) but no unified, audited model.
+- **Authority Model** — audited s48; formalized in `adr/006`; enforcement phased (Phase-1
+  is a queued gated task, not yet built). This is the prerequisite the profiles thrust
+  depends on (a profile over an unprotected oracle is theater).
 - **Profiles / Qualification Layer** — a reusable per-project-type proof pack (WP/WC
   first): the harness proves the *process*, the profile proves the *product*. Our
   `gate.agentCi` is the substrate; a profile productizes it. (The `adr/004` **north-star**
@@ -64,13 +76,14 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-- **s48 (priority) — Authority Model, scoped narrow:** audit what the worker can
-  currently write into its diff vs the oracle artifacts (tests, `ci.yml`, gate config)
-  and whether the gate catches tampering → `adr/006` (capability-based authority) +
-  `PRINCIPLES.md` hardening (risk 3 "gate proves only formalized properties" + sharpen
-  "worker doesn't write its own oracle"). Fix enforcement only if the audit finds a hole.
-- **s49+ — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build (depends on the
-  Authority Model being sound). Fold in the `adr/004` north-star concept.
+- **`adr/006` Phase-1 (queued gated task) — definition integrity:** move the gate's
+  `loadInvariants`/`loadGuardPairs` (incl. `guardStillRed`'s reload) to the trusted root;
+  wire `contract.constitutionPaths`; fail closed on a configured-but-unreadable oracle.
+  Touches the contract-zone contour → full TDD → luna critic → live-prove. Records the
+  "new zone no longer self-enforces in the same run" behavior-change gotcha.
+- **s49+ (priority) — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build
+  (depends on the Authority Model; can interleave with Phase-1). Fold in the `adr/004`
+  north-star concept. Phase-2/3 protected-paths land here.
 - **Remaining `adr/004` slices** (after/interleaved, each own brainstorm→spec→plan):
   morning report · mandatory anti-drift · (north-star → folded into profiles).
 - **Metrics / Evaluation Corpus** (GPT suggestion, decide if/when): autonomy-%,
@@ -85,6 +98,7 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
+- **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Docs on `autodev/s48-authority-model` (unmerged).
 - **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Merged to `main` (`7759346`).
 - **s46** — overnight presence toggle (`adr/004` slice 2): global settings store + sidebar UI + daemon wiring; 4-pass luna gate; live-proven. PR #77 merged (`680b9fa`), CI 4/4. GOTCHAS 69→70.
 - **s45** — 2 carried fixes + overnight escalation supervisor (`adr/004` slice 1); 4-pass luna gate; live-proven twice. Branch `autodev/s45-carried-items` (PR status open, see above).
