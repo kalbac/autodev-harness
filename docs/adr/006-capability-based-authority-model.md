@@ -118,7 +118,19 @@ surface; dropping it is the point, not a regression.
 
 ## Consequences (phased; each phase is its own gated task)
 
-- **Phase 1 (first enforcement increment) — definition integrity.** Move the gate's
+- **Phase 1 — definition integrity. ✅ SHIPPED s49 (2026-07-21).** Built, four codex
+  `gpt-5.6-luna` review rounds, live-proven on `woodev-shipping-plugin-test` (a zone
+  declared only at the trusted root escalated a real task whose worktree contained no
+  INVARIANTS file at all). Two things the plan below did not anticipate: (a) "read it
+  from `repoRoot`" is not a guarantee until the path is **realpath-contained** — a
+  lexical `join` clamps neither `..` nor an intermediate symlinked ancestor
+  (`src/util/path-contain.ts`); (b) fail-closed alone would have bricked every
+  already-scaffolded project, because the scaffold always configured `guardsFile` but
+  never wrote it — hence `ensureContractStubs`, which heals `GUARDS.md` only and never
+  `INVARIANTS.md` (missing guards escalate; missing invariants would pass vacuously).
+  Behaviour changes recorded in `gotchas/oracle-definitions-trusted-root-behavior-changes.md`.
+  The original plan, for the record:
+  Move the gate's
   oracle-*definition* reads to the trusted root: `gateDeps` reads
   `loadInvariants`/`loadGuardPairs` from `repoRoot` (as `zonesTouchedInDiff`
   already does), keeping mutation/CI/check *execution* against `wt.path`.
