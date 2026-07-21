@@ -2,9 +2,10 @@
 
 > The constitution. **Why** the invariants exist, not just what they are.
 >
-> Read this when a guard, gate, or restriction looks like "unnecessary complexity"
-> and you are tempted to remove it. Almost every one of these was written to stop a
-> specific failure that already happened. If you want to change one, argue with the
+> Part of the every-session read (`CLAUDE.md` Session Start Protocol, step 2), and
+> re-read specifically when a guard, gate, or restriction looks like "unnecessary
+> complexity" and you are tempted to remove it. Almost every one of these was written
+> to stop a specific failure that already happened. If you want to change one, argue with the
 > *reason* here first — do not delete the mechanism and discover the reason again.
 >
 > `VISION.md` = what we are building. `PRINCIPLES.md` = the rules that must hold for it

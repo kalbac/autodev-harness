@@ -9,10 +9,11 @@
 
 At the start of **every** session, read in this order:
 1. `docs/VISION.md` — mission, single-source-of-truth rule, roles-matrix (the anchor)
-2. `AGENTS.md` — the agent contract for this repo (language, git-ownership, batch-merges, review discipline)
-3. `docs/CURRENT-STATE.md` — phase status, next concrete actions, open questions
-4. `docs/GOTCHAS.md` — scan the index to avoid repeated mistakes
-5. `docs/reference/` — the ported reference docs (autodev-loop runbook + critic protocol)
+2. `docs/PRINCIPLES.md` — the 15 invariants and *why* they exist (the constitution)
+3. `AGENTS.md` — the agent contract for this repo (language, git-ownership, batch-merges, review discipline)
+4. `docs/CURRENT-STATE.md` — phase status, next concrete actions, open questions
+5. `docs/GOTCHAS.md` — scan the index to avoid repeated mistakes
+6. `docs/reference/` — the ported reference docs (autodev-loop runbook + critic protocol)
 
 ## What this project is
 
@@ -52,6 +53,7 @@ truth for "where we are". Do not track status here (it rots).
 | `adr/` | Architecture Decision Records |
 | `wiki/` | Deep-dive topic references |
 | `reference/` | The ported reference docs (autodev-loop runbook, critic protocol) |
+| `superpowers/` | Working artifacts of the brainstorm→spec→plan cycle (`plans/`, `specs/`, `donor-extraction/`) — heavily linked from ADRs and SESSION-LOG |
 | `archive/` | Resolved historical docs |
 
 ## Coding Conventions

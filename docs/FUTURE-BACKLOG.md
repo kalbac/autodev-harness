@@ -268,9 +268,11 @@ Ranked by fit (UX-first — the operator's reason to like it):
 Fills a gap the current four donors don't center on: **worker code-editing quality
 & token economy.**
 
-- 🥇 **Aider** (`Aider-AI/aider`, Apache-2.0) — repo-map via tree-sitter, edit formats
-  (diff/whole), per-change git commits, any-LLM. Best-in-class for precise, cheap
-  patching. **Strongest additional candidate — analyze next.**
+- ~~🥇 **Aider**~~ — **DONE, not a candidate.** The donor-extraction pass analyzed it
+  (`superpowers/donor-extraction/aider-brief.md`) and `adr/002` accepted it as the
+  **fourth settled donor** ("focused edit/diff patterns" — see `VISION.md`'s donor
+  list). This bullet predates that pass; kept only so the list's history reads
+  straight.
 - **SWE-agent** — Agent-Computer Interface (ACI) design + strong eval lineage; overlaps
   OpenHands' eval, so lower marginal value.
 - **Cline** — good approval UX (plan/act, checkpoints) but VS Code-bound; less fit for a
