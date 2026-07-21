@@ -979,6 +979,49 @@ describe("runIteration -- oracle-path fence (adr/006 Phase 2)", () => {
     expect(escalateCalls[0]!.evidence).toContain(oraclePath);
   });
 
+  it("11b. a file caught by BOTH arms is reported ONCE, with the literal's undistorted spelling and both kinds (s50 live proof: it read as 'modified 2 oracle artifact(s)', one path missing its leading dot)", async () => {
+    const oraclePath = ".github/workflows/ci.yml";
+    const task = makeTask({ file_set: [oraclePath] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [".github/workflows/**"],
+      sources: new Map([
+        [oraclePath, "gate.agentCi.workflows: .github/workflows/ci.yml"],
+        [".github/workflows/**", "gate.agentCi.enabled"],
+      ]),
+    });
+    // The SAME file drifts on disk AND shows up in the git-visible touched set, so the
+    // fs-fingerprint arm and the glob arm both fire on it.
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [oraclePath],
+      oracleBefore: new Map([[oraclePath, "h1"]]),
+      oracleAfter: new Map([[oraclePath, "h2"]]),
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    const call = escalateCalls[0]!;
+    // ONE artifact, not two.
+    expect(call.what).toContain("modified 1 oracle artifact(s)");
+    // Exactly one evidence line, carrying BOTH arms.
+    const evidenceLines = call.evidence.split("\n").filter((l) => l.trim() !== "");
+    expect(evidenceLines).toHaveLength(1);
+    expect(evidenceLines[0]).toContain("fs-fingerprint+glob");
+    // The declared literal's spelling wins -- the glob arm's `normalizePath` form
+    // ("github/workflows/ci.yml", dot stripped) must not be what the operator reads.
+    expect(evidenceLines[0]).toContain(".github/workflows/ci.yml");
+    expect(call.evidence).not.toMatch(/(^|\s)github\/workflows\/ci\.yml/m);
+  });
+
   it("12. worker CREATES a previously-absent oracle literal -> escalates", async () => {
     const oraclePath = "GUARDS.md";
     const task = makeTask({ file_set: ["a.ts"] });

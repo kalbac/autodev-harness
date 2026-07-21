@@ -145,6 +145,39 @@ function buildDriftEscalation(line: string, nowMs: number): EscalationInput {
  * the matching -- so find the first declared glob that actually matches `hitPath`
  * and report ITS source instead.
  */
+/**
+ * Merge the two oracle-fence arms into ONE hit per real file (adr/006 Phase 2;
+ * found by the s50 live proof). A protected file that is BOTH a declared literal
+ * and covered by a declared glob is caught twice — once as `.github/workflows/ci.yml`
+ * by the fs-fingerprint arm, once as `github/workflows/ci.yml` by the glob arm, whose
+ * `normalizePath` strips the leading dot. Reported raw that read as "modified 2 oracle
+ * artifact(s)" with one of the two paths visibly wrong: a single edit overstated as
+ * two, which is exactly the kind of unearned claim Principle 13 forbids in our own
+ * artifacts.
+ *
+ * Dedupe key is `normalizePath` (the only form in which the two arms' spellings
+ * agree); the DISPLAYED path prefers the fs-fingerprint arm's, because that one is the
+ * literal as declared — dot intact — while the glob arm's has been through the
+ * `.TrimStart('./')` parity quirk. Kinds accumulate so the evidence still shows which
+ * arm(s) caught it.
+ */
+function mergeOracleHits(driftPaths: string[], globPaths: string[]): { path: string; kinds: string[] }[] {
+  const byKey = new Map<string, { path: string; kinds: string[] }>();
+  const add = (p: string, kind: string): void => {
+    const key = normalizePath(p);
+    const existing = byKey.get(key);
+    if (existing) {
+      if (!existing.kinds.includes(kind)) existing.kinds.push(kind);
+      return;
+    }
+    byKey.set(key, { path: p, kinds: [kind] });
+  };
+  // fs-fingerprint FIRST so its (undistorted) spelling wins the displayed path.
+  for (const p of driftPaths) add(p, "fs-fingerprint");
+  for (const p of globPaths) add(p, "glob");
+  return [...byKey.values()];
+}
+
 function oracleSourceFor(hitPath: string, set: OracleSet): string {
   const direct = set.sources.get(hitPath);
   if (direct) return direct;
@@ -478,12 +511,9 @@ export function createConductor(deps: ConductorDeps): Conductor {
         const oracleGlobHits = oracleGlobTouches(touched, oracleSet.globs);
         if (oracleDrift.length > 0 || oracleGlobHits.length > 0) {
           await repo.moveTask(task.id, "active", "escalated");
-          const hits = [
-            ...oracleDrift.map((p) => ({ path: p, kind: "fs-fingerprint" as const })),
-            ...oracleGlobHits.map((p) => ({ path: p, kind: "glob" as const })),
-          ];
+          const hits = mergeOracleHits(oracleDrift, oracleGlobHits);
           const oracleEvidence = hits
-            .map((h) => `${h.path}  (${oracleSourceFor(h.path, oracleSet)})  [${h.kind}]`)
+            .map((h) => `${h.path}  (${oracleSourceFor(h.path, oracleSet)})  [${h.kinds.join("+")}]`)
             .join("\n");
           await escalate(
             buildEscalation(task, {
