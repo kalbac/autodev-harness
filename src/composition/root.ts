@@ -71,6 +71,7 @@ import { mutationCheck, type MutationRecipe } from "../gate/mutation-check.js";
 import { escalate as escalateCore, type EscalationInput } from "../escalate/escalate.js";
 import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { snapshot } from "../util/fingerprint.js";
+import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
@@ -666,6 +667,13 @@ export async function buildProjectRoot(
 
   const snapshotFingerprints = (cwd: string, rawPaths: string[]): Map<string, string> => snapshot(cwd, rawPaths);
 
+  // Oracle-path set (adr/006 Phase 2): resolved against `repoRoot` -- the TRUSTED
+  // root, never `wt.path` -- same discipline as `loadInvariantsFrom`/
+  // `loadGuardPairsFrom` above. Built fresh on every call (not memoized): the
+  // conductor calls this once per round, and the underlying GUARDS.md/config can
+  // legitimately change between an operator's edits and the next task.
+  const resolveProjectOracleSet = (): Promise<OracleSet> => resolveOracleSet(cfg, raw, repoRoot);
+
   const harvestWorkerReport = async (wt: Worktree, taskId: string): Promise<void> => {
     await harvestWorkerReportCore(wt.path, repo.runtimeDir(taskId));
   };
@@ -690,6 +698,7 @@ export async function buildProjectRoot(
     harvestWorkerReport,
     gitChangedPaths,
     snapshotFingerprints,
+    resolveOracleSet: resolveProjectOracleSet,
     zonesTouchedInDiff,
     clock,
     sleep,

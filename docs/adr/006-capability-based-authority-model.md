@@ -148,7 +148,44 @@ surface; dropping it is the point, not a regression.
   gotcha for the "new zone no longer self-enforces in the same run" behavior change.
   **Scope: Phase 1 closes only *definition* tampering** — executable-input tampering
   stays open until Phase 2.
-- **Phase 2 — executable-input integrity.** A mechanical **protected-paths fence**:
+- **Phase 2 — executable-input integrity. ✅ SHIPPED s50 (2026-07-22).** Built as
+  `src/gate/oracle-paths.ts` + a conductor fence that runs **before** the critic (so an
+  oracle touch costs no critic tokens) and **before** the stray/forbidden fence (so the
+  operator gets "the worker edited the oracle", not a generic "out of scope"). Escalates
+  the existing `constitution` type — semantically identical and already non-retryable in
+  the overnight supervisor, so no new plumbing. The set is derived from the trusted root:
+  `contract.invariantsFile`/`guardsFile`, **every** GUARDS.md row's `recipe` and
+  `guard_test` (all rows, not only mutation-verified ones — an unverified row's test file
+  is still an oracle input), the `gate.agentCi.workflows` files plus `.github/workflows/**`
+  when agent-ci is enabled, and `contract.constitutionPaths`. `recipe.file` is
+  deliberately NOT protected: it is the code under test, and protecting it would make
+  every guarded zone's own source unwritable.
+
+  Two arms with deliberately different guarantees: **literals** are fingerprinted
+  directly on the filesystem (pre/post worker), which is what covers a **git-ignored**
+  oracle file the porcelain fence cannot see (SOUND #3 scope) — every *derived* entry is
+  a literal, so the concrete hole the audit named is closed; **globs** are matched only
+  against the git-visible touched set, leaving a gitignored path matching *only* an
+  operator-declared glob as a documented residual (closing it needs a bounded,
+  junction-safe worktree walk — `FUTURE-BACKLOG.md`).
+
+  **Six** codex `gpt-5.6-luna` rounds, each closing a narrower fail-open inside the
+  previous round's own fix — the same convergence shape as Phase 1's four, and worth
+  budgeting for on anything touching this contour. The through-line was one invariant
+  that took five rounds to state properly: *every entry is worktree-relative,
+  `/`-separated, and names a real regular file*. See the gotcha for the specific leaks.
+  Live-proven end-to-end on `woodev-shipping-plugin-test`: a task whose `file_set`
+  contained `.github/workflows/ci.yml` escalated `constitution` with oracle evidence and
+  never reached the critic (no `critic-verdict.json` written), while a control task
+  touching a non-oracle file passed the fence, the critic and the gate and committed
+  (`dd79ef4`). Closes Finding 4 and the executable-input residual Phase 1 left open.
+
+  **Still open after Phase 2:** `success_command` scripts and the `checkCommand` are
+  commands, not declared paths, so their *implementations* are only protected when the
+  operator lists them in `constitutionPaths`. Deriving a path set from a command string
+  is not reliably decidable; naming the gap is honest, closing it is not attempted here.
+
+  The original plan, for the record: a mechanical **protected-paths fence**:
   a **trusted-root, worker-immutable** declaration of the oracle artifact class,
   checked against the worker's touched set independent of (and in addition to) the
   LLM-authored `forbidden_paths`, so an oracle file in a `file_set` escalates to an
