@@ -361,6 +361,53 @@ describe("resolveOracleSet", () => {
 
     await expect(resolveOracleSet(cfg, {}, root)).rejects.toThrow(/absolute pattern/);
   });
+
+  // --- source 5: profile protectedPaths ------------------------------------------
+  // `gate/` must not depend on `profile/` (wrong dependency direction -- see this
+  // module's own doc comment), so the composition root passes a plain `string[]`
+  // rather than a `ResolvedProfile`. Classification/normalization is the SAME
+  // addLiteral/addGlob path as every other source -- only the attributed reason
+  // differs, so these tests only need to pin the wiring, not re-prove the fail-closed
+  // matrix already covered above.
+  describe("profile protected paths (source 5)", () => {
+    it("adds a profile literal with a profile-attributed reason", async () => {
+      const cfg = HarnessConfigSchema.parse({});
+      const raw = {};
+
+      const set = await resolveOracleSet(cfg, raw, root, ["phpcs.xml"]);
+
+      expect(set.literals).toContain("phpcs.xml");
+      expect(set.sources.get("phpcs.xml")).toMatch(/profile/i);
+    });
+
+    it("classifies a profile glob into the glob arm", async () => {
+      const cfg = HarnessConfigSchema.parse({});
+      const raw = {};
+
+      const set = await resolveOracleSet(cfg, raw, root, ["ci/**"]);
+
+      expect(set.globs).toContain("ci/**");
+      expect(set.literals).not.toContain("ci/**");
+    });
+
+    it("fails closed on an escaping profile path", async () => {
+      const cfg = HarnessConfigSchema.parse({});
+      const raw = {};
+
+      await expect(resolveOracleSet(cfg, raw, root, ["../outside.xml"])).rejects.toThrow(/escapes/i);
+    });
+
+    it("changes nothing when the list is empty (default)", async () => {
+      const cfg = HarnessConfigSchema.parse({});
+      const raw = {};
+
+      const withArg = await resolveOracleSet(cfg, raw, root, []);
+      const without = await resolveOracleSet(cfg, raw, root);
+
+      expect(withArg.literals).toEqual(without.literals);
+      expect(withArg.globs).toEqual(without.globs);
+    });
+  });
 });
 
 describe("oracleGlobTouches", () => {

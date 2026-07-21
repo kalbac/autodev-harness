@@ -44,6 +44,15 @@ export const HarnessConfigSchema = z.object({
   stateDir: z.string().default(".autodev"),
   allowedBranchPattern: z.string().default("^autodev/"),
 
+  // Attached qualification profile, as "<id>@<version>" (e.g.
+  // "wordpress-woocommerce@1"). null = no profile = the whole profile contour is
+  // inert (no gate step 1d, no extra oracle paths, no extra provisioning), byte-
+  // identical to pre-profile behaviour. Same null-is-a-no-op shape as
+  // gate.checkCommand. The reference is RESOLVED (and fail-closed validated) in
+  // src/profile/profile.ts, not here: the schema only records the operator's
+  // intent, it does not touch the filesystem.
+  profile: z.string().nullable().default(null),
+
   repoRoot: z
     .object({ markers: z.array(z.string()).default([".git"]) })
     .default({ markers: [".git"] }),

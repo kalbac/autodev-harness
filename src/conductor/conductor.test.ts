@@ -348,6 +348,7 @@ function defaultGateVerdict(overrides: Partial<GateVerdict> = {}): GateVerdict {
     composer_green: true,
     success_green: true,
     agent_ci_green: true,
+    profile_green: true,
     constitution_touched: [],
     zones_touched: [],
     decision: "COMMIT",

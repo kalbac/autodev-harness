@@ -36,6 +36,7 @@ export interface GateVerdict {
   composer_green: boolean;
   success_green: boolean;
   agent_ci_green: boolean; // true when the feature is off / not applicable
+  profile_green: boolean; // true when no profile is attached
   constitution_touched: string[];
   zones_touched: ZoneResult[];
   decision: Decision;
@@ -67,6 +68,18 @@ export interface GateDeps {
    *  AgentCiUnavailableError (Windows-without-WSL) propagates OUT of runGate on purpose --
    *  do NOT wrap in try/catch here; the conductor escalates a gate throw. */
   runAgentCi: ((taskId: string) => Promise<{ green: boolean; reasons: string[] }>) | null;
+  /** Optional qualification-profile gates (`profile:` in config). null = no profile attached.
+   *  A RED gate is worker-fixable -> RETRY. A gate that could not RUN (missing tool, absent
+   *  vendor, spawn ENOENT) must THROW out of runGate exactly like runAgentCi's infra failure --
+   *  do NOT catch it here; the conductor escalates a gate throw as broken operator config.
+   *  Receives this task's CHANGED FILES so a profile gate can judge the diff rather than the
+   *  whole tree. That scoping is load-bearing, not an optimization: measured on the real
+   *  polygon, the same WPCS ruleset reports 7069 pre-existing errors tree-wide and 8 on the
+   *  file a task actually touched, so a whole-tree profile gate would be red on every run
+   *  regardless of the diff -- blocking everything while proving nothing about the change
+   *  under judgement. A gate that declares no file glob is whole-project by design (e.g.
+   *  `composer validate`) and ignores this argument. */
+  runProfileGates: ((changedFiles: string[]) => Promise<{ id: string; green: boolean; exitCode: number }[]>) | null;
   /** Config-level (trusted-root, worker-inaccessible) human-only path globs (adr/006
    *  Phase 1, closing Finding 2 -- `contract.constitutionPaths` was previously dead
    *  config). Unioned with `inv.constitution.path_globs` for the constitution check.
@@ -100,6 +113,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
       composer_green: false,
       success_green: false,
       agent_ci_green: true,
+      profile_green: true,
       constitution_touched: [],
       zones_touched: [],
       decision: "ESCALATE",
@@ -153,6 +167,26 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     agentCiGreen = ci.green;
     if (!ci.green) {
       reasons.push(...ci.reasons);
+    }
+  }
+
+  // 1d. optional qualification-profile gates (spec 2026-07-22). null = no profile
+  // attached. A red gate folds into the verdict exactly like a failed check
+  // command (worker-fixable -> RETRY, via `reasons` + the decision expression
+  // below). A gate that could not RUN AT ALL (missing tool, absent vendor, spawn
+  // ENOENT) is NOT worker-fixable -- `deps.runProfileGates` REJECTS in that case
+  // and this THROWS through, uncaught, exactly like 1c's runAgentCi: the
+  // conductor's try/catch around runGate is what escalates it as broken operator
+  // config. Looping a worker against a broken environment is the exact failure
+  // mode this contract exists to prevent.
+  let profileGreen = true;
+  if (deps.runProfileGates !== null) {
+    const results = await deps.runProfileGates(changedFiles);
+    for (const r of results) {
+      if (!r.green) {
+        profileGreen = false;
+        reasons.push(`profile gate '${r.id}' FAILED (exit ${r.exitCode})`);
+      }
     }
   }
 
@@ -262,7 +296,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
 
   // 4. decision — RETRY overrides everything, then constitution, then any bad zone, else COMMIT
   let decision: Decision = "COMMIT";
-  if (!composerGreen || !successGreen || !agentCiGreen) {
+  if (!composerGreen || !successGreen || !agentCiGreen || !profileGreen) {
     decision = "RETRY";
   } else if (constitutionTouched.length > 0) {
     decision = "ESCALATE";
@@ -280,6 +314,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     composer_green: composerGreen,
     success_green: successGreen,
     agent_ci_green: agentCiGreen,
+    profile_green: profileGreen,
     constitution_touched: constitutionTouched,
     zones_touched: zonesTouched,
     decision,

@@ -71,7 +71,9 @@ import { mutationCheck, type MutationRecipe } from "../gate/mutation-check.js";
 import { escalate as escalateCore, type EscalationInput } from "../escalate/escalate.js";
 import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { snapshot } from "../util/fingerprint.js";
+
 import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
+import { loadProfile, prepareGateInvocation } from "../profile/profile.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
@@ -394,6 +396,17 @@ export async function buildProjectRoot(
 
   const log = createLogger(join(repoRoot, cfg.stateDir, "conductor.log"));
 
+  // Qualification profile (spec 2026-07-22). Loaded ONCE per root build and fail-
+  // CLOSED: an unresolvable profile throws right here rather than degrading to "no
+  // profile", because the degraded mode is the dangerous one -- gates the operator
+  // believes are running would silently not run, and a green verdict would claim a
+  // qualification that never happened. null = not attached = every profile contour
+  // below (gate step 1d, the fifth oracle source, the provision union) is inert.
+  const profile = cfg.profile === null ? null : await loadProfile(cfg.profile);
+  if (profile !== null) {
+    log("INFO", `profile attached: ${profile.id}@${profile.version} (${profile.gates.length} gate(s))`);
+  }
+
   // Read-through: the daemon-global presence flag is NOT cached on the ProjectRoot
   // (unlike `cfg`, captured once above) -- see the PresenceReader doc comment. The
   // production default is only constructed here, where `log` is already in scope
@@ -407,7 +420,11 @@ export async function buildProjectRoot(
   const scheduler = createScheduler(repo);
   const worktreesDir = join(repoRoot, cfg.stateDir, "worktrees");
   const worktree = createWorktreeManager(repoRoot, worktreesDir, {
-    provision: cfg.worktree.provision,
+    // Union, never override: a profile ADDS what its gates need (e.g. `vendor`,
+    // which supplies vendor/bin/phpcs) to whatever the project already
+    // provisions. De-duplicated because the two lists legitimately overlap -- a
+    // project that already provisioned `vendor` must not have it linked twice.
+    provision: [...new Set([...cfg.worktree.provision, ...(profile?.provision ?? [])])],
     log,
   });
   const router = createRouter(cfg);
@@ -479,6 +496,32 @@ export async function buildProjectRoot(
         const r = await runNative(c, a, { cwd: wt.path });
         return { exitCode: r.exitCode };
       },
+      // Profile gates (spec 2026-07-22) run in the WORKTREE -- that is the code
+      // under judgement -- while their rulesets come from the profile directory in
+      // the harness repo, already absolute after `{profile}` expansion at load.
+      // `runNative` REJECTS on a spawn ENOENT, so a missing tool or an unprovisioned
+      // `vendor` propagates OUT of runGate as the infra throw the conductor
+      // escalates, instead of reading as a red gate that would loop the worker on
+      // an environment it cannot fix -- the same contract as runAgentCi below.
+      runProfileGates:
+        profile === null || profile.gates.length === 0
+          ? null
+          : async (changedFiles: string[]) => {
+              const out: { id: string; green: boolean; exitCode: number }[] = [];
+              for (const g of profile.gates) {
+                const inv = prepareGateInvocation(g, changedFiles);
+                if (inv.skipped) {
+                  // Logged, never silent: a skipped gate is a BOUND on what this
+                  // verdict covers, and an unreported bound reads as coverage.
+                  log("INFO", `profile gate '${g.id}' skipped -- ${inv.reason}`);
+                  continue;
+                }
+                const { c, a } = splitCommand(inv.command);
+                const r = await runNative(c, a, { cwd: wt.path });
+                out.push({ id: g.id, green: r.exitCode === 0, exitCode: r.exitCode });
+              }
+              return out;
+            },
       runAgentCi: agentCi.enabled
         ? async (taskId: string) => {
             if (agentCi.workflows.length === 0) {
@@ -672,7 +715,12 @@ export async function buildProjectRoot(
   // `loadGuardPairsFrom` above. Built fresh on every call (not memoized): the
   // conductor calls this once per round, and the underlying GUARDS.md/config can
   // legitimately change between an operator's edits and the next task.
-  const resolveProjectOracleSet = (): Promise<OracleSet> => resolveOracleSet(cfg, raw, repoRoot);
+  // The attached profile's `protectedPaths` ride in as the fifth source. Passed as
+  // a plain `string[]`, not the ResolvedProfile: `gate/` must not depend on
+  // `profile/`, the same dependency-direction rule `oracle-paths.ts` already keeps
+  // toward `composition/`.
+  const resolveProjectOracleSet = (): Promise<OracleSet> =>
+    resolveOracleSet(cfg, raw, repoRoot, profile?.protectedPaths ?? []);
 
   const harvestWorkerReport = async (wt: Worktree, taskId: string): Promise<void> => {
     await harvestWorkerReportCore(wt.path, repo.runtimeDir(taskId));
