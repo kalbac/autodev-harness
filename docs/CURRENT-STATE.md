@@ -5,22 +5,24 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s49)
+## Where we are (leaving s50)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced (s49 = PR #78 merged, `cc0db6f`, CI 4/4).
+~5 slices).
 
-**s49 built `adr/006` Phase 1 — the first Authority-Model enforcement increment.** The
-machine gate no longer reads its oracle *definitions* (contract zones, guards, recipes,
-the constitution path list) from the worktree the worker just wrote; it reads them from
-the trusted root and only *executes* against the worktree. Fail-closed on a
-configured-but-unreadable oracle; `contract.constitutionPaths` is wired (was dead
-config); realpath containment on both the read and the stub-write path. Four codex
-`gpt-5.6-luna` rounds, live-proven end-to-end. Next priority is unchanged: **Profiles /
-WP-WC Qualification Layer** (Track A) — the Authority Model prerequisite it depends on
-is now materially closer.
+**s50 closed the `adr/006` enforcement tail — Phase 2, executable-input protected
+paths.** Phase 1 (s49) stopped a worker from changing *what the gate checks*; Phase 2
+stops it from editing the oracle *inputs the gate executes* — guard test files, mutation
+recipes, agent-ci workflow files, and operator-declared human-only paths. The set is
+declared at the trusted root and fenced by fingerprint **before the critic** (an oracle
+touch now costs no critic tokens) and **before the stray/forbidden fence** (so the
+reason is "the worker edited the oracle", not a generic "out of scope"). Literals are
+fingerprinted directly on disk, which is what covers **git-ignored** oracle files the
+porcelain fence cannot see. Six codex `gpt-5.6-luna` rounds; live-proven both
+directions. With Phase 1+2 landed, the Authority-Model prerequisite the profiles thrust
+depends on is **materially satisfied** — Phase 3 folds into Profiles itself.
 
 ## Phase status
 
@@ -31,6 +33,7 @@ is now materially closer.
 | Attended live-orchestrator presence (`adr/004`) | ✅ shipped (s40, PR #72) |
 | Unattended autonomy (`adr/004`) | 🚧 partly built — see below |
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
+| Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) shipped; Phase 3 folds into Profiles |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -38,6 +41,44 @@ is now materially closer.
 - ⬜ Morning report (batch-narrate `.autodev/decision-journal.ndjson`, reuses the s40 narrator)
 - ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
 - ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
+
+## What s50 delivered (`adr/006` Phase 2 — executable-input protected paths)
+
+- **`src/gate/oracle-paths.ts`** — `resolveOracleSet(cfg, raw, repoRoot)` builds the
+  protected set from the **trusted root**: `contract.invariantsFile`/`guardsFile`,
+  **every** GUARDS.md row's `recipe` + `guard_test` (all rows, not only
+  mutation-verified — an unverified row's test file is still an oracle input), the
+  `gate.agentCi.workflows` files + `.github/workflows/**` when agent-ci is enabled, and
+  `contract.constitutionPaths`. `recipe.file` is deliberately **not** protected: it is
+  the code under test, and protecting it would make every guarded zone's own source
+  unwritable.
+- **Two arms, different guarantees, not conflated.** `literals` are fingerprinted
+  directly on the filesystem pre/post worker — this is what covers a **git-ignored**
+  oracle file (audit SOUND #3 scope); every *derived* entry is a literal, so the
+  concrete hole is closed. `globs` match the git-visible touched set only; a gitignored
+  path matching *only* an operator glob is a documented residual (needs a bounded,
+  junction-safe worktree walk → `FUTURE-BACKLOG.md`).
+- **Fenced early.** Runs before the critic (no critic tokens burned on an oracle touch)
+  and before the stray/forbidden fence (specific reason beats "out of scope").
+  Escalates the existing `constitution` type — already non-retryable in the overnight
+  supervisor, so no new plumbing through the journal/UI/reply path.
+- **Six codex `gpt-5.6-luna` rounds**, each closing a narrower fail-open inside the
+  previous round's own fix (absolute entries `join`ing to nonsense paths · a swallowed
+  containment error · a bare `catch` folding EACCES into "absent" · an empty-string key
+  `snapshot` skips · host-only absolute detection missing Windows forms on POSIX ·
+  separator folding applied to only one of the two probe paths). Verdict CLEAN at round
+  six. One invariant took five rounds to state properly: *every entry is
+  worktree-relative, `/`-separated, and names a real regular file*. GOTCHAS 72→73.
+- **Live-proven both directions** on `woodev-shipping-plugin-test`: a task whose
+  `file_set` held `.github/workflows/ci.yml` escalated `constitution` with oracle
+  evidence and never reached the critic (no `critic-verdict.json` written); a control
+  task on a non-oracle file passed the fence, critic and gate and **committed**
+  (`dd79ef4`). The live run also caught a reporting defect unit tests could not — a file
+  matched by both arms read as "modified 2 oracle artifact(s)" for one edit (fixed:
+  `mergeOracleHits`).
+- **Still open by design:** `success_command`/`checkCommand` *implementations* are
+  commands, not declared paths, so they are protected only if the operator lists them in
+  `constitutionPaths`. Deriving paths from a command string is not reliably decidable.
 
 ## What s49 delivered (`adr/006` Phase 1 — oracle definition integrity)
 
@@ -95,9 +136,11 @@ is now materially closer.
 Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Evaluation Corpus
 ```
 
-- **Authority Model** — audited s48; formalized in `adr/006`; enforcement phased (Phase-1
-  is a queued gated task, not yet built). This is the prerequisite the profiles thrust
-  depends on (a profile over an unprotected oracle is theater).
+- **Authority Model** — audited s48; formalized in `adr/006`; **Phase 1 shipped s49,
+  Phase 2 shipped s50**. The prerequisite the profiles thrust depends on (a profile over
+  an unprotected oracle is theater) is now materially satisfied; Phase 3 is not a
+  separate step — it folds into Profiles (the profile and its protected-path declaration
+  must themselves live at the trusted root).
 - **Profiles / Qualification Layer** — a reusable per-project-type proof pack (WP/WC
   first): the harness proves the *process*, the profile proves the *product*. Our
   `gate.agentCi` is the substrate; a profile productizes it. (The `adr/004` **north-star**
@@ -105,25 +148,34 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-- **s50 (priority) — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build
-  (depends on the Authority Model; can interleave with Phase-1). Fold in the `adr/004`
-  north-star concept. Phase-2/3 protected-paths land here.
-- **Remaining `adr/004` slices** (after/interleaved, each own brainstorm→spec→plan):
-  morning report · mandatory anti-drift · (north-star → folded into profiles).
+- **(priority) Profiles / WP-WC Qualification Layer:** brainstorm→spec→build. The
+  Authority-Model prerequisite is now satisfied (Phase 1+2 shipped). Fold in the
+  `adr/004` north-star concept; `adr/006` Phase 3 lands here (the profile and its
+  protected-path declaration must live at a trusted, worker-unwritable root, or the
+  model is self-authorizing).
+- **Docs audit** (s50 checkpoint, session divisible by 10 — offered and deferred behind
+  the Phase-2 work; last full audit was s47).
+- **Remaining `adr/004` slices** (each own brainstorm→spec→plan): morning report ·
+  mandatory anti-drift · (north-star → folded into profiles).
 - **Metrics / Evaluation Corpus** (GPT suggestion, decide if/when): autonomy-%,
   rework-cycles, first-pass gate-success, critic FP/FN — the numbers that prove the gate.
+  "Oracle-tamper attempts caught" is now a real, measurable gate property.
 - **Carried:** agent-ci synthetic `GITHUB_REPO` for non-GitHub repos · overloaded
   `blocked` EscalationType (v1 parks all) · chat-runtime → TanStack AI + AG-UI (`FUTURE-BACKLOG`).
 
 ## Open questions
 
-- **`adr/006` Phase 2 (executable-input protected paths)** — when? It is the half Phase 1
-  deliberately leaves open (guard test files, `success_command` scripts, workflow
-  implementations still run from the worktree). Phase 3 folds into Profiles.
+- **Oracle protection for `success_command`/`checkCommand` implementations** — they are
+  commands, not declared paths, so Phase 2 protects them only when the operator lists
+  them in `constitutionPaths`. Deriving a path set from a command string is not reliably
+  decidable; is an explicit per-command path declaration worth the config surface?
+- *(closed s50)* `adr/006` Phase 2 → shipped. Phase 3 → confirmed as a Profiles facet,
+  not a standalone phase.
 - *(closed s49)* s45 PR status → PR #76 merged 17.07. Merge policy → reconciled in `AGENTS.md`.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
+- **s50** — `adr/006` Phase 2 shipped: trusted-root protected-oracle-path fence (guard tests, recipes, workflows, constitution paths), fingerprinted pre/post worker ahead of the critic; covers git-ignored oracle files. 6 luna rounds → CLEAN; live-proven both directions (oracle task escalated pre-critic, control task committed `dd79ef4`). GOTCHAS 72→73.
 - **s49** — `adr/006` Phase 1 shipped: oracle definitions read from the trusted root, fail-closed, `constitutionPaths` wired, realpath containment, `GUARDS.md` migration; 4 luna rounds; live-proven (trusted-root zone escalated a real task). GOTCHAS 71→72. `AGENTS.md` merge policy reconciled.
 - **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Merged to `main` (`c6c2343`).
 - **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Merged to `main` (`7759346`).

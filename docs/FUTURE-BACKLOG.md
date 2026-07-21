@@ -124,6 +124,27 @@ heavier package. Polish the product surface first; wrap it once it's real.
 
 ## Deferred features
 
+- **Bounded worktree walk for the oracle-fence GLOB arm (`adr/006` Phase 2 residual, s50)** —
+  `resolveOracleSet`'s `literals` are fingerprinted directly on the filesystem, so a
+  **git-ignored** oracle file is covered; its `globs` are matched only against the
+  git-visible touched set, so an operator-declared *glob* that matches a path the target
+  repo gitignores is **not** seen. Every entry the harness itself DERIVES (invariants,
+  guards, recipes, guard tests, workflow files) is a literal, so the concrete hole the
+  s48 audit named is closed — this residual is only reachable via a hand-written glob
+  over ignored paths. Closing it needs enumerating the worktree to expand the globs,
+  which must skip `.git`, must be bounded (fail closed if a file-count cap is hit), and
+  must NOT follow symlinks/junctions (`[worktree/win-junction-follow]` — a recursive walk
+  that follows a junction reads outside the worktree). Not worth that machinery until a
+  real project declares such a glob. Documented in `adr/006` + the Phase 2 gotcha.
+
+- **Oracle protection for `success_command` / `checkCommand` implementations (s50)** —
+  Phase 2 protects declared *paths*; these are command *strings*, so the scripts they
+  invoke are protected only when the operator also lists them in
+  `contract.constitutionPaths`. Deriving a path set from an arbitrary command string is
+  not reliably decidable. Options if it ever matters: an explicit optional
+  `protectedPaths` alongside each command, or requiring commands to be declared as a
+  path + args pair. Costs config surface; parked until a real tamper case appears.
+
 - **Desktop wrap (Electron/Tauri over the loopback API)** — DEFERRED by operator (s25) until the web
   UI is debugged + polished to a real product (see "pilot → product" above). Additive when it comes
   (the daemon already serves install-relative); needs an IA/UX discussion before building.
