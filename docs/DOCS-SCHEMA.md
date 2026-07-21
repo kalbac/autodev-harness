@@ -37,7 +37,10 @@ CURRENT-STATE keeps only the live status + a one-line pointer per recent session
    `gotchas/{slug}.md`, add one index line to `GOTCHAS.md`, bump the count.
 2. A decision with real tradeoffs → an ADR: `adr/{NNN-title}.md` + index in
    `adr/README.md`.
-3. Deep topic explanation → `wiki/{topic}.md`.
+3. Deep topic explanation, or an **Architecture Note** (rationale — *why* the system
+   is built this way, not what the code does) → `wiki/{topic}.md`. This is the home for
+   design rationale and analysis memos; do **not** create a competing `architecture/`
+   folder (that re-introduces the multi-source-of-truth drift).
 
 ## Gotcha file template
 

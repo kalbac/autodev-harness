@@ -5,15 +5,17 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (entering s47)
+## Where we are (entering s48)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
 ~5 slices). `main` is clean and synced (s46 = PR #77 merged, `680b9fa`, CI 4/4).
 
-**s47 is a discussion-first session** (operator-flagged): a docs cleanup + new project
-goals/ideas talk — see Current focus.
+**s47 was a docs-consolidation + external-feedback session.** The docs cleanup shipped
+(see below), and an external agent review (`wiki/architecture-review-external-2026-07.md`)
+surfaced a new strategic thrust: **Authority Model → Profiles / Qualification Layer**.
+That thrust — not more autonomy polish — is judged the next priority (see NEXT ACTIONS).
 
 ## Phase status
 
@@ -32,33 +34,58 @@ goals/ideas talk — see Current focus.
 - ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
 - ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
 
-## Current focus (s47)
+## What s47 delivered (docs consolidation)
 
-1. **Docs cleanup (in progress).** Two diseases fixed: (A) CURRENT-STATE had become a
-   session-log clone; (B) foundational docs (README/CLAUDE/VISION/AGENT-RULES) still
-   told the superseded "fork AO / Go / Electron / day-zero" story. Added
-   `PRINCIPLES.md` (the constitution — invariants + *why*, per the GPT-dialog advice).
-2. **"Project profiles" / WP-WC domain pack.** Operator's favorite idea from the GPT
-   dialog: the harness is stack-agnostic (knows nothing about WP/WC conventions);
-   a *profile* = a reusable domain-knowledge + config pack per project type that makes
-   worker/critic/gates domain-aware. Pending the exact dialog fragment → brainstorm.
+- **Fixed the stale foundation** — README/CLAUDE/VISION/AGENT-RULES no longer tell the
+  superseded "fork AO / Go / Electron / day-zero" story; AGENT-RULES had the
+  single-source-of-truth rule inverted → corrected to the blackboard.
+- **Slimmed CURRENT-STATE** 139 KB → ~8 KB (snapshot, not a log; replace-not-append
+  discipline in `DOCS-SCHEMA`).
+- **Added `PRINCIPLES.md`** — the constitution (13 invariants + *why*), per the external
+  review's advice; wired into `DOCS-INDEX`/`DOCS-SCHEMA`. Made `wiki/`'s role explicit
+  (Architecture Notes — rationale, not API) and saved the external review there.
+
+## The new thrust — Authority Model → Profiles (from the external review)
+
+`wiki/architecture-review-external-2026-07.md` details it. The chain, order load-bearing:
+
+```text
+Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Evaluation Corpus
+```
+
+- **Authority Model** — "the worker must never control its own oracle". Acceptance
+  criteria, hidden tests, gate config, CI, protected paths, release config must be
+  **outside the worker's write authority**, by capability not role name. We have pieces
+  (orchestrator forbidden-paths, contract-zones) but no unified, audited model.
+- **Profiles / Qualification Layer** — a reusable per-project-type proof pack (WP/WC
+  first): the harness proves the *process*, the profile proves the *product*. Our
+  `gate.agentCi` is the substrate; a profile productizes it. (The `adr/004` **north-star**
+  doc likely folds into this.)
 
 ## NEXT ACTIONS
 
-- **This session:** finish docs cleanup (wire `PRINCIPLES.md` into `DOCS-INDEX`/`DOCS-SCHEMA`); commit the docs batch.
-- **Project profiles:** get the operator's GPT fragment → brainstorm → spec. May re-order the `adr/004` backlog.
-- **Remaining `adr/004` slices** (each its own brainstorm→spec→plan): morning report · north-star doc · mandatory anti-drift.
-- **Metrics** (GPT suggestion, decide if/when): a lightweight harness for autonomy-%, rework-cycles, first-pass gate-success, critic FP/FN — the numbers that prove the gate's value.
-- **Carried:** agent-ci synthetic `GITHUB_REPO` for non-GitHub repos · the overloaded `blocked` EscalationType (v1 parks all) · chat-runtime → TanStack AI + AG-UI migration (own future brainstorm, `FUTURE-BACKLOG`).
+- **s48 (priority) — Authority Model, scoped narrow:** audit what the worker can
+  currently write into its diff vs the oracle artifacts (tests, `ci.yml`, gate config)
+  and whether the gate catches tampering → `adr/006` (capability-based authority) +
+  `PRINCIPLES.md` hardening (risk 3 "gate proves only formalized properties" + sharpen
+  "worker doesn't write its own oracle"). Fix enforcement only if the audit finds a hole.
+- **s49+ — Profiles / WP-WC Qualification Layer:** brainstorm→spec→build (depends on the
+  Authority Model being sound). Fold in the `adr/004` north-star concept.
+- **Remaining `adr/004` slices** (after/interleaved, each own brainstorm→spec→plan):
+  morning report · mandatory anti-drift · (north-star → folded into profiles).
+- **Metrics / Evaluation Corpus** (GPT suggestion, decide if/when): autonomy-%,
+  rework-cycles, first-pass gate-success, critic FP/FN — the numbers that prove the gate.
+- **Carried:** agent-ci synthetic `GITHUB_REPO` for non-GitHub repos · overloaded
+  `blocked` EscalationType (v1 parks all) · chat-runtime → TanStack AI + AG-UI (`FUTURE-BACKLOG`).
 
 ## Open questions
 
-- **Project-profiles scope** — pending the operator's dialog fragment (risks section + WP/WC domain-pack bullets).
 - **s45 PR status** — `autodev/s45-carried-items` (overnight escalation supervisor): confirm whether it merged or is still pending.
 - **Merge policy reconciliation** — `AGENTS.md` grants a standing "agent merges without waiting"; recent practice (s44+) is the operator's in-turn "merge PR #N". Pick one and make the docs agree.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
+- **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Branch `autodev/s47-docs-cleanup` (docs-only; merge/push at operator's call).
 - **s46** — overnight presence toggle (`adr/004` slice 2): global settings store + sidebar UI + daemon wiring; 4-pass luna gate; live-proven. PR #77 merged (`680b9fa`), CI 4/4. GOTCHAS 69→70.
 - **s45** — 2 carried fixes + overnight escalation supervisor (`adr/004` slice 1); 4-pass luna gate; live-proven twice. Branch `autodev/s45-carried-items` (PR status open, see above).
 - **s44** — `gpt-5.6-luna` promoted as critic (calibrated 12/12) + reply-B poison-fix.
