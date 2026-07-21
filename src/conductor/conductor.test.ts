@@ -15,6 +15,7 @@ import type { EscalationInput } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
+import type { OracleSet } from "../gate/oracle-paths.js";
 
 // ---------------------------------------------------------------------------
 // Fakes / test helpers. No real subprocesses, no real filesystem (except the
@@ -360,7 +361,20 @@ function makeCleanVerdict(overrides: Partial<Verdict> = {}): Verdict {
   return { verdict: "clean", broken_contracts: [], notes: "", confidence: 1, ...overrides };
 }
 
-/** Pairs up baseline/after fingerprint snapshots per fence round, driven by call count. */
+/** The default `resolveOracleSet` fake (see `buildDeps`) always resolves to THIS
+ *  SAME object -- a shared, stable reference, never reconstructed per call. That
+ *  stability is load-bearing for `makeFingerprintFakes` below: it lets the fence
+ *  fake recognize (and skip) the two NEW oracle-fingerprint calls (adr/006 Phase 2)
+ *  by REFERENCE rather than by content, since an oracle call's `rawPaths` (this
+ *  object's `.literals`, always `[]` here) is otherwise indistinguishable from a
+ *  legitimate empty `gitChangedPaths()` result the regular fence also produces. */
+const EMPTY_ORACLE_SET: OracleSet = { literals: [], globs: [], sources: new Map() };
+
+/** Pairs up baseline/after fingerprint snapshots per fence round, driven by call count.
+ *  Skips (without consuming the pairing counter) any `snapshotFingerprints` call made
+ *  with the shared `EMPTY_ORACLE_SET.literals` array -- the oracle-fence baseline/after
+ *  calls conductor.ts now makes every round (adr/006 Phase 2) alongside the regular
+ *  dirty-file fence's own baseline/now calls that this fake exists to script. */
 function makeFingerprintFakes(sequence: { paths: string[]; map: Map<string, string> }[]): {
   gitChangedPaths: (cwd: string) => Promise<string[]>;
   snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
@@ -376,10 +390,53 @@ function makeFingerprintFakes(sequence: { paths: string[]; map: Map<string, stri
       counter++;
       return s.paths;
     },
-    snapshotFingerprints: (): Map<string, string> => {
+    snapshotFingerprints: (_cwd: string, rawPaths: string[]): Map<string, string> => {
+      if (rawPaths === EMPTY_ORACLE_SET.literals) return new Map();
       const s = step();
       counter++;
       return s.map;
+    },
+  };
+}
+
+/**
+ * Fakes for exercising the oracle-path fence (adr/006 Phase 2) in isolation from the
+ * regular dirty-file fence. POSITION-keyed, not content-keyed: one round calls
+ * `snapshotFingerprints` exactly FOUR times, always in this order -- oracle-baseline
+ * (pre-worker), fence-baseline, fence-now, oracle-after (post-worker, BEFORE the
+ * dirty-file check) -- so scripting by position (rather than by the `rawPaths`
+ * argument's content) is required whenever a test wants the SAME path to appear in
+ * both the oracle literal set and the regular git-visible touched set (test 14
+ * deliberately does this, to prove the oracle check wins the race). Assumes exactly
+ * ONE round -- every test below uses the default single-shot DONE worker.
+ */
+function makeOracleFingerprintFakes(opts: {
+  gitAfter: string[];
+  oracleBefore: Map<string, string>;
+  oracleAfter: Map<string, string>;
+}): {
+  gitChangedPaths: (cwd: string) => Promise<string[]>;
+  snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
+} {
+  let gitCall = 0;
+  let snapCall = 0;
+  return {
+    gitChangedPaths: async (): Promise<string[]> => {
+      const paths = gitCall === 0 ? [] : opts.gitAfter;
+      gitCall++;
+      return paths;
+    },
+    snapshotFingerprints: (): Map<string, string> => {
+      const pos = snapCall;
+      snapCall++;
+      if (pos === 0) return opts.oracleBefore;
+      if (pos === 3) return opts.oracleAfter;
+      // pos 1 (regular fence baseline, over the empty pre-worker path list) / pos 2
+      // (regular fence "now", over `gitAfter`) -- content is irrelevant to every
+      // oracle assertion these tests make; keyed only so the regular fence's own
+      // `workerTouched` sees a stable, non-crashing map.
+      const paths = pos === 1 ? [] : opts.gitAfter;
+      return new Map(paths.map((p) => [p, "h"]));
     },
   };
 }
@@ -420,6 +477,7 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     harvestWorkerReport: partial.harvestWorkerReport ?? (async () => {}),
     gitChangedPaths: partial.gitChangedPaths ?? (async () => []),
     snapshotFingerprints: partial.snapshotFingerprints ?? (() => new Map()),
+    resolveOracleSet: partial.resolveOracleSet ?? (async () => EMPTY_ORACLE_SET),
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
     clock: partial.clock ?? { now: () => 0 },
     sleep: partial.sleep ?? (async () => {}),
@@ -846,6 +904,190 @@ describe("runIteration -- dirty-file fence (content fingerprint)", () => {
     expect(state.locations.get(task.id)).toBe("escalated");
     expect(escalateCalls.length).toBe(1);
     expect(escalateCalls[0]!.type).toBe("dirty-file");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6b. Oracle-path fence (adr/006 Phase 2) -- protects executable oracle INPUTS
+//     (guard test files, recipes, agent-ci workflows, constitution paths) that
+//     the worker still executes from the worktree by design, closing the
+//     residual Phase 1 (trusted-root oracle-DEFINITION reads) left open.
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- oracle-path fence (adr/006 Phase 2)", () => {
+  it("10. worker edits a guard test file that IS in file_set -> escalates constitution BEFORE the critic runs", async () => {
+    const oraclePath = "tests/FooTest.php";
+    const task = makeTask({ file_set: [oraclePath] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { critic, calls: criticCalls } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [],
+      sources: new Map([[oraclePath, "GUARDS.md guard_test (contract_id=c1)"]]),
+    });
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [],
+      oracleBefore: new Map([[oraclePath, "h1"]]),
+      oracleAfter: new Map([[oraclePath, "h2"]]), // content changed -> drift
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, critic, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("constitution");
+    // The critic must never even run -- the oracle fence intercepts before it,
+    // proving order, not merely outcome.
+    expect(criticCalls.length).toBe(0);
+  });
+
+  it("11. worker edits a GITIGNORED oracle literal (invisible to gitChangedPaths) -> still escalates (fs-fingerprint arm)", async () => {
+    const oraclePath = "recipes/mutation-recipe.json";
+    // Deliberately NOT in file_set and NEVER reported by gitChangedPaths --
+    // simulating a target-repo-gitignored oracle file. Only the literal arm's
+    // direct filesystem fingerprint (not the git-visible touched set) can catch this.
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [],
+      sources: new Map([[oraclePath, "GUARDS.md recipe (contract_id=c1)"]]),
+    });
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [], // gitignored -> git never reports it, before OR after
+      oracleBefore: new Map([[oraclePath, "h1"]]),
+      oracleAfter: new Map([[oraclePath, "h2"]]),
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("constitution");
+    expect(escalateCalls[0]!.evidence).toContain(oraclePath);
+  });
+
+  it("12. worker CREATES a previously-absent oracle literal -> escalates", async () => {
+    const oraclePath = "GUARDS.md";
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [],
+      sources: new Map([[oraclePath, "contract.guardsFile"]]),
+    });
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [],
+      oracleBefore: new Map([[oraclePath, "<absent>"]]), // matches util/fingerprint.ts's snapshot() convention
+      oracleAfter: new Map([[oraclePath, "abc123"]]),
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls[0]!.type).toBe("constitution");
+  });
+
+  it("13. worker touches NOTHING oracle -> unchanged behavior, reaches the critic and commits", async () => {
+    const oraclePath = "GUARDS.md";
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic, calls: criticCalls } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [],
+      sources: new Map([[oraclePath, "contract.guardsFile"]]),
+    });
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [],
+      oracleBefore: new Map([[oraclePath, "same-hash"]]),
+      oracleAfter: new Map([[oraclePath, "same-hash"]]), // unchanged -> no drift
+    });
+
+    const deps = buildDeps({ repo, scheduler, critic, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(criticCalls.length).toBe(1);
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+  });
+
+  it("14. an oracle file OUTSIDE file_set reports 'constitution', NOT 'dirty-file' (order matters)", async () => {
+    const oraclePath = "GUARDS.md";
+    // NOT in file_set -- the regular stray-check WOULD flag this too if the
+    // oracle fence did not intercept first (git reports it changed, below).
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const resolveOracleSet = async (): Promise<OracleSet> => ({
+      literals: [oraclePath],
+      globs: [],
+      sources: new Map([[oraclePath, "contract.guardsFile"]]),
+    });
+    const { gitChangedPaths, snapshotFingerprints } = makeOracleFingerprintFakes({
+      gitAfter: [oraclePath], // git-visible too -- would ALSO be `stray` if reached
+      oracleBefore: new Map([[oraclePath, "h1"]]),
+      oracleAfter: new Map([[oraclePath, "h2"]]),
+    });
+
+    const deps = buildDeps({ repo, scheduler, escalate, resolveOracleSet, gitChangedPaths, snapshotFingerprints });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    // Exactly ONE escalation -- the oracle fence's early return means the
+    // dirty-file fence never even runs, so there is no SECOND escalation either.
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("constitution");
+  });
+
+  it("15. resolveOracleSet throwing escalates 'constitution', never commits, and the drain survives to the next task", async () => {
+    const { repo, state } = makeRepo();
+    const taskA = makeTask({ id: "oa1", file_set: ["a.ts"], path: "queue/pending/oa1.md" });
+    const taskB = makeTask({ id: "oa2", file_set: ["b.ts"], path: "queue/pending/oa2.md" });
+    const { scheduler } = makeScheduler([taskA, taskB], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const resolveOracleSet = async (): Promise<OracleSet> => {
+      throw new Error("GUARDS.md row escapes the trusted root");
+    };
+
+    const deps = buildDeps({ repo, scheduler, escalate, resolveOracleSet });
+    const conductor = createConductor(deps);
+
+    // Must resolve (not reject) for BOTH tasks -- a throw here must never crash the drain.
+    await expect(conductor.run({ drain: true })).resolves.toBeUndefined();
+
+    expect(state.locations.get("oa1")).toBe("escalated");
+    expect(state.locations.get("oa2")).toBe("escalated");
+    expect(escalateCalls.length).toBe(2);
+    for (const call of escalateCalls) {
+      expect(call.type).toBe("constitution");
+      expect(call.evidence).toContain("GUARDS.md row escapes the trusted root");
+    }
   });
 });
 

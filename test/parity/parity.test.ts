@@ -92,6 +92,7 @@ interface HarnessOptions {
   zonesTouchedInDiff?: ConductorDeps["zonesTouchedInDiff"];
   gitChangedPaths?: ConductorDeps["gitChangedPaths"];
   snapshotFingerprints?: ConductorDeps["snapshotFingerprints"];
+  resolveOracleSet?: ConductorDeps["resolveOracleSet"];
   clock?: { now: () => number };
 }
 
@@ -361,6 +362,11 @@ function makeParityHarness(opts: HarnessOptions = {}): Harness {
   // --- fingerprint deps: default "nothing stray, no zones touched" ---
   const gitChangedPaths = opts.gitChangedPaths ?? (async (): Promise<string[]> => []);
   const snapshotFingerprints = opts.snapshotFingerprints ?? ((): Map<string, string> => new Map());
+  // adr/006 Phase 2: default resolves to an EMPTY oracle set (no literals, no
+  // globs) -- this parity harness's existing scenarios predate the oracle-path
+  // fence and must stay byte-identical unless a test opts in via `opts.resolveOracleSet`.
+  const resolveOracleSet =
+    opts.resolveOracleSet ?? (async () => ({ literals: [], globs: [], sources: new Map<string, string>() }));
   const zonesTouchedInDiff = opts.zonesTouchedInDiff ?? (async (): Promise<string[]> => []);
 
   const clock = opts.clock ?? { now: (): number => Date.now() };
@@ -389,6 +395,7 @@ function makeParityHarness(opts: HarnessOptions = {}): Harness {
     harvestWorkerReport: async (): Promise<void> => {},
     gitChangedPaths,
     snapshotFingerprints,
+    resolveOracleSet,
     zonesTouchedInDiff,
     clock,
     sleep,

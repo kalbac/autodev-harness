@@ -19,6 +19,8 @@ import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
+import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
+import { globMatch, normalizePath } from "../util/glob.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
 
@@ -50,6 +52,17 @@ export interface ConductorDeps {
   harvestWorkerReport: (wt: Worktree, taskId: string) => Promise<void>;
   gitChangedPaths: (cwd: string) => Promise<string[]>;
   snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
+  /** Resolve the current protected-oracle-artifact set (`adr/006` Phase 2): the guard
+   *  test files, mutation recipes, agent-ci workflow files, and configured constitution
+   *  paths a worker must never edit, regardless of what it declared in `file_set`. Built
+   *  against the TRUSTED root at the composition root (`resolveOracleSet` in
+   *  `gate/oracle-paths.ts`, wired at `composition/root.ts` against `repoRoot`, never
+   *  `wt.path`) -- same "read from the trusted root, not the worktree" discipline as
+   *  Phase 1's `loadInvariants`/`loadGuardPairs` above. May THROW on a broken operator
+   *  declaration (an escaping `constitutionPaths` entry, a configured-but-missing
+   *  contract file, ...); the conductor treats that throw as fail-closed ESCALATE,
+   *  same contract as a throwing `runGate`. */
+  resolveOracleSet: () => Promise<OracleSet>;
   zonesTouchedInDiff: (diff: string) => Promise<string[]>;
   clock: { now: () => number };
   sleep: (seconds: number) => Promise<void>;
@@ -124,6 +137,21 @@ function buildDriftEscalation(line: string, nowMs: number): EscalationInput {
   };
 }
 
+/**
+ * Human-readable "why is this protected" for one oracle-fence hit (adr/006 Phase 2
+ * escalation evidence). A LITERAL hit is keyed directly in `OracleSet.sources`. A
+ * GLOB hit is keyed by the DECLARED glob pattern, not the touched path it matched --
+ * `oracleGlobTouches` only proves set membership, it does not report which glob did
+ * the matching -- so find the first declared glob that actually matches `hitPath`
+ * and report ITS source instead.
+ */
+function oracleSourceFor(hitPath: string, set: OracleSet): string {
+  const direct = set.sources.get(hitPath);
+  if (direct) return direct;
+  const matchingGlob = set.globs.find((g) => globMatch(normalizePath(g), normalizePath(hitPath)));
+  return (matchingGlob && set.sources.get(matchingGlob)) || "protected oracle path";
+}
+
 export function createConductor(deps: ConductorDeps): Conductor {
   const {
     cfg,
@@ -142,6 +170,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     harvestWorkerReport,
     gitChangedPaths,
     snapshotFingerprints,
+    resolveOracleSet,
     zonesTouchedInDiff,
     clock,
     sleep,
@@ -285,6 +314,41 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       let round = 0;
       while (true) {
+        // ORACLE-PATH baseline (adr/006 Phase 2, closing the executable-input
+        // residual Phase 1 left open -- see `docs/superpowers/plans/
+        // 2026-07-22-adr006-phase2-executable-input-protected-paths.md`). Resolved
+        // + fingerprinted BEFORE the worker runs, every round (a worker that only
+        // touches the oracle on a LATER retry round must still be caught), on the
+        // same footing as the dirty-file fence's own baseline just below: a worker
+        // touch of a guard test / recipe / workflow / constitution literal must
+        // register as drift even when that literal is gitignored (invisible to
+        // `gitChangedPaths`) or sits INSIDE `file_set` (invisible to the
+        // stray-check). A throw here (a broken GUARDS.md row, an escaping
+        // `constitutionPaths` entry, a configured-but-missing contract file, ...)
+        // is a broken operator config, not a worker-fixable one -- fail closed:
+        // escalate `constitution` and never let a task run against an oracle set
+        // this harness could not even resolve (Principle 10).
+        let oracleSet: OracleSet;
+        try {
+          oracleSet = await resolveOracleSet();
+        } catch (err) {
+          await repo.moveTask(task.id, "active", "escalated");
+          await escalate(
+            buildEscalation(task, {
+              reason: "oracle-path set could not be resolved -- broken operator config",
+              type: "constitution",
+              what: `Task ${task.id}: resolveOracleSet threw before the worker ran: ${String(err)}.`,
+              decision: "Fix the broken contract/guards/agent-ci declaration at the trusted root.",
+              optionA: "Fix the config and re-queue.",
+              optionB: "Abandon the task.",
+              costOfWrong: "A gate that cannot resolve its own oracle set cannot protect anything this round.",
+              evidence: String(err),
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+        const oracleBaseline = snapshotFingerprints(wt.path, oracleSet.literals);
+
         // Pre-worker fingerprint baseline.
         const basePaths = await gitChangedPaths(wt.path);
         const baseline = snapshotFingerprints(wt.path, basePaths);
@@ -389,10 +453,55 @@ export function createConductor(deps: ConductorDeps): Conductor {
         }
         // (DONE / anything else falls through to the fence.)
 
-        // DIRTY-FILE FENCE
+        // POST-WORKER TOUCHED SET -- computed once, ahead of BOTH checks that
+        // consume it below (the oracle glob arm, then the stray/forbidden fence),
+        // so there is exactly one gitChangedPaths/snapshotFingerprints round trip
+        // for "what changed" (unchanged cost vs. before this task).
         const nowPaths = await gitChangedPaths(wt.path);
         const now = snapshotFingerprints(wt.path, nowPaths);
         const touched = workerTouched(baseline, now);
+
+        // ORACLE-PATH FENCE (adr/006 Phase 2). Runs BEFORE the stray/forbidden
+        // fence below so an oracle touch is reported with its SPECIFIC reason
+        // ("the worker edited the oracle") instead of the generic "out of scope"
+        // a plain dirty-file escalation would give -- an oracle file outside
+        // `file_set` would otherwise be caught by `strayChanged` first and
+        // reported as `dirty-file` (spec: order matters). Two arms, matching
+        // `OracleSet`'s two guarantees: `literals` are fingerprinted DIRECTLY on
+        // disk (`oracleBaseline`/`oracleAfter`), covering a gitignored oracle file
+        // `touched` would never see; `globs` are matched against the SAME
+        // git-visible `touched` set the fence below uses (accepted residual: a
+        // gitignored path matching only a glob stays uncovered -- see the Phase 2
+        // spec's "Accepted residuals").
+        const oracleAfter = snapshotFingerprints(wt.path, oracleSet.literals);
+        const oracleDrift = workerTouched(oracleBaseline, oracleAfter);
+        const oracleGlobHits = oracleGlobTouches(touched, oracleSet.globs);
+        if (oracleDrift.length > 0 || oracleGlobHits.length > 0) {
+          await repo.moveTask(task.id, "active", "escalated");
+          const hits = [
+            ...oracleDrift.map((p) => ({ path: p, kind: "fs-fingerprint" as const })),
+            ...oracleGlobHits.map((p) => ({ path: p, kind: "glob" as const })),
+          ];
+          const oracleEvidence = hits
+            .map((h) => `${h.path}  (${oracleSourceFor(h.path, oracleSet)})  [${h.kind}]`)
+            .join("\n");
+          await escalate(
+            buildEscalation(task, {
+              reason: "worker touched a protected oracle path",
+              type: "constitution",
+              what: `Task ${task.id} modified ${hits.length} oracle artifact(s) -- the files that define what "pass" means.`,
+              decision: "Bless the oracle change explicitly, or reject it.",
+              optionA:
+                "Bless: apply the oracle change yourself at the trusted root, then re-queue the task without it in file_set.",
+              optionB: "Reject the change.",
+              costOfWrong: "A worker-authored oracle edit lets the next run be judged against a standard the worker chose.",
+              evidence: oracleEvidence,
+            }),
+          );
+          return { claimedTaskId: task.id, committed: false, rateLimited: false };
+        }
+
+        // DIRTY-FILE FENCE
         const stray = strayChanged(touched, task.file_set, cfg.dirtyFenceIgnore);
         const forbidden = forbiddenTouches(touched, task.forbidden_paths);
         if (stray.length > 0 || forbidden.length > 0) {
