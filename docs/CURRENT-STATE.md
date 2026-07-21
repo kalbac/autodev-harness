@@ -10,9 +10,8 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean (s46 = PR #77 merged, `680b9fa`). **s48 docs (Authority
-Model) are committed on `autodev/s48-authority-model`, not yet merged** — a docs batch
-awaiting the operator's merge word.
+~5 slices). `main` is clean and synced (s48 = Authority Model docs merged, `c6c2343`;
+s46 = PR #77, `680b9fa`).
 
 **s48 was the Authority Model audit + `adr/006` (docs only, no product code — operator
 scoped it narrow).** The audit found the write-authority boundary **half-closed**: the
@@ -98,7 +97,7 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
-- **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Docs on `autodev/s48-authority-model` (unmerged).
+- **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Merged to `main` (`c6c2343`).
 - **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Merged to `main` (`7759346`).
 - **s46** — overnight presence toggle (`adr/004` slice 2): global settings store + sidebar UI + daemon wiring; 4-pass luna gate; live-proven. PR #77 merged (`680b9fa`), CI 4/4. GOTCHAS 69→70.
 - **s45** — 2 carried fixes + overnight escalation supervisor (`adr/004` slice 1); 4-pass luna gate; live-proven twice. Branch `autodev/s45-carried-items` (PR status open, see above).
