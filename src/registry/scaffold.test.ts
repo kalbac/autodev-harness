@@ -1,19 +1,42 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { scaffoldProject, buildConfigYaml, mergeConfigYaml, ScaffoldConfigError, ScaffoldFormSchema } from "./scaffold.js";
+import { join, basename } from "node:path";
+import {
+  scaffoldProject,
+  buildConfigYaml,
+  mergeConfigYaml,
+  ensureContractStubs,
+  ScaffoldConfigError,
+  ScaffoldFormSchema,
+} from "./scaffold.js";
 import { loadConfig } from "../config/config.js";
 import { parseInvariants } from "../gate/invariants.js";
+import { parseGuardsTable } from "../gate/guards.js";
 import { parse as parseYaml } from "yaml";
+import { runNative } from "../util/native.js";
 
 let repo: string;
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "adh-scaf-"));
-  mkdirSync(join(repo, ".git")); // a plain .git DIR by default
+  mkdirSync(join(repo, ".git")); // a plain .git DIR by default -- NOT a real repo (no HEAD/objects/refs)
 });
 afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+/**
+ * Turn `repo`'s placeholder `.git` DIR (created by `beforeEach` above, which most
+ * tests in this file only need to exist as a directory, e.g. for `ensureGitExclude`'s
+ * `stat().isDirectory()` check) into a REAL git repository. Needed by the round-3
+ * fix 1 tests below: `ensureContractStubs` now runs a real `git check-ignore`, which
+ * requires an actual repo (`.git/HEAD` etc.) -- the placeholder dir is not one, and
+ * `git check-ignore` fails against it exactly like a "not a git repo at all" case.
+ */
+async function makeRealGitRepo(dir: string): Promise<void> {
+  rmSync(join(dir, ".git"), { recursive: true, force: true });
+  const r = await runNative("git", ["init"], { cwd: dir });
+  if (r.exitCode !== 0) throw new Error(`git init failed: ${r.stderr}`);
+}
 
 describe("buildConfigYaml", () => {
   it("emits YAML that loads through the real strict schema (round-trip)", async () => {
@@ -246,6 +269,21 @@ describe("scaffoldProject", () => {
     expect(inv.constitution.path_globs).toEqual([]);
   });
 
+  it("writes .autodev/GUARDS.md, and it parses to zero rows (adr/006 Phase 1 -- the scaffold configures guardsFile but never wrote it)", async () => {
+    const res = await scaffoldProject(repo, ScaffoldFormSchema.parse({}));
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(true);
+    expect(res.written).toContain(".autodev/GUARDS.md");
+    const rows = parseGuardsTable(readFileSync(join(repo, ".autodev", "GUARDS.md"), "utf8"));
+    expect(rows).toEqual([]);
+  });
+
+  it("the scaffolded config loads with the GUARDS.md stub in place (guardsFile fail-closed no longer trips on a fresh scaffold)", async () => {
+    await scaffoldProject(repo, ScaffoldFormSchema.parse({}));
+    const cfg = await loadConfig(repo);
+    expect(cfg.contract.guardsFile).toBe(".autodev/GUARDS.md");
+    expect(existsSync(join(repo, cfg.contract.guardsFile))).toBe(true);
+  });
+
   it("the scaffolded config round-trips through loadConfig (strict schema passes)", async () => {
     await scaffoldProject(
       repo,
@@ -352,5 +390,189 @@ describe("scaffoldProject", () => {
     expect(readdirSync(outside)).toEqual([]);
     expect(existsSync(join(repo, ".autodev", "config.yaml"))).toBe(false);
     rmSync(outside, { recursive: true, force: true });
+  });
+});
+
+describe("ensureContractStubs (adr/006 Phase 1 Finding 2 — self-healing migration)", () => {
+  it("writes the missing GUARDS.md for an already-scaffolded pre-Phase-1 project (the woodev-shipping-plugin-test case)", async () => {
+    // Simulates a project scaffolded BEFORE GUARDS_STUB existed: config.yaml already
+    // configures guardsFile, but the file itself was never written. Round-3 fix 1:
+    // healing now requires a VERIFIED git-ignored target, so this needs a real repo
+    // with .autodev actually excluded (not just the placeholder .git dir).
+    await makeRealGitRepo(repo);
+    writeFileSync(join(repo, ".gitignore"), ".autodev/\n");
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(
+      join(repo, ".autodev", "config.yaml"),
+      "contract:\n  invariantsFile: .autodev/INVARIANTS.md\n  guardsFile: .autodev/GUARDS.md\n",
+    );
+    const cfg = await loadConfig(repo);
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(false); // precondition
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(true);
+    expect(parseGuardsTable(readFileSync(join(repo, ".autodev", "GUARDS.md"), "utf8"))).toEqual([]);
+  });
+
+  it("round-2 fix 1: does NOT heal invariantsFile even when explicitly configured and absent -- while guardsFile in the SAME run IS healed", async () => {
+    // A missing INVARIANTS.md degrades to "zero zones" -- a VACUOUS pass, the unsafe
+    // fail-OPEN direction (Principle 10/14). Auto-writing INVARIANTS_STUB would convert
+    // the loader's fail-closed throw into exactly that silent vacuous pass, which is the
+    // failure `adr/006` Phase 1 exists to remove. A missing GUARDS.md degrades to "no
+    // guards" -- a touched auto_guardable zone reads as UNCOVERED and escalates, the safe
+    // fail-CLOSED direction -- so healing guardsFile is safe and stays.
+    await makeRealGitRepo(repo);
+    writeFileSync(join(repo, ".gitignore"), ".autodev/\n");
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(
+      join(repo, ".autodev", "config.yaml"),
+      "contract:\n  invariantsFile: .autodev/INVARIANTS.md\n  guardsFile: .autodev/GUARDS.md\n",
+    );
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(existsSync(join(repo, ".autodev", "INVARIANTS.md"))).toBe(false);
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(true);
+  });
+
+  it("does NOT write when guardsFile is not explicitly configured (schema default, nothing to heal)", async () => {
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), ""); // empty file -> all schema defaults, nothing configured
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    // Default cfg.contract.guardsFile is "GUARDS.md" (repoRoot-relative, not under
+    // stateDir) -- nothing was explicitly configured, so nothing is written anywhere.
+    expect(existsSync(join(repo, "GUARDS.md"))).toBe(false);
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(false);
+  });
+
+  it("does NOT write when the configured path resolves OUTSIDE stateDir -- the fail-closed throw stands for a real, operator-owned contract file", async () => {
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: contract/GUARDS.md\n");
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(existsSync(join(repo, "contract", "GUARDS.md"))).toBe(false);
+  });
+
+  it("never clobbers an existing GUARDS.md (already healed, or hand-authored by the operator)", async () => {
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(
+      join(repo, ".autodev", "config.yaml"),
+      "contract:\n  guardsFile: .autodev/GUARDS.md\n",
+    );
+    writeFileSync(join(repo, ".autodev", "GUARDS.md"), "MY HAND-WRITTEN GUARDS -- do not touch\n");
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(readFileSync(join(repo, ".autodev", "GUARDS.md"), "utf8")).toBe("MY HAND-WRITTEN GUARDS -- do not touch\n");
+  });
+
+  it("is a best-effort no-op (never throws) when the project's config.yaml is unreadable/invalid", async () => {
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: .autodev/GUARDS.md\n");
+    const cfg = await loadConfig(repo);
+    // Corrupt config.yaml AFTER computing `cfg` (mirrors the real startup-pass timing:
+    // ensureContractStubs re-reads raw config itself and must not blow up the caller).
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "not: [valid, yaml, contract:\n");
+
+    const logs: string[] = [];
+    await expect(ensureContractStubs(repo, cfg, (lvl, msg) => logs.push(`${lvl}:${msg}`))).resolves.toBeUndefined();
+    expect(logs.some((l) => l.startsWith("WARN:"))).toBe(true);
+  });
+
+  it("round-2 fix 2(i): a symlinked INTERMEDIATE directory inside stateDir -> no write anywhere, even though the parent lstats as a real directory through the link", async () => {
+    // `.autodev/link` is a symlink pointing OUTSIDE the repo; `outside/deep` is a REAL
+    // directory over there. Lexically `.autodev/link/deep/GUARDS.md` still starts with
+    // the `stateDirAbs` prefix (the old `abs.startsWith(stateDirAbs + sep)` check would
+    // pass it), and `lstat` on the parent follows the symlink and sees a real directory
+    // -- but the REAL location is `outside/deep`, entirely outside the repo.
+    const outside = mkdtempSync(join(tmpdir(), "adh-heal-escape-"));
+    try {
+      mkdirSync(join(outside, "deep"), { recursive: true });
+      mkdirSync(join(repo, ".autodev"), { recursive: true });
+      symlinkSync(outside, join(repo, ".autodev", "link"), process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: .autodev/link/deep/GUARDS.md\n");
+      const cfg = await loadConfig(repo);
+
+      await ensureContractStubs(repo, cfg);
+
+      expect(existsSync(join(outside, "deep", "GUARDS.md"))).toBe(false);
+      expect(existsSync(join(repo, ".autodev", "link", "deep", "GUARDS.md"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("round-2 fix 2(ii): cfg.stateDir escaping repoRoot via '..' -> no write", async () => {
+    // `stateDir: ../<outside>` resolves (lexically AND actually, since `outside` is a
+    // real sibling tmp dir) to a location outside `repo`. Nothing configured under it
+    // may ever be healed, no matter what the configured guardsFile path itself looks like.
+    const outside = mkdtempSync(join(tmpdir(), "adh-statedir-escape-"));
+    try {
+      const relOutside = join("..", basename(outside));
+      mkdirSync(join(repo, ".autodev"), { recursive: true });
+      writeFileSync(
+        join(repo, ".autodev", "config.yaml"),
+        `stateDir: ${relOutside}\ncontract:\n  guardsFile: ${join(relOutside, "GUARDS.md")}\n`,
+      );
+      const cfg = await loadConfig(repo);
+
+      await ensureContractStubs(repo, cfg);
+
+      expect(existsSync(join(outside, "GUARDS.md"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ensureContractStubs (round-3 fix 1 — VERIFY git-ignored via `git check-ignore`, don't assume it)", () => {
+  it("target path IS verified git-ignored (real repo + .gitignore rule) -> the stub IS written", async () => {
+    await makeRealGitRepo(repo);
+    writeFileSync(join(repo, ".gitignore"), ".autodev/\n");
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: .autodev/GUARDS.md\n");
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(true);
+  });
+
+  it("target path is NOT git-ignored (real repo, no ignore rule -- a tracked/visible dir) -> NO file is created", async () => {
+    // Simulates the exact hazard the finding describes: `cfg.stateDir` pointed at a
+    // directory that is NOT git-excluded (e.g. an operator repointing stateDir at a
+    // tracked `config/`). Writing here would dirty `git status --porcelain` on every
+    // daemon startup -> `mergeAfterGate` refuses -> every task escalates `blocked`.
+    await makeRealGitRepo(repo);
+    // Deliberately NO .gitignore / .git/info/exclude entry for .autodev/.
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: .autodev/GUARDS.md\n");
+    const cfg = await loadConfig(repo);
+
+    await ensureContractStubs(repo, cfg);
+
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(false);
+  });
+
+  it("the git-ignore check itself cannot be performed (not a git repo at all) -> no write, and ensureContractStubs never throws", async () => {
+    // `repo`'s `.git` is `beforeEach`'s placeholder DIR, not a real repository --
+    // `git check-ignore` run against it fails (non-zero exit / no valid repo), which
+    // must be treated the SAME as "not ignored": skip the heal, never write. The
+    // fail-closed loader throw this migration exists to prevent then simply stands,
+    // and it names the missing path (self-diagnosing) -- correct behavior, not a bug.
+    mkdirSync(join(repo, ".autodev"), { recursive: true });
+    writeFileSync(join(repo, ".autodev", "config.yaml"), "contract:\n  guardsFile: .autodev/GUARDS.md\n");
+    const cfg = await loadConfig(repo);
+
+    await expect(ensureContractStubs(repo, cfg)).resolves.toBeUndefined(); // never throws
+    expect(existsSync(join(repo, ".autodev", "GUARDS.md"))).toBe(false);
   });
 });

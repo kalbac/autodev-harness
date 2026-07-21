@@ -54,6 +54,24 @@ export function isPlannerExplicitlyConfigured(raw: Record<string, unknown>): boo
   return (roles as Record<string, unknown>)["planner"] !== undefined;
 }
 
+/**
+ * Did the operator EXPLICITLY set `contract.invariantsFile`/`contract.guardsFile` in
+ * the raw (pre-defaults) config? Mirrors `isPlannerExplicitlyConfigured` — the parsed
+ * `HarnessConfig` always defaults BOTH contract file keys (schema.ts), so only the raw
+ * object can distinguish "operator configured an oracle file" from "the schema filled
+ * in a default". `adr/006` Phase 1's fail-closed loader rule hinges on exactly that
+ * distinction: absent + not-configured is legitimate (no oracle declared), absent +
+ * configured is a broken operator config that must escalate, not silently read empty.
+ */
+export function isContractFileConfigured(
+  raw: Record<string, unknown>,
+  key: "invariantsFile" | "guardsFile",
+): boolean {
+  const contract = raw["contract"];
+  if (typeof contract !== "object" || contract === null || Array.isArray(contract)) return false;
+  return (contract as Record<string, unknown>)[key] !== undefined;
+}
+
 /** Walk up from `start` to the nearest ancestor directory containing one of `markers`. */
 export function detectRepoRoot(start: string, markers: string[] = [".git"]): string {
   let cur = start;

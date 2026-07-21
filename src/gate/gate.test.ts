@@ -367,6 +367,46 @@ describe("runGate", () => {
     await expect(runGate(input, deps)).rejects.toBeInstanceOf(AgentCiUnavailableError);
   });
 
+  it("18. constitutionPaths alone (INVARIANTS declares no constitution) flags a changed file and escalates (adr/006)", async () => {
+    const invariants = makeInvariants({ constitution: { path_globs: [] } });
+    const { deps } = makeDeps({ invariants, changedFiles: ["secrets/config.php"] });
+    const input: GateInput = { taskId: "T18", fileSet: ["secrets/config.php"] };
+
+    const result = await runGate(input, { ...deps, constitutionPaths: ["secrets/**"] });
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.constitution_touched).toEqual(["secrets/config.php"]);
+  });
+
+  it("19. a file matching BOTH the INVARIANTS glob and constitutionPaths appears ONCE, alongside a constitutionPaths-only file (isolates dedup from mere presence)", async () => {
+    const invariants = makeInvariants({ constitution: { path_globs: ["docs/**"] } });
+    const { deps } = makeDeps({
+      invariants,
+      changedFiles: ["docs/VISION.md", "secrets/config.php"],
+    });
+    const input: GateInput = { taskId: "T19", fileSet: ["docs/VISION.md", "secrets/config.php"] };
+
+    // docs/VISION.md matches BOTH lists (dedup must collapse it to one entry);
+    // secrets/config.php matches ONLY constitutionPaths (proves the union is real,
+    // not a no-op that happens to already contain the double-matched file).
+    const result = await runGate(input, {
+      ...deps,
+      constitutionPaths: ["docs/VISION.md", "secrets/**"],
+    });
+
+    expect(result.constitution_touched).toEqual(["docs/VISION.md", "secrets/config.php"]);
+  });
+
+  it("20. constitutionPaths omitted from GateDeps produces an identical verdict to today (no regression)", async () => {
+    const { deps } = makeDeps({ changedFiles: ["src/foo.ts"] });
+    const input: GateInput = { taskId: "T20", fileSet: ["src/foo.ts"] };
+
+    const result = await runGate(input, deps); // no `constitutionPaths` key at all
+
+    expect(result.decision).toBe("COMMIT");
+    expect(result.constitution_touched).toEqual([]);
+  });
+
   it("17. passes the task id into runAgentCi", async () => {
     const seen: string[] = [];
     const { deps } = makeDeps({

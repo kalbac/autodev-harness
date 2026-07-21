@@ -7,12 +7,13 @@
 // wiring. This module is integration glue that spawns real `claude`/`codex`/`git`,
 // so it is deliberately NOT unit-tested; every module it wires already has its
 // own unit tests against injected fakes (same status as src/index.ts).
-import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, mkdir, lstat } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
-import { loadConfigWithRaw, isPlannerExplicitlyConfigured } from "../config/config.js";
+import { loadConfigWithRaw, isPlannerExplicitlyConfigured, isContractFileConfigured } from "../config/config.js";
+import { realpathContains } from "../util/path-contain.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 import { createWorktreeManager, type Worktree } from "../worktree/worktree.js";
@@ -121,6 +122,188 @@ export async function shouldSupervise(presence: PresenceReader, projectOptIn: bo
   } catch {
     return false;
   }
+}
+
+/** Why a candidate oracle-definition path was not readable (`resolveContainedOracleFile`
+ *  below). Kept distinct from a plain `null` so callers can compose an actionable,
+ *  specific error message instead of a generic "missing" (Principle 10/14). */
+type OracleUnreadableReason = "absent" | "escaped-root" | "symlinked";
+
+type OracleFileResolution = { readable: true; path: string } | { readable: false; reason: OracleUnreadableReason };
+
+/**
+ * Resolve `<root>/<relPath>` as a trusted oracle-DEFINITION file and verify FULL
+ * containment under `root` -- not just the lexical `join` the callers used to do
+ * before `adr/006` Phase 1 (codex-flagged: `join` does not clamp `..`, and a plain
+ * `readFile` follows symlinks). Two escapes a lexical `..`-check alone misses (this
+ * repo's precedent: `docs/gotchas/static-file-serving-symlink-traversal.md`):
+ *
+ *   1. `relPath` itself walks out via `..` (e.g. `../some-worktree/INVARIANTS.md`).
+ *   2. An INTERMEDIATE ancestor directory between `root` and the leaf is a symlink
+ *      pointing outside `root` -- lexically the joined path still LOOKS like it's
+ *      under `root`, but the real file lives elsewhere (a worker-controlled
+ *      worktree, in the threat model this closes).
+ *
+ * Both are closed the same way industry static servers do: canonicalize (`realpath`)
+ * BOTH `root` and the candidate, then require the candidate's canonical form to be
+ * `root` itself or a descendant of it -- via the SHARED `realpathContains` primitive
+ * (`src/util/path-contain.ts`), not a private copy of the comparison here. That
+ * module also carries the drive-root/UNC-share trailing-separator fix (round-2 fix
+ * 3): a plain `canonicalRoot + sep` prefix build rejects every legitimate child of a
+ * canonical Windows drive root (`C:\`) because `realpath` returns such a root WITH
+ * its trailing separator already attached, doubling it in the prefix. `root.ts` uses
+ * the shared helper rather than keeping its own copy so this repo has exactly ONE
+ * containment implementation to get right and to fix, not two that can drift back
+ * out of sync with each other (the same drift that let `healOneContractStub` in
+ * `scaffold.ts` keep a lexical check after this file's read path had already moved
+ * on to realpath containment).
+ *
+ * The FINAL path component must ALSO not itself be a symlink -- checked via `lstat`
+ * (never `stat`/`existsSync`, which follow it) BEFORE any realpath containment check,
+ * so a symlinked leaf is rejected outright even when its target happens to resolve
+ * inside `root`. Mirrors `docs/gotchas/scaffold-symlink-escape.md`'s "lstat before
+ * trusting a path" discipline, applied here to a READ instead of a write.
+ *
+ * Returns a `reason`, not just `null`/boolean, precisely so `loadInvariantsFrom` /
+ * `loadGuardPairsFrom` below can name what went wrong when a CONFIGURED path fails
+ * this check (fail-closed, Principle 10/14) -- and so the not-configured path can
+ * still collapse "absent" and "blocked by a symlink/escape" into the SAME legitimate
+ * empty result (Principle 10: no oracle declared is fine; a worker-controlled link
+ * silently masquerading as "no oracle" is not something this function needs to
+ * distinguish for that caller -- the configured branch is what actually enforces).
+ *
+ * KNOWN, ACCEPTED RESIDUAL (do not "fix" without re-reading the reasoning): a
+ * `realpath` -> later `readFile`-by-path TOCTOU window remains between this
+ * function's checks and its caller's subsequent read -- an adversary who could mutate
+ * an intermediate directory into a symlink between the two calls could still redirect
+ * the read. Exploiting it needs an actor with write access to the TRUSTED root
+ * (`repoRoot`) itself mid-gate-run; the worker only ever writes its own worktree, never
+ * `repoRoot`, so this is outside this harness's threat model. This repo has an
+ * identical accepted residual, for the identical reason, already documented in
+ * `docs/gotchas/static-file-serving-symlink-traversal.md` (closing it needs
+ * `openat2`/`RESOLVE_BENEATH`, which Node exposes on no platform portably).
+ */
+async function resolveContainedOracleFile(root: string, relPath: string): Promise<OracleFileResolution> {
+  const p = join(root, relPath);
+  let lst;
+  try {
+    lst = await lstat(p);
+  } catch {
+    return { readable: false, reason: "absent" };
+  }
+  if (lst.isSymbolicLink()) return { readable: false, reason: "symlinked" };
+  if (!lst.isFile()) return { readable: false, reason: "absent" }; // directory/fifo/etc -- nothing readable here
+
+  if (!(await realpathContains(root, p))) {
+    return { readable: false, reason: "escaped-root" }; // intermediate symlinked dir, a `..` escape, or root itself unresolvable
+  }
+  return { readable: true, path: p };
+}
+
+/** Compose the "why unreadable" clause for the fail-closed loader errors below. The
+ *  `"absent"` wording is BYTE-IDENTICAL to the pre-containment-check message (root.test.ts
+ *  tests 7/9 assert on it) -- only `"escaped-root"`/`"symlinked"` are new text. */
+function oracleUnreadableClause(root: string, reason: OracleUnreadableReason): string {
+  switch (reason) {
+    case "absent":
+      return `is not readable at the trusted root '${root}'`;
+    case "escaped-root":
+      return `resolves OUTSIDE the trusted root '${root}' (an intermediate symlinked directory or a '..' path segment escapes it)`;
+    case "symlinked":
+      return `resolves through a symlink under the trusted root '${root}' (the final path component is a link, not a real file)`;
+  }
+}
+
+/**
+ * Parse `<root>/<cfg.contract.invariantsFile>` -- oracle-DEFINITION read, always against
+ * a TRUSTED root (`adr/006` Phase 1, closing `[gate/oracle-read-from-worktree]`). Resolves
+ * via `resolveContainedOracleFile` (full realpath containment + final-component symlink
+ * refusal, not a lexical `join`), then branches two ways, by design (Principle 10 -- fail
+ * toward the safe state):
+ *
+ *   - NOT explicitly configured in `raw` -> `EMPTY_INVARIANTS` (today's behavior; most
+ *     projects declare no oracle and that is legitimate — a zero-zone gate, not a broken one).
+ *   - explicitly configured (`raw.contract.invariantsFile !== undefined`) -> THROWS whenever
+ *     the file is absent, escapes the trusted root, or is reached through a symlink. A
+ *     configured-but-unreadable oracle is an operator-config error, not a worker-fixable
+ *     one; `runGate` deliberately rejects on a loader throw (gate.ts) and the conductor
+ *     treats that as `broken -- operator config` -- no new escalation plumbing needed.
+ *
+ * An unparseable (but present) file already throws via `parseInvariants` -- unchanged.
+ *
+ * Hoisted out of `buildProjectRoot` (module scope, `cfg`/`raw`/`root` passed explicitly
+ * rather than closed over) so this trusted-root / fail-closed contract is directly unit-
+ * testable without the full ProjectRoot wiring — see root.test.ts's "trusted-root reads"
+ * suite. `gateDeps(wt)` and `zonesTouchedInDiff` below both call this with `repoRoot`.
+ */
+export async function loadInvariantsFrom(
+  cfg: HarnessConfig,
+  raw: Record<string, unknown>,
+  root: string,
+): Promise<Invariants> {
+  const resolution = await resolveContainedOracleFile(root, cfg.contract.invariantsFile);
+  if (!resolution.readable) {
+    if (isContractFileConfigured(raw, "invariantsFile")) {
+      throw new Error(
+        `contract.invariantsFile is configured ('${cfg.contract.invariantsFile}') but ` +
+          `${oracleUnreadableClause(root, resolution.reason)} -- the gate cannot judge against ` +
+          `a missing oracle (adr/006 Phase 1)`,
+      );
+    }
+    return EMPTY_INVARIANTS;
+  }
+  const text = await readFile(resolution.path, "utf8");
+  if (text.trim() === "") return EMPTY_INVARIANTS;
+  return parseInvariants(text);
+}
+
+/**
+ * Parse `<root>/<cfg.contract.guardsFile>` and load each mutation-verified row's recipe
+ * JSON -- oracle-DEFINITION read, same trusted-root / fail-closed contract as
+ * `loadInvariantsFrom` above (`adr/006` Phase 1). Best-effort per-row: a guard row whose
+ * recipe path is missing/escaped/symlinked/unparseable is SKIPPED (`continue`), NEVER
+ * thrown -- dropping one guard makes its zone read as *uncovered*, which already
+ * escalates on its own (a touched `auto_guardable` zone with no covering guard fails the
+ * gate); that direction is already fail-safe, so widening the per-row check to include
+ * trusted-root containment (Finding 1: `recipePath = join(root, row.recipe)` had the same
+ * `..`/symlink-escape hole as the whole-file case) only needs to SKIP the row, not escalate
+ * the whole table -- unlike the whole-`guardsFile`-absent case, which DOES need the
+ * configured-vs-not throw/no-throw distinction below, because there the operator declared
+ * an oracle and got none at all, not merely one weaker row.
+ */
+export async function loadGuardPairsFrom(
+  cfg: HarnessConfig,
+  raw: Record<string, unknown>,
+  root: string,
+): Promise<GuardRecipePair[]> {
+  const resolution = await resolveContainedOracleFile(root, cfg.contract.guardsFile);
+  if (!resolution.readable) {
+    if (isContractFileConfigured(raw, "guardsFile")) {
+      throw new Error(
+        `contract.guardsFile is configured ('${cfg.contract.guardsFile}') but ` +
+          `${oracleUnreadableClause(root, resolution.reason)} -- the gate cannot judge against ` +
+          `a missing oracle (adr/006 Phase 1)`,
+      );
+    }
+    return [];
+  }
+  const text = await readFile(resolution.path, "utf8");
+  const rows = parseGuardsTable(text);
+
+  const pairs: GuardRecipePair[] = [];
+  for (const row of rows) {
+    if (!isMutationVerified(row)) continue;
+    const recipeResolution = await resolveContainedOracleFile(root, row.recipe);
+    if (!recipeResolution.readable) continue; // see doc comment above -- skip, never throw
+    try {
+      const recipeText = await readFile(recipeResolution.path, "utf8");
+      const recipe = JSON.parse(recipeText) as GuardRecipe;
+      pairs.push({ guard: row, recipe });
+    } catch {
+      continue; // unparseable recipe -- skip, never let one bad file break the whole table
+    }
+  }
+  return pairs;
 }
 
 /** Everything the daemon knows about ONE project. Built once per project by the
@@ -256,41 +439,14 @@ export async function buildProjectRoot(
   })();
 
   // --- Contract-zone plumbing (INVARIANTS.md / GUARDS.md) ---------------
-  /** Parse `<root>/<contract.invariantsFile>`; missing/empty file -> an empty (zero-zone) Invariants. */
-  async function loadInvariantsFrom(root: string): Promise<Invariants> {
-    const p = join(root, cfg.contract.invariantsFile);
-    if (!existsSync(p)) return EMPTY_INVARIANTS;
-    const text = await readFile(p, "utf8");
-    if (text.trim() === "") return EMPTY_INVARIANTS;
-    return parseInvariants(text);
-  }
+  // `loadInvariantsFrom`/`loadGuardPairsFrom` are the module-level, trusted-root loaders
+  // defined above (adr/006 Phase 1) -- both closures below pass `cfg`/`raw` explicitly.
 
-  /** Parse `<root>/<contract.guardsFile>` and load each mutation-verified row's recipe JSON. Best-effort. */
-  async function loadGuardPairsFrom(root: string): Promise<GuardRecipePair[]> {
-    const p = join(root, cfg.contract.guardsFile);
-    if (!existsSync(p)) return [];
-    const text = await readFile(p, "utf8");
-    const rows = parseGuardsTable(text);
-
-    const pairs: GuardRecipePair[] = [];
-    for (const row of rows) {
-      if (!isMutationVerified(row)) continue;
-      const recipePath = join(root, row.recipe);
-      if (!existsSync(recipePath)) continue;
-      try {
-        const recipeText = await readFile(recipePath, "utf8");
-        const recipe = JSON.parse(recipeText) as GuardRecipe;
-        pairs.push({ guard: row, recipe });
-      } catch {
-        continue; // unparseable recipe -- skip, never let one bad file break the whole table
-      }
-    }
-    return pairs;
-  }
-
-  /** Which contract zones (by id) does this diff touch? Path-less: only the +/- diff lines are checked. */
+  /** Which contract zones (by id) does this diff touch? Path-less: only the +/- diff lines
+   *  are checked. Already read from `repoRoot` pre-Phase-1 (this is the symmetry `gateDeps`
+   *  below now matches). */
   const zonesTouchedInDiff = async (diff: string): Promise<string[]> => {
-    const inv = await loadInvariantsFrom(repoRoot);
+    const inv = await loadInvariantsFrom(cfg, raw, repoRoot);
     const diffLines = diffAddedRemovedLines(diff);
     return inv.contract_zones.filter((z) => zoneTouched(z, [], diffLines)).map((z) => z.id);
   };
@@ -300,8 +456,12 @@ export async function buildProjectRoot(
     const checkCommand = cfg.gate.checkCommand;
     const agentCi = cfg.gate.agentCi;
     return {
-      loadInvariants: () => loadInvariantsFrom(wt.path),
-      loadGuardPairs: () => loadGuardPairsFrom(wt.path),
+      // Oracle DEFINITIONS read from the trusted root (adr/006 Phase 1) -- NOT `wt.path`.
+      // A worker only ever writes a per-task worktree, never `repoRoot`, so a diff cannot
+      // talk the gate into judging against a definition it just edited.
+      loadInvariants: () => loadInvariantsFrom(cfg, raw, repoRoot),
+      loadGuardPairs: () => loadGuardPairsFrom(cfg, raw, repoRoot),
+      constitutionPaths: cfg.contract.constitutionPaths,
       resolveScope: async (inp: GateInput) => {
         const g = createGit(wt.path);
         return { changedFiles: await g.changedFiles(inp.fileSet), diffText: await g.diffText(inp.fileSet) };
@@ -410,7 +570,11 @@ export async function buildProjectRoot(
           }
         : null,
       guardStillRed: async (guard: GuardRow) => {
-        const pairs = await loadGuardPairsFrom(wt.path);
+        // SELECTION reads the trusted root (adr/006 Phase 1 -- this reload is load-bearing:
+        // a loader-only fix elsewhere would leave THIS reload a worktree bypass, per the
+        // gotcha this closes). The mutation RUN below stays against `wt.path` on purpose --
+        // executing the recipe against the worktree is unchanged, in scope for a later phase.
+        const pairs = await loadGuardPairsFrom(cfg, raw, repoRoot);
         // Match the FULL row identity, not contract_id alone: per-value coverage
         // (divergence #2) means one contract_id can have several sibling rows
         // with different recipes -- matching on contract_id alone could run the

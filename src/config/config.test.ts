@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, loadConfigWithRaw, isPlannerExplicitlyConfigured, detectRepoRoot } from "./config.js";
+import {
+  loadConfig,
+  loadConfigWithRaw,
+  isPlannerExplicitlyConfigured,
+  isContractFileConfigured,
+  detectRepoRoot,
+} from "./config.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "adh-cfg-")); });
@@ -192,5 +198,50 @@ describe("isPlannerExplicitlyConfigured", () => {
     writeFileSync(join(dir, ".autodev", "config.yaml"), "gate:\n  checkCommand: npm test\n");
     const { raw } = await loadConfigWithRaw(dir);
     expect(isPlannerExplicitlyConfigured(raw)).toBe(false);
+  });
+});
+
+describe("isContractFileConfigured", () => {
+  // adr/006 Phase 1: the parsed HarnessConfig always defaults contract.invariantsFile
+  // to "INVARIANTS.md" / contract.guardsFile to "GUARDS.md" (schema.ts), so only the
+  // raw pre-defaults object can tell "operator configured an oracle file" apart from
+  // "the schema filled in a default" -- the fail-closed loader rule hinges on this.
+  it("is true when contract.invariantsFile is explicitly set in raw", () => {
+    expect(
+      isContractFileConfigured({ contract: { invariantsFile: "custom/INVARIANTS.md" } }, "invariantsFile"),
+    ).toBe(true);
+  });
+
+  it("is true when contract.guardsFile is explicitly set in raw", () => {
+    expect(isContractFileConfigured({ contract: { guardsFile: "custom/GUARDS.md" } }, "guardsFile")).toBe(true);
+  });
+
+  it("is false for a bare {} (no contract block at all)", () => {
+    expect(isContractFileConfigured({}, "invariantsFile")).toBe(false);
+    expect(isContractFileConfigured({}, "guardsFile")).toBe(false);
+  });
+
+  it("is false when contract is present but the specific key is absent", () => {
+    expect(isContractFileConfigured({ contract: { guardsFile: "GUARDS.md" } }, "invariantsFile")).toBe(false);
+  });
+
+  it("is false when contract is not a plain object (array or scalar)", () => {
+    expect(isContractFileConfigured({ contract: [] as unknown as Record<string, unknown> }, "invariantsFile")).toBe(
+      false,
+    );
+    expect(
+      isContractFileConfigured({ contract: "INVARIANTS.md" as unknown as Record<string, unknown> }, "invariantsFile"),
+    ).toBe(false);
+  });
+
+  it("reflects raw presence end-to-end through loadConfigWithRaw", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(
+      join(dir, ".autodev", "config.yaml"),
+      "contract:\n  invariantsFile: custom/INVARIANTS.md\n",
+    );
+    const { raw } = await loadConfigWithRaw(dir);
+    expect(isContractFileConfigured(raw, "invariantsFile")).toBe(true);
+    expect(isContractFileConfigured(raw, "guardsFile")).toBe(false);
   });
 });
