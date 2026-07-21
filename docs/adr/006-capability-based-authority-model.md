@@ -21,7 +21,11 @@ checks themselves. The external review named this risk 5: **"the worker must nev
 control its own oracle."**
 
 The s48 audit (`wiki/authority-model-audit-2026-07.md`) traced this in code and
-found the boundary is **half-closed**:
+found the boundary is **half-closed**. *(Every `file:line` citation in this
+Context section, and in the Phase-1 "original plan" below, describes the code as
+it stood at the audit commit `6b36c3f` — before Phase 1 and Phase 2 moved it. They
+are historical evidence, not a current map; `gateDeps` and `guardStillRed` have
+since moved within `composition/root.ts`.)*
 
 - **Closed by construction:** the *task contract* (`file_set`, `forbidden_paths`,
   `success_commands`, contract-zone flags) and the *gate config* (`.autodev/config.yaml`)

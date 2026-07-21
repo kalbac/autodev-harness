@@ -80,54 +80,6 @@ depends on is **materially satisfied** — Phase 3 folds into Profiles itself.
   commands, not declared paths, so they are protected only if the operator lists them in
   `constitutionPaths`. Deriving paths from a command string is not reliably decidable.
 
-## What s49 delivered (`adr/006` Phase 1 — oracle definition integrity)
-
-- **`gateDeps` reads definitions from `repoRoot`** — `loadInvariants`, `loadGuardPairs`,
-  and `guardStillRed`'s guard-pair *selection* (the codex-flagged bypass a loader-only
-  refactor would leave). Execution (check command, success commands, agent-ci, the
-  mutation run) stays against `wt.path`. Symmetric with `zonesTouchedInDiff` at last.
-- **Fail closed** — a contract file *explicitly configured in the raw YAML* but absent,
-  escaping the trusted root, or reached through a symlink now throws (→ escalate).
-  Not-configured + absent stays legitimate. Needs the RAW config: zod defaults both keys.
-- **`contract.constitutionPaths` wired** (Finding 2 — dead since the schema shipped),
-  unioned + deduped with the INVARIANTS constitution globs.
-- **`src/util/path-contain.ts`** — realpath containment shared by the oracle read path
-  and the stub-write path (a lexical `join` clamps neither `..` nor a symlinked
-  ancestor); win32-only case folding; full trailing-separator normalization.
-- **Migration** — the scaffold always configured `guardsFile` but never wrote it, so
-  fail-closed alone would have bricked every existing project. `ensureContractStubs`
-  (serve startup) heals `GUARDS.md` only, and only when verified git-ignored +
-  realpath-contained. `INVARIANTS.md` is deliberately never healed.
-- **4 codex `gpt-5.6-luna` rounds**, each finding a narrower leak in the previous fix
-  (lexical containment → healed invariants = vacuous pass → lexical check re-leaked into
-  the write path → unverified git-ignore assumption). TOCTOU-on-read declined as a
-  documented accepted residual. 1207 tests green.
-- **Live-proven** on `woodev-shipping-plugin-test`: the startup migration self-healed
-  the real project (INFO log), then a zone declared ONLY at the trusted root escalated a
-  real task — `decision: ESCALATE`, `zone 'shipping-method-ids' touched … needs guard` —
-  with no INVARIANTS file in the worktree at all. Pre-Phase-1 that run committed vacuously.
-- **Docs** — `AGENTS.md` merge policy reconciled (attended = operator's merge word;
-  unattended = standing auto-merge grant); GOTCHAS 71→72.
-
-## What s48 delivered (Authority Model audit + `adr/006`)
-
-- **Audit** (`wiki/authority-model-audit-2026-07.md`) — traced worker write-scope vs the
-  oracle in code. **Sound (5 items):** task contract + gate config live in git-excluded
-  `.autodev` (worker-inaccessible); the fence bounds writes to `file_set`; routing reads
-  main-root INVARIANTS. **5 holes:** (1) the gate reads oracle *definitions* from the
-  worktree; (2) `contract.constitutionPaths` is dead config; (3) scaffold points contract
-  files at git-excluded `.autodev/…` → absent from worktree → gate zone checks vacuous
-  (verified live); (4) no capability/protected-paths model; (5) missing oracle fails open.
-- **`adr/006`** — capability-based Authority Model: oracle *definitions* from a trusted
-  root, *execution* against the worktree, *changes* via operator bless. Phased enforcement
-  (not built s48): Phase-1 definition integrity · Phase-2 executable-input protected-paths ·
-  Phase-3 profiles.
-- **`PRINCIPLES.md` +2** — #14 "worker does not write its own oracle" (write-authority,
-  distinct from #2) + #15 "gate proves only formalized properties" (review risk 3). 15 total.
-- **codex `gpt-5.6-luna` reviewed the audit + ADR** — corrected an overstated CI claim,
-  scoped the "sound" framing (executable-input tampering ≠ closed by trusted-root reads),
-  and flagged the `guardStillRed` bypass + fail-open. All folded in.
-
 ## The thrust — Authority Model → Profiles (from the external review)
 
 `wiki/architecture-review-external-2026-07.md` details it. The chain, order load-bearing:
@@ -153,8 +105,12 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
   `adr/004` north-star concept; `adr/006` Phase 3 lands here (the profile and its
   protected-path declaration must live at a trusted, worker-unwritable root, or the
   model is self-authorizing).
-- **Docs audit** (s50 checkpoint, session divisible by 10 — offered and deferred behind
-  the Phase-2 work; last full audit was s47).
+- *(done s50)* Docs audit — the divisible-by-10 checkpoint ran after the Phase-2 work:
+  11 findings fixed (stale ADR-003 status · `AGENT-RULES` merge rule contradicting the
+  s49 reconciliation · audit hole-count · Aider listed as unanalyzed · `PRINCIPLES.md`
+  read-trigger · abandoned tag namespaces · `reference/` status banner · a broken
+  markdown table · Russian-quote carve-out · `superpowers/` missing from navigation ·
+  this file's own accumulated history). Next checkpoint: s60.
 - **Remaining `adr/004` slices** (each own brainstorm→spec→plan): morning report ·
   mandatory anti-drift · (north-star → folded into profiles).
 - **Metrics / Evaluation Corpus** (GPT suggestion, decide if/when): autonomy-%,
@@ -175,17 +131,19 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
-- **s50** — `adr/006` Phase 2 shipped: trusted-root protected-oracle-path fence (guard tests, recipes, workflows, constitution paths), fingerprinted pre/post worker ahead of the critic; covers git-ignored oracle files. 6 luna rounds → CLEAN; live-proven both directions (oracle task escalated pre-critic, control task committed `dd79ef4`). GOTCHAS 72→73.
-- **s49** — `adr/006` Phase 1 shipped: oracle definitions read from the trusted root, fail-closed, `constitutionPaths` wired, realpath containment, `GUARDS.md` migration; 4 luna rounds; live-proven (trusted-root zone escalated a real task). GOTCHAS 71→72. `AGENTS.md` merge policy reconciled.
-- **s48** — Authority Model audit (5 sound / 5 holes, worker write-scope vs the oracle) + `adr/006` (capability model, phased enforcement) + `PRINCIPLES.md` +2 (#14/#15); codex-luna-reviewed; GOTCHAS 70→71. Merged to `main` (`c6c2343`).
-- **s47** — docs consolidation (stale foundation fixed · CURRENT-STATE 139 KB→8 KB · `PRINCIPLES.md` added) + external agent review processed → Authority-Model→Profiles thrust defined. Merged to `main` (`7759346`).
-- **s46** — overnight presence toggle (`adr/004` slice 2): global settings store + sidebar UI + daemon wiring; 4-pass luna gate; live-proven. PR #77 merged (`680b9fa`), CI 4/4. GOTCHAS 69→70.
-- **s45** — 2 carried fixes + overnight escalation supervisor (`adr/004` slice 1); 4-pass luna gate; live-proven twice. Branch `autodev/s45-carried-items` (PR status open, see above).
-- **s44** — `gpt-5.6-luna` promoted as critic (calibrated 12/12) + reply-B poison-fix.
-- **s43** — reply-B cycle live-proven + `blocked`-state shipped (PR #74).
-- **s42** — critic-is-a-correctness-gate (`adr/005`) + reply-B carries critic feedback (PR #73).
-- **s41** — first real CI run on a real task, operator-observable end-to-end → DONE (`3609a2c`); 4 findings.
-- **s40** — attended live-orchestrator presence shipped, chat = main screen (PR #72).
+> One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
+
+- **s50** — `adr/006` Phase 2: protected-oracle-path fence (PR #79, open).
+- **s49** — `adr/006` Phase 1: trusted-root oracle definitions (`cc0db6f`).
+- **s48** — Authority Model audit + `adr/006` + `PRINCIPLES.md` #14/#15 (`c6c2343`).
+- **s47** — docs consolidation + external review → the Profiles thrust (`7759346`).
+- **s46** — overnight presence toggle, `adr/004` slice 2 (`680b9fa`).
+- **s45** — overnight escalation supervisor, `adr/004` slice 1 (PR #76).
+- **s44** — `gpt-5.6-luna` promoted as critic + reply-B poison fix.
+- **s43** — reply-B cycle live-proven + `blocked` state (PR #74).
+- **s42** — `adr/005` critic-is-a-correctness-gate (PR #73).
+- **s41** — first real CI run on a real task, end-to-end DONE (`3609a2c`).
+- **s40** — attended live-orchestrator presence, chat = main screen (PR #72).
 
 ## Environment (verified s46)
 

@@ -1,6 +1,13 @@
 # PROTOCOL — Mandatory Codex Critic Gate on top of AO (woodev-framework)
 
-> Status: ACTIVE. Authored 2026-07-01.
+> Status: **HISTORICAL** — superseded by `adr/002` (dated the same day, 2026-07-01),
+> which demoted AO from fork-base to one donor of four. The **critic-gate policy** this
+> document specifies (critic prompt, verdict schema, contract-zone model, re-critic
+> discipline) IS what the harness ported and still runs — that is why it stays under
+> "what we are porting". The **AO-specific mechanics** (`ao spawn`, `ao review submit`,
+> the AO orchestrator session as the driver) were never built and never will be; the
+> harness drives the same policy from its own Node conductor.
+> Authored 2026-07-01.
 > Purpose: port the **adversarial critic gate** from the autodev-loop runbook onto
 > the **Agent Orchestrator (AO)** runtime, so that no worker PR merges without an
 > independent GPT-5.5 critic pass — the same guarantee we had in autodev-loop, but

@@ -14,6 +14,10 @@
   agent or the git history reads.
 - Net: Russian is for the human conversation; English is for everything written to
   disk or dispatched to another agent.
+- **One narrow exception:** a *verbatim quote of the operator's own words* may keep
+  its original language when the exact phrasing is the point — e.g. recording which
+  trigger phrase authorized a merge. Quotes are evidence, not prose; everything
+  around them stays English. Do not use this to write Russian commentary.
 
 ## Git ownership — the agent drives everything
 

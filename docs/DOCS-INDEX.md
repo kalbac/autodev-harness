@@ -27,7 +27,7 @@
 | `adr/` | Architecture Decision Records (`adr/README.md` = template + index) |
 | `wiki/` | **Architecture Notes — rationale (*why*, not API)** + deep-dive references |
 | `wiki/architecture-review-external-2026-07.md` | External agent review — risks + priorities; seed for the Authority-Model → Profiles thrust |
-| `wiki/authority-model-audit-2026-07.md` | Code audit (s48) — worker write-scope vs the oracle; what's sound, 4 holes, with file:line evidence; justifies `adr/006` |
+| `wiki/authority-model-audit-2026-07.md` | Code audit (s48) — worker write-scope vs the oracle; what's sound (5), 5 holes, with file:line evidence; justifies `adr/006` |
 | `wiki/openhands-analysis.md` | OpenHands analysis — intelligence-pattern donor, ranked "what to steal" |
 | `wiki/opendesign-analysis.md` | Open Design analysis — UX/extensibility donor (agent auto-detect, model router, skills/plugins/MCP) |
 | `gotchas/` | Atomic gotcha detail files |
