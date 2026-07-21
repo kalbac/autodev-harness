@@ -10,7 +10,8 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices).
+~5 slices). `main` is clean and synced — s50 merged PR #79 (`44aebd8`, CI 4/4) and
+PR #81 (`0a89a45`, CI 4/4).
 
 **s50 closed the `adr/006` enforcement tail — Phase 2, executable-input protected
 paths.** Phase 1 (s49) stopped a worker from changing *what the gate checks*; Phase 2
@@ -133,7 +134,7 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
-- **s50** — `adr/006` Phase 2: protected-oracle-path fence (PR #79, open).
+- **s50** — `adr/006` Phase 2: protected-oracle-path fence (`44aebd8`) + docs audit (`0a89a45`).
 - **s49** — `adr/006` Phase 1: trusted-root oracle definitions (`cc0db6f`).
 - **s48** — Authority Model audit + `adr/006` + `PRINCIPLES.md` #14/#15 (`c6c2343`).
 - **s47** — docs consolidation + external review → the Profiles thrust (`7759346`).

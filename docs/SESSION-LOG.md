@@ -4,7 +4,7 @@
 
 ---
 
-## s50 (2026-07-22) — `adr/006` PHASE 2 SHIPPED: executable-input protected paths — 6 codex-luna rounds to CLEAN, live-proven both directions
+## s50 (2026-07-22) — `adr/006` PHASE 2 SHIPPED: executable-input protected paths — 6 codex-luna rounds to CLEAN, live-proven both directions — PR #79 MERGED (`44aebd8`, CI 4/4) + docs audit PR #81 MERGED (`0a89a45`, CI 4/4)
 
 Attended build session. Operator ordered the session explicitly: close the `adr/006` tail first, then the docs audit, then Profiles if context allows. Started by offering the s50 docs-audit checkpoint (session divisible by 10) — deferred behind the enforcement work by operator choice.
 - **The gap Phase 2 closes.** Phase 1 (s49) stopped a worker changing *what the gate checks* by reading oracle **definitions** from the trusted root. It explicitly left the *contents of executable oracle inputs* open — guard **test files** the mutation-check runs, agent-ci **workflow implementations**, mutation **recipes**, and operator-declared human-only paths, all executed from the worktree and worker-writable whenever the orchestrator put them in `file_set`. Nothing required `forbidden_paths` (LLM-authored, best-effort) to cover them, and both the porcelain fence and the gate's constitution check are **git-visible only**, so a target-repo-gitignored oracle file could be rewritten with no trace at all.
