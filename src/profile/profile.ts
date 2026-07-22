@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { globMatch, normalizePath } from "../util/glob.js";
+import { canonicalPathContains, realpathContains } from "../util/path-contain.js";
 import { ProfileFileSchema, type ResolvedProfile, type ResolvedGate } from "./schema.js";
 
 /**
@@ -40,8 +41,8 @@ export function harnessRoot(): string {
 const PROFILE_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * The only prefix a `{profile}`-derived command token may carry: a real CLI flag
- * ending in `=`, e.g. `--standard=` or `-c=`.
+ * The only prefix a `{profile}`-derived command token may carry: a flag-SHAPED
+ * string ending in `=`, e.g. `--standard=`, `-c=`, `--some_flag=`, `--some.flag=`.
  *
  * This is deliberately a FLAG shape, not "the prefix ends with `=`". That weaker
  * rule was the round-2 critic finding: `={profile}/gates/phpcs.xml` ends with `=`,
@@ -50,8 +51,19 @@ const PROFILE_ID = /^[a-z0-9][a-z0-9-]*$/;
  * validate-one-string-run-another bug the check was added to close. "Ends with a
  * character a flag happens to end with" is not proof of a flag; requiring the
  * whole prefix to BE one is.
+ *
+ * Honesty about what this regex actually checks (round-3 finding): it is a
+ * deliberately LOOSE flag-shaped check, not a validator of any one tool's option
+ * grammar. Its only job is to reject prefixes that are NOT flag-like at all (a
+ * bare `=`, an arbitrary word, a flag missing its `=`) -- it still accepts
+ * oddities a strict CLI grammar would refuse, such as `--some-=` or `-123=`. That
+ * is fine: this check exists to catch the validate-one-string-run-another class of
+ * bug above, not to police flag-naming conventions no tool here actually enforces.
+ * `_` and `.` are included in the allowed body characters because real CLI tools
+ * legitimately define flags like `--some_flag=` and `--some.flag=`; the name must
+ * still start with an alphanumeric and the whole prefix must end with `=`.
  */
-const FLAG_PREFIX = /^--?[A-Za-z0-9][A-Za-z0-9-]*=$/;
+const FLAG_PREFIX = /^--?[A-Za-z0-9][A-Za-z0-9._-]*=$/;
 
 /**
  * Parse `"<id>@<version>"`. The id charset is restrictive on purpose: it is
@@ -238,11 +250,37 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
   // (`<dir>/...`, `at === 0`) or a flag-prefixed form whose prefix ends with `=`
   // (`--standard=<dir>/...`). Anything else -- e.g. a token like
   // "prefix{profile}/gates/phpcs.xml" expanding to "prefix<dir>/gates/phpcs.xml"
-  // -- is a malformed argument the runner would receive verbatim: `token.slice(at)`
-  // used to probe only the suffix from `dir` onward, so a probe like that would
-  // stat a real file and pass while the runner gets a path that does not exist,
-  // failing opaquely later as a non-zero gate exit. Fail loud here instead, naming
-  // both accepted shapes.
+  // -- is a malformed argument the runner would receive verbatim. Fail loud here
+  // instead, naming both accepted shapes.
+  //
+  // THE NORMAL FORM (round-3 finding): a {profile}-derived token is
+  // `<optional flag prefix><dir><separator><relative path>`, where the separator
+  // is `/` or `\`, and the resolved path must remain INSIDE `dir`. Two gaps in an
+  // earlier, narrower reading of that same sentence:
+  //   (a) `token.indexOf(dir) === 0` only proves the token STARTS WITH the string
+  //       `dir` -- it does not prove `dir` is a genuine path component. A sibling
+  //       directory whose name shares `dir` as a prefix ('<dir>-evil/x.xml') or a
+  //       token that is `dir` with an unrelated suffix ('<dir>extra') both satisfy
+  //       it while naming something other than the profile directory. Requiring
+  //       the character immediately after `dir` to be a path separator (checked
+  //       below, before any path is built) closes this; it simultaneously refuses
+  //       a token that IS `dir` with nothing after it, which names no file at all.
+  //   (b) Even a token that legitimately continues with a separator can still
+  //       resolve outside `dir` once `.`/`..` segments are collapsed
+  //       (`<dir>/../outside.xml`) -- `at === 0` says nothing about that. Closed by
+  //       verifying containment properly: a lexical check (`canonicalPathContains`,
+  //       no filesystem access -- catches the `..` escape even for a path that
+  //       does not exist yet) followed by a realpath check once the file is known
+  //       to exist (`realpathContains` -- catches an intermediate symlinked
+  //       ancestor whose real location is outside `dir`, which lexical resolution
+  //       alone cannot see). This is the SAME lexical-then-realpath sequencing
+  //       `src/gate/oracle-paths.ts` uses for the analogous oracle-path
+  //       containment problem (`resolveTrustedFile` / `normalizeLiteralEntry`);
+  //       `src/util/path-contain.ts` is the shared primitive both use.
+  //
+  // Splitting on whitespace to find {profile}-derived tokens is safe, not merely
+  // convenient -- the whitespace check above already refused any profile `dir`
+  // containing a space, so a {profile}-derived token can never itself contain one.
   for (const g of gates) {
     for (const token of g.run.split(/\s+/)) {
       const at = token.indexOf(dir);
@@ -255,7 +293,32 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
             `flag-prefixed form ('--standard=${dir}/...', '-c=${dir}/...')`,
         );
       }
+
+      // `dir` must be a genuine path component of the token, not merely a string
+      // it starts with: the character right after it must be a separator. This
+      // also refuses a token that IS `dir` with nothing following it.
+      const afterDir = token.charAt(at + dir.length);
+      if (afterDir !== "/" && afterDir !== "\\") {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: gate '${g.id}' token '${token}' embeds the profile directory '${dir}' ` +
+            `with no path separator immediately after it -- a {profile}-derived token must continue with '/' or ` +
+            `'\\' followed by a relative path, e.g. '${dir}/gates/phpcs.xml' (a token that is only '${dir}' with ` +
+            `nothing after it names no file either)`,
+        );
+      }
+
       const rulesetPath = token.slice(at);
+
+      // Lexical containment: collapses '.'/'..' segments without touching the
+      // filesystem, so an escape like '{profile}/../outside.xml' is refused even
+      // when a real file happens to sit at the escaped location.
+      if (!canonicalPathContains(resolve(dir), resolve(rulesetPath))) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which resolves OUTSIDE ` +
+            `the profile directory '${dir}' via a '..' path segment -- refusing to probe a path outside the profile`,
+        );
+      }
+
       let st;
       try {
         st = await stat(rulesetPath);
@@ -275,6 +338,16 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
       if (!st.isFile()) {
         throw new Error(
           `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which is not a regular file`,
+        );
+      }
+
+      // Realpath containment, now that the file is known to exist: catches an
+      // intermediate symlinked ancestor whose REAL location is outside `dir` even
+      // though it lexically resolved inside it.
+      if (!(await realpathContains(dir, rulesetPath))) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which resolves OUTSIDE ` +
+            `the profile directory '${dir}' via a symlink -- refusing to probe a path outside the profile`,
         );
       }
     }

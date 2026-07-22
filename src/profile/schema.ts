@@ -58,6 +58,49 @@ function isInvalidProvisionEntry(p: string): boolean {
 }
 
 /**
+ * Is `entry` absolute on ANY supported platform, not just the host running this
+ * process? This harness is a cross-platform product -- a profile authored on
+ * Windows is legitimately loaded by a daemon on Linux -- so `posix.isAbsolute`
+ * alone would miss a Windows drive path (`C:\outside`) or UNC share, and
+ * `win32.isAbsolute` alone would miss nothing extra on a POSIX host but the
+ * reverse omission (checking only the host's own implementation) is exactly the
+ * gap this closes. Also recognises a drive-RELATIVE form (`D:x`), which
+ * `win32.isAbsolute` deliberately calls NOT absolute (it resolves against that
+ * drive's own current directory) yet is equally unenforceable as a
+ * worktree-relative path, so equally refused.
+ *
+ * Mirrors `src/gate/oracle-paths.ts`'s identically-named, non-exported
+ * `isAbsoluteOnAnyPlatform` -- duplicated rather than imported, for the same
+ * reason `isInvalidProvisionEntry` above duplicates `src/config/schema.ts`'s
+ * predicate: `gate/` is not a module `profile/` owns, and the function is not
+ * exported from it.
+ */
+function isAbsoluteOnAnyPlatform(entry: string): boolean {
+  return posix.isAbsolute(entry) || win32.isAbsolute(entry) || /^[A-Za-z]:/.test(entry);
+}
+
+/**
+ * Fail-closed lexical check for a `protectedPaths` entry: refuses an empty
+ * string, an absolute path on either platform, or any path containing a `..`
+ * segment.
+ *
+ * This is a HARDENING, not the closing of an open hole -- say so honestly.
+ * `src/gate/oracle-paths.ts`'s `resolveOracleSet` already rejects an absolute or
+ * `..`-escaping `protectedPaths` entry fail-closed (via its `normalizeLiteralEntry`
+ * / `assertGlobNotEscaping`), at the point it actually builds the oracle set from
+ * the profile's declared paths, so a bad entry was never silently accepted into
+ * an unenforceable set. The reason to also check it HERE, at profile load, is
+ * purely about WHEN and HOW the operator finds out: a broken declaration should
+ * fail loud immediately, naming the offending profile, rather than surface later
+ * as an opaque failure while building a task's oracle set.
+ */
+function isInvalidProtectedPathEntry(p: string): boolean {
+  if (p === "") return true;
+  if (isAbsoluteOnAnyPlatform(p)) return true;
+  return p.split(/[\\/]/).some((seg) => seg === "..");
+}
+
+/**
  * `profile.yaml` — the on-disk shape of a qualification profile.
  *
  * `.strict()` everywhere for the same reason the harness config root is strict
@@ -89,7 +132,26 @@ export const ProfileFileSchema = z
       .strict()
       .default({ provision: [] }),
     gates: z.array(ProfileGateSchema).default([]),
-    protectedPaths: z.array(z.string()).default([]),
+    /**
+     * Worktree-relative oracle paths this profile protects (see
+     * `ResolvedProfile.protectedPaths`). Validated lexically at load
+     * (`isInvalidProtectedPathEntry`) so a broken declaration fails loud here,
+     * naming the profile -- see that function's doc comment for why this is a
+     * hardening rather than the closing of an open hole.
+     */
+    protectedPaths: z
+      .array(z.string())
+      .superRefine((arr, ctx) => {
+        for (const p of arr) {
+          if (isInvalidProtectedPathEntry(p)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `protectedPaths entry must be a non-empty, worktree-relative path (not absolute on any platform, no ".." segment): ${JSON.stringify(p)}`,
+            });
+          }
+        }
+      })
+      .default([]),
   })
   .strict();
 

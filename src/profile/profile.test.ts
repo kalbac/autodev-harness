@@ -373,3 +373,76 @@ gates:
     await expect(loadProfile("demo@1", root)).rejects.toThrow(/unrecognized shape/);
   });
 });
+
+describe("{profile} token normal form (round-3 critic finding -- containment + prefix confusion)", () => {
+  const tok = (run: string) => `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "${run}"
+`;
+
+  it.each([
+    ["bare path", "{profile}/gates/phpcs.xml"],
+    ["long flag", "--standard={profile}/gates/phpcs.xml"],
+    ["short flag", "-c={profile}/gates/phpcs.xml"],
+    ["flag with underscore", "--some_flag={profile}/gates/phpcs.xml"],
+    ["flag with dot", "--some.flag={profile}/gates/phpcs.xml"],
+  ])("accepts a legitimate shape (%s)", async (_label, token) => {
+    await writeProfile("demo", tok(`phpcs ${token}`));
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.run).toContain("gates/phpcs.xml");
+  });
+
+  it("refuses '{profile}' alone with no separator after it", async () => {
+    await writeProfile("demo", tok("phpcs {profile}"));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/no path separator/);
+  });
+
+  it("refuses an escape via '..' even when a real file sits at the escaped location", async () => {
+    // Without the containment check, `{profile}/../outside.xml` would `stat()`
+    // this real file and load successfully -- the escape this test proves is
+    // closed, not merely a string-shape assertion.
+    await writeProfile("demo", tok("phpcs {profile}/../outside.xml"));
+    await writeFile(join(root, "profiles", "outside.xml"), "<ruleset/>", "utf8");
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/resolves OUTSIDE the profile directory/);
+  });
+
+  it("refuses a sibling directory whose name shares the profile dir as a string prefix", async () => {
+    // Build the sibling ON DISK, with a real file at the shape the profile
+    // references, so this proves the real filesystem behaviour is blocked -- not
+    // just that a string starting with the profile dir looks suspicious.
+    await writeProfile("demo", tok("phpcs {profile}-evil/gates/phpcs.xml"));
+    await mkdir(join(root, "profiles", "demo-evil", "gates"), { recursive: true });
+    await writeFile(join(root, "profiles", "demo-evil", "gates", "phpcs.xml"), "<ruleset/>", "utf8");
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/no path separator/);
+  });
+});
+
+describe("loadProfile -- protectedPaths validated at load (round-3 critic finding)", () => {
+  const withProtectedPaths = (entry: string) => `id: demo
+version: 1
+gates: []
+protectedPaths: [${JSON.stringify(entry)}]
+`;
+
+  it.each([
+    ["empty string", ""],
+    ["'..' segment", "../outside"],
+    ["POSIX absolute path", "/etc/passwd"],
+    ["Windows absolute path", "C:\\outside"],
+  ])("refuses %s", async (_label, entry) => {
+    await writeProfile("demo", withProtectedPaths(entry));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/protectedPaths/);
+  });
+
+  it.each([
+    ["plain filename", "phpcs.xml"],
+    ["dotfile", ".phpcs.xml"],
+    ["glob", "ci/**"],
+  ])("accepts %s", async (_label, entry) => {
+    await writeProfile("demo", withProtectedPaths(entry));
+    const p = await loadProfile("demo@1", root);
+    expect(p.protectedPaths).toEqual([entry]);
+  });
+});
