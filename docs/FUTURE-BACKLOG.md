@@ -40,12 +40,13 @@ scoped diff (it is the file's convention, not a regression) and tracked here as 
 Shipped v1 = two facets (`gates` + `protectedPaths`), WP/WC first. What v1 named but
 did not build, in rough priority order:
 
-- **Per-LINE gate scoping.** v1 scopes to changed FILES, so a task touching an existing
-  file inherits its entire pre-existing debt (measured: every PHP file in the polygon is
-  already non-zero under the ruleset). Options: run the tool then intersect findings with
-  the diff's line ranges; a per-profile baseline file; or an explicit "you touched it, you
-  clean it" policy. A product decision, not a bug fix — it decides how useful profiles are
-  on real legacy code. `gotchas/profile-gates-must-be-diff-scoped.md`.
+- ✅ *(done s51)* **Per-LINE gate scoping** — shipped as `wordpress-woocommerce@2` via
+  `report: checkstyle`; live-proven on a legacy file with 10 pre-existing violations.
+- **Timing-sensitive tests flake under CPU load.** `src/watchdog/watchdog.test.ts` and
+  `src/api/server.test.ts` both failed during s51 while subagents saturated the machine,
+  and both passed cleanly when re-run alone (verified against clean `main` too, so not a
+  regression). Harmless locally, but a loaded CI runner could hit it. Worth making those
+  tests clock-driven rather than wall-clock-driven.
 - ✅ *(done s51)* **Gate feedback on RETRY** -- shipped for all three output-producing
   steps and live-proven (one retry to convergence instead of an exhausted budget).
 - **Line-ending normalization for WPCS on Windows.** WPCS demands `

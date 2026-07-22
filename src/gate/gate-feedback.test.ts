@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { clampOutput, formatGateFeedback, stripAnsi, type FailedStep } from "./gate-feedback.js";
+import type { FilteredFinding } from "./finding-filter.js";
 
 /** SGR colour sequence, written with an escaped ESC so the source stays plain ASCII. */
 const ESC = String.fromCharCode(27);
@@ -195,5 +196,114 @@ describe("round-2 critic fixes", () => {
 
   it.each([0, 1, 39, 40, 41, 42, 100])("never exceeds the limit (%i)", (limit) => {
     expect(clampOutput("q".repeat(5_000), limit).length).toBeLessThanOrEqual(limit);
+  });
+});
+
+// Task 5 (docs/superpowers/plans/2026-07-22-line-scoped-profile-gates.md): a
+// `report: checkstyle` gate's `FailedStep` carries structured findings instead
+// of raw tool output. The worker must never see the machine (XML) format -- it
+// is noise it cannot act on and it costs tokens -- so these are rendered as a
+// readable list, through the SAME clamps/caps/fences raw output already goes
+// through (a finding list is just as unbounded as raw output was).
+describe("formatGateFeedback -- structured findings (Task 5)", () => {
+  const finding = (over: Partial<FilteredFinding> = {}): FilteredFinding => ({
+    file: "includes/a.php",
+    line: 13,
+    severity: "error",
+    message: "Missing doc comment for function x()",
+    source: "Squiz.Commenting.FunctionComment.Missing",
+    unattributed: false,
+    ...over,
+  });
+
+  const findingsStep = (findings: FilteredFinding[], over: Partial<FailedStep> = {}): FailedStep => ({
+    label: "profile gate 'phpcs'",
+    exitCode: 2,
+    output: "", // ignored when `findings` is present
+    findings,
+    ...over,
+  });
+
+  it("renders findings as a readable `path:line  message  [source]` list, not raw XML", () => {
+    const doc = formatGateFeedback([findingsStep([finding()])])!;
+    expect(doc).toContain("includes/a.php:13");
+    expect(doc).toContain("Missing doc comment for function x()");
+    expect(doc).toContain("Squiz.Commenting.FunctionComment.Missing");
+    // The worker must never see the machine format.
+    expect(doc).not.toContain("<error");
+    expect(doc).not.toContain("<checkstyle");
+    expect(doc).not.toContain("<file");
+  });
+
+  it("the step's exit code is still reported as today for a findings-based step", () => {
+    const doc = formatGateFeedback([findingsStep([finding()], { exitCode: 2 })])!;
+    expect(doc).toContain("profile gate 'phpcs'");
+    expect(doc).toContain("exit 2");
+  });
+
+  it("a finding with line === null renders honestly -- never `path:null`, never a fabricated line", () => {
+    const doc = formatGateFeedback([findingsStep([finding({ line: null, message: "Missing file doc comment" })])])!;
+    expect(doc).toContain("includes/a.php");
+    expect(doc).toContain("Missing file doc comment");
+    expect(doc).not.toContain(":null");
+    expect(doc).not.toMatch(/includes\/a\.php:\d/); // no invented line number
+  });
+
+  it("groups unattributed findings separately, clearly labelled, from attributed ones", () => {
+    const attributed = finding({ file: "includes/a.php", message: "attributed finding", unattributed: false });
+    const unattributed = finding({
+      file: "/some/unresolvable/path.php",
+      message: "unattributed finding",
+      unattributed: true,
+    });
+    const doc = formatGateFeedback([findingsStep([attributed, unattributed])])!;
+
+    expect(doc).toContain("attributed finding");
+    expect(doc).toContain("unattributed finding");
+    expect(doc).toMatch(/unattributed/i); // a clear label naming the group exists
+
+    // The two groups must be visibly separate, not flattened into one
+    // undifferentiated list -- the label must sit between them.
+    const attributedIdx = doc.indexOf("attributed finding");
+    const labelIdx = doc.search(/unattributed/i);
+    const unattributedIdx = doc.indexOf("unattributed finding");
+    expect(labelIdx).toBeGreaterThan(attributedIdx);
+    expect(unattributedIdx).toBeGreaterThan(labelIdx);
+  });
+
+  it("keeps the unattributed finding rather than dropping it (fail-closed path is visible)", () => {
+    const unattributed = finding({ file: "/tmp/whatever.php", unattributed: true });
+    const doc = formatGateFeedback([findingsStep([unattributed])])!;
+    expect(doc).toContain("/tmp/whatever.php");
+  });
+
+  it("the global cap still holds when a gate reports many thousands of findings", () => {
+    const many = Array.from({ length: 5_000 }, (_, i) =>
+      finding({ file: `includes/file-${i}.php`, line: i + 1, message: `finding number ${i}` }),
+    );
+    const doc = formatGateFeedback([findingsStep(many)])!;
+    expect(doc.length).toBeLessThanOrEqual(40_000);
+    // The clamp must actually have engaged (this input is far larger than the cap).
+    expect(doc).toMatch(/omitted/i);
+  });
+
+  it("the global cap holds across MANY findings-based steps, same as for raw-output steps", () => {
+    const bigFindings = Array.from({ length: 500 }, (_, i) => finding({ file: `f${i}.php`, line: i + 1 }));
+    const steps = Array.from({ length: 20 }, (_, i) => findingsStep(bigFindings, { label: `profile gate 'g${i}'` }));
+    const doc = formatGateFeedback(steps)!;
+    expect(doc.length).toBeLessThanOrEqual(40_000);
+  });
+
+  it("a step with raw output (no `findings`) still renders exactly as before -- regression guard", () => {
+    const withOutput: FailedStep = {
+      label: "profile gate 'phpcs'",
+      exitCode: 1,
+      output: "FILE: x.php\n 3 | ERROR | Missing docblock",
+    };
+    const doc = formatGateFeedback([withOutput])!;
+    expect(doc).toContain("profile gate 'phpcs'");
+    expect(doc).toContain("exit 1");
+    expect(doc).toContain("FILE: x.php");
+    expect(doc).toContain("Missing docblock");
   });
 });

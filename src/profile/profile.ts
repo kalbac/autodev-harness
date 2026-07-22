@@ -298,6 +298,7 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
     filesGlob: g.files ?? null,
     // See ResolvedGate.redExitCodes for why the default is [1], not "any non-zero".
     redExitCodes: g.redExitCodes ?? [1],
+    report: g.report ?? null,
   }));
 
   // The two halves of diff-scoping must agree, and a mismatch in EITHER direction
@@ -321,6 +322,32 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
       throw new Error(
         `profile ${JSON.stringify(ref)}: gate '${g.id}' declares a 'files:' glob but its 'run' never uses ` +
           `'{files}' -- the gate would silently run whole-tree while reading as diff-scoped`,
+      );
+    }
+
+    // 'report' cross-check. What CAN be verified at load time, honestly: we
+    // cannot run the tool, so we cannot prove `run` truly makes it emit
+    // `report` -- only a live run proves that (Task 7 of the plan). What we CAN
+    // refuse is the obviously-broken combination: a gate that declares a report
+    // format its own command never even ASKS the tool for. A command that never
+    // mentions "checkstyle" anywhere cannot plausibly have been written to pass
+    // e.g. `--report=checkstyle` -- the author almost certainly forgot the flag,
+    // or copy-pasted a gate and only edited half of it. This is the same
+    // "obviously broken, not exhaustively proven" spirit as the {files}/files:
+    // cross-check above: a case-sensitive-lowercased substring search is
+    // deliberately weak (it does not parse any tool's flag grammar, does not
+    // check the flag is spelled `--report=`, and would be fooled by a command
+    // that merely mentions "checkstyle" in a comment-like argument) -- widening
+    // it to actually validate flag syntax would be false confidence: this
+    // module has no way to know what flag shape a given tool expects. Refusing
+    // the case where the format is not mentioned AT ALL is the one thing this
+    // check can say for certain without running anything.
+    if (g.report !== null && !g.run.toLowerCase().includes(g.report.toLowerCase())) {
+      throw new Error(
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' declares 'report: ${g.report}' but its 'run' command ` +
+          `('${g.run}') never mentions '${g.report}' -- this cannot prove the tool actually emits that format ` +
+          `(only a live run can), but a gate that never asks the tool for it cannot possibly produce it either; ` +
+          `add the tool's own report flag (e.g. '--report=${g.report}') to 'run', or remove 'report: ${g.report}'`,
       );
     }
   }

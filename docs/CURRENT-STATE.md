@@ -40,6 +40,7 @@ task that would have burned its whole budget converged in **one** retry (`c0fb8d
 | Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 | Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
+| Line-scoped profile gates | ✅ shipped (s51) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -115,14 +116,9 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-- **(priority) Decide the per-FILE vs per-LINE scoping policy.** Profile gates scope to
-  changed FILES, so a task touching an existing file inherits that file's whole
-  pre-existing debt -- and every PHP file in the polygon is already non-zero under the
-  ruleset, so v1 is practically green only for new files and non-matching files. Options:
-  line-scoped filtering (run the tool, intersect with the diff's line ranges), a
-  per-profile baseline, or an explicit "you touched it, you clean it" policy. This is a
-  product decision, not a bug fix, and it gates how useful profiles are on real legacy
-  plugins. `gotchas/profile-gates-must-be-diff-scoped.md`.
+- *(done s51)* **Line-scoped profile gates** -- shipped as `wordpress-woocommerce@2`.
+  Findings are filtered to the lines the diff ADDED, so a compliant change to a legacy
+  file commits green. A baseline file was rejected on principle (a baseline IS an oracle).
 - *(done s51)* **Gate feedback on RETRY** -- shipped and live-proven; the gotcha is
   marked RESOLVED. Covers all three output-producing steps, not just profile gates.
 - **CRLF vs WPCS on Windows.** WPCS demands `
@@ -144,9 +140,9 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## Open questions
 
-- **Per-FILE vs per-LINE gate scoping** — see NEXT ACTIONS. The honest v1 position is
-  that file-level scoping made the gate *meaningful* (7069 → 8) but not yet *practical*
-  on a legacy tree.
+- *(closed s51)* **Per-FILE vs per-LINE gate scoping** → line-scoping shipped. File-level
+  made the gate *meaningful* (7069 → 8); line-level made it *usable* (a legacy file with
+  10 pre-existing violations now commits a compliant change).
 - **PHPStan in a profile.** Deliberately not a v1 gate: useful WordPress analysis needs
   `szepeviktor/phpstan-wordpress`, whose `extension.neon` a profile-shipped config cannot
   portably reference (a neon `includes:` resolves relative to the neon file, which lives

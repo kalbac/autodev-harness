@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<checkstyle version="3.13.5">
+<file name="C:\Users\maksi\AppData\Local\Temp\tmp.e3mbbP7xGX\bad.php">
+ <error line="1" column="1" severity="error" message="Class file names should be based on the class name with &quot;class-&quot; prepended. Expected class-bad-thing.php, but found bad.php." source="WordPress.Files.FileName.InvalidClassFileName"/>
+ <error line="1" column="1" severity="error" message="Missing file doc comment" source="Squiz.Commenting.FileComment.Missing"/>
+ <error line="2" column="1" severity="error" message="Missing doc comment for class Bad_Thing" source="Squiz.Commenting.ClassComment.Missing"/>
+ <error line="3" column="1" severity="warning" message="Found precision alignment of 2 spaces." source="Universal.WhiteSpace.PrecisionAlignment.Found"/>
+ <error line="3" column="3" severity="error" message="Line indented incorrectly; expected 1 tabs, found 2 spaces" source="Generic.WhiteSpace.ScopeIndent.IncorrectExact"/>
+ <error line="3" column="17" severity="error" message="Missing doc comment for function x()" source="Squiz.Commenting.FunctionComment.Missing"/>
+ <error line="3" column="27" severity="error" message="Expected 1 spaces after opening parenthesis; 0 found" source="Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen"/>
+ <error line="3" column="30" severity="error" message="Expected 1 spaces before closing parenthesis; 0 found" source="Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose"/>
+ <error line="3" column="32" severity="error" message="Opening brace must be the last content on the line" source="Squiz.Functions.MultiLineFunctionDeclaration.ContentAfterBrace"/>
+ <error line="3" column="34" severity="error" message="No space after opening parenthesis is prohibited" source="WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis"/>
+ <error line="3" column="41" severity="warning" message="Loose comparisons are not allowed. Expected: &quot;===&quot;; Found: &quot;==&quot;" source="Universal.Operators.StrictComparisons.LooseEqual"/>
+ <error line="3" column="41" severity="error" message="Use Yoda Condition checks, you must." source="WordPress.PHP.YodaConditions.NotYoda"/>
+ <error line="3" column="45" severity="error" message="No space before closing parenthesis is prohibited" source="WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis"/>
+ <error line="3" column="47" severity="error" message="Newline required after opening brace" source="Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace"/>
+ <error line="3" column="56" severity="error" message="String &quot;y&quot; does not require double quotes; use single quotes instead" source="Squiz.Strings.DoubleQuoteUsage.NotRequired"/>
+ <error line="3" column="70" severity="error" message="String &quot;n&quot; does not require double quotes; use single quotes instead" source="Squiz.Strings.DoubleQuoteUsage.NotRequired"/>
+ <error line="3" column="73" severity="error" message="Each PHP statement must be on a line by itself" source="Generic.Formatting.DisallowMultipleStatements.SameLine"/>
+</file>
+</checkstyle>

@@ -230,8 +230,61 @@ gates:
   });
 });
 
+describe("loadProfile -- 'report' key (line-scoped profile gates, Task 4)", () => {
+  const withReport = (report: string, run: string) => `id: demo
+version: 1
+gates:
+  - id: phpcs
+    files: "**/*.php"
+    report: ${report}
+    run: "${run}"
+`;
+
+  it("carries a declared report format onto the resolved gate", async () => {
+    await writeProfile(
+      "demo",
+      withReport("checkstyle", "vendor/bin/phpcs --report=checkstyle {files}"),
+    );
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.report).toBe("checkstyle");
+  });
+
+  it("leaves report null for a gate that declares none", async () => {
+    await writeProfile("demo", GOOD);
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.report).toBeNull();
+  });
+
+  it("rejects an unknown report format at load (closed enum, not a free string)", async () => {
+    await writeProfile(
+      "demo",
+      withReport("junit", "vendor/bin/phpcs --report=junit {files}"),
+    );
+    await expect(loadProfile("demo@1", root)).rejects.toThrow();
+  });
+
+  it("rejects a 'report: checkstyle' gate whose run command never mentions checkstyle (obviously-broken combination)", async () => {
+    await writeProfile("demo", withReport("checkstyle", "vendor/bin/phpcs {files}"));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/never mentions 'checkstyle'/);
+  });
+
+  it("accepts the format mention case-insensitively and anywhere in the command", async () => {
+    await writeProfile(
+      "demo",
+      withReport("checkstyle", "vendor/bin/phpcs --report=CheckStyle {files}"),
+    );
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
+});
+
 describe("prepareGateInvocation", () => {
-  const scoped = (run: string, filesGlob: string | null) => ({ id: "phpcs", run, filesGlob, redExitCodes: [1] });
+  const scoped = (run: string, filesGlob: string | null) => ({
+    id: "phpcs",
+    run,
+    filesGlob,
+    redExitCodes: [1],
+    report: null,
+  });
 
   it("passes a whole-project gate through untouched", () => {
     const inv = prepareGateInvocation(scoped("composer validate", null), ["a.php"]);

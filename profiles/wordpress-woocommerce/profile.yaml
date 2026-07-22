@@ -1,4 +1,4 @@
-# WordPress / WooCommerce qualification profile, v1.
+# WordPress / WooCommerce qualification profile.
 #
 # The harness proves the PROCESS; this profile proves the PRODUCT. Every ruleset
 # referenced below ships INSIDE this directory: a gate that invoked a project
@@ -6,14 +6,25 @@
 # own standard of quality -- the oracle owned by the defendant, which is exactly
 # what adr/006 exists to prevent.
 #
-# v1 is deliberately STATIC only. PHPUnit / wp-env / Plugin Check / HPOS need
+# v1 was deliberately STATIC only. PHPUnit / wp-env / Plugin Check / HPOS need
 # Docker and cannot run on a native-Windows polygon
 # (docs/gotchas/agent-ci-not-runnable-on-native-windows.md), where they would
 # escalate infra on every single run. Static tools over a junctioned `vendor` are
 # proven to work (docs/gotchas/vendor-junction-composer-autoload-basedir.md) --
 # which is why the set is shaped this way, and not out of modesty.
+#
+# v2 (docs/superpowers/plans/2026-07-22-line-scoped-profile-gates.md): the phpcs
+# gate now emits `--report=checkstyle` and declares `report: checkstyle`, so the
+# harness parses its findings and judges the gate by the diff's ADDED lines
+# instead of the exit code -- a worker adding a compliant method to a legacy
+# file full of pre-existing violations now gets a green gate, where v1 would
+# have blocked it on debt the worker never touched. Bumped to a new major
+# because this is an OBSERVABLE BEHAVIOUR change to the gate, not a cosmetic
+# one: the same diff that v1 rejected can now commit, and a pinned version whose
+# meaning silently changed underneath a project would defeat the entire point
+# of pinning (`profiles/README.md`, "Union only, no selective disable").
 id: wordpress-woocommerce
-version: 1
+version: 2
 
 requires:
   provision: [vendor]
@@ -35,22 +46,33 @@ gates:
     run: "composer validate --no-check-publish --no-check-all"
     redExitCodes: [1]
 
-  # DIFF-SCOPED. Measured on the real polygon before this was written: this same
-  # ruleset reports 7069 pre-existing errors across the tree and 8 on the single
-  # file a task actually changed. A whole-tree gate would be red on every run no
-  # matter what the worker wrote -- blocking everything, proving nothing about the
-  # diff. `--report=full` (not summary) because the worker needs the actual sniff
-  # messages to fix them; a summary tells it only that a number is non-zero.
+  # DIFF-SCOPED, and since v2 also LINE-SCOPED. Measured on the real polygon
+  # before this was written: this same ruleset reports 7069 pre-existing errors
+  # across the tree and 8 on the single file a task actually changed -- so even
+  # the v1 file-level scoping above was not enough: a worker touching one line of
+  # a legacy file inherited every pre-existing violation in that whole file. v2
+  # narrows the verdict one step further, to the lines the diff actually ADDED.
+  #
+  # `--report=checkstyle` (not `--report=full`) because the harness now PARSES
+  # the report (`src/gate/checkstyle.ts`) to filter it against the diff's added
+  # lines (`src/gate/finding-filter.ts`) before rendering it back to the worker
+  # as readable text (`src/gate/gate-feedback.ts`) -- the worker never sees this
+  # machine format directly. `report: checkstyle` below is what tells the
+  # harness to parse it at all instead of judging by exit code alone; the two
+  # keys are cross-checked at profile load (`src/profile/profile.ts`) so a gate
+  # cannot declare one without the other.
   #
   # redExitCodes: [1, 2] -- PHPCS's own documented exit contract: 0 = clean,
   # 1 = errors were found, 2 = only warnings/fixable violations were found (both
   # are genuine findings about the diff); 3 = a processing error (bad ruleset,
   # unreadable file) -- left OUT on purpose so classifyGateExit reads a 3 as
-  # "unrunnable" rather than a RED the worker would loop against forever.
+  # "unrunnable" rather than a RED the worker would loop against forever. This
+  # classification runs BEFORE any report parsing is attempted either way.
   - id: phpcs
     files: "**/*.php"
-    run: "vendor/bin/phpcs -q --report=full --standard={profile}/gates/phpcs.xml {files}"
+    run: "vendor/bin/phpcs -q --report=checkstyle --standard={profile}/gates/phpcs.xml {files}"
     redExitCodes: [1, 2]
+    report: checkstyle
 
 # PHPStan is deliberately NOT a v1 gate, and the reason is technical, not modesty.
 # Useful WordPress analysis needs `szepeviktor/phpstan-wordpress`, whose
