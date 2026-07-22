@@ -1,5 +1,12 @@
 # FUTURE BACKLOG — Autodev Harness
 
+> **FROZEN (s52, 2026-07-23).** This file no longer accepts new items. The backlog
+> moved to **GitHub Issues + the "Autodev Harness Backlog" project board**
+> (`https://github.com/users/kalbac/projects/2`) — see `AGENTS.md` § Backlog for the
+> capture rules (issue cards are written in Russian). Open items below were migrated
+> to issues **#85–#108, #110**; the file remains as history plus the parked-by-design
+> residuals it documents in place.
+
 > Deferred features and tech debt. Not scheduled; parked with rationale.
 
 ## ✅ RESOLVED (s44 2026-07-16) — Evaluate `gpt-5.6` (Sol / Terra / Luna) as the critic model

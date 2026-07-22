@@ -14,6 +14,12 @@
   agent or the git history reads.
 - Net: Russian is for the human conversation; English is for everything written to
   disk or dispatched to another agent.
+- **Exception — operator-facing backlog artifacts are in Russian** (operator decision,
+  s52 2026-07-23): GitHub **issue titles/bodies** and **Project-board cards** — and any
+  note whose intended reader is the operator — are written in Russian, because he is
+  their primary reader. Technical identifiers inside them (file paths, code, gotcha
+  tags, label names) stay English. Everything else in the durable-artifact rule is
+  unchanged: docs, code, commits, PR titles/bodies remain English.
 - **One narrow exception:** a *verbatim quote of the operator's own words* may keep
   its original language when the exact phrasing is the point — e.g. recording which
   trigger phrase authorized a merge. Quotes are evidence, not prose; everything
@@ -50,6 +56,26 @@
   of changes, or an explicit "land this now" from the operator. When in doubt, keep
   committing and merge less often. (Direct push to `main` is classifier-gated, so small
   commits accumulate on a branch until the batch is worth a merge.)
+
+## Backlog — GitHub Issues + Project board (since s52)
+
+- **The single backlog for this repo is GitHub Issues** plus the user-level Project
+  board **"Autodev Harness Backlog"** (`https://github.com/users/kalbac/projects/2`).
+  Board statuses: `Инбокс` → `Бэклог` → `В работе` → `Готово`.
+- **Capture rule:** any out-of-scope idea, bug, or debt item discovered mid-session is
+  captured **immediately** as an issue — `gh issue create` with a type label
+  (`bug`/`enhancement`/`idea`/`tech-debt`/`research`/`polish`) + an `area:*` label and a
+  **Russian** title/body (see the language exception above) — then added to the board
+  with status `Инбокс`:
+  `gh project item-add 2 --owner kalbac --url <issue-url>`.
+  Never a stray `.txt` note; a code TODO must reference an issue (`// TODO(#123): ...`),
+  never stand alone.
+- **Triage is the operator's:** items in `Инбокс` wait for his decision; agents do not
+  self-promote them to `Бэклог`. When an agent picks an issue up on the operator's word,
+  move it to `В работе`; move to `Готово` only when the work is merged and verified.
+- **`docs/FUTURE-BACKLOG.md` is FROZEN** (s52): do not append new items. Its open items
+  were migrated to issues #85–#108, #110; the file remains as history plus the
+  parked-by-design residuals it documents in place.
 
 ## Review discipline (unchanged — the project's whole point)
 
