@@ -120,7 +120,14 @@ Three fields carry the design's weight:
   read as a product-wide one.
 - **`findings.in_diff` vs `total`.** A gate can legitimately be green with a non-zero
   exit code when every finding sits outside the diff. The report must show both
-  numbers, because their difference *is* the untouched debt.
+  numbers, because their difference *is* the untouched debt. This requires the gate
+  to record the tool's count *before* diff-filtering as well as after: `findings` as
+  the gate hands it over is already the filtered set, so a ledger storing only that
+  would make the two numbers equal by construction and the debt invisible — a
+  line-scoped green would silently read as a whole-file proof. When a run never
+  measured the full count (a gate that exited 0 and was therefore never parsed), the
+  total is recorded as *not measured* rather than as `0`: claiming a file is clean
+  because nothing looked at it is the fail-open this whole feature exists to avoid.
 
 Writing is **fail-soft**: an evidence write that throws logs a WARN and never fails a
 task. A report assembled over records that are missing or unreadable says so
@@ -207,20 +214,28 @@ These are the acceptance criteria of the feature, and each gets a test.
 Changes to existing code, kept minimal:
 
 - `runProfileGates` (composition root, `root.ts:537-623`) returns per-gate records
-  **including skipped ones**, instead of collapsing to one boolean. `runGate` passes
-  them through on the verdict path so the conductor can record them. This is the only
-  behavioural change on the gate path, and it adds no decision — the verdict logic is
-  untouched.
-- The conductor stamps `started_at`/`ended_at` and writes the evidence record at each
-  decisive exit (commit, quarantine, escalate), the same points that already persist
-  `critic-verdict.json` — reusing the "write only at decisive exits" rule from
-  `gotchas/per-round-overwrite-artifact-stale.md`.
+  **including skipped ones**, instead of collapsing to one boolean. The record is the
+  dep's one and only return shape — not the old shape with optional fields added
+  beside it, which would be two normal forms for one value and hence the exact defect
+  family `gotchas/validated-one-string-used-another.md` names as this repo's most
+  recurring. `runGate` folds only `status === "red"` into `profile_green` (a skipped
+  gate must never turn a verdict red) and carries the records on `GateVerdict.
+  profile_gates`, which puts them in `gate-verdict.json` for free and delivers them to
+  the conductor with no new plumbing. The verdict logic itself is untouched.
+- The conductor accumulates a mutable evidence draft during a task iteration; each
+  decisive exit records its outcome by assignment, and the record is written **once**,
+  in the iteration's `finally`. A write at each exit was rejected: `runIteration` has
+  ten decisive exits, so that is ten chances to forget one, and a forgotten exit means
+  a silently missing record. This is the same write-once idiom `gate-feedback.md`
+  already uses, for the same reason (`gotchas/per-round-overwrite-artifact-stale.md`).
+  The draft's default outcome is `abandoned`, so an exit that forgets to set one
+  produces an honest "ended without a recorded decision" rather than a claimed success.
 - API: `GET /projects/:id/runs/:runId/report` and
   `POST /projects/:id/qualification-report` (a claim is an explicit act, hence POST).
 - CLI: `report run <runId>` and `report qualify [--from <sha>] [--to <sha>]`.
 
-UI is out of scope for this spec beyond linking the Execution Report from `RunView`;
-a designed report surface is its own piece of work.
+UI is out of scope: a designed report surface is its own piece of work, and both
+reports are readable through the CLI and the endpoints in the meantime.
 
 ## Testing
 
