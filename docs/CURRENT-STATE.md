@@ -21,6 +21,13 @@ gate step 1d and its `protectedPaths` become the fifth source in `resolveOracleS
 the entire Phase 1+2 protection is inherited unchanged. Six codex `gpt-5.6-luna` rounds;
 all three live directions proven on `woodev-shipping-plugin-test`.
 
+**s51 then closed the first of the two limitations that proof exposed: gate feedback
+on RETRY.** A red gate used to tell the worker nothing -- the RETRY branch wrote no
+artifact and every step discarded its tool output -- so the worker reproduced the same
+diff until its budget ran out. Now each failing step's output is captured, bounded and
+persisted as `gate-feedback.md`, and the next round's worker reads it. Live-proven: a
+task that would have burned its whole budget converged in **one** retry (`c0fb8de`).
+
 ## Phase status
 
 | Area | Status |
@@ -32,6 +39,7 @@ all three live directions proven on `woodev-shipping-plugin-test`.
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
 | Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
+| Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -115,12 +123,8 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
   per-profile baseline, or an explicit "you touched it, you clean it" policy. This is a
   product decision, not a bug fix, and it gates how useful profiles are on real legacy
   plugins. `gotchas/profile-gates-must-be-diff-scoped.md`.
-- **(priority) Gate feedback on RETRY.** A red gate tells the worker nothing: the RETRY
-  branch writes no artifact, `critic-feedback.md` is written only on critic/escalation
-  paths, and `runProfileGates` discards the tool's stdout -- so the worker reproduces the
-  same diff until its budget is exhausted, then escalates. Fail-safe, not fail-open, but
-  it wastes every retry. Pre-existing for `checkCommand`; load-bearing for profiles.
-  `gotchas/profile-gate-red-gives-the-worker-no-feedback.md`.
+- *(done s51)* **Gate feedback on RETRY** -- shipped and live-proven; the gotcha is
+  marked RESOLVED. Covers all three output-producing steps, not just profile gates.
 - **CRLF vs WPCS on Windows.** WPCS demands `
 `; a worker on Windows writes `
 
