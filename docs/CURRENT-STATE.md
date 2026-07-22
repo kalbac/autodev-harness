@@ -10,9 +10,8 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is at `ba050df` (s51's three PRs merged). **s52's work — the two
-reports — sits on branch `feat/two-reports` (20 commits, 1611 tests green), live-proven,
-awaiting the operator's merge word (attended).**
+~5 slices). `main` is synced -- **s52 merged the two reports as PR #113 (`4fc1e87`, CI
+4/4)**, and PR #111 (`bc842fb`) moved the backlog to GitHub Issues.
 
 **s52 built the two reports — the third link of the external-review chain.** Separate a
 successful *Run* from a successful *Product*: a **Harness Execution Report** (per-run
@@ -46,7 +45,7 @@ committed `0590e9f`.
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 | Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
 | Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
-| Two reports (Execution + Qualification) | 🟡 built + live-proven s52 (`feat/two-reports`, 20 commits); awaiting merge word |
+| Two reports (Execution + Qualification) | ✅ shipped s52 (PR #113, `4fc1e87`, CI 4/4) -- per-task evidence ledger + both reports; 4 critic rounds -> SAFE |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -123,8 +122,8 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-**First: merge `feat/two-reports`** (20 commits, 1611 tests green, 4 critic rounds ->
-SAFE, live-proven) once the operator gives the word. Then, in rough priority order:
+The two reports shipped (PR #113). The `architecture-review-external-2026-07.md`
+chain is now down to its last link. In rough priority order:
 
 - **(priority) Evaluation Corpus** — the chain's last link. Real tasks
   (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports
