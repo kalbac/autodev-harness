@@ -10,7 +10,7 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`, CI 4/4).
+~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`) and PR #83 (`4745a9a`), both CI 4/4.
 
 **s51 shipped Profiles v1 — the qualification layer.** The harness proves the
 *process*; a profile proves the *product*. A profile (`profiles/wordpress-woocommerce@1`)
@@ -26,7 +26,7 @@ on RETRY.** A red gate used to tell the worker nothing -- the RETRY branch wrote
 artifact and every step discarded its tool output -- so the worker reproduced the same
 diff until its budget ran out. Now each failing step's output is captured, bounded and
 persisted as `gate-feedback.md`, and the next round's worker reads it. Live-proven: a
-task that would have burned its whole budget converged in **one** retry (`c0fb8de`).
+task that would have burned its whole budget converged in **one** retry (`c0fb8de`). Merged as PR #83 (`4745a9a`).
 
 ## Phase status
 

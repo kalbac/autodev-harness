@@ -4,7 +4,7 @@
 
 ---
 
-## s51b (2026-07-22) — GATE FEEDBACK ON RETRY: the worker now learns WHY the gate rejected it
+## s51b (2026-07-22) — GATE FEEDBACK ON RETRY: the worker now learns WHY the gate rejected it — PR #83 MERGED (`4745a9a`, CI 4/4)
 
 Continuation of s51, on the operator's instruction ("gate feedback first, then we discuss scoping"). This closes the first of the two limitations the Profiles live proof exposed.
 
