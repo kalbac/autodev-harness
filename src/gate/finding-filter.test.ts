@@ -384,3 +384,30 @@ describe("R4-FIX5: an ambiguous case-colliding path is unattributed, not attribu
     expect(result[0]).toMatchObject({ file: "src/Foo.php", unattributed: false });
   });
 });
+
+describe("R5-FIX1: a new file with NO added lines still owns its file-level findings", () => {
+  it("keeps a file-level finding on a new but EMPTY file (no hunk, so no added lines)", () => {
+    // A binary addition has no hunk at all, and neither does a new zero-byte
+    // file -- both land in newFiles with no entry in addedLines. The `!added`
+    // bail used to run first and discard the finding for a file the worker had
+    // just created.
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\includes\\empty.php", line: null, message: "missing file doc comment" })],
+      new Map(),
+      "C:\\repo",
+      new Set(["includes/empty.php"]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "includes/empty.php", unattributed: false });
+  });
+
+  it("still drops a file-level finding on an untouched file", () => {
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\includes\\old.php", line: null, message: "pre-existing" })],
+      new Map(),
+      "C:\\repo",
+      new Set(),
+    );
+    expect(result).toEqual([]);
+  });
+});

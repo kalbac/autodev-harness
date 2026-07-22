@@ -226,3 +226,24 @@ describe("R4-FIX4: the unclosed-<file> guard must not reject VALID reports", () 
     expect(() => parseCheckstyle(xml)).toThrow(/unclosed|closed/i);
   });
 });
+
+describe("R5: malformed regions must never read as clean", () => {
+  it("throws on an unterminated CDATA whose text contains a literal </checkstyle>", () => {
+    // The root-close check would otherwise be satisfied by markup that is only
+    // literal TEXT, so a document truncated mid-CDATA read as a well-formed,
+    // finding-less report.
+    expect(() => parseCheckstyle("<checkstyle><![CDATA[ literal </checkstyle>")).toThrow(/CDATA/i);
+  });
+
+  it("still accepts a properly terminated CDATA section", () => {
+    const xml = '<checkstyle><![CDATA[ harmless ]]><file name="x.php"/></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("throws on a non-self-closing <error> instead of skipping it", () => {
+    // ERROR_TAG_RE only reads `<error .../>`, so this real finding was silently
+    // dropped and the file reported as clean.
+    const xml = '<checkstyle><file name="x.php"><error line="1" severity="error" message="boom"></file></checkstyle>';
+    expect(() => parseCheckstyle(xml)).toThrow(/self-closing|malformed/i);
+  });
+});

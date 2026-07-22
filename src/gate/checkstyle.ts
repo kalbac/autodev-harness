@@ -124,6 +124,9 @@ const FILE_SELF_CLOSED_RE = /<file\b[^>]*\/>/g;
  *  markup and must not be counted as an opening tag. */
 const CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g;
 const ERROR_TAG_RE = /<error\b([^>]*)\/>/g;
+/** Any `<error` opening, self-closing or not. Counted against `ERROR_TAG_RE` so a
+ *  malformed non-self-closed `<error ...>` cannot be skipped in silence. */
+const ERROR_OPEN_RE = /<error\b/g;
 const ATTR_RE = /([A-Za-z_:][\w.:-]*)\s*=\s*"([^"]*)"/g;
 
 /** Parse one self-closing tag's attribute list (`line="1" column="1" ...`) into a
@@ -171,6 +174,23 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
         `a PASS, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
     );
   }
+  // R5-FIX4: an UNTERMINATED CDATA section must be caught before the root-close
+  // check below, because that check would otherwise be satisfied by a
+  // `</checkstyle>` sitting INSIDE the unterminated CDATA -- where it is literal
+  // text, not markup. `<checkstyle><![CDATA[ literal </checkstyle>` then reads as
+  // a well-formed, file-less, finding-less report: CLEAN, for a document that was
+  // truncated mid-section. Counting openings against terminators catches it.
+  const cdataOpenCount = (xml.match(/<!\[CDATA\[/g) ?? []).length;
+  const cdataCloseCount = (xml.match(/\]\]>/g) ?? []).length;
+  if (cdataOpenCount > cdataCloseCount) {
+    throw new Error(
+      `parseCheckstyle: report contains an unterminated CDATA section (${cdataOpenCount} opened, ` +
+        `${cdataCloseCount} closed) -- the document is truncated. A </checkstyle> inside an unterminated ` +
+        `CDATA is literal text, not a closed root, so accepting this would report a truncated document as ` +
+        `CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+    );
+  }
+
   const rootSelfClosed = rootMatch[0].endsWith("/>");
   if (!rootSelfClosed && !/<\/checkstyle\s*>/.test(xml)) {
     throw new Error(
@@ -219,6 +239,24 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
   for (const fileMatch of xml.matchAll(FILE_BLOCK_RE)) {
     const file = unescapeXmlEntities(fileMatch[1]!);
     const body = fileMatch[2]!;
+
+    // R5-FIX5: the same shortfall discipline the `<file>` count applies, one
+    // level down. `ERROR_TAG_RE` only recognizes a SELF-CLOSING `<error .../>`,
+    // so a malformed `<error line="1" ...>` (no `/`) was skipped in silence and
+    // a report carrying a real finding parsed as zero -- CLEAN. An unparsed
+    // element inside a document we accepted is never ignorable here: this
+    // parser's entire contract is that "no findings" means the tool found none,
+    // not that we failed to read them.
+    const errorOpenCount = [...body.matchAll(ERROR_OPEN_RE)].length;
+    const errorTagCount = [...body.matchAll(ERROR_TAG_RE)].length;
+    if (errorTagCount < errorOpenCount) {
+      throw new Error(
+        `parseCheckstyle: file block for ${JSON.stringify(file)} has ${errorOpenCount} <error> tag(s) but ` +
+          `only ${errorTagCount} in the self-closing form this parser can read -- the report is malformed. ` +
+          `Skipping the unreadable ones would report a file with real findings as clean, so it throws instead`,
+      );
+    }
+
     for (const errorMatch of body.matchAll(ERROR_TAG_RE)) {
       const attrs = parseAttrs(errorMatch[1]!);
       const lineAttr = attrs["line"];

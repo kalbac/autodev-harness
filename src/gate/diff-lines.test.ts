@@ -371,3 +371,10 @@ describe("new-file signals do not leak across file sections", () => {
     expect(r.newFiles.has("existing.php")).toBe(false);
   });
 });
+
+describe("R5-FIX3: an empty quoted path is refused", () => {
+  it("throws rather than seeding the map with an empty key that can never match", () => {
+    const d = ["--- /dev/null", '+++ ""', "@@ -0,0 +1,1 @@", "+one", ""].join(String.fromCharCode(10));
+    expect(() => addedLineNumbers(d)).toThrow(/empty quoted path/i);
+  });
+});

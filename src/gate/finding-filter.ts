@@ -281,18 +281,26 @@ export function filterFindings(
     // above), so there is nothing to union -- the key either names a file the
     // diff touched or it does not.
     const added = addedLines.get(normalizedPath);
+
+    // Rule 6, checked BEFORE the "no added lines" bail below (R5-FIX1). A file
+    // can be genuinely NEW and still have no entry in `addedLines`: a binary
+    // addition has no hunk at all, and neither does a new but EMPTY file. Both
+    // land in `newFiles` (from `new file mode` / `--- /dev/null`) with no added
+    // lines to their name. Bailing on `!added` first therefore discarded the
+    // file-level finding for a file the worker had just created -- e.g. a new
+    // zero-byte .php file drawing "missing file doc comment". Ordering is the
+    // entire bug: both branches were individually correct.
+    if (f.line === null) {
+      if (newFiles.has(normalizedPath)) {
+        kept.push({ ...f, file: normalizedPath, unattributed: false });
+      }
+      continue;
+    }
+
     if (!added) {
       // Rule 4: a known file, just not one the diff touched. Drop, silently --
       // this is ordinary out-of-scope pre-existing debt, not a failure of any
       // kind.
-      continue;
-    }
-
-    if (f.line === null) {
-      // Rule 6.
-      if (newFiles.has(normalizedPath)) {
-        kept.push({ ...f, file: normalizedPath, unattributed: false });
-      }
       continue;
     }
 

@@ -185,7 +185,19 @@ function unquotePath(raw: string): string {
         `because a wrong key silently drops every finding for that file`,
     );
   }
-  return decodeGitQuotedPathContent(raw.slice(1, closedAt));
+  const decoded = decodeGitQuotedPathContent(raw.slice(1, closedAt));
+  if (decoded === "") {
+    // R5-FIX3: `""` passes the termination scan (the closing quote IS the last
+    // character) and decodes to the empty string, which is not a filename any
+    // filesystem can hold. Accepting it seeds the map -- and possibly
+    // `newFiles` -- with an empty key that matches nothing, so every finding for
+    // whatever file the diff actually meant is then treated as out of scope.
+    throw new Error(
+      `addedLineNumbers: diff contains an empty quoted path ("") -- no filesystem holds such a path, so the ` +
+        `diff is malformed; refusing rather than keying the added-line map on a path that can never match`,
+    );
+  }
+  return decoded;
 }
 
 /** Matches a `diff --git` line where BOTH sides are C-quoted (R3-FIX1/FIX2).
