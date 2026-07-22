@@ -58,7 +58,7 @@ describe("parseCheckstyle (pinned on a REAL PHPCS report)", () => {
     expect(found.some((f) => f.severity === "error")).toBe(true);
   });
 
-  it("surfaces a missing/unparseable line attribute as null, never a fabricated number", () => {
+  it("surfaces an ABSENT line attribute as null, never a fabricated number", () => {
     const found = parseCheckstyle(
       '<checkstyle><file name="f.php"><error severity="error" message="no line here" source="s"/></file></checkstyle>',
     );
@@ -79,5 +79,71 @@ describe("parseCheckstyle (pinned on a REAL PHPCS report)", () => {
 
   it("THROWS on an empty string", () => {
     expect(() => parseCheckstyle("")).toThrow(/checkstyle/i);
+  });
+
+  it("FIX4: THROWS on a truncated report that has a root but never closes it (killed process / half-written report)", () => {
+    // Contains the `<checkstyle` root marker, so the OLD "no root at all" check
+    // would pass it through and the regex scan would simply find zero <file>
+    // blocks -- returning [] and reading as CLEAN downstream. A document that
+    // never ended is not a legitimate empty report; it must throw.
+    expect(() =>
+      parseCheckstyle('<?xml version="1.0"?>\n<checkstyle version="3.13.5"><file name="x.php">'),
+    ).toThrow(/checkstyle/i);
+  });
+
+  it("FIX4: a genuinely empty, well-CLOSED report still returns []", () => {
+    expect(parseCheckstyle('<?xml version="1.0"?>\n<checkstyle version="3.13.5"></checkstyle>')).toEqual([]);
+  });
+
+  it("FIX5: an ABSENT line attribute is legitimately file-level -- null, not a throw", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error severity="error" message="no line here" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.line).toBeNull();
+  });
+
+  it("FIX5: a PRESENT but unparseable line attribute (line=\"abc\") THROWS rather than silently becoming file-level", () => {
+    expect(() =>
+      parseCheckstyle(
+        '<checkstyle><file name="f.php"><error line="abc" severity="error" message="m" source="s"/></file></checkstyle>',
+      ),
+    ).toThrow(/line/i);
+  });
+
+  it("FIX5: a PRESENT but non-positive line attribute (line=\"-1\") THROWS rather than silently becoming file-level", () => {
+    expect(() =>
+      parseCheckstyle(
+        '<checkstyle><file name="f.php"><error line="-1" severity="error" message="m" source="s"/></file></checkstyle>',
+      ),
+    ).toThrow(/line/i);
+  });
+
+  it("FIX5: line=\"0\" also THROWS -- Checkstyle line numbers are 1-based, so 0 is not a legitimate value", () => {
+    expect(() =>
+      parseCheckstyle(
+        '<checkstyle><file name="f.php"><error line="0" severity="error" message="m" source="s"/></file></checkstyle>',
+      ),
+    ).toThrow(/line/i);
+  });
+
+  it("FIX6: decodes decimal and hex numeric XML entities in the message", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="a&#10;b&#x27;c" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("a\nb'c");
+  });
+
+  it("FIX6: numeric-entity decoding still leaves &amp; for last -- a literal &amp;#10; does not double-decode", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="a &amp;#10; b" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("a &#10; b");
+  });
+
+  it("FIX6: an out-of-range numeric entity is left undecoded rather than producing an invalid character", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="bad &#x110000; entity" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("bad &#x110000; entity");
   });
 });

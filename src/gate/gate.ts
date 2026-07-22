@@ -6,6 +6,7 @@ import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { formatGateFeedback } from "./gate-feedback.js";
 import type { FailedStep } from "./gate-feedback.js";
 import { addedLineNumbers } from "./diff-lines.js";
+import type { AddedLines } from "./diff-lines.js";
 import type { FilteredFinding } from "./finding-filter.js";
 
 /**
@@ -87,14 +88,15 @@ export interface GateDeps {
    *  under judgement. A gate that declares no file glob is whole-project by design (e.g.
    *  `composer validate`) and ignores this argument.
    *
-   *  Also receives the diff's ADDED-line map (line-scoped profile gates,
+   *  Also receives the diff's ADDED-line data (line-scoped profile gates,
    *  `docs/superpowers/plans/2026-07-22-line-scoped-profile-gates.md`, Task 4), keyed by
    *  worktree-relative path -- computed ONCE here in `runGate` from `resolveScope`'s
    *  `diffText` via `addedLineNumbers` (`diff-lines.ts`), rather than have the composition
    *  root re-derive the diff with a second `git` call. A gate that declares `report:
-   *  checkstyle` uses this map to filter its tool's findings down to only the lines this
-   *  diff added; a gate without `report` ignores it, exactly like a whole-project gate
-   *  ignores `changedFiles`.
+   *  checkstyle` uses `addedLines.added` to filter its tool's findings down to only the
+   *  lines this diff added and `addedLines.newFiles` to decide which files are brand new
+   *  (FIX3/FIX9, `diff-lines.ts`'s `AddedLines`); a gate without `report` ignores it,
+   *  exactly like a whole-project gate ignores `changedFiles`.
    *
    *  A per-gate result MAY carry `findings`: the SURVIVING (already diff-filtered)
    *  findings for a `report` gate, or `undefined` for an ordinary gate (no report format,
@@ -109,7 +111,7 @@ export interface GateDeps {
   runProfileGates:
     | ((
         changedFiles: string[],
-        addedLines: Map<string, Set<number>>,
+        addedLines: AddedLines,
       ) => Promise<
         { id: string; green: boolean; exitCode: number; output?: string; findings?: FilteredFinding[] }[]
       >)

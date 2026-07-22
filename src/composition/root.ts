@@ -76,6 +76,7 @@ import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
 import { loadProfile, prepareGateInvocation, classifyGateExit } from "../profile/profile.js";
 import { parseCheckstyle } from "../gate/checkstyle.js";
 import { filterFindings, type FilteredFinding } from "../gate/finding-filter.js";
+import type { AddedLines } from "../gate/diff-lines.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
@@ -525,7 +526,7 @@ export async function buildProjectRoot(
       runProfileGates:
         profile === null || profile.gates.length === 0
           ? null
-          : async (changedFiles: string[], addedLines: Map<string, Set<number>>) => {
+          : async (changedFiles: string[], addedLines: AddedLines) => {
               const out: {
                 id: string;
                 green: boolean;
@@ -610,7 +611,7 @@ export async function buildProjectRoot(
                 // unrunnable throw above, and the conductor escalates it the
                 // same way.
                 const parsed = parseCheckstyle(r.stdout);
-                const filtered = filterFindings(parsed, addedLines, wt.path);
+                const filtered = filterFindings(parsed, addedLines.added, wt.path, addedLines.newFiles);
                 out.push({
                   id: g.id,
                   green: filtered.length === 0,

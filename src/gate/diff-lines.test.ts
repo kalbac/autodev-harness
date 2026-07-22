@@ -17,7 +17,7 @@ index 111..222 100644
 
 describe("addedLineNumbers", () => {
   it("records only ADDED lines, numbered in the NEW file", () => {
-    const m = addedLineNumbers(DIFF);
+    const m = addedLineNumbers(DIFF).added;
     expect([...m.get("includes/a.php")!]).toEqual([13]);
   });
 
@@ -33,7 +33,7 @@ describe("addedLineNumbers", () => {
 +e
  f
 `;
-    expect([...addedLineNumbers(d).get("x.php")!]).toEqual([2, 22]);
+    expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2, 22]);
   });
 
   it("treats a brand-new file as entirely added", () => {
@@ -44,7 +44,7 @@ describe("addedLineNumbers", () => {
 +two
 +three
 `;
-    expect([...addedLineNumbers(d).get("new.php")!]).toEqual([1, 2, 3]);
+    expect([...addedLineNumbers(d).added.get("new.php")!]).toEqual([1, 2, 3]);
   });
 
   it("a deletion-only hunk adds nothing and does not shift the cursor", () => {
@@ -55,7 +55,7 @@ describe("addedLineNumbers", () => {
 -b
  c
 `;
-    expect(addedLineNumbers(d).get("x.php") ?? new Set()).toEqual(new Set());
+    expect(addedLineNumbers(d).added.get("x.php") ?? new Set()).toEqual(new Set());
   });
 
   it("covers several files in one diff", () => {
@@ -70,20 +70,53 @@ describe("addedLineNumbers", () => {
  c
 +d
 `;
-    const m = addedLineNumbers(d);
+    const m = addedLineNumbers(d).added;
     expect([...m.get("x.php")!]).toEqual([2]);
     expect([...m.get("y.php")!]).toEqual([6]);
   });
 
   it("survives CRLF line endings", () => {
     const d = "--- a/x.php\r\n+++ b/x.php\r\n@@ -1,1 +1,2 @@\r\n a\r\n+b\r\n";
-    expect([...addedLineNumbers(d).get("x.php")!]).toEqual([2]);
+    expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2]);
   });
 
   it("ignores the +++ header, which also starts with a plus", () => {
     // The classic off-by-one in every hand-rolled diff parser.
-    const m = addedLineNumbers(DIFF);
+    const m = addedLineNumbers(DIFF).added;
     expect(m.has("b/includes/a.php")).toBe(false);
     expect([...m.get("includes/a.php")!]).not.toContain(1);
+  });
+
+  it("FIX1: a content line whose own text begins with ++ is NOT mistaken for a file header", () => {
+    // The added line's content is "++ b content" -- prefixed with the unified-diff
+    // "+" marker it becomes "+++ b content" on the wire, textually indistinguishable
+    // from a `+++ b/<path>` file header. Only trusting the hunk header's line counts
+    // (not sniffing the body for header-shaped text) tells them apart.
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,1 +1,2 @@", " a", "+++ b content"].join("\n");
+    const m = addedLineNumbers(d).added;
+    // currentPath must still be "x.php" -- not corrupted to "b content" or similar.
+    expect([...m.get("x.php")!]).toEqual([2]);
+  });
+
+  it("FIX2: an unrecognized @@ hunk header (e.g. a combined/merge-diff @@@ header) THROWS naming the line", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@@ -1,2 -1,2 +1,3 @@@", " a", "+b", " c"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/@@@ -1,2 -1,2 \+1,3 @@@/);
+  });
+
+  it("FIX3: reports a brand-new file (--- /dev/null) in newFiles", () => {
+    const d = `--- /dev/null
++++ b/new.php
+@@ -0,0 +1,3 @@
++one
++two
++three
+`;
+    const { newFiles } = addedLineNumbers(d);
+    expect(newFiles.has("new.php")).toBe(true);
+  });
+
+  it("FIX3: an existing (non-new) file is absent from newFiles", () => {
+    const { newFiles } = addedLineNumbers(DIFF);
+    expect(newFiles.has("includes/a.php")).toBe(false);
   });
 });

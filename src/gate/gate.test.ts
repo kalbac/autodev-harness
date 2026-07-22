@@ -48,7 +48,7 @@ function makeReportGateRun(opts: {
     }
     // classification === "red" -- only NOW is the parser reached.
     const parsed = parse(opts.rawOutput);
-    const findings = filterFindings(parsed, addedLines, opts.worktreePath);
+    const findings = filterFindings(parsed, addedLines.added, opts.worktreePath, addedLines.newFiles);
     return [{ id: "phpcs", green: findings.length === 0, exitCode: opts.exitCode, findings }];
   };
 }

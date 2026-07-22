@@ -25,10 +25,15 @@ export interface CheckstyleFinding {
    *  `/`-separated path is a LATER stage's job (the finding-filter, Task 3 of this
    *  plan), not this parser's -- this module only decodes what the tool said. */
   file: string;
-  /** `null`, never a fabricated `0`/`1`, when the tool omitted or could not supply
-   *  a line number. A later stage treats a line-less finding differently (it can
-   *  only ever be attributed to a brand-new file, never a specific added line), so
-   *  inventing a number here would be a lie that stage would act on. */
+  /** `null` when the tool OMITTED the `line` attribute entirely -- legitimately
+   *  file-level (e.g. "missing file doc comment"). Never a fabricated `0`/`1`. A
+   *  later stage treats a line-less finding differently (it can only ever be
+   *  attributed to a brand-new file, never a specific added line), so inventing
+   *  a number here would be a lie that stage would act on. A `line` attribute
+   *  that IS present but does not parse to a positive integer is a different
+   *  case entirely -- the parser THROWS rather than falling back to `null`,
+   *  because silently downgrading a malformed line number to "file-level" risks
+   *  the finding-filter dropping a real finding on an existing file. */
   line: number | null;
   /** PHPCS's exit code 1 (errors) and 2 (errors+warnings) are equally RED today --
    *  both severities are kept here. Deciding that one severity should NOT block is
@@ -42,19 +47,38 @@ export interface CheckstyleFinding {
   source: string;
 }
 
-// Order matters: `&lt; &gt; &quot; &apos;` first, `&amp;` LAST. If `&amp;` ran
-// first, a message containing the literal substring `&amp;quot;` would decode in
-// two passes ( `&amp;quot;` -> `&quot;` -> `"` ) and silently invent a quote
-// character the tool never emitted. Decoding `&amp;` last means a literal
-// `&amp;quot;` correctly stays `&quot;` (one real ampersand, followed by the
-// still-escaped entity text) instead of being eaten twice.
+// Order matters: `&lt; &gt; &quot; &apos;` and numeric entities (`&#10;`,
+// `&#x27;`) first, `&amp;` LAST. If `&amp;` ran first, a message containing the
+// literal substring `&amp;quot;` would decode in two passes ( `&amp;quot;` ->
+// `&quot;` -> `"` ) and silently invent a quote character the tool never
+// emitted. Decoding `&amp;` last means a literal `&amp;quot;` correctly stays
+// `&quot;` (one real ampersand, followed by the still-escaped entity text)
+// instead of being eaten twice. The same reasoning applies to numeric entities:
+// `&amp;#10;` must stay `&#10;` (literal text), never become an actual newline.
 function unescapeXmlEntities(s: string): string {
   return s
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, hex: string) => decodeCodePoint(parseInt(hex, 16), m))
+    .replace(/&#(\d+);/g, (m, dec: string) => decodeCodePoint(parseInt(dec, 10), m))
     .replace(/&amp;/g, "&");
+}
+
+/** A numeric XML character reference decodes to the Unicode code point it
+ *  names. Guard against out-of-range (beyond `0x10FFFF`, the maximum valid
+ *  Unicode code point) or otherwise invalid values -- `String.fromCodePoint`
+ *  THROWS on those, and a malformed entity in a tool's message is not worth
+ *  failing the whole parse over, so the original entity text is left
+ *  untouched (`m`) rather than invented or dropped. */
+function decodeCodePoint(codePoint: number, original: string): string {
+  if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return original;
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return original;
+  }
 }
 
 const FILE_BLOCK_RE = /<file\s+name="([^"]*)"\s*>([\s\S]*?)<\/file>/g;
@@ -80,18 +104,39 @@ function parseAttrs(raw: string): Record<string, string> {
  * `[]`. Zero findings reads as "clean" everywhere downstream, so a parse failure
  * that returned `[]` would silently convert a broken/misconfigured tool run into
  * a PASS verdict -- a fail-open in exactly the component whose job is deciding
- * whether a change may merge. "Unparseable" is deliberately narrow here: only "no
- * `<checkstyle` root at all" is treated as unparseable (e.g. the tool crashed and
- * printed a shell error instead of a report). A well-formed root with zero `<file>`
- * blocks is a legitimate clean report and returns `[]`.
+ * whether a change may merge. Two shapes are treated as unparseable:
+ *
+ *   1. No `<checkstyle` root at all (e.g. the tool crashed and printed a shell
+ *      error instead of a report).
+ *   2. A root that never ENDS -- no `</checkstyle>` closing tag, and the root
+ *      open tag is not itself self-closed (`<checkstyle .../>`). A killed
+ *      process or a half-written report can produce exactly `<checkstyle
+ *      version="..."><file name="x.php">` and then just stop: the root marker
+ *      IS present, so a check for the root alone would pass this through, the
+ *      `<file>`/`<error>` regex scan would find no complete blocks, and the
+ *      result would be `[]` -- reading as CLEAN downstream for a report that
+ *      never finished. Requiring evidence the document actually ended is what
+ *      tells a genuinely empty, well-formed report (`<checkstyle .../>` or
+ *      `<checkstyle>...</checkstyle>` with zero `<file>` blocks -- a legitimate
+ *      clean report, returns `[]`) apart from a truncated one.
  */
 export function parseCheckstyle(xml: string): CheckstyleFinding[] {
-  if (!/<checkstyle(\s|>|\/)/.test(xml)) {
+  const rootMatch = /<checkstyle\b[^>]*>/.exec(xml);
+  if (!rootMatch) {
     throw new Error(
       `parseCheckstyle: input has no <checkstyle> root -- this is not a Checkstyle report ` +
         `(the tool likely crashed or printed something other than its --report=checkstyle ` +
         `output). Treating this as zero findings would silently turn a broken gate run into ` +
         `a PASS, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+    );
+  }
+  const rootSelfClosed = rootMatch[0].endsWith("/>");
+  if (!rootSelfClosed && !/<\/checkstyle\s*>/.test(xml)) {
+    throw new Error(
+      `parseCheckstyle: <checkstyle> root was never closed -- no </checkstyle> and the root tag ` +
+        `is not self-closed. This looks like a truncated report (killed process, or output cut ` +
+        `off mid-write): zero findings would parse out of a document like this and read as CLEAN ` +
+        `downstream, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
     );
   }
 
@@ -102,11 +147,32 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
     for (const errorMatch of body.matchAll(ERROR_TAG_RE)) {
       const attrs = parseAttrs(errorMatch[1]!);
       const lineAttr = attrs["line"];
-      const lineNum = lineAttr === undefined ? NaN : Number(lineAttr);
+      let line: number | null = null;
+      if (lineAttr !== undefined) {
+        // PRESENT but unparseable or non-positive means the report is not
+        // trustworthy -- Checkstyle line numbers are 1-based, so anything
+        // that doesn't parse to a positive integer is malformed input, not a
+        // legitimate file-level finding. Silently falling back to `null` here
+        // (as an ABSENT attribute legitimately does) would make a malformed
+        // `line="abc"`/`line="-1"` read as file-level, which on an EXISTING
+        // file means the finding-filter DROPS it -- a finding the worker may
+        // have actually written, silently discarded.
+        const n = Number(lineAttr);
+        if (!Number.isInteger(n) || n <= 0) {
+          throw new Error(
+            `parseCheckstyle: <error> has an unparseable or non-positive line attribute ` +
+              `(line=${JSON.stringify(lineAttr)}) in file ${JSON.stringify(file)} -- a PRESENT line ` +
+              `attribute that isn't a positive integer means the report is not trustworthy, and ` +
+              `treating it as file-level (null) would risk silently dropping a real finding on an ` +
+              `existing file.`,
+          );
+        }
+        line = n;
+      }
       const severity = attrs["severity"] === "warning" ? "warning" : "error"; // PHPCS emits only these two; anything else is treated as the more conservative "error"
       findings.push({
         file,
-        line: Number.isFinite(lineNum) ? lineNum : null,
+        line,
         severity,
         message: unescapeXmlEntities(attrs["message"] ?? ""),
         source: attrs["source"] ?? "",
