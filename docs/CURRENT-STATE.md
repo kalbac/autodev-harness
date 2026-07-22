@@ -5,28 +5,33 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s51)
+## Where we are (leaving s52)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`), #83 (`4745a9a`) and #84 (`c1ff87e`), all CI 4/4.
+~5 slices). `main` is at `ba050df` (s51's three PRs merged). **s52's work — the two
+reports — sits on branch `feat/two-reports` (20 commits, 1611 tests green), live-proven,
+awaiting the operator's merge word (attended).**
 
-**s51 shipped Profiles v1 — the qualification layer.** The harness proves the
-*process*; a profile proves the *product*. A profile (`profiles/wordpress-woocommerce@1`)
-is a named, versioned per-project-type proof pack living in the **harness** repo, so it
-is worker-immutable by construction -- which is how `adr/006` **Phase 3** lands without
-being a separate phase. It is an **oracle source, not a second judge**: its gates become
-gate step 1d and its `protectedPaths` become the fifth source in `resolveOracleSet`, so
-the entire Phase 1+2 protection is inherited unchanged. Six codex `gpt-5.6-luna` rounds;
-all three live directions proven on `woodev-shipping-plugin-test`.
+**s52 built the two reports — the third link of the external-review chain.** Separate a
+successful *Run* from a successful *Product*: a **Harness Execution Report** (per-run
+diagnostics — rounds, critic, gates, budgets) and a **Product Qualification Report**
+(per-commit-range, on-demand — requirements, compatibility, security, release artifact),
+never mixed. Both are pure functions over a new per-task **evidence ledger**
+(`runtime/<taskId>/evidence.json`) written once per iteration in the conductor's
+`finally`; `profile_green` was already a separate verdict field, so this is assembly.
 
-**s51 then closed the first of the two limitations that proof exposed: gate feedback
-on RETRY.** A red gate used to tell the worker nothing -- the RETRY branch wrote no
-artifact and every step discarded its tool output -- so the worker reproduced the same
-diff until its budget ran out. Now each failing step's output is captured, bounded and
-persisted as `gate-feedback.md`, and the next round's worker reads it. Live-proven: a
-task that would have burned its whole budget converged in **one** retry (`c0fb8de`). Merged as PR #83 (`4745a9a`).
+**The honesty is the product.** The Qualification Report's "not proven" section is
+load-bearing: skipped gates, unchecked `acceptance[]`, pre-existing debt (`total -
+in_diff`), missing/unreadable evidence, the analyzer-toolchain residual. Four codex
+`gpt-5.6-luna` rounds (5 -> 3 -> 4 -> SAFE), one finding declined with verified
+rationale (the Qualification Report is about commits not tasks, so it does not reconcile
+against the live queue — R4 agreed). The deepest fix made **Principle 11** mechanical:
+the Execution Report reconciles each record against the live blackboard, which wins on a
+contradiction. **Live-proven, two numbers appearing AND differing:** `phpcs` green on the
+added lines (`in_diff: 0`) while the file carries 10 pre-existing findings (`total: 10`),
+committed `0590e9f`.
 
 ## Phase status
 
@@ -41,6 +46,7 @@ task that would have burned its whole budget converged in **one** retry (`c0fb8d
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 | Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
 | Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
+| Two reports (Execution + Qualification) | 🟡 built + live-proven s52 (`feat/two-reports`, 20 commits); awaiting merge word |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -110,24 +116,23 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
   separate step — it folds into Profiles (the profile and its protected-path declaration
   must themselves live at the trusted root).
 - **Profiles / Qualification Layer** — **v1 shipped s51** (two facets: `gates` +
-  `protectedPaths`; WP/WC first). Next in the chain: the **two reports** (Harness
-  Execution vs Product Qualification), for which `profile_green` is already a separate
-  verdict field. (The `adr/004` **north-star** doc still folds into this.)
+  `protectedPaths`; WP/WC first). Next in the chain — the **two reports** — is **built
+  and live-proven in s52** (`feat/two-reports`), awaiting merge. (The `adr/004`
+  **north-star** doc still folds into this.) After the reports land, the chain's last
+  link is the **Evaluation Corpus**.
 
 ## NEXT ACTIONS
 
-Both limitations the Profiles v1 live proof exposed are now closed (gate feedback
-on RETRY, and line-scoping). What is left, in rough priority order:
+**First: merge `feat/two-reports`** (20 commits, 1611 tests green, 4 critic rounds ->
+SAFE, live-proven) once the operator gives the word. Then, in rough priority order:
 
-- **(priority) The two reports** — a **Harness Execution Report** (orchestration,
-  critic, gates, budgets) and a **Product Qualification Report** (requirements,
-  compatibility, security, release artifact), kept separate. This is the next link
-  in the `architecture-review-external-2026-07.md` chain, and it is assembly rather
-  than untangling: `profile_green` is already its own verdict field precisely so
-  this could be built without unpicking anything.
+- **(priority) Evaluation Corpus** — the chain's last link. Real tasks
+  (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports
+  now produce the raw material: first-pass gate rate, retries-to-convergence,
+  escalations-by-type, and (from the Qualification Report) proven-on-change vs debt.
 - **CRLF vs WPCS on Windows** — WPCS demands `
 `; a worker on Windows writes
-  `
+  `
 `, so every NEW PHP file draws an automatic line-ending error. Line-scoping
   made this survivable (an existing file's line-1 EOL finding is now filtered out
   as pre-existing) but a new file still trips it. Needs a normalization step or an
