@@ -3,6 +3,8 @@ import { diffAddedRemovedLines, zoneTouched, zoneTouchedStrings } from "./invari
 import type { Invariants } from "./invariants.js";
 import { isBlessed, selectGuardForValue, selectGuardForZone } from "./guards.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
+import { formatGateFeedback } from "./gate-feedback.js";
+import type { FailedStep } from "./gate-feedback.js";
 
 /**
  * The machine-gate decision core — parity: `gate.ps1 Invoke-AutodevGate`
@@ -58,10 +60,13 @@ export interface GateDeps {
   loadGuardPairs: () => GuardRecipePair[] | Promise<GuardRecipePair[]>;
   /** Resolve the scoped changed files + unified diff text for this task (git). */
   resolveScope: (input: GateInput) => Promise<{ changedFiles: string[]; diffText: string }>;
-  /** The whole-tree build/test command (composer check / npm test). null = skip. */
-  runCheck: (() => Promise<{ green: boolean; exitCode: number }>) | null;
-  /** Run one task success_command; exit 0 = pass. */
-  runSuccessCommand: (cmd: string) => Promise<{ exitCode: number }>;
+  /** The whole-tree build/test command (composer check / npm test). null = skip.
+   *  `output` (stdout+stderr, combined) is OPTIONAL so every existing caller and
+   *  test keeps compiling unchanged; when present it feeds `gate-feedback.md` on
+   *  a failing run (see `writeGateFeedback` below). */
+  runCheck: (() => Promise<{ green: boolean; exitCode: number; output?: string }>) | null;
+  /** Run one task success_command; exit 0 = pass. `output` optional, same reason as `runCheck`. */
+  runSuccessCommand: (cmd: string) => Promise<{ exitCode: number; output?: string }>;
   /** Live mutation-check for a guard: true iff it still goes red-on-flip. Parity: Test-AutodevGuardStillRed. */
   guardStillRed: (guard: GuardRow) => Promise<boolean>;
   /** Optional agent-ci replay. null = feature off. May THROW: a genuine infra failure or an
@@ -79,7 +84,9 @@ export interface GateDeps {
    *  regardless of the diff -- blocking everything while proving nothing about the change
    *  under judgement. A gate that declares no file glob is whole-project by design (e.g.
    *  `composer validate`) and ignores this argument. */
-  runProfileGates: ((changedFiles: string[]) => Promise<{ id: string; green: boolean; exitCode: number }[]>) | null;
+  runProfileGates:
+    | ((changedFiles: string[]) => Promise<{ id: string; green: boolean; exitCode: number; output?: string }[]>)
+    | null;
   /** Config-level (trusted-root, worker-inaccessible) human-only path globs (adr/006
    *  Phase 1, closing Finding 2 -- `contract.constitutionPaths` was previously dead
    *  config). Unioned with `inv.constitution.path_globs` for the constitution check.
@@ -87,6 +94,13 @@ export interface GateDeps {
   constitutionPaths?: string[];
   /** Optional: persist gate-verdict.json. Omit in unit tests. */
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
+  /** Optional: persist (or CLEAR) the gate-failure document the next round's worker reads.
+   *  Called exactly ONCE per gate run, at the decisive exit, with the content when this run
+   *  had failures and `null` when it did not. Writing once with a nullable payload -- rather
+   *  than appending per failing step -- is what makes the artifact always describe the most
+   *  recent gate run, so it can never go stale
+   *  (docs/gotchas/per-round-overwrite-artifact-stale.md). Omit in unit tests. */
+  writeGateFeedback?: (taskId: string, content: string | null) => Promise<void>;
 }
 
 /**
@@ -131,6 +145,13 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
   const { changedFiles, diffText } = await deps.resolveScope(input);
   const diffLines = diffAddedRemovedLines(diffText);
   const reasons: string[] = [];
+  // Tool output from every FAILED step this run, in the order the steps executed.
+  // Feeds `writeGateFeedback` at the decisive exit below. Deliberately narrower than
+  // `reasons`: constitution/zone findings are NOT tool output (there is no subprocess
+  // report to show) and are already fully expressed in `reasons`, so they are never
+  // added here -- adding them would duplicate content the worker already gets and
+  // dilute the actual linter/test output with restated verdict text.
+  const failedSteps: FailedStep[] = [];
 
   // 1. check command (whole tree). null = skip.
   let composerGreen = true;
@@ -139,6 +160,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     composerGreen = cc.green;
     if (!composerGreen) {
       reasons.push(`check command FAILED (exit ${cc.exitCode})`);
+      failedSteps.push({ label: "check command", exitCode: cc.exitCode, output: cc.output ?? "" });
     }
   }
 
@@ -152,6 +174,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     if (sc.exitCode !== 0) {
       successGreen = false;
       reasons.push(`success_command FAILED (exit ${sc.exitCode}): ${cmd}`);
+      failedSteps.push({ label: `success_command: ${cmd}`, exitCode: sc.exitCode, output: sc.output ?? "" });
     }
   }
 
@@ -186,6 +209,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
       if (!r.green) {
         profileGreen = false;
         reasons.push(`profile gate '${r.id}' FAILED (exit ${r.exitCode})`);
+        failedSteps.push({ label: `profile gate '${r.id}'`, exitCode: r.exitCode, output: r.output ?? "" });
       }
     }
   }
@@ -324,6 +348,14 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
 
   if (deps.writeVerdict) {
     await deps.writeVerdict(input.taskId, verdict);
+  }
+
+  // Every return from here on followed a REAL gate run (the empty-file_set
+  // fast-path above returns before any step runs and never reaches this line),
+  // so this is the single decisive-exit call site the write-or-clear contract
+  // requires: content when this run had failing steps, `null` (CLEAR) otherwise.
+  if (deps.writeGateFeedback) {
+    await deps.writeGateFeedback(input.taskId, formatGateFeedback(failedSteps));
   }
 
   return verdict;

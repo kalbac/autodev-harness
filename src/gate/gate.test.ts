@@ -30,6 +30,7 @@ interface DepsOverrides {
   guardStillRed?: GateDeps["guardStillRed"];
   runAgentCi?: GateDeps["runAgentCi"];
   runProfileGates?: GateDeps["runProfileGates"];
+  writeGateFeedback?: GateDeps["writeGateFeedback"];
 }
 
 interface Calls {
@@ -64,6 +65,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     guardStillRed: overrides.guardStillRed ?? (async () => true),
     runAgentCi: overrides.runAgentCi !== undefined ? overrides.runAgentCi : null,
     runProfileGates: overrides.runProfileGates !== undefined ? overrides.runProfileGates : null,
+    ...(overrides.writeGateFeedback !== undefined ? { writeGateFeedback: overrides.writeGateFeedback } : {}),
   };
 
   return { deps, calls };
@@ -480,5 +482,56 @@ describe("profile gates (step 1d)", () => {
     const input: GateInput = { taskId: "P4", fileSet: ["a.ts"] };
 
     await expect(runGate(input, deps)).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe("gate feedback persistence", () => {
+  it("writes the failing step's output when the decision is RETRY", async () => {
+    const written: { taskId: string; content: string | null }[] = [];
+    const { deps } = makeDeps({
+      runProfileGates: async () => [
+        { id: "phpcs", green: false, exitCode: 1, output: "3 | ERROR | Missing docblock" },
+      ],
+      writeGateFeedback: async (taskId: string, content: string | null) => {
+        written.push({ taskId, content });
+      },
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(v.decision).toBe("RETRY");
+    expect(written).toHaveLength(1);
+    expect(written[0]!.content).toContain("Missing docblock");
+  });
+
+  it("CLEARS the document when the gate run had no failures", async () => {
+    // A "latest value" artifact that survives a clean run would contradict the
+    // real outcome -- gotcha [conductor/per-round-overwrite-stale].
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(written).toEqual([null]);
+  });
+
+  it("includes a failing check command, not only profile gates", async () => {
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      runCheck: async () => ({ green: false, exitCode: 2, output: "PHPUnit: 1 failure" }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(written[0]).toContain("PHPUnit: 1 failure");
+  });
+
+  it("is optional -- a deps set without the hook behaves exactly as before", async () => {
+    const { deps } = makeDeps({
+      runProfileGates: async () => [{ id: "phpcs", green: false, exitCode: 1, output: "x" }],
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(v.decision).toBe("RETRY");
   });
 });
