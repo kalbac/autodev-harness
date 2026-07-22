@@ -339,10 +339,20 @@ describe("R4-FIX3: a malformed hunk body line THROWS instead of being silently c
     expect(() => addedLineNumbers(d)).toThrow(/xyz malformed/);
   });
 
-  it("a genuinely blank (empty-string) context line is STILL accepted, not treated as malformed", () => {
-    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,2 @@", "", " b"].join("\n");
+  it("R8-FIX1: a blank context line carries its leading SPACE -- verified against real git output", () => {
+    // The original version of this case asserted that a bare empty string was an
+    // acceptable blank context line. That rested on an unverified assumption, and
+    // capturing a real `git diff` over a file with a blank line disproved it:
+    // git emits `" "`. Accepting `""` therefore protected nothing real while
+    // letting a corrupt hunk close with an empty added-set.
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,2 @@", " ", " b"].join("\n");
     expect(() => addedLineNumbers(d)).not.toThrow();
     expect(addedLineNumbers(d).added.get("x.php") ?? new Set()).toEqual(new Set());
+  });
+
+  it("R8-FIX1: a bare empty line inside a hunk now throws", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,2 @@", "", " b"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/not a valid|malformed/i);
   });
 });
 
@@ -405,8 +415,8 @@ describe("R6-FIX4: a diff truncated right after a hunk header is caught", () => 
     expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2]);
   });
 
-  it("a genuinely blank final context line is still accepted", () => {
-    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,3 @@", " a", "+b", "", ""].join(
+  it("a blank final context line (a space, as git writes it) survives the trailing-newline drop", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,3 @@", " a", "+b", " ", ""].join(
       String.fromCharCode(10),
     );
     expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2]);

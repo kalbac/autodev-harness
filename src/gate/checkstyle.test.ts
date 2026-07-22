@@ -298,3 +298,19 @@ describe("R6: comments and CDATA are TEXT, not markup", () => {
     expect(found[0]).toMatchObject({ line: 2, message: "real" });
   });
 });
+
+describe("R8-FIX2: a scrubbed region cannot JOIN fragments into markup", () => {
+  it("does not let a comment inside a tag name collapse into a valid element", () => {
+    // Deleting the region outright turned `<fi<!--x-->le name="x.php"/>` into a
+    // perfectly valid-looking `<file name="x.php"/>` -- markup that was never in
+    // the document. A separator makes synthesis impossible: the scrub can only
+    // ever destroy structure, never invent it.
+    const xml = '<checkstyle><fi<!--x-->le name="x.php"/></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("does not let CDATA inside an attribute value collapse into a valid element", () => {
+    const xml = '<checkstyle><file name="x<![CDATA[bogus]]>.php"/></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+});

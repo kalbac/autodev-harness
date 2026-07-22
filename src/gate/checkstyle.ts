@@ -134,8 +134,17 @@ function decodeCodePoint(codePoint: number, original: string): string {
  * we failed to read them.
  */
 function scrubTextSections(xml: string): string {
-  let out = "";
+  // R8-FIX2: a removed region is replaced by a SPACE, never by nothing. Deleting
+  // it outright lets the fragments on either side JOIN into markup that was never
+  // in the document: `<fi<!--x-->le name="x.php"/>` collapses to a perfectly
+  // valid-looking `<file name="x.php"/>`, and a CDATA opener inside an attribute
+  // value does the same. A separator makes synthesis impossible -- the scrub can
+  // then only ever destroy structure, never invent it, which is the direction
+  // that matters here: an invented `<error>` would be a finding no tool reported,
+  // and an invented `<file>` would silently change what is counted.
+  const parts: string[] = [];
   let i = 0;
+  let plainFrom = 0;
   while (i < xml.length) {
     if (xml.startsWith("<!--", i)) {
       const end = xml.indexOf("-->", i + 4);
@@ -146,7 +155,9 @@ function scrubTextSections(xml: string): string {
             `as CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
         );
       }
+      parts.push(xml.slice(plainFrom, i), " ");
       i = end + 3;
+      plainFrom = i;
       continue;
     }
     if (xml.startsWith("<![CDATA[", i)) {
@@ -158,7 +169,9 @@ function scrubTextSections(xml: string): string {
             `this would report a truncated document as CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
         );
       }
+      parts.push(xml.slice(plainFrom, i), " ");
       i = end + 3;
+      plainFrom = i;
       continue;
     }
     if (xml.startsWith("]]>", i)) {
@@ -168,10 +181,10 @@ function scrubTextSections(xml: string): string {
           `hide whatever the tool actually wrote. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
       );
     }
-    out += xml[i];
     i += 1;
   }
-  return out;
+  parts.push(xml.slice(plainFrom));
+  return parts.join("");
 }
 
 const FILE_BLOCK_RE = /<file\s+name="([^"]*)"\s*>([\s\S]*?)<\/file>/g;

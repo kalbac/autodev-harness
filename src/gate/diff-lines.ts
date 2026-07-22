@@ -395,7 +395,17 @@ export function addedLineNumbers(diffText: string): AddedLines {
       // above), and a completely EMPTY line, which some producers emit for a
       // blank context line instead of a line holding a single space. Anything
       // else means the diff is not what it claims to be.
-      if (line !== "" && !line.startsWith(" ")) {
+      // R8-FIX1: a context line MUST carry its leading space. The earlier
+      // allowance for a bare empty line rested on an assumption ("some producers
+      // emit a blank context line with no leading space") that was never checked
+      // -- and is FALSE for the producer this actually consumes: `git diff` emits
+      // `" "` for a blank context line, verified by capturing one (`cat -A` shows
+      // a space before the line end). Accepting `""` therefore protected nothing
+      // real and let a corrupt hunk close cleanly with an empty added-set, which
+      // makes a genuine finding on an added line read as pre-existing. The
+      // trailing-newline artifact that `split` produces is already dropped above,
+      // so any empty line still reaching here is genuinely malformed.
+      if (!line.startsWith(" ")) {
         throw new Error(
           `addedLineNumbers: hunk in ${currentPath ?? "<unknown file>"} contains a line that is not a valid ` +
             `unified-diff body line -- the diff is malformed or was truncated. Offending line: ${JSON.stringify(line)}`,
