@@ -63,28 +63,50 @@ function foldSeparators(p: string): string {
  *  The UNC variant, `\\?\UNC\server\share\...` (folded `//?/UNC/server/
  *  share/...`), maps back to an ordinary UNC path `\\server\share\...`
  *  (folded `//server/share/...`) -- one fewer path segment than the plain
- *  extended-length case, hence the separate branch. */
+ *  extended-length case, hence the separate branch.
+ *
+ *  R3-FIX4: `//?/` is stripped ONLY when what follows is actually
+ *  Windows-shaped -- a drive letter (`//?/C:/...`) or the UNC form
+ *  (`//?/UNC/server/share/...`). `?` is a perfectly legal POSIX filename
+ *  character, so a bare `//?/repo/src.php` is an ORDINARY path (a
+ *  directory literally named `?`), not an extended-length escape.
+ *  Stripping it unconditionally (the old behaviour) turned it into
+ *  `repo/src.php` -- a string that can then coincidentally collide with
+ *  and be wrongly matched against an unrelated worktree, or fail a prefix
+ *  check it should have passed, either way silently misnormalizing a path
+ *  that was never in Windows extended-length form to begin with. */
 function stripExtendedLengthPrefix(folded: string): string {
   const uncMatch = /^\/\/\?\/UNC\/(.*)$/i.exec(folded);
   if (uncMatch) return "//" + (uncMatch[1] ?? "");
-  const longMatch = /^\/\/\?\/(.*)$/.exec(folded);
-  if (longMatch) return longMatch[1] ?? "";
+  const driveMatch = /^\/\/\?\/([A-Za-z]:\/.*)$/.exec(folded);
+  if (driveMatch) return driveMatch[1] ?? "";
   return folded;
 }
 
-/** Case-insensitively find the key in `keys` that names the same path as
- *  `target` (both already folded/stripped to the same normal form), or
- *  `undefined` if none does. Used ONLY when the containment check that
- *  produced `target` was itself case-insensitive (R2-FIX3) -- see the long
- *  comment on `normalizeFindingPath` for why a case-insensitive prefix check
- *  followed by an exact-case lookup is the exact "validated one string, used
- *  another" shape that keeps recurring in this module. */
-function findCaseInsensitiveKey(target: string, keys: Iterable<string>): string | undefined {
+/** Case-insensitively find EVERY key in `keys` that names the same path as
+ *  `target` (both already folded/stripped to the same normal form). Used
+ *  ONLY when the containment check that produced `target` was itself
+ *  case-insensitive (R2-FIX3) -- see the long comment on
+ *  `normalizeFindingPath` for why a case-insensitive prefix check followed
+ *  by an exact-case lookup is the exact "validated one string, used
+ *  another" shape that keeps recurring in this module.
+ *
+ *  R3-FIX3: returns ALL matching keys, not just the first. A repo created on
+ *  a case-sensitive filesystem can legitimately hold both `src/Foo.php` and
+ *  `SRC/foo.php` as two DISTINCT files that both fold to the same lowercase
+ *  string -- picking only the first meant the OTHER key's added-line set (or
+ *  its `newFiles` membership) was never consulted at all, and a finding that
+ *  landed only there was silently dropped. Returning every match lets the
+ *  caller union their line sets: uniting can only ever KEEP more findings
+ *  than a single-key pick, never fewer, which is the only safe direction for
+ *  a component whose fail state is "never lose a finding". */
+function findAllCaseInsensitiveKeys(target: string, keys: Iterable<string>): string[] {
   const targetLower = target.toLowerCase();
+  const matches: string[] = [];
   for (const k of keys) {
-    if (k.toLowerCase() === targetLower) return k;
+    if (k.toLowerCase() === targetLower) matches.push(k);
   }
-  return undefined;
+  return matches;
 }
 
 /** Is a (separator-folded) path Windows-shaped -- a drive letter (`C:/...`) or
@@ -217,15 +239,37 @@ export function filterFindings(
     // another" bug this module's own doc comment warns about. When the
     // containment check was case-sensitive (POSIX), `norm.rel` IS the key
     // to use as-is. When it was case-insensitive (Windows-shaped), resolve
-    // `norm.rel` against the diff's actual keys case-insensitively; falling
-    // back to `norm.rel` itself when no key matches keeps the existing "not
-    // a file the diff touched" behaviour (rule 4) rather than inventing a
-    // match.
-    const normalizedPath = norm.caseInsensitive
-      ? (findCaseInsensitiveKey(norm.rel, addedLines.keys()) ?? norm.rel)
-      : norm.rel;
+    // `norm.rel` against ALL of the diff's actual keys that fold to it
+    // case-insensitively (R3-FIX3, plural -- not just the first): a
+    // case-sensitive filesystem can legitimately hold two distinct touched
+    // files, e.g. `src/Foo.php` and `SRC/foo.php`, that both fold to the
+    // same lowercase string, and a Windows-shaped report path cannot say
+    // which one it means. Falling back to `[norm.rel]` when no key matches
+    // keeps the existing "not a file the diff touched" behaviour (rule 4)
+    // rather than inventing a match.
+    const candidateKeys = norm.caseInsensitive
+      ? (() => {
+          const matches = findAllCaseInsensitiveKeys(norm.rel, addedLines.keys());
+          return matches.length > 0 ? matches : [norm.rel];
+        })()
+      : [norm.rel];
+    // Display/output path: pick the first candidate deterministically. This
+    // only matters for what the operator SEES in a genuine case-collision,
+    // which is rare; it never affects which lines/newFiles membership is
+    // consulted below -- that is the UNION across every candidate key.
+    const normalizedPath = candidateKeys[0]!;
 
-    const added = addedLines.get(normalizedPath);
+    // R3-FIX3: UNION the added-line sets of every case-colliding key rather
+    // than consulting only one. Uniting is the safe direction -- it can only
+    // ever KEEP more findings than a single-key pick, never drop one that a
+    // narrower choice would have missed.
+    let added: Set<number> | undefined;
+    for (const key of candidateKeys) {
+      const set = addedLines.get(key);
+      if (!set) continue;
+      if (!added) added = new Set<number>();
+      for (const n of set) added.add(n);
+    }
     if (!added) {
       // Rule 4: a known file, just not one the diff touched. Drop, silently --
       // this is ordinary out-of-scope pre-existing debt, not a failure of any
@@ -234,8 +278,9 @@ export function filterFindings(
     }
 
     if (f.line === null) {
-      // Rule 6.
-      if (newFiles.has(normalizedPath)) {
+      // Rule 6. R3-FIX3: membership in newFiles is likewise checked across
+      // ALL candidate keys, not just the displayed one.
+      if (candidateKeys.some((key) => newFiles.has(key))) {
         kept.push({ ...f, file: normalizedPath, unattributed: false });
       }
       continue;

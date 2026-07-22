@@ -68,6 +68,127 @@
  *  #2): it throws rather than silently falling through. */
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
+/** git C-quotes a path (wraps it in `"..."`) whenever it contains bytes it
+ *  considers unsafe to print raw -- confirmed by capturing real `git diff`
+ *  output: a non-ASCII filename produces e.g. `+++ "b/\321\204\320\260\320\271
+ *  \320\273.php"`, where each `\NNN` is a 3-DIGIT OCTAL escape naming one raw
+ *  UTF-8 byte of the encoded filename (NOT one decoded character -- a
+ *  multi-byte UTF-8 character is a run of several consecutive `\NNN`
+ *  escapes that must be regrouped and decoded together). `\"` and `\\`
+ *  escape a literal quote/backslash; the other C-style single-letter
+ *  escapes (`\n`, `\t`, `\r`, `\a`, `\b`, `\f`, `\v`) are recognized for the
+ *  same reason -- a path is technically free to contain any of those raw
+ *  bytes on a POSIX filesystem. (Empirically, a plain ASCII space alone does
+ *  NOT trigger quoting on this git version -- only non-ASCII/control bytes
+ *  do -- but this decoder handles whatever quoted form it is actually given,
+ *  regardless of which condition triggered it.) */
+function decodeGitQuotedPathContent(escaped: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < escaped.length; i++) {
+    const ch = escaped[i]!;
+    if (ch === "\\" && i + 1 < escaped.length) {
+      const next = escaped[i + 1]!;
+      const simple: Record<string, number> = {
+        '"': 0x22,
+        "\\": 0x5c,
+        n: 0x0a,
+        t: 0x09,
+        r: 0x0d,
+        a: 0x07,
+        b: 0x08,
+        f: 0x0c,
+        v: 0x0b,
+      };
+      if (Object.prototype.hasOwnProperty.call(simple, next)) {
+        bytes.push(simple[next]!);
+        i += 1;
+        continue;
+      }
+      const octal = escaped.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(octal)) {
+        bytes.push(parseInt(octal, 8) & 0xff);
+        i += 3;
+        continue;
+      }
+      // An escape sequence this decoder does not recognize: keep the
+      // backslash literally rather than eating a byte that was not
+      // actually an escape target, and let the loop reprocess `next` on
+      // its own next iteration.
+      bytes.push(0x5c);
+      continue;
+    }
+    // A literal (unescaped) character. git only ever leaves printable-safe
+    // bytes unescaped inside a quoted path, so this is always a single
+    // ASCII byte in practice.
+    bytes.push(ch.charCodeAt(0) & 0xff);
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(bytes));
+}
+
+/** If `raw` is a whole, C-quoted path (`"..."`), decode it (R3-FIX1);
+ *  otherwise return it unchanged. Applied at every point this module reads a
+ *  path straight off a diff line -- `--- `, `+++ `, `copy to `, and the
+ *  `diff --git a/... b/...` line -- because a quoted path's literal text
+ *  starts with `"`, which `stripPrefix`'s `a/`/`b/` check does not
+ *  recognize: without unquoting first, the map ends up keyed on the quoted,
+ *  still-escaped string, and a finding on that file's added lines is
+ *  silently dropped when a real caller looks it up by the plain, decoded
+ *  path. */
+function unquotePath(raw: string): string {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    return decodeGitQuotedPathContent(raw.slice(1, -1));
+  }
+  return raw;
+}
+
+/** Matches a `diff --git` line where BOTH sides are C-quoted (R3-FIX1/FIX2).
+ *  Confirmed by real `git diff` output: git quotes each side of this line
+ *  INDEPENDENTLY (only the side that actually needs it), but for a brand-new
+ *  file specifically the old and new paths are always textually identical
+ *  (the "old" side is nominal -- the file never existed there), so a
+ *  genuinely new file's `diff --git` line is always either quoted on BOTH
+ *  sides or on NEITHER, never a mismatched one-quoted-one-not. This pattern
+ *  is deliberately only used for that guaranteed-identical case (see
+ *  `newFilePathFromDiffGitLine`) -- it is not a general rename/copy parser. */
+const DIFF_GIT_BOTH_QUOTED_RE = /^diff --git "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"$/;
+
+/** Matches a `diff --git a/<path> b/<path>` line where BOTH sides are
+ *  UNQUOTED and textually IDENTICAL -- the backreference `\1` is what makes
+ *  this safe even when `<path>` itself contains spaces: unlike a naive
+ *  split on the middle space, a backreference only matches at the one place
+ *  (if any) where the text after `a/` and the text after `b/` are exactly
+ *  the same string, which is guaranteed for a brand-new file's `diff --git`
+ *  line (no rename is possible when the file did not exist before). */
+const DIFF_GIT_BOTH_UNQUOTED_SAME_RE = /^diff --git a\/(.+) b\/\1$/;
+
+/** Extract the new-file path from a `diff --git` line, for the ONE case this
+ *  module needs it (R3-FIX2): a `new file mode` header, whose own text
+ *  carries no path at all, on a file with no `+++` header to fall back on (a
+ *  binary addition prints `Binary files /dev/null and b/x.png differ`
+ *  instead). Returns `null` when the line does not match either recognized
+ *  new-file shape -- notably, a rename or copy line (old path != new path)
+ *  never matches, which is correct: those are handled by `rename to`/`copy
+ *  to` directly (a rename is never new content; a copy's destination is
+ *  read straight off `copy to`), and a `new file mode` header never appears
+ *  on either of those anyway. */
+function newFilePathFromDiffGitLine(line: string): string | null {
+  const quoted = DIFF_GIT_BOTH_QUOTED_RE.exec(line);
+  if (quoted) {
+    // The decoded quoted content still carries its OWN a//b/ convention
+    // prefix (`a/картинка.png` vs `b/картинка.png`) -- those two strings can
+    // never be equal as-is even for the identical underlying file, so the
+    // old==new proof has to compare the paths AFTER stripping each side's
+    // own prefix, not the raw decoded strings.
+    const oldPath = stripPrefix(decodeGitQuotedPathContent(quoted[1]!));
+    const newPath = stripPrefix(decodeGitQuotedPathContent(quoted[2]!));
+    if (oldPath !== newPath) return null;
+    return newPath;
+  }
+  const unquoted = DIFF_GIT_BOTH_UNQUOTED_SAME_RE.exec(line);
+  if (unquoted) return unquoted[1]!; // already prefix-free: captured after "a/"
+  return null;
+}
+
 /** Result of walking a diff: which new-file lines it added, and which files it
  *  created from nothing. Both are keyed on the same normalized, worktree-relative,
  *  `/`-separated path (see `stripPrefix`) so a caller can look either up with the
@@ -120,6 +241,13 @@ export function addedLineNumbers(diffText: string): AddedLines {
   // for. A RENAME must NOT set this — its content moved, it did not
   // originate — so only `copy to` (never `rename to`) is recognized here.
   let sawNewFileSignal = false;
+  // R3-FIX2: the new-side path parsed off the most recent `diff --git` line,
+  // ONLY when that line proves (per `newFilePathFromDiffGitLine`) it is a
+  // genuinely new file's line (old side textually identical to new side) --
+  // `null` otherwise (a rename/copy, or a line this parser could not resolve).
+  // Consumed the moment `new file mode` is seen, not deferred to `+++`,
+  // because a binary addition never reaches a `+++` header at all.
+  let pendingNewFilePath: string | null = null;
 
   for (const line of lines) {
     // Trap #3 (formerly #1): while a hunk still has counted body lines
@@ -199,7 +327,12 @@ export function addedLineNumbers(diffText: string): AddedLines {
     // `--- /dev/null` (trap #4): remember that so the immediately-following
     // `+++` header can record the new path into `newFiles`.
     if (line.startsWith("--- ")) {
-      const raw = line.slice(4).trim();
+      // R3-FIX1: unquote BEFORE checking for the /dev/null sentinel and
+      // before `+++` strips the a//b/ prefix -- a quoted path's raw text
+      // starts with `"`, never matches `/dev/null` by accident, but must
+      // still be decoded so the paired `+++` line (and `stripPrefix`) see
+      // the real path, not the still-escaped wire form.
+      const raw = unquotePath(line.slice(4).trim());
       oldWasDevNull = raw === "/dev/null";
       continue;
     }
@@ -209,7 +342,11 @@ export function addedLineNumbers(diffText: string): AddedLines {
     // to null rather than a path, and any hunk that follows (there shouldn't be
     // one) simply has nowhere to record into.
     if (line.startsWith("+++ ")) {
-      const raw = line.slice(4).trim();
+      // R3-FIX1: unquote first (see the `--- ` branch above) -- a quoted
+      // path is `"b/<path>"` (the a//b/ convention prefix lives INSIDE the
+      // quotes, confirmed against real `git diff` output), so `stripPrefix`
+      // must run on the DECODED string, not the raw quoted one.
+      const raw = unquotePath(line.slice(4).trim());
       currentPath = raw === "/dev/null" ? null : stripPrefix(raw);
       if ((oldWasDevNull || sawNewFileSignal) && currentPath !== null) {
         newFiles.add(currentPath);
@@ -251,6 +388,22 @@ export function addedLineNumbers(diffText: string): AddedLines {
     // does not originate it, so its file-level findings stay pre-existing.
     if (line.startsWith("copy to ") || line.startsWith("new file mode ")) {
       sawNewFileSignal = true;
+      if (line.startsWith("copy to ")) {
+        // R3-FIX2: a git copy's destination is known directly from THIS
+        // header (no a//b/ convention prefix on it -- confirmed against real
+        // `copy to "<path>"` output) -- add it to `newFiles` right here
+        // rather than waiting for a `+++` header a binary copy never has
+        // ("Binary files ... differ" instead). Redundant-but-harmless for a
+        // text copy, which also reaches the `+++` branch below.
+        newFiles.add(unquotePath(line.slice("copy to ".length).trim()));
+      } else if (pendingNewFilePath !== null) {
+        // R3-FIX2: likewise for `new file mode` -- its own text carries no
+        // path, so fall back to the new-side path already parsed off the
+        // preceding `diff --git` line. Populating `newFiles` here (rather
+        // than only inside `+++`) is what makes a binary addition (which
+        // never reaches a `+++` header at all) actually get recorded.
+        newFiles.add(pendingNewFilePath);
+      }
       continue;
     }
 
@@ -266,6 +419,12 @@ export function addedLineNumbers(diffText: string): AddedLines {
     if (line.startsWith("diff --git ")) {
       oldWasDevNull = false;
       sawNewFileSignal = false;
+      // R3-FIX2: (re)compute the pending new-file path for THIS file's
+      // section. `null` when the line does not prove old==new (a rename or
+      // copy, or a shape this parser cannot resolve) -- those never carry a
+      // `new file mode` header anyway, so `pendingNewFilePath` is simply
+      // never consumed for them.
+      pendingNewFilePath = newFilePathFromDiffGitLine(line);
       continue;
     }
 

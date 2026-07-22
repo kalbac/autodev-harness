@@ -275,4 +275,58 @@ describe("filterFindings", () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ file: "src/x.php", unattributed: false });
   });
+
+  it("R3-FIX3: when the diff has TWO case-colliding keys, a finding on a line only present under the OTHER key is still kept, not dropped", () => {
+    // A repo created on a case-sensitive filesystem can legitimately hold both
+    // "src/Foo.php" and "src/foo.php" as distinct files, both touched by the
+    // same diff. findCaseInsensitiveKey used to return only the FIRST key
+    // that folds to the match -- if line 9 was added only under "src/foo.php"
+    // (added second in Map insertion order) and the report's Windows-shaped
+    // path folds ambiguously to either, picking just "src/Foo.php" (added
+    // first) loses line 9 entirely and the finding on it is silently dropped.
+    const findings = [finding({ file: "C:\\repo\\src\\FOO.PHP", line: 9, message: "case-colliding" })];
+    const addedLines = new Map([
+      ["src/Foo.php", new Set([3])],
+      ["src/foo.php", new Set([9])],
+    ]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ line: 9, unattributed: false });
+  });
+
+  it("R3-FIX3: the union also governs the newFiles membership test for a file-level finding", () => {
+    // Only "src/foo.php" (not "src/Foo.php") is in newFiles -- picking the
+    // FIRST case-colliding key alone (if it happens to be "src/Foo.php")
+    // would wrongly report this file-level finding as pre-existing debt and
+    // drop it, even though the diff's newFiles signal marks the colliding
+    // path as genuinely new.
+    const findings = [
+      finding({ file: "C:\\repo\\src\\FOO.PHP", line: null, message: "missing file doc comment" }),
+    ];
+    const addedLines = new Map([
+      ["src/Foo.php", new Set([3])],
+      ["src/foo.php", new Set([9])],
+    ]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set(["src/foo.php"]));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ line: null, unattributed: false });
+  });
+
+  it("R3-FIX4: an ordinary POSIX path starting //?/ (a legal '?' filename character, not a Windows extended-length prefix) is NOT stripped into a coincidental false match", () => {
+    // On POSIX, `?` is a perfectly legal filename character -- "//?/repo/src.php"
+    // literally names a file under a directory called "?", not a Windows \\?\
+    // escape. The OLD code stripped the "//?/" unconditionally, turning the
+    // finding's path into the bare string "repo/src.php" -- which then
+    // coincidentally collides with the unrelated worktree "repo" and gets
+    // WRONGLY matched/attributed to "src.php" there, even though the raw path
+    // never actually named anything under that worktree at all. The fix must
+    // leave the "//?/" alone (it is neither a drive-letter nor a UNC form), so
+    // the path correctly fails to resolve under the worktree and is kept,
+    // flagged unattributed, instead of silently mismatched to the wrong file.
+    const findings = [finding({ file: "//?/repo/src.php", line: 3, message: "literal question-mark dir" })];
+    const addedLines = new Map([["src.php", new Set([3])]]);
+    const result = filterFindings(findings, addedLines, "repo", new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "literal question-mark dir" });
+  });
 });

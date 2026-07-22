@@ -200,6 +200,99 @@ describe("addedLineNumbers", () => {
   });
 });
 
+describe("R3-FIX1: git C-style quoted paths are unquoted before being used as map keys", () => {
+  it("a +++ header quoting a path (brief's literal example: a space-containing path) is unquoted before the a//b/ prefix strip and the map key", () => {
+    // Per the FIX brief's own literal example. (Empirically, real git on this
+    // machine does NOT quote a path for a plain ASCII space alone -- only for
+    // non-ASCII/control characters, confirmed separately below -- but the
+    // decoder must handle whatever C-quoted form it is given, regardless of
+    // which condition triggered the quoting.)
+    const d = ['--- "a/path with spaces.php"', '+++ "b/path with spaces.php"', "@@ -1,1 +1,2 @@", " a", "+b"].join(
+      "\n",
+    );
+    const m = addedLineNumbers(d).added;
+    expect(m.has('"b/path with spaces.php"')).toBe(false);
+    expect(m.has("b/path with spaces.php")).toBe(false);
+    expect([...m.get("path with spaces.php")!]).toEqual([2]);
+  });
+
+  it("a +++ header quoting a NON-ASCII path with git's real octal-byte escapes decodes to the correct UTF-8 filename", () => {
+    // Captured verbatim from a real `git diff` run against a file named
+    // "файл.php" (Cyrillic) on this machine: `+++ "b/\321\204\320\260\320\271\320\273.php"`.
+    // Each \NNN is a 3-digit OCTAL escape naming one raw UTF-8 byte -- decoding
+    // must regroup the byte sequence and interpret it as UTF-8, not decode each
+    // escape as an independent character.
+    const d = [
+      "--- /dev/null",
+      '+++ "b/\\321\\204\\320\\260\\320\\271\\320\\273.php"',
+      "@@ -0,0 +1,1 @@",
+      "+one",
+    ].join("\n");
+    const { added, newFiles } = addedLineNumbers(d);
+    expect([...added.get("файл.php")!]).toEqual([1]);
+    expect(newFiles.has("файл.php")).toBe(true);
+  });
+
+  it("an unquoted plain path (the overwhelmingly common case) is completely unaffected by the new quote-decoding logic", () => {
+    const m = addedLineNumbers(DIFF).added;
+    expect([...m.get("includes/a.php")!]).toEqual([13]);
+  });
+});
+
+describe("R3-FIX2: a binary/copy new file with no +++ line still reaches newFiles", () => {
+  it("a git COPY's binary destination (copy to, no +++ line at all) is recorded in newFiles from the 'copy to' header directly", () => {
+    // Real shape of a binary copy: no --- /+++ pair, no hunk -- just
+    // "Binary files ... differ". The OLD code only ever populated newFiles
+    // inside the +++ branch, so a binary copy's destination never reached it.
+    const d = [
+      "diff --git a/src.png b/copy.png",
+      "similarity index 100%",
+      "copy from src.png",
+      "copy to copy.png",
+      "Binary files a/src.png and b/copy.png differ",
+    ].join("\n");
+    const { newFiles } = addedLineNumbers(d);
+    expect(newFiles.has("copy.png")).toBe(true);
+  });
+
+  it("a genuinely NEW binary file (new file mode, no +++ line at all) is recorded in newFiles from the diff --git line's new-side path", () => {
+    // Real shape of a binary addition: `new file mode` is present, but there
+    // is no --- /+++ pair and no hunk -- git prints "Binary files /dev/null
+    // and b/x.png differ" instead. sawNewFileSignal alone never turns into a
+    // newFiles entry because nothing ever reaches the +++ branch that
+    // consumes it.
+    const d = [
+      "diff --git a/logo.png b/logo.png",
+      "new file mode 100644",
+      "index 0000000..1111111",
+      "Binary files /dev/null and b/logo.png differ",
+    ].join("\n");
+    const { newFiles } = addedLineNumbers(d);
+    expect(newFiles.has("logo.png")).toBe(true);
+  });
+
+  it("a genuinely NEW binary file whose path needs C-style quoting (non-ASCII) is still recorded, via the quoted diff --git line", () => {
+    // Captured verbatim from a real `git diff` run against a new binary file
+    // named "картинка.png" (Cyrillic): both the old and new tokens on the
+    // `diff --git` line are independently quoted (and, for a brand-new file,
+    // always identical once decoded -- there is no rename involved).
+    const d = [
+      'diff --git "a/\\320\\272\\320\\260\\321\\200\\321\\202\\320\\270\\320\\275\\320\\272\\320\\260.png" "b/\\320\\272\\320\\260\\321\\200\\321\\202\\320\\270\\320\\275\\320\\272\\320\\260.png"',
+      "new file mode 100644",
+      "index 0000000..0c62808",
+      'Binary files /dev/null and "b/\\320\\272\\320\\260\\321\\200\\321\\202\\320\\270\\320\\275\\320\\272\\320\\260.png" differ',
+    ].join("\n");
+    const { newFiles } = addedLineNumbers(d);
+    expect(newFiles.has("картинка.png")).toBe(true);
+  });
+
+  it("does NOT invent a newFiles entry for a plain rename (old != new, and rename never carries 'new file mode')", () => {
+    const d = ["diff --git a/old.php b/renamed.php", "rename from old.php", "rename to renamed.php"].join("\n");
+    const { newFiles } = addedLineNumbers(d);
+    expect(newFiles.size).toBe(0);
+  });
+});
+
 describe("new-file signals do not leak across file sections", () => {
   it("a binary new file with no hunk body does not mark the NEXT file as new", () => {
     // The signal is normally consumed by the next `+++` header, but a binary

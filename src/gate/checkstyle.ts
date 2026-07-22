@@ -115,6 +115,7 @@ function decodeCodePoint(codePoint: number, original: string): string {
 }
 
 const FILE_BLOCK_RE = /<file\s+name="([^"]*)"\s*>([\s\S]*?)<\/file>/g;
+const FILE_OPEN_RE = /<file\b/g;
 const ERROR_TAG_RE = /<error\b([^>]*)\/>/g;
 const ATTR_RE = /([A-Za-z_:][\w.:-]*)\s*=\s*"([^"]*)"/g;
 
@@ -170,6 +171,28 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
         `is not self-closed. This looks like a truncated report (killed process, or output cut ` +
         `off mid-write): zero findings would parse out of a document like this and read as CLEAN ` +
         `downstream, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+    );
+  }
+
+  // R3-FIX5: the two checks above only prove the ROOT closed -- they say
+  // nothing about a `<file>` block INSIDE it that never closed. Given
+  // `<checkstyle><file name="x.php"><error line="1"/></checkstyle>`, the root
+  // is well-formed (closed by `</checkstyle>`), but `FILE_BLOCK_RE` requires a
+  // literal `</file>` it never finds, so the scan below would silently match
+  // zero blocks and return `[]` -- CLEAN, for a document with an unparsed
+  // `<error>` sitting right there. Counting `<file` openings against the
+  // number of blocks `FILE_BLOCK_RE` actually matched catches this directly:
+  // a `<file>` that never closed can never be captured by that regex, so any
+  // shortfall means at least one block is being silently dropped rather than
+  // parsed.
+  const fileOpenCount = [...xml.matchAll(FILE_OPEN_RE)].length;
+  const fileBlockCount = [...xml.matchAll(FILE_BLOCK_RE)].length;
+  if (fileBlockCount < fileOpenCount) {
+    throw new Error(
+      `parseCheckstyle: found ${fileOpenCount} <file> opening tag(s) but only ${fileBlockCount} closed ` +
+        `with a matching </file> -- at least one <file> block is unclosed (a truncated or malformed ` +
+        `report). Treating the unparsed region as zero findings would silently turn a broken gate run ` +
+        `into a PASS, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
     );
   }
 

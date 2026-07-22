@@ -95,6 +95,17 @@ describe("parseCheckstyle (pinned on a REAL PHPCS report)", () => {
     expect(parseCheckstyle('<?xml version="1.0"?>\n<checkstyle version="3.13.5"></checkstyle>')).toEqual([]);
   });
 
+  it("R3-FIX5: THROWS when the root is closed but a <file> block inside it is never closed", () => {
+    // <checkstyle> ... </checkstyle> is present and well-formed, but the <file>
+    // inside it has no matching </file> -- FILE_BLOCK_RE finds zero complete
+    // blocks, so the OLD code returned [] (reads as CLEAN downstream) even
+    // though a real <error> sits inside the unclosed block and was never
+    // parsed at all.
+    expect(() =>
+      parseCheckstyle('<checkstyle><file name="x.php"><error line="1"/></checkstyle>'),
+    ).toThrow(/checkstyle|file/i);
+  });
+
   it("FIX5: an ABSENT line attribute is legitimately file-level -- null, not a throw", () => {
     const found = parseCheckstyle(
       '<checkstyle><file name="f.php"><error severity="error" message="no line here" source="s"/></file></checkstyle>',
