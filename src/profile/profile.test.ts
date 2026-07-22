@@ -619,3 +619,33 @@ describe("loadProfile -- profile directory must be realpath-contained under the 
     },
   );
 });
+
+describe("exact version pinning, both sides (round-6 critic finding)", () => {
+  it("refuses a profile.yaml version JavaScript cannot represent exactly", async () => {
+    // The file declares 9007199254740993, which JS stores as ...992. Reached with
+    // a SAFE reference, because an unsafe one is refused earlier by
+    // parseProfileRef (see the next test). Without the schema guard this surfaces
+    // as "pinned version 1 does not match the file's version 9007199254740992" --
+    // a message pointing at the wrong problem entirely.
+    await writeProfile("demo", GOOD.replace("version: 1", "version: 9007199254740993"));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/exactly representable/i);
+  });
+
+  it("the round trip the critic described is NOT reachable: the rounded value is itself unsafe", async () => {
+    // Codex round 6 rated this HIGH on the theory that a reference pinning the
+    // ROUNDED value (...992) would parse cleanly and then compare equal to the
+    // file's rounded version. It does not: ...992 is 2^53, one above
+    // MAX_SAFE_INTEGER (...991), so parseProfileRef refuses it. Verified here
+    // rather than argued -- the schema guard above is defence in depth and a
+    // better error message, not the closing of an open hole.
+    expect(Number.isSafeInteger(9007199254740992)).toBe(false);
+    await writeProfile("demo", GOOD.replace("version: 1", "version: 9007199254740993"));
+    await expect(loadProfile("demo@9007199254740992", root)).rejects.toThrow(/cannot be represented exactly/i);
+  });
+
+  it("still accepts a large but exactly representable version", async () => {
+    await writeProfile("demo", GOOD.replace("version: 1", `version: ${Number.MAX_SAFE_INTEGER}`));
+    const p = await loadProfile(`demo@${Number.MAX_SAFE_INTEGER}`, root);
+    expect(p.version).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});

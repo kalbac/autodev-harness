@@ -146,7 +146,20 @@ function isInvalidProtectedPathEntry(p: string): boolean {
 export const ProfileFileSchema = z
   .object({
     id: z.string().min(1),
-    version: z.number().int().positive(),
+    // `.refine(Number.isSafeInteger)` is NOT redundant with `.int()`: `.int()`
+    // accepts 9007199254740993, which JavaScript cannot represent and silently
+    // stores as ...992. `parseProfileRef` already refuses such a value on the
+    // REFERENCE side, but guarding only one side left the guarantee half-closed
+    // (round-6 critic finding): a profile.yaml declaring the unrepresentable
+    // number becomes ...992 in memory, a reference pinning ...992 parses cleanly,
+    // and `pf.version !== version` then compares equal -- so the loader reports a
+    // profile as "resolved exactly as pinned" when the file's own declared decimal
+    // says otherwise. Exact pinning is the contract this whole module exists to
+    // uphold, so both sides of the comparison have to reject what they cannot
+    // represent.
+    version: z.number().int().positive().refine(Number.isSafeInteger, {
+      message: "profile version must be an exactly representable integer (<= Number.MAX_SAFE_INTEGER)",
+    }),
     requires: z
       .object({
         provision: z
