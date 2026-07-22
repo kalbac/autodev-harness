@@ -57,6 +57,34 @@ describe("buildEvidence", () => {
     expect(rec.profile_gates[0]!.findings).toEqual({ total: 12, in_diff: 2, unattributed: 1 });
   });
 
+  it("falls back to the filtered count when the tool's total was never measured", () => {
+    // `findings_total: null` means "not measured", not "zero". The floor must be
+    // the findings we DO know about: understating the debt is survivable, inventing
+    // a total is not, and reporting `total: 0` beside two real findings would be a
+    // self-contradicting record.
+    const rec = buildEvidence(
+      draft({
+        profileGates: [
+          {
+            id: "phpcs",
+            status: "red",
+            exit_code: 1,
+            skip_reason: null,
+            scope: "changed-lines",
+            files: ["src/a.php"],
+            output: "",
+            findings_total: null,
+            findings: [
+              { file: "src/a.php", line: 3, severity: "error", message: "m", source: "s", unattributed: false },
+              { file: "src/a.php", line: 9, severity: "error", message: "m", source: "s", unattributed: false },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(rec.profile_gates[0]!.findings).toEqual({ total: 2, in_diff: 2, unattributed: 0 });
+  });
+
   it("keeps a skipped gate's reason", () => {
     const rec = buildEvidence(
       draft({
