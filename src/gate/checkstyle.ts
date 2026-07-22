@@ -114,18 +114,72 @@ function decodeCodePoint(codePoint: number, original: string): string {
   }
 }
 
+/**
+ * Remove the two constructs whose contents are TEXT rather than markup — XML
+ * comments and CDATA sections — returning only what a structural scan may read.
+ *
+ * A single left-to-right state machine, not a pair of regex counts (R7-FIX1/FIX2).
+ * Counting `<!--`/`-->` and `<![CDATA[`/`]]>` occurrences independently cannot
+ * know which construct is OPEN at each point, and got it wrong in both
+ * directions: `<![CDATA[ literal <!-- marker ]]>` is valid XML (the `<!--` is
+ * inside CDATA, so it is text) yet the comment counter saw an unterminated
+ * comment and REJECTED a valid report; while `<!-- <![CDATA[ --> ]]>` balanced
+ * both counters, passed, and then scrubbed as a comment — leaving a stray `]]>`
+ * that no longer read as CDATA at all, so a malformed document parsed as CLEAN.
+ * Only a scan that tracks the ACTIVE construct can tell text from markup.
+ *
+ * Throws on an unterminated section, and on a `]]>` in text position (XML forbids
+ * it outside CDATA): both mean the document is not what it claims to be, and this
+ * parser's contract is that "no findings" means the tool found none — never that
+ * we failed to read them.
+ */
+function scrubTextSections(xml: string): string {
+  let out = "";
+  let i = 0;
+  while (i < xml.length) {
+    if (xml.startsWith("<!--", i)) {
+      const end = xml.indexOf("-->", i + 4);
+      if (end === -1) {
+        throw new Error(
+          `parseCheckstyle: report contains an unterminated XML comment -- the document is truncated. ` +
+            `Everything after it is commented-out text, so accepting it would report a truncated document ` +
+            `as CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+        );
+      }
+      i = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<![CDATA[", i)) {
+      const end = xml.indexOf("]]>", i + 9);
+      if (end === -1) {
+        throw new Error(
+          `parseCheckstyle: report contains an unterminated CDATA section -- the document is truncated. ` +
+            `A </checkstyle> inside an unterminated CDATA is literal text, not a closed root, so accepting ` +
+            `this would report a truncated document as CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+        );
+      }
+      i = end + 3;
+      continue;
+    }
+    if (xml.startsWith("]]>", i)) {
+      throw new Error(
+        `parseCheckstyle: report contains a "]]>" outside any CDATA section, which XML forbids -- the ` +
+          `document is malformed (most likely a crossed comment/CDATA). Treating it as a clean report would ` +
+          `hide whatever the tool actually wrote. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+      );
+    }
+    out += xml[i];
+    i += 1;
+  }
+  return out;
+}
+
 const FILE_BLOCK_RE = /<file\s+name="([^"]*)"\s*>([\s\S]*?)<\/file>/g;
 const FILE_OPEN_RE = /<file\b/g;
 /** A `<file ... />` element that closes itself -- a file with no findings, which
  *  several tools emit for a clean file. It is a complete element, so it must not
  *  be counted as an opening awaiting a `</file>`. */
 const FILE_SELF_CLOSED_RE = /<file\b[^>]*\/>/g;
-/** A CDATA section: its contents are literal text, so a `<file` inside one is not
- *  markup and must not be counted as an opening tag. */
-const CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g;
-/** An XML comment. Its contents are TEXT, not markup -- a `<error>` written inside
- *  one is commented-out and must neither be counted nor parsed. */
-const COMMENT_RE = /<!--[\s\S]*?-->/g;
 const ERROR_TAG_RE = /<error\b([^>]*)\/>/g;
 /** Any `<error` opening, self-closing or not. Counted against `ERROR_TAG_RE` so a
  *  malformed non-self-closed `<error ...>` cannot be skipped in silence. */
@@ -174,39 +228,7 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
   // text, not markup. `<checkstyle><![CDATA[ literal </checkstyle>` then reads as
   // a well-formed, file-less, finding-less report: CLEAN, for a document that was
   // truncated mid-section. Counting openings against terminators catches it.
-  const commentOpenCount = (xml.match(/<!--/g) ?? []).length;
-  const commentCloseCount = (xml.match(/-->/g) ?? []).length;
-  if (commentOpenCount > commentCloseCount) {
-    throw new Error(
-      `parseCheckstyle: report contains an unterminated XML comment (${commentOpenCount} opened, ` +
-        `${commentCloseCount} closed) -- the document is truncated. Everything after an unterminated ` +
-        `comment is commented-out text, so accepting it would report a truncated document as CLEAN. ` +
-        `First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
-    );
-  }
-
-  const cdataOpenCount = (xml.match(/<!\[CDATA\[/g) ?? []).length;
-  const cdataCloseCount = (xml.match(/\]\]>/g) ?? []).length;
-  if (cdataOpenCount > cdataCloseCount) {
-    throw new Error(
-      `parseCheckstyle: report contains an unterminated CDATA section (${cdataOpenCount} opened, ` +
-        `${cdataCloseCount} closed) -- the document is truncated. A </checkstyle> inside an unterminated ` +
-        `CDATA is literal text, not a closed root, so accepting this would report a truncated document as ` +
-        `CLEAN. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
-    );
-  }
-
-  // R6-FIX2/FIX3: everything from here on reads MARKUP, so comments and CDATA are
-  // removed first. Their contents are TEXT, and treating text as markup broke in
-  // both directions at once: a `</checkstyle>` inside a (properly closed) CDATA
-  // satisfied the root-close check, so a truncated report read as CLEAN; an
-  // `<error line="1">` inside an XML COMMENT was counted as a real tag, so a
-  // perfectly valid report was REJECTED and every task failed; and an
-  // `<error .../>` inside CDATA was parsed as a genuine finding that no tool ever
-  // reported. One scrub, applied before any structural reasoning, closes all
-  // three -- the unterminated checks above deliberately run on the RAW text,
-  // since a section that never closes cannot be scrubbed away safely.
-  const markup = xml.replace(COMMENT_RE, "").replace(CDATA_RE, "");
+  const markup = scrubTextSections(xml);
 
   const rootMatch = /<checkstyle\b[^>]*>/.exec(markup);
   if (!rootMatch) {

@@ -271,6 +271,25 @@ describe("R6: comments and CDATA are TEXT, not markup", () => {
     expect(() => parseCheckstyle("<checkstyle><!-- oops </checkstyle>")).toThrow(/comment/i);
   });
 
+  it("R7: accepts a <!-- that is INSIDE a CDATA section (it is text, not a comment)", () => {
+    // Counting `<!--` and `-->` independently of which construct is open saw an
+    // unterminated comment here and rejected an entirely valid report.
+    const xml = "<checkstyle><![CDATA[ literal <!-- marker ]]></checkstyle>";
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("R7: accepts a <![CDATA[ that is INSIDE a comment (it is text, not a section)", () => {
+    const xml = "<checkstyle><!-- literal <![CDATA[ marker --></checkstyle>";
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("R7: THROWS on crossed comment/CDATA rather than reading the wreckage as clean", () => {
+    // Both raw counters balanced here, so the old check passed; the region then
+    // scrubbed as a comment, leaving a stray `]]>` that no longer read as CDATA
+    // at all -- and the document parsed as CLEAN.
+    expect(() => parseCheckstyle("<checkstyle><!-- <![CDATA[ --> ]]> </checkstyle>")).toThrow(/\]\]>/);
+  });
+
   it("still parses a real finding alongside a comment", () => {
     const xml =
       '<checkstyle><file name="x.php"><!-- note --><error line="2" severity="error" message="real" source="s"/></file></checkstyle>';

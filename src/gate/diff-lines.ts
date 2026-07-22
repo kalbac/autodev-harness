@@ -365,6 +365,19 @@ export function addedLineNumbers(diffText: string): AddedLines {
       }
 
       if (line.startsWith("\\")) {
+        // R7-FIX3: only the ONE marker git actually emits is a marker. Accepting
+        // any `\`-prefixed line meant a corrupt body line like `\ bogus` was
+        // skipped without consuming either counter, so the hunk still closed
+        // cleanly on the following context line and the walker returned an empty
+        // added-set successfully -- a corrupt diff reading as "the worker added
+        // nothing", which makes a real finding on line 1 look pre-existing.
+        if (line !== "\\ No newline at end of file") {
+          throw new Error(
+            `addedLineNumbers: hunk in ${currentPath ?? "<unknown file>"} contains a backslash line that is ` +
+              `not git's "\\ No newline at end of file" marker -- the diff is malformed or was truncated. ` +
+              `Offending line: ${JSON.stringify(line)}`,
+          );
+        }
         // "\ No newline at end of file" -- a marker about the PREVIOUS line,
         // not content of its own, and not counted in either the old or new
         // hunk-header count. Must not advance the cursor or consume a count.

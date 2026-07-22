@@ -387,6 +387,24 @@ describe("R6-FIX4: a diff truncated right after a hunk header is caught", () => 
     expect(() => addedLineNumbers(d)).toThrow(/still owe|truncated|malformed/i);
   });
 
+  it("R7-FIX3: a backslash line that is not git's no-newline marker throws", () => {
+    // Accepting any `\`-prefixed line meant `\ bogus` was skipped without
+    // consuming either counter, the hunk still closed on the next context line,
+    // and the walker returned an empty added-set successfully -- so a real
+    // finding on line 1 would read as pre-existing.
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,1 +1,1 @@", "\\ bogus", " existing"].join(
+      String.fromCharCode(10),
+    );
+    expect(() => addedLineNumbers(d)).toThrow(/No newline at end of file/);
+  });
+
+  it("R7-FIX3: git's real no-newline marker is still accepted", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,1 +1,2 @@", " a", "+b", "\\ No newline at end of file"].join(
+      String.fromCharCode(10),
+    );
+    expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2]);
+  });
+
   it("a genuinely blank final context line is still accepted", () => {
     const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,3 @@", " a", "+b", "", ""].join(
       String.fromCharCode(10),
