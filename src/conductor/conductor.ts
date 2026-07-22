@@ -23,7 +23,7 @@ import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
 import { globMatch, normalizePath } from "../util/glob.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
-import { writeEvidence, type EvidenceDraft } from "../report/evidence.js";
+import { writeEvidence, EVIDENCE_FILE, type EvidenceDraft } from "../report/evidence.js";
 
 export interface ConductorDeps {
   cfg: HarnessConfig;
@@ -305,6 +305,22 @@ export function createConductor(deps: ConductorDeps): Conductor {
     // ONE clock read for both ends of the draft: `endedAt` is overwritten in the
     // `finally`, and starting it equal to `startedAt` keeps an unwritable-clock
     // edge case from producing an end BEFORE the start.
+    //
+    // The PREVIOUS iteration's record is removed FIRST, before any work: the write
+    // in the `finally` is fail-soft (H6, it must never fail a task), so a failed
+    // write would otherwise leave the stale record in place and the report would
+    // repeat it. Concretely: a RETRY iteration records `abandoned`, the next
+    // iteration commits, its evidence write fails -- and the task is `done` while
+    // the ledger still says abandoned. Absent is the honest state (the store reports
+    // it as missing evidence, H1); present-and-wrong is not. Best-effort itself:
+    // `removeRuntimeFile` is idempotent for an absent file, and a failure to remove
+    // must no more fail the iteration than a failure to write.
+    try {
+      await repo.removeRuntimeFile(task.id, EVIDENCE_FILE);
+    } catch (err) {
+      safeLog("WARN", `conductor: clearing stale evidence for ${task.id} failed (ignored): ${String(err)}`);
+    }
+
     const startedAt = new Date(clock.now()).toISOString();
     const evidence: EvidenceDraft = {
       taskId: task.id,

@@ -2380,6 +2380,34 @@ describe("runIteration -- evidence ledger", () => {
     expect(rec.escalation?.reason).toBe("agent-ci gate requires WSL on Windows -- install WSL or run on Linux/Mac");
   });
 
+  it("a stale record from a previous iteration does NOT survive an iteration whose own write fails", async () => {
+    // The write is fail-soft by contract (H6), so the only way to keep the ledger
+    // from repeating a lie is to remove the previous record BEFORE the work: a
+    // failed write must leave the record ABSENT (reported honestly as missing
+    // evidence, H1), never present and contradicting the task's real outcome.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    // What a previous RETRY iteration left behind.
+    await repo.writeRuntimeFile(task.id, "evidence.json", JSON.stringify({ schema: 1, outcome: "abandoned" }));
+
+    const { scheduler } = makeScheduler([task], repo);
+    const failingRepo: BlackboardRepository = {
+      ...repo,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "evidence.json") throw new Error("disk full");
+        await repo.writeRuntimeFile(id, name, content);
+      },
+    };
+
+    const deps = buildDeps({ repo: failingRepo, scheduler });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+    // Absent -- not the previous iteration's "abandoned" record beside a done task.
+    expect(state.runtimeFiles.get(task.id)?.has("evidence.json")).toBe(false);
+  });
+
   it("records a RETRY as 'abandoned' -- this iteration decided nothing", async () => {
     const task = makeTask();
     const { repo, state } = makeRepo();
