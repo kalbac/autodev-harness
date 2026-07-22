@@ -252,9 +252,19 @@ export function filterFindings(
     // which one it means. Falling back to `[norm.rel]` when no key matches
     // keeps the existing "not a file the diff touched" behaviour (rule 4)
     // rather than inventing a match.
+    // R6-FIX1: resolve against the union of BOTH key spaces. Searching only
+    // `addedLines` meant a file present ONLY in `newFiles` -- a binary addition
+    // or a new empty file, neither of which has a hunk and so neither of which
+    // appears in `addedLines` at all -- fell through to the raw `norm.rel`
+    // fallback, which carries the REPORT's casing. The subsequent
+    // `newFiles.has(...)` is an exact-case Set lookup, so `ASSET.BIN` missed the
+    // key `asset.bin` and the file-level finding for a file the worker had just
+    // created was dropped. The same "folded one string, looked up another" shape
+    // as R2-FIX3, one key space over.
     const candidateKeys = norm.caseInsensitive
       ? (() => {
-          const matches = findAllCaseInsensitiveKeys(norm.rel, addedLines.keys());
+          const keys = new Set<string>([...addedLines.keys(), ...newFiles]);
+          const matches = findAllCaseInsensitiveKeys(norm.rel, keys);
           return matches.length > 0 ? matches : [norm.rel];
         })()
       : [norm.rel];

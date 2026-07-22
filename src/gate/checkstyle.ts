@@ -123,6 +123,9 @@ const FILE_SELF_CLOSED_RE = /<file\b[^>]*\/>/g;
 /** A CDATA section: its contents are literal text, so a `<file` inside one is not
  *  markup and must not be counted as an opening tag. */
 const CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g;
+/** An XML comment. Its contents are TEXT, not markup -- a `<error>` written inside
+ *  one is commented-out and must neither be counted nor parsed. */
+const COMMENT_RE = /<!--[\s\S]*?-->/g;
 const ERROR_TAG_RE = /<error\b([^>]*)\/>/g;
 /** Any `<error` opening, self-closing or not. Counted against `ERROR_TAG_RE` so a
  *  malformed non-self-closed `<error ...>` cannot be skipped in silence. */
@@ -165,21 +168,23 @@ function parseAttrs(raw: string): Record<string, string> {
  *      clean report, returns `[]`) apart from a truncated one.
  */
 export function parseCheckstyle(xml: string): CheckstyleFinding[] {
-  const rootMatch = /<checkstyle\b[^>]*>/.exec(xml);
-  if (!rootMatch) {
-    throw new Error(
-      `parseCheckstyle: input has no <checkstyle> root -- this is not a Checkstyle report ` +
-        `(the tool likely crashed or printed something other than its --report=checkstyle ` +
-        `output). Treating this as zero findings would silently turn a broken gate run into ` +
-        `a PASS, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
-    );
-  }
   // R5-FIX4: an UNTERMINATED CDATA section must be caught before the root-close
   // check below, because that check would otherwise be satisfied by a
   // `</checkstyle>` sitting INSIDE the unterminated CDATA -- where it is literal
   // text, not markup. `<checkstyle><![CDATA[ literal </checkstyle>` then reads as
   // a well-formed, file-less, finding-less report: CLEAN, for a document that was
   // truncated mid-section. Counting openings against terminators catches it.
+  const commentOpenCount = (xml.match(/<!--/g) ?? []).length;
+  const commentCloseCount = (xml.match(/-->/g) ?? []).length;
+  if (commentOpenCount > commentCloseCount) {
+    throw new Error(
+      `parseCheckstyle: report contains an unterminated XML comment (${commentOpenCount} opened, ` +
+        `${commentCloseCount} closed) -- the document is truncated. Everything after an unterminated ` +
+        `comment is commented-out text, so accepting it would report a truncated document as CLEAN. ` +
+        `First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+    );
+  }
+
   const cdataOpenCount = (xml.match(/<!\[CDATA\[/g) ?? []).length;
   const cdataCloseCount = (xml.match(/\]\]>/g) ?? []).length;
   if (cdataOpenCount > cdataCloseCount) {
@@ -191,8 +196,30 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
     );
   }
 
+  // R6-FIX2/FIX3: everything from here on reads MARKUP, so comments and CDATA are
+  // removed first. Their contents are TEXT, and treating text as markup broke in
+  // both directions at once: a `</checkstyle>` inside a (properly closed) CDATA
+  // satisfied the root-close check, so a truncated report read as CLEAN; an
+  // `<error line="1">` inside an XML COMMENT was counted as a real tag, so a
+  // perfectly valid report was REJECTED and every task failed; and an
+  // `<error .../>` inside CDATA was parsed as a genuine finding that no tool ever
+  // reported. One scrub, applied before any structural reasoning, closes all
+  // three -- the unterminated checks above deliberately run on the RAW text,
+  // since a section that never closes cannot be scrubbed away safely.
+  const markup = xml.replace(COMMENT_RE, "").replace(CDATA_RE, "");
+
+  const rootMatch = /<checkstyle\b[^>]*>/.exec(markup);
+  if (!rootMatch) {
+    throw new Error(
+      `parseCheckstyle: input has no <checkstyle> root -- this is not a Checkstyle report ` +
+        `(the tool likely crashed or printed something other than its --report=checkstyle ` +
+        `output). Treating this as zero findings would silently turn a broken gate run into ` +
+        `a PASS, so it throws instead. First 200 chars: ${JSON.stringify(xml.slice(0, 200))}`,
+    );
+  }
+
   const rootSelfClosed = rootMatch[0].endsWith("/>");
-  if (!rootSelfClosed && !/<\/checkstyle\s*>/.test(xml)) {
+  if (!rootSelfClosed && !/<\/checkstyle\s*>/.test(markup)) {
     throw new Error(
       `parseCheckstyle: <checkstyle> root was never closed -- no </checkstyle> and the root tag ` +
         `is not self-closed. This looks like a truncated report (killed process, or output cut ` +
@@ -222,7 +249,7 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
   //   - A literal `<file` inside a CDATA section is text, not markup.
   // Both are excluded here; a genuinely unclosed `<file>` still throws, which is
   // the guarantee this check exists for.
-  const scanned = xml.replace(CDATA_RE, "");
+  const scanned = markup;
   const selfClosedFileCount = [...scanned.matchAll(FILE_SELF_CLOSED_RE)].length;
   const fileOpenCount = [...scanned.matchAll(FILE_OPEN_RE)].length - selfClosedFileCount;
   const fileBlockCount = [...scanned.matchAll(FILE_BLOCK_RE)].length;
@@ -236,7 +263,7 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
   }
 
   const findings: CheckstyleFinding[] = [];
-  for (const fileMatch of xml.matchAll(FILE_BLOCK_RE)) {
+  for (const fileMatch of markup.matchAll(FILE_BLOCK_RE)) {
     const file = unescapeXmlEntities(fileMatch[1]!);
     const body = fileMatch[2]!;
 

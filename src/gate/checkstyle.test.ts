@@ -247,3 +247,35 @@ describe("R5: malformed regions must never read as clean", () => {
     expect(() => parseCheckstyle(xml)).toThrow(/self-closing|malformed/i);
   });
 });
+
+describe("R6: comments and CDATA are TEXT, not markup", () => {
+  it("does not count an <error> inside an XML comment -- a valid report must not be rejected", () => {
+    const xml = '<checkstyle><file name="x.php"><!-- <error line="1"> --></file></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("does not parse an <error/> inside CDATA as a genuine finding", () => {
+    const xml =
+      '<checkstyle><file name="x.php"><![CDATA[ <error line="1" severity="error" message="fake" source="s"/> ]]></file></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("throws when the only </checkstyle> sits inside a CLOSED CDATA section", () => {
+    // The section terminates, so the unterminated-CDATA guard does not fire --
+    // but the text inside it is not a closed root, and the document really did
+    // end early.
+    expect(() => parseCheckstyle("<checkstyle><![CDATA[ </checkstyle> ]]>")).toThrow(/never closed/i);
+  });
+
+  it("throws on an unterminated XML comment", () => {
+    expect(() => parseCheckstyle("<checkstyle><!-- oops </checkstyle>")).toThrow(/comment/i);
+  });
+
+  it("still parses a real finding alongside a comment", () => {
+    const xml =
+      '<checkstyle><file name="x.php"><!-- note --><error line="2" severity="error" message="real" source="s"/></file></checkstyle>';
+    const found = parseCheckstyle(xml);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 2, message: "real" });
+  });
+});

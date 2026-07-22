@@ -411,3 +411,16 @@ describe("R5-FIX1: a new file with NO added lines still owns its file-level find
     expect(result).toEqual([]);
   });
 });
+
+describe("R6-FIX1: a new file present only in newFiles resolves case-insensitively", () => {
+  it("keeps a file-level finding whose report path differs in case from the newFiles key", () => {
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\ASSET.PHP", line: null, message: "missing file doc comment" })],
+      new Map(),
+      "C:\\repo",
+      new Set(["asset.php"]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "asset.php", unattributed: false });
+  });
+});

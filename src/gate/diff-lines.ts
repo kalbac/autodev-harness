@@ -283,7 +283,16 @@ export function addedLineNumbers(diffText: string): AddedLines {
   // the end of every path and every hunk-header number, breaking both the file
   // header match and the `+`/`-`/` ` prefix checks below (a line body of `\r`-only
   // content is indistinguishable from empty without this).
-  const lines = diffText.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+  const rawLines = diffText.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+  // R6-FIX4: a trailing newline is the LAST REAL LINE'S TERMINATOR, not a line of
+  // its own, but `split("\n")` yields an extra empty element for it. That element
+  // was then treated as a bare blank context line -- so a diff truncated right
+  // after a hunk header (`@@ -1,1 +1,1 @@\n`) had its counters fully discharged by
+  // an artifact of splitting, and the underflow guard never fired: a corrupt diff
+  // returned an empty added-set successfully. Drop exactly one trailing empty
+  // element, and only when the text really ends in a newline -- a genuinely blank
+  // final context line is `"\n\n"`, whose second-to-last element survives.
+  const lines = diffText.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
 
   let currentPath: string | null = null;
   let cursor = 0; // next NEW-file line number; only meaningful once a hunk header set it

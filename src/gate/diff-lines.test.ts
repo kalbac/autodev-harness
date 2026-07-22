@@ -378,3 +378,19 @@ describe("R5-FIX3: an empty quoted path is refused", () => {
     expect(() => addedLineNumbers(d)).toThrow(/empty quoted path/i);
   });
 });
+
+describe("R6-FIX4: a diff truncated right after a hunk header is caught", () => {
+  it("throws instead of letting the split artifact discharge the hunk", () => {
+    const d = ["diff --git a/x.php b/x.php", "--- a/x.php", "+++ b/x.php", "@@ -1,1 +1,1 @@", ""].join(
+      String.fromCharCode(10),
+    );
+    expect(() => addedLineNumbers(d)).toThrow(/still owe|truncated|malformed/i);
+  });
+
+  it("a genuinely blank final context line is still accepted", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,3 @@", " a", "+b", "", ""].join(
+      String.fromCharCode(10),
+    );
+    expect([...addedLineNumbers(d).added.get("x.php")!]).toEqual([2]);
+  });
+});
