@@ -289,9 +289,15 @@ describe("filterFindings", () => {
       ["src/Foo.php", new Set([3])],
       ["src/foo.php", new Set([9])],
     ]);
+    // R4-FIX5 SUPERSEDES the union this case originally pinned. The intent it
+    // was written to protect -- "a finding under the other colliding key is NOT
+    // silently dropped" -- still holds and is still asserted: the finding
+    // survives. What changed is that it is no longer attributed to one of the
+    // two files, because the report path genuinely cannot say which it meant.
+    // Unioning made it look attributed, which was a confident wrong answer.
     const result = filterFindings(findings, addedLines, "C:\\repo", new Set());
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ line: 9, unattributed: false });
+    expect(result[0]).toMatchObject({ line: 9, unattributed: true });
   });
 
   it("R3-FIX3: the union also governs the newFiles membership test for a file-level finding", () => {
@@ -307,9 +313,13 @@ describe("filterFindings", () => {
       ["src/Foo.php", new Set([3])],
       ["src/foo.php", new Set([9])],
     ]);
+    // R4-FIX5 SUPERSEDES the union here too, and the original intent is intact:
+    // the file-level finding is still NOT dropped as pre-existing debt. It is
+    // now flagged instead of pinned to whichever colliding key happened to be
+    // in `newFiles`, since the report cannot distinguish the two files.
     const result = filterFindings(findings, addedLines, "C:\\repo", new Set(["src/foo.php"]));
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ line: null, unattributed: false });
+    expect(result[0]).toMatchObject({ line: null, unattributed: true });
   });
 
   it("R3-FIX4: an ordinary POSIX path starting //?/ (a legal '?' filename character, not a Windows extended-length prefix) is NOT stripped into a coincidental false match", () => {
@@ -328,5 +338,49 @@ describe("filterFindings", () => {
     const result = filterFindings(findings, addedLines, "repo", new Set());
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ unattributed: true, message: "literal question-mark dir" });
+  });
+});
+
+describe("R4-FIX5: an ambiguous case-colliding path is unattributed, not attributed", () => {
+  const collide = () =>
+    new Map([
+      ["src/Foo.php", new Set([10])],
+      ["SRC/foo.php", new Set([20])],
+    ]);
+
+  it("does not attribute a finding to one of two files that merely share a folded name", () => {
+    // Round 3 unioned the two line sets, so a finding at line 10 was kept as if
+    // it belonged to whichever key came first -- an answer the input cannot
+    // support. Keep it (nothing lost) but flag it (nothing falsely pinned).
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\SRC\\FOO.PHP", line: 10, message: "ambiguous" })],
+      collide(),
+      "C:\\repo",
+      new Set(),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "ambiguous" });
+  });
+
+  it("keeps an ambiguous file-level finding too, rather than resolving it by guess", () => {
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\SRC\\FOO.PHP", line: null, message: "file level" })],
+      collide(),
+      "C:\\repo",
+      new Set(["src/Foo.php"]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true });
+  });
+
+  it("a SINGLE case-insensitive match still resolves normally", () => {
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\SRC\\FOO.PHP", line: 10, message: "unambiguous" })],
+      new Map([["src/Foo.php", new Set([10])]]),
+      "C:\\repo",
+      new Set(),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "src/Foo.php", unattributed: false });
   });
 });

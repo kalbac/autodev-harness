@@ -91,15 +91,20 @@ function stripExtendedLengthPrefix(folded: string): string {
  *  by an exact-case lookup is the exact "validated one string, used
  *  another" shape that keeps recurring in this module.
  *
- *  R3-FIX3: returns ALL matching keys, not just the first. A repo created on
- *  a case-sensitive filesystem can legitimately hold both `src/Foo.php` and
- *  `SRC/foo.php` as two DISTINCT files that both fold to the same lowercase
- *  string -- picking only the first meant the OTHER key's added-line set (or
- *  its `newFiles` membership) was never consulted at all, and a finding that
- *  landed only there was silently dropped. Returning every match lets the
- *  caller union their line sets: uniting can only ever KEEP more findings
- *  than a single-key pick, never fewer, which is the only safe direction for
- *  a component whose fail state is "never lose a finding". */
+ *  Returns ALL matching keys, not just the first, because a repo created on a
+ *  case-sensitive filesystem can legitimately hold both `src/Foo.php` and
+ *  `SRC/foo.php` as two DISTINCT files that fold to the same lowercase string.
+ *
+ *  What the caller does with more than one match changed twice, and the history
+ *  is the point. R3 had it pick the first key, which silently dropped a finding
+ *  that landed only in the other. R3's fix UNIONED their line sets, which cured
+ *  that and introduced the opposite error: a finding was kept because the OTHER
+ *  file added that line number, attributing it to a file it may not belong to.
+ *  R4 settled it: two matches means the report path is AMBIGUOUS, and neither
+ *  picking nor uniting can answer a question the input does not contain. The
+ *  caller now flags such a finding `unattributed` -- kept, so nothing is lost,
+ *  and pinned to no file, so nothing is falsely attributed. This function's job
+ *  is therefore to report the ambiguity faithfully, not to resolve it. */
 function findAllCaseInsensitiveKeys(target: string, keys: Iterable<string>): string[] {
   const targetLower = target.toLowerCase();
   const matches: string[] = [];
@@ -253,23 +258,29 @@ export function filterFindings(
           return matches.length > 0 ? matches : [norm.rel];
         })()
       : [norm.rel];
-    // Display/output path: pick the first candidate deterministically. This
-    // only matters for what the operator SEES in a genuine case-collision,
-    // which is rare; it never affects which lines/newFiles membership is
-    // consulted below -- that is the UNION across every candidate key.
+    // R4-FIX5: more than one diff key folding to this report path means the
+    // path is genuinely AMBIGUOUS -- the report cannot say which of two
+    // distinct files (`src/Foo.php` vs `SRC/foo.php`) it meant. R3 resolved
+    // that by UNIONING their line sets, which fixed under-attribution and
+    // created the opposite error: a finding at line 10 was kept because the
+    // OTHER file added line 10, attributing it to a file it may not belong to.
+    //
+    // Neither "pick one" nor "union" is right, because both answer a question
+    // the input cannot answer. Ambiguity is its own outcome: keep the finding
+    // (nothing is lost) and flag it `unattributed` (nothing is falsely pinned
+    // to a specific file), so the operator sees the ambiguity instead of a
+    // confident wrong answer. Fail-closed, like every other unresolvable path
+    // here.
+    if (candidateKeys.length > 1) {
+      kept.push({ ...f, unattributed: true });
+      continue;
+    }
     const normalizedPath = candidateKeys[0]!;
 
-    // R3-FIX3: UNION the added-line sets of every case-colliding key rather
-    // than consulting only one. Uniting is the safe direction -- it can only
-    // ever KEEP more findings than a single-key pick, never drop one that a
-    // narrower choice would have missed.
-    let added: Set<number> | undefined;
-    for (const key of candidateKeys) {
-      const set = addedLines.get(key);
-      if (!set) continue;
-      if (!added) added = new Set<number>();
-      for (const n of set) added.add(n);
-    }
+    // Exactly one candidate key survives to here (an ambiguous match returned
+    // above), so there is nothing to union -- the key either names a file the
+    // diff touched or it does not.
+    const added = addedLines.get(normalizedPath);
     if (!added) {
       // Rule 4: a known file, just not one the diff touched. Drop, silently --
       // this is ordinary out-of-scope pre-existing debt, not a failure of any
@@ -278,9 +289,8 @@ export function filterFindings(
     }
 
     if (f.line === null) {
-      // Rule 6. R3-FIX3: membership in newFiles is likewise checked across
-      // ALL candidate keys, not just the displayed one.
-      if (candidateKeys.some((key) => newFiles.has(key))) {
+      // Rule 6.
+      if (newFiles.has(normalizedPath)) {
         kept.push({ ...f, file: normalizedPath, unattributed: false });
       }
       continue;

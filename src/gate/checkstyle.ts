@@ -116,6 +116,13 @@ function decodeCodePoint(codePoint: number, original: string): string {
 
 const FILE_BLOCK_RE = /<file\s+name="([^"]*)"\s*>([\s\S]*?)<\/file>/g;
 const FILE_OPEN_RE = /<file\b/g;
+/** A `<file ... />` element that closes itself -- a file with no findings, which
+ *  several tools emit for a clean file. It is a complete element, so it must not
+ *  be counted as an opening awaiting a `</file>`. */
+const FILE_SELF_CLOSED_RE = /<file\b[^>]*\/>/g;
+/** A CDATA section: its contents are literal text, so a `<file` inside one is not
+ *  markup and must not be counted as an opening tag. */
+const CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g;
 const ERROR_TAG_RE = /<error\b([^>]*)\/>/g;
 const ATTR_RE = /([A-Za-z_:][\w.:-]*)\s*=\s*"([^"]*)"/g;
 
@@ -185,8 +192,20 @@ export function parseCheckstyle(xml: string): CheckstyleFinding[] {
   // a `<file>` that never closed can never be captured by that regex, so any
   // shortfall means at least one block is being silently dropped rather than
   // parsed.
-  const fileOpenCount = [...xml.matchAll(FILE_OPEN_RE)].length;
-  const fileBlockCount = [...xml.matchAll(FILE_BLOCK_RE)].length;
+  // R4-FIX4: two ways that count was WRONG in the rejecting direction, each of
+  // which fails a perfectly valid report and so brings down the gate run for
+  // every task -- a denial of service, which is its own kind of broken gate.
+  //   - `<file name="x.php"/>` is a self-closed element for a file with no
+  //     findings, which several tools emit. It counts as an opening but can
+  //     never match `FILE_BLOCK_RE` (that pattern requires a literal `</file>`),
+  //     so a clean report was rejected outright.
+  //   - A literal `<file` inside a CDATA section is text, not markup.
+  // Both are excluded here; a genuinely unclosed `<file>` still throws, which is
+  // the guarantee this check exists for.
+  const scanned = xml.replace(CDATA_RE, "");
+  const selfClosedFileCount = [...scanned.matchAll(FILE_SELF_CLOSED_RE)].length;
+  const fileOpenCount = [...scanned.matchAll(FILE_OPEN_RE)].length - selfClosedFileCount;
+  const fileBlockCount = [...scanned.matchAll(FILE_BLOCK_RE)].length;
   if (fileBlockCount < fileOpenCount) {
     throw new Error(
       `parseCheckstyle: found ${fileOpenCount} <file> opening tag(s) but only ${fileBlockCount} closed ` +

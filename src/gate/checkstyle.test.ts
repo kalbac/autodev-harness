@@ -194,3 +194,35 @@ describe("parseCheckstyle (pinned on a REAL PHPCS report)", () => {
     expect(found[0]!.message).toBe("\u{1F600}");
   });
 });
+
+describe("R4-FIX4: the unclosed-<file> guard must not reject VALID reports", () => {
+  it("accepts a self-closing <file/> -- a clean file, which several tools emit", () => {
+    // Counting it as an opening awaiting a `</file>` rejected an entirely valid
+    // report, bringing down the gate run for every task. A denial of service is
+    // its own kind of broken gate, just in the other direction.
+    const xml = '<?xml version="1.0"?><checkstyle version="3.13.5"><file name="clean.php"/></checkstyle>';
+    expect(parseCheckstyle(xml)).toEqual([]);
+  });
+
+  it("accepts a mix of self-closed and populated file elements", () => {
+    const xml =
+      '<checkstyle><file name="clean.php"/><file name="dirty.php">' +
+      '<error line="4" severity="error" message="boom" source="X.Y"/></file></checkstyle>';
+    const found = parseCheckstyle(xml);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ file: "dirty.php", line: 4 });
+  });
+
+  it("does not count a literal <file inside CDATA as an opening tag", () => {
+    const xml =
+      '<checkstyle><file name="x.php"><error line="1" severity="error" message="m" source="S"/></file>' +
+      '<![CDATA[ literal <file name="fake.php"> text ]]></checkstyle>';
+    expect(parseCheckstyle(xml)).toHaveLength(1);
+  });
+
+  it("STILL throws on a genuinely unclosed <file> -- the guarantee is intact", () => {
+    const xml =
+      '<checkstyle><file name="x.php"><error line="1" severity="error" message="m" source="S"/></checkstyle>';
+    expect(() => parseCheckstyle(xml)).toThrow(/unclosed|closed/i);
+  });
+});

@@ -293,6 +293,59 @@ describe("R3-FIX2: a binary/copy new file with no +++ line still reaches newFile
   });
 });
 
+describe("R4-FIX1: an unterminated or malformed C-quoted path THROWS rather than being accepted as literal", () => {
+  it("a +++ header quoting a path with NO closing quote at all (truncated diff) throws", () => {
+    const d = ['--- a/x.php', '+++ "b/x.php', "@@ -1,1 +1,2 @@", " a", "+b"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/unterminated|quot/i);
+  });
+
+  it("a path whose apparent trailing quote is itself ESCAPED (\\\") is not a real terminator -- throws", () => {
+    // `"b/x\"` -- the last two characters are the escape sequence for a
+    // literal quote, not a closing delimiter, so there is in fact no real
+    // terminator anywhere in this token.
+    const d = ['--- a/x.php', '+++ "b/x\\"', "@@ -1,1 +1,2 @@", " a", "+b"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/unterminated|quot/i);
+  });
+
+  it("a path legitimately ending in an escaped backslash IS properly terminated and still decodes", () => {
+    // `"b/x\\"` -- content is `x` followed by one escaped backslash, then the
+    // REAL closing quote. This is the boundary the critic checked and found
+    // correct: it must NOT be treated as unterminated.
+    const d = ['--- /dev/null', '+++ "b/x\\\\"', "@@ -0,0 +1,1 @@", "+one"].join("\n");
+    const { added } = addedLineNumbers(d);
+    expect([...added.get("x\\")!]).toEqual([1]);
+  });
+
+  it("a truncated octal escape at the very end of a quoted path (only 2 of 3 digits) throws", () => {
+    // `"b/x\12"` -- \12 is short one digit; git never emits a non-3-digit
+    // octal escape, so this can only be a truncated/corrupt diff. The OLD
+    // decoder fell back to keeping "\12" as literal text, silently producing
+    // the wrong key.
+    const d = ['--- a/x.php', '+++ "b/x\\12"', "@@ -1,1 +1,2 @@", " a", "+b"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/octal|truncat/i);
+  });
+});
+
+describe("R4-FIX2: invalid UTF-8 inside a quoted path THROWS rather than becoming U+FFFD", () => {
+  it("a lone continuation byte (\\200) decodes to invalid UTF-8 and throws, instead of silently becoming the replacement character", () => {
+    const d = ['--- a/x.php', '+++ "b/x\\200.php"', "@@ -1,1 +1,2 @@", " a", "+b"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/utf-8|invalid/i);
+  });
+});
+
+describe("R4-FIX3: a malformed hunk body line THROWS instead of being silently consumed as context", () => {
+  it("a stray line with no +/-/space/backslash prefix while the hunk still owes lines throws, naming the line", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,2 @@", " a", "xyz malformed"].join("\n");
+    expect(() => addedLineNumbers(d)).toThrow(/xyz malformed/);
+  });
+
+  it("a genuinely blank (empty-string) context line is STILL accepted, not treated as malformed", () => {
+    const d = ["--- a/x.php", "+++ b/x.php", "@@ -1,2 +1,2 @@", "", " b"].join("\n");
+    expect(() => addedLineNumbers(d)).not.toThrow();
+    expect(addedLineNumbers(d).added.get("x.php") ?? new Set()).toEqual(new Set());
+  });
+});
+
 describe("new-file signals do not leak across file sections", () => {
   it("a binary new file with no hunk body does not mark the NEXT file as new", () => {
     // The signal is normally consumed by the next `+++` header, but a binary

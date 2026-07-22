@@ -110,19 +110,34 @@ function decodeGitQuotedPathContent(escaped: string): string {
         i += 3;
         continue;
       }
-      // An escape sequence this decoder does not recognize: keep the
-      // backslash literally rather than eating a byte that was not
-      // actually an escape target, and let the loop reprocess `next` on
-      // its own next iteration.
-      bytes.push(0x5c);
-      continue;
+      // R4-FIX1: an escape this decoder cannot read (a truncated `\12` at the
+      // end, or an unknown letter) used to be kept as a literal backslash --
+      // which quietly produced a DIFFERENT path than the one git wrote, and a
+      // wrong key drops every finding for that file. Refuse instead.
+      throw new Error(
+        `addedLineNumbers: quoted path contains an unrecognized or truncated escape sequence ` +
+          `at ${JSON.stringify(escaped.slice(i, i + 4))} -- the diff is malformed or was truncated`,
+      );
     }
     // A literal (unescaped) character. git only ever leaves printable-safe
     // bytes unescaped inside a quoted path, so this is always a single
     // ASCII byte in practice.
     bytes.push(ch.charCodeAt(0) & 0xff);
   }
-  return new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(bytes));
+  // R4-FIX2: `fatal: true`. A non-fatal decoder REPLACES an invalid byte
+  // sequence with U+FFFD, so `"b/x\200.php"` (a lone UTF-8 continuation byte)
+  // yielded the key `x<U+FFFD>.php` -- a path that does not exist -- and every
+  // finding for the real file was then silently dropped. A path we cannot decode
+  // means a corrupt diff, and this module's contract is to be loud rather than
+  // approximate.
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+  } catch {
+    throw new Error(
+      `addedLineNumbers: quoted path ${JSON.stringify(escaped)} does not decode as UTF-8 -- refusing to ` +
+        `substitute replacement characters, which would key the added-line map on a path that does not exist`,
+    );
+  }
 }
 
 /** If `raw` is a whole, C-quoted path (`"..."`), decode it (R3-FIX1);
@@ -135,10 +150,42 @@ function decodeGitQuotedPathContent(escaped: string): string {
  *  silently dropped when a real caller looks it up by the plain, decoded
  *  path. */
 function unquotePath(raw: string): string {
-  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
-    return decodeGitQuotedPathContent(raw.slice(1, -1));
+  if (!raw.startsWith('"')) return raw;
+
+  // R4-FIX1: a path that OPENS a quote must close it, and the closing quote must
+  // be a real terminator rather than an escaped `\"` that happens to sit last.
+  // The previous `startsWith('"') && endsWith('"')` test accepted a truncated
+  // header like `+++ "b/x.php` verbatim, so the map was keyed on the literal
+  // `"b/x.php` -- quotes and all -- and a finding on the real `x.php` was
+  // silently dropped. A corrupt diff must be loud here, not guessed at.
+  //
+  // Termination is decided by scanning, not by looking at the last character:
+  // `"b/x\\"` ends in an ESCAPED backslash followed by a genuine closing quote
+  // and is perfectly valid, while `"b/x\"` ends in an escaped QUOTE and is not
+  // terminated at all. Only a scan that consumes escapes in order tells the two
+  // apart.
+  let i = 1;
+  let closedAt = -1;
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (ch === "\\") {
+      i += 2; // skip the escaped byte; a trailing lone `\` falls out of the loop
+      continue;
+    }
+    if (ch === '"') {
+      closedAt = i;
+      break;
+    }
+    i += 1;
   }
-  return raw;
+  if (closedAt !== raw.length - 1) {
+    throw new Error(
+      `addedLineNumbers: quoted path ${JSON.stringify(raw)} is not properly terminated -- the diff is ` +
+        `malformed or was truncated. Refusing to key the added-line map on a path this module cannot read, ` +
+        `because a wrong key silently drops every finding for that file`,
+    );
+  }
+  return decodeGitQuotedPathContent(raw.slice(1, closedAt));
 }
 
 /** Matches a `diff --git` line where BOTH sides are C-quoted (R3-FIX1/FIX2).
@@ -301,6 +348,24 @@ export function addedLineNumbers(diffText: string): AddedLines {
         // not content of its own, and not counted in either the old or new
         // hunk-header count. Must not advance the cursor or consume a count.
         continue;
+      }
+
+      // R4-FIX3: only a genuine context line reaches here. Previously ANY
+      // remaining line was consumed as context, so a corrupt body line such as
+      // `@@ malformed-body` fully discharged BOTH counters and the walker
+      // returned an empty added-set *successfully* -- a corrupt diff read as
+      // "this task added no lines", which downstream means every finding is
+      // pre-existing and none belongs to the worker. Silent and total.
+      //
+      // Legal body lines are exactly: ` ` (context), `+`, `-`, `\` (all handled
+      // above), and a completely EMPTY line, which some producers emit for a
+      // blank context line instead of a line holding a single space. Anything
+      // else means the diff is not what it claims to be.
+      if (line !== "" && !line.startsWith(" ")) {
+        throw new Error(
+          `addedLineNumbers: hunk in ${currentPath ?? "<unknown file>"} contains a line that is not a valid ` +
+            `unified-diff body line -- the diff is malformed or was truncated. Offending line: ${JSON.stringify(line)}`,
+        );
       }
 
       // A context line (starts with a literal space) or a blank line inside a
