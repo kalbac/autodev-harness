@@ -28,7 +28,17 @@ const ZoneRecord = z
 
 const FindingCounts = z
   .object({
-    total: z.number().int().nonnegative(),
+    /**
+     * The tool's count BEFORE diff-filtering, or `null` for NOT MEASURED.
+     *
+     * Nullable rather than a number with a floor: a gate that exited 0 was never
+     * parsed, so nothing looked at the file, and any number here would be an
+     * invention. Substituting `in_diff` (the old behaviour) made `total - in_diff`
+     * zero by construction and the pre-existing debt invisible -- "not measured"
+     * silently reading as "no debt" is precisely the fail-open this ledger exists
+     * to prevent (spec 2026-07-22, `findings.in_diff` vs `total`).
+     */
+    total: z.number().int().nonnegative().nullable(),
     in_diff: z.number().int().nonnegative(),
     unattributed: z.number().int().nonnegative(),
   })

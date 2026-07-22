@@ -57,11 +57,11 @@ describe("buildEvidence", () => {
     expect(rec.profile_gates[0]!.findings).toEqual({ total: 12, in_diff: 2, unattributed: 1 });
   });
 
-  it("falls back to the filtered count when the tool's total was never measured", () => {
-    // `findings_total: null` means "not measured", not "zero". The floor must be
-    // the findings we DO know about: understating the debt is survivable, inventing
-    // a total is not, and reporting `total: 0` beside two real findings would be a
-    // self-contradicting record.
+  it("records the total as NOT MEASURED (null) when the tool's count was never taken", () => {
+    // `findings_total: null` means "not measured" -- neither zero nor a floor.
+    // Substituting the filtered length would make `total - in_diff` zero by
+    // construction, and "nothing looked" would read as "no debt": the fail-open
+    // this ledger exists to prevent. The report says UNKNOWN instead.
     const rec = buildEvidence(
       draft({
         profileGates: [
@@ -82,7 +82,9 @@ describe("buildEvidence", () => {
         ],
       }),
     );
-    expect(rec.profile_gates[0]!.findings).toEqual({ total: 2, in_diff: 2, unattributed: 0 });
+    expect(rec.profile_gates[0]!.findings).toEqual({ total: null, in_diff: 2, unattributed: 0 });
+    // And the record still satisfies the fail-closed schema with a null total.
+    expect(() => EvidenceSchema.parse(rec)).not.toThrow();
   });
 
   it("keeps a skipped gate's reason", () => {

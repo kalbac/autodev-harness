@@ -64,10 +64,11 @@ export function buildEvidence(d: EvidenceDraft): EvidenceRecord {
               // `total` is the tool's FULL count and `in_diff` the surviving,
               // diff-filtered one. They are different numbers and their difference
               // is the file's pre-existing debt -- the whole reason the ledger keeps
-              // both. Falling back to the filtered length when `findings_total` was
-              // never measured is the honest floor: it can understate the debt, never
-              // invent one.
-              total: g.findings_total ?? g.findings.length,
+              // both. `findings_total` is passed through UNCHANGED, `null` included:
+              // null means the tool's count was never measured, and any substitute
+              // (the filtered length, or zero) would make the debt read as zero by
+              // construction. The report states "not measured" instead.
+              total: g.findings_total,
               in_diff: g.findings.length,
               unattributed: g.findings.filter((f) => f.unattributed).length,
             },
