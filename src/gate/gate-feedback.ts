@@ -78,11 +78,24 @@ export function stripAnsi(text: string): string {
  * the whole report. The omission is stated inline; a silent truncation would read
  * as a complete report and quietly mislead the worker about what it must fix.
  */
+/** The inline notice that a clamp dropped characters. One definition, so the
+ *  budget reserved for it and the text actually emitted can never disagree. */
+function renderOmissionMarker(dropped: number): string {
+  return `\n\n... [${dropped} characters omitted] ...\n\n`;
+}
+
 export function clampOutput(text: string, limit: number = PER_STEP_LIMIT): string {
   if (text.length <= limit) return text;
   if (limit <= 0) return ""; // no budget at all -- nothing can be shown
 
-  const half = Math.floor((limit - 40) / 2);
+  // Reserve the marker's REAL length, not a fixed 40. The marker embeds the
+  // dropped-character count, so its width grows with the digits of that number --
+  // a 100 MB input needs 9 digits where 40 chars assumed room for far fewer, and
+  // the result then ran one character over the limit it promises (round-2 critic
+  // finding). `text.length` is the largest `dropped` can ever be, so sizing the
+  // marker with it is the safe over-estimate.
+  const markerWidth = renderOmissionMarker(text.length).length;
+  const half = Math.floor((limit - markerWidth) / 2);
   if (half <= 0) {
     // Below ~40-42 chars there is no room for a head+tail split AND the
     // "[N characters omitted]" marker text -- the head+tail shape breaks down
@@ -94,7 +107,7 @@ export function clampOutput(text: string, limit: number = PER_STEP_LIMIT): strin
   }
 
   const dropped = text.length - half * 2;
-  return `${text.slice(0, half)}\n\n... [${dropped} characters omitted] ...\n\n${text.slice(-half)}`;
+  return `${text.slice(0, half)}${renderOmissionMarker(dropped)}${text.slice(-half)}`;
 }
 
 /**
@@ -126,37 +139,51 @@ export function formatGateFeedback(failed: FailedStep[]): string | null {
     "reported below with the tool's own output. Fix these before resubmitting.",
     "",
   ];
-  let used = parts.join("\n").length;
   let rendered = 0;
+
+  /** The document as it would actually be emitted. Measuring the JOINED string,
+   *  rather than summing each step's length, is what makes the cap honest: the
+   *  `"\n"` separators `join` inserts between parts are real characters the
+   *  summing approach did not count, so the emitted document could exceed
+   *  TOTAL_DOC_LIMIT while the bookkeeping believed it had not (round-2 critic
+   *  finding). The step count here is tiny, so re-joining per step is free. */
+  const emitted = (extra: string[] = []): string => [...parts, ...extra].join("\n");
 
   for (const step of failed) {
     const label = clampOutput(step.label, LABEL_LIMIT);
     const exitLabel = step.exitCode === null ? "(no subprocess exit code)" : `exit ${step.exitCode}`;
-    const body = step.output.trim();
     // Strip BEFORE clamping, not after: escape bytes are invisible but still cost
     // characters, so clamping first would spend the budget on them -- and a cut
     // landing mid-sequence would leave a fragment in the prompt.
-    const cleanBody = body === "" ? "" : clampOutput(stripAnsi(body));
+    //
+    // Emptiness is judged AFTER stripping, not before: output consisting only of
+    // colour codes is non-empty as bytes but carries no information, and testing
+    // the raw text produced an empty fenced block instead of saying plainly that
+    // the step printed nothing (round-2 critic finding).
+    const cleanBody = clampOutput(stripAnsi(step.output)).trim();
     const fence = fenceFor(cleanBody);
-    const bodyBlock = body === "" ? "_(the step produced no output)_" : `${fence}\n${cleanBody}\n${fence}`;
+    const bodyBlock = cleanBody === "" ? "_(the step produced no output)_" : `${fence}\n${cleanBody}\n${fence}`;
     const stepParts = [`## ${label} — ${exitLabel}`, "", bodyBlock, ""];
-    const stepText = stepParts.join("\n");
 
     // Global cap: stop BEFORE adding a step that would push the document over
     // budget, and say explicitly how many steps were left out -- a silently
     // truncated list would read to the worker as "everything is fixed", which
     // is the opposite of the truth. Always render at least the first step, even
-    // if it alone is large, so the cap never produces an empty document.
-    if (rendered > 0 && used + stepText.length > TOTAL_DOC_LIMIT) {
+    // if it alone is large, so the cap never produces an empty document. The
+    // omission footer is measured as part of the candidate, not appended
+    // afterwards unchecked.
+    if (rendered > 0) {
       const remaining = failed.length - rendered;
-      parts.push(`_(${remaining} further failing step${remaining === 1 ? "" : "s"} omitted -- document size cap)_`, "");
-      return parts.join("\n");
+      const footer = `_(${remaining} further failing step${remaining === 1 ? "" : "s"} omitted -- document size cap)_`;
+      if (emitted([...stepParts, footer, ""]).length > TOTAL_DOC_LIMIT) {
+        parts.push(footer, "");
+        return parts.join("\n");
+      }
     }
 
     parts.push(...stepParts);
-    used += stepText.length;
     rendered++;
   }
 
-  return parts.join("\n");
+  return emitted();
 }

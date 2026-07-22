@@ -147,3 +147,53 @@ describe("ANSI escape stripping", () => {
     expect(doc).not.toMatch(/omitted/);
   });
 });
+
+describe("round-2 critic fixes", () => {
+  it("keeps the EMITTED document within the cap, join separators and footer included", () => {
+    // The cap used to sum each step's own length, ignoring the newline
+    // separators `join` inserts between parts, and appended the omission
+    // footer unchecked -- so the document actually emitted could exceed the
+    // limit the bookkeeping believed it was holding.
+    const steps = Array.from({ length: 40 }, (_, i) => ({
+      label: `step ${i}`,
+      exitCode: 1,
+      output: "y".repeat(7_000),
+    }));
+    const doc = formatGateFeedback(steps)!;
+    expect(doc.length).toBeLessThanOrEqual(40_000);
+    expect(doc).toMatch(/further failing steps omitted/);
+  });
+
+  it("states the correct number of omitted steps", () => {
+    const steps = Array.from({ length: 10 }, (_, i) => ({
+      label: `step ${i}`,
+      exitCode: 1,
+      output: "y".repeat(7_000),
+    }));
+    const doc = formatGateFeedback(steps)!;
+    const m = doc.match(/\((\d+) further failing steps? omitted/);
+    const rendered = (doc.match(/^## /gm) ?? []).length;
+    expect(Number(m![1]!)).toBe(10 - rendered);
+  });
+
+  it("reports output that is ONLY colour codes as no output at all", () => {
+    // Non-empty as bytes, empty as information: judging emptiness before
+    // stripping produced an empty fenced block instead of saying so plainly.
+    const doc = formatGateFeedback([
+      { label: "phpcs", exitCode: 1, output: ESC + "[31m" + ESC + "[0m" },
+    ])!;
+    expect(doc).toMatch(/produced no output/);
+    expect(doc).not.toMatch(/```\s*```/);
+  });
+
+  it("holds the length promise when the dropped-count needs many digits", () => {
+    // The marker embeds the dropped count, so its width grows with that number's
+    // digits; a fixed 40-char reserve ran over for very large inputs.
+    const huge = "z".repeat(2_000_000);
+    expect(clampOutput(huge, 8_000).length).toBeLessThanOrEqual(8_000);
+  });
+
+  it.each([0, 1, 39, 40, 41, 42, 100])("never exceeds the limit (%i)", (limit) => {
+    expect(clampOutput("q".repeat(5_000), limit).length).toBeLessThanOrEqual(limit);
+  });
+});
