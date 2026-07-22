@@ -7,7 +7,7 @@ import { formatGateFeedback } from "./gate-feedback.js";
 import type { FailedStep } from "./gate-feedback.js";
 import { addedLineNumbers } from "./diff-lines.js";
 import type { AddedLines } from "./diff-lines.js";
-import type { FilteredFinding } from "./finding-filter.js";
+import type { ProfileGateRecord } from "./profile-gate-record.js";
 
 /**
  * The machine-gate decision core — parity: `gate.ps1 Invoke-AutodevGate`
@@ -47,6 +47,10 @@ export interface GateVerdict {
   decision: Decision;
   reasons: string[];
   changed_files: string[];
+  /** Per-gate records for this run, including SKIPPED gates. Empty when no profile
+   *  is attached. Carried on the verdict (rather than a second return channel) so it
+   *  lands in gate-verdict.json for free and reaches the conductor with no new plumbing. */
+  profile_gates: ProfileGateRecord[];
 }
 
 export interface GateInput {
@@ -98,24 +102,15 @@ export interface GateDeps {
    *  (FIX3/FIX9, `diff-lines.ts`'s `AddedLines`); a gate without `report` ignores it,
    *  exactly like a whole-project gate ignores `changedFiles`.
    *
-   *  A per-gate result MAY carry `findings`: the SURVIVING (already diff-filtered)
-   *  findings for a `report` gate, or `undefined` for an ordinary gate (no report format,
-   *  or a green run with nothing to show). When present, `green` was decided from the
-   *  FILTERED FINDING COUNT, not from `exitCode` -- a report gate can legitimately have
-   *  `green: true` alongside a non-zero `exitCode` (every finding sat outside the diff);
-   *  that combination is not a bug, it is the entire point of Task 4. `output`, when
-   *  present, is the raw tool output (kept for a non-report gate, and as a fallback for a
-   *  report gate whose `findings` are for some reason absent) -- `runGate` prefers
-   *  `findings` for the feedback document precisely because it excludes the debt outside
-   *  the diff that `output` (the tool's raw, whole-file report) does not. */
-  runProfileGates:
-    | ((
-        changedFiles: string[],
-        addedLines: AddedLines,
-      ) => Promise<
-        { id: string; green: boolean; exitCode: number; output?: string; findings?: FilteredFinding[] }[]
-      >)
-    | null;
+   *  Returns one `ProfileGateRecord` per declared gate, INCLUDING skipped ones (spec
+   *  2026-07-22 "two reports", `profile-gate-record.ts`) -- a skipped gate is a bound
+   *  on what this verdict covers, not an absence of data. `status: "green"` MAY carry a
+   *  non-zero `exit_code` for a `report` gate whose findings all sat outside the diff
+   *  (the entire point of line-scoped gates); `findings` is the SURVIVING, diff-filtered
+   *  set used for the worker's feedback document, `findings_total` is the tool's
+   *  full pre-filter count (see `ProfileGateRecord` for why the two are kept apart), and
+   *  `output` is the raw tool output, kept as a fallback and for operator debugging. */
+  runProfileGates: ((changedFiles: string[], addedLines: AddedLines) => Promise<ProfileGateRecord[]>) | null;
   /** Config-level (trusted-root, worker-inaccessible) human-only path globs (adr/006
    *  Phase 1, closing Finding 2 -- `contract.constitutionPaths` was previously dead
    *  config). Unioned with `inv.constitution.path_globs` for the constitution check.
@@ -167,6 +162,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
       decision: "ESCALATE",
       reasons: ["empty file_set -- nothing can be safely judged"],
       changed_files: [],
+      profile_gates: [],
     };
     if (deps.writeVerdict) {
       await deps.writeVerdict(input.taskId, verdict);
@@ -255,43 +251,29 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     // config. Looping a worker against a broken environment is the exact failure
     // mode this contract exists to prevent.
     let profileGreen = true;
+    let profileGates: ProfileGateRecord[] = [];
     if (deps.runProfileGates !== null) {
       // Computed from `diffText` (already resolved above), not re-derived with a
       // second `git` call -- see the `runProfileGates` doc comment. Cheap and pure,
       // so it is fine to compute unconditionally even when every gate happens to
       // declare no `report`; a report-less gate simply never reads it.
       const addedLines = addedLineNumbers(diffText);
-      const results = await deps.runProfileGates(changedFiles, addedLines);
-      for (const r of results) {
-        if (!r.green) {
-          profileGreen = false;
-          reasons.push(`profile gate '${r.id}' FAILED (exit ${r.exitCode})`);
-          // A `report` gate's `findings` ARE the feedback: they are already the
-          // diff-filtered subset the worker is responsible for, and rendering
-          // them (`gate-feedback.ts`'s job, Task 5) instead of the tool's raw
-          // whole-file `output` is what keeps a legacy file's pre-existing debt
-          // out of the document -- the entire point of line-scoped profile
-          // gates. `findings` is passed through UNRENDERED here -- `gate.ts`
-          // does not own the rendering (grouping unattributed findings, the
-          // per-step/label/total clamps, fence selection); `formatGateFeedback`
-          // does. `findings` is checked for `undefined` (not truthiness /
-          // non-empty), because a report gate is only ever pushed here with
-          // `green: false`, which -- per the composition root's contract --
-          // means `findings` is a NON-empty array whenever it is present at
-          // all; an ordinary gate (no `report`) simply never sets it, and
-          // falls back to raw `output`, byte-identical to pre-Task-4 behaviour.
-          failedSteps.push({
-            label: `profile gate '${r.id}'`,
-            exitCode: r.exitCode,
-            output: r.output ?? "",
-            // `exactOptionalPropertyTypes` -- spread only when `findings` is
-            // actually present, rather than assigning `undefined` to an
-            // optional key (a real, meaningful difference under this
-            // tsconfig: an assigned-but-undefined key is not the same as an
-            // absent one).
-            ...(r.findings !== undefined ? { findings: r.findings } : {}),
-          });
+      profileGates = await deps.runProfileGates(changedFiles, addedLines);
+      for (const r of profileGates) {
+        // Only "red" is worker-fixable failure. "skipped" must never turn the
+        // verdict red: the gate did not judge this diff, which is a coverage
+        // bound (reported by the Qualification Report), not a defect.
+        if (r.status !== "red") {
+          continue;
         }
+        profileGreen = false;
+        reasons.push(`profile gate '${r.id}' FAILED (exit ${r.exit_code ?? "n/a"})`);
+        failedSteps.push({
+          label: `profile gate '${r.id}'`,
+          exitCode: r.exit_code,
+          output: r.output,
+          ...(r.findings !== null ? { findings: r.findings } : {}),
+        });
       }
     }
 
@@ -425,6 +407,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
       decision,
       reasons,
       changed_files: changedFiles,
+      profile_gates: profileGates,
     };
 
     if (deps.writeVerdict) {

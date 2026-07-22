@@ -336,6 +336,7 @@ function makeParityHarness(opts: HarnessOptions = {}): Harness {
       decision: "COMMIT",
       reasons: [],
       changed_files: [],
+      profile_gates: [],
     }));
   const runGate: ConductorDeps["runGate"] = async (input, wt) => {
     gateCalls.push(input);
@@ -645,6 +646,7 @@ describe("parity divergence #4 -- gate RETRY routing", () => {
         decision: "RETRY",
         reasons: ["tests failed"],
         changed_files: [],
+        profile_gates: [],
       }),
     });
     h.seedTask({ id: "t6" });

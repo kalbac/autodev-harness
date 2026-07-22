@@ -357,6 +357,7 @@ function defaultGateVerdict(overrides: Partial<GateVerdict> = {}): GateVerdict {
     decision: "COMMIT",
     reasons: [],
     changed_files: [],
+    profile_gates: [],
     ...overrides,
   };
 }
