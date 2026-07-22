@@ -101,7 +101,7 @@ the harness already decides but currently discards.
       "exit_code": 1 | null, "skip_reason": "no changed file matched files: **/*.php" | null,
       "scope": "changed-lines" | "changed-files" | "whole-project",
       "files": ["…"],
-      "findings": { "total": 8, "in_diff": 0, "unattributed": 0 } | null }
+      "findings": { "total": 8 | null, "in_diff": 0, "unattributed": 0 } | null }
   ],
   "tokens": { "worker": { … }, "critic": { … } }
 }
@@ -126,11 +126,16 @@ Three fields carry the design's weight:
   would make the two numbers equal by construction and the debt invisible — a
   line-scoped green would silently read as a whole-file proof. When a run never
   measured the full count (a gate that exited 0 and was therefore never parsed), the
-  total is recorded as *not measured* rather than as `0`: claiming a file is clean
-  because nothing looked at it is the fail-open this whole feature exists to avoid.
+  total is recorded as `null` — *not measured* — and passed through unchanged, never
+  floored to the filtered length or to `0`: claiming a file is clean because nothing
+  looked at it is the fail-open this whole feature exists to avoid. A `null` total is
+  itself a `not_proven` entry (the debt is UNKNOWN, not zero), never treated as clean.
 
 Writing is **fail-soft**: an evidence write that throws logs a WARN and never fails a
-task. A report assembled over records that are missing or unreadable says so
+task. The iteration therefore REMOVES any existing record before it starts work, so a
+failed write leaves the record absent (reported honestly as missing evidence, H1)
+rather than leaving the previous iteration's record standing beside a contradicting
+outcome. A report assembled over records that are missing or unreadable says so
 explicitly (see H1).
 
 ### Harness Execution Report
@@ -164,7 +169,9 @@ that set. A record with `commit: null` (escalated or quarantined — nothing lan
 entries are still reported, since the operator asked for them and never got them.
 Produced on demand — a CLI verb and an endpoint — never on a timer.
 
-Header: profile `id@version`, harness version, commit range, evidence completeness.
+Header: profile `id@version` (derived from the SELECTED records only — a range that
+selected nothing names no profile, since no ruleset judged it), harness version,
+commit range, evidence completeness.
 Then exactly three sections, in this order:
 
 1. **Proven on change.** Per gate with `scope: changed-lines` or `changed-files`: the
@@ -174,9 +181,13 @@ Then exactly three sections, in this order:
    `composer validate`). Small on purpose; growing it is the profile's job, not the
    report's.
 3. **Not proven.** The longest section by design, assembled from:
-   - every skipped gate, by id and skip reason;
-   - every `acceptance[]` string not covered by a `success_command`;
-   - pre-existing findings outside the diff (`total − in_diff`), as the named debt;
+   - every skipped gate, by id and skip reason, taken from EVERY record and not only
+     the selected ones — "phpcs was unavailable" is a fact about the qualification
+     attempt whether or not the task landed — de-duplicated by id + reason;
+   - every `acceptance[]` string (H4), with the task's declared `success_commands`
+     named when it has any;
+   - pre-existing findings outside the diff (`total − in_diff`), as the named debt, or
+     an explicit UNKNOWN when `total` was never measured;
    - tasks with missing or unreadable evidence;
    - a standing entry naming what the profile does not check at all (the analyzer
      toolchain is project-controlled — the residual named in `CURRENT-STATE.md`).
@@ -188,13 +199,21 @@ These are the acceptance criteria of the feature, and each gets a test.
 - **H1 — missing evidence is `unknown`, never `pass`.** A task whose record is absent
   or unparseable is counted in "not proven" and named in the report's completeness
   line. (`PRINCIPLES.md` #10.)
-- **H2 — a skipped gate is always visible.** It appears by id and reason in section 3.
-  A report that cannot determine whether a gate ran treats it as skipped.
+- **H2 — a skipped gate is always visible.** It appears by id and reason in section 3,
+  whether or not the task's commit is in the selected range: a skip bounds the
+  qualification attempt itself. A report that cannot determine whether a gate ran
+  treats it as skipped.
 - **H3 — no bare verdict.** The Qualification Report never emits "qualified" as a
   standalone word. Its summary line always carries profile, range, and the three
   counts. A rendering test pins this.
-- **H4 — unchecked acceptance is a gap, not silence.** Free-text `acceptance[]` lands
-  in section 3 unless a `success_command` covers it.
+- **H4 — unchecked acceptance is a gap, not silence.** EVERY free-text `acceptance[]`
+  entry lands in section 3. A declared `success_command` suppresses nothing: no field
+  links a specific criterion to a specific command, and nothing can (`success_commands`
+  is a flat list of shell strings), so treating one command as covering every criterion
+  would be an assertion the ledger cannot support — and it emptied this section for
+  exactly the tasks that declared the most. When the task did declare commands, the
+  entry says so (`the task declares N success_command(s), but nothing links this
+  criterion to any of them`) rather than hiding the criterion.
 - **H5 — the two reports never share a section.** The Execution renderer does not read
   findings; the Qualification renderer does not read tokens, rounds, or attempts. A
   test asserts each renderer's output is free of the other's vocabulary.
