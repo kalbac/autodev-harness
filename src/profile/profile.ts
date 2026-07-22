@@ -40,6 +40,20 @@ export function harnessRoot(): string {
 const PROFILE_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
+ * The only prefix a `{profile}`-derived command token may carry: a real CLI flag
+ * ending in `=`, e.g. `--standard=` or `-c=`.
+ *
+ * This is deliberately a FLAG shape, not "the prefix ends with `=`". That weaker
+ * rule was the round-2 critic finding: `={profile}/gates/phpcs.xml` ends with `=`,
+ * so it validated, while the runner received the malformed argument
+ * `=<dir>/gates/phpcs.xml` -- a narrower instance of exactly the
+ * validate-one-string-run-another bug the check was added to close. "Ends with a
+ * character a flag happens to end with" is not proof of a flag; requiring the
+ * whole prefix to BE one is.
+ */
+const FLAG_PREFIX = /^--?[A-Za-z0-9][A-Za-z0-9-]*=$/;
+
+/**
  * Parse `"<id>@<version>"`. The id charset is restrictive on purpose: it is
  * concatenated into a filesystem path, so a separator or a `..` segment would let
  * a config reference resolve a "profile" from outside the harness tree.
@@ -234,11 +248,11 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
       const at = token.indexOf(dir);
       if (at === -1) continue; // not {profile}-derived
       const prefix = token.slice(0, at);
-      if (at !== 0 && !prefix.endsWith("=")) {
+      if (at !== 0 && !FLAG_PREFIX.test(prefix)) {
         throw new Error(
           `profile ${JSON.stringify(ref)}: gate '${g.id}' token '${token}' embeds the profile directory in an ` +
             `unrecognized shape -- a {profile}-derived token must be either the bare path ('${dir}/...') or a ` +
-            `flag-prefixed form whose prefix ends with '=' (e.g. '--standard=${dir}/...')`,
+            `flag-prefixed form ('--standard=${dir}/...', '-c=${dir}/...')`,
         );
       }
       const rulesetPath = token.slice(at);

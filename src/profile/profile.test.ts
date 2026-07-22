@@ -343,3 +343,33 @@ gates: []
     expect(p.provision).toEqual(["vendor"]);
   });
 });
+
+describe("{profile} token normal form (round-2 critic finding)", () => {
+  const tok = (run: string) => `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "${run}"
+`;
+
+  it.each([
+    ["bare path", "{profile}/gates/phpcs.xml"],
+    ["long flag", "--standard={profile}/gates/phpcs.xml"],
+    ["short flag", "-c={profile}/gates/phpcs.xml"],
+  ])("accepts a legitimate shape (%s)", async (_label, token) => {
+    await writeProfile("demo", tok(`phpcs ${token}`));
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.run).toContain("gates/phpcs.xml");
+  });
+
+  it.each([
+    // The round-2 leak: "ends with '='" is not proof of a flag.
+    ["bare equals sign", "={profile}/gates/phpcs.xml"],
+    ["arbitrary prefix", "prefix{profile}/gates/phpcs.xml"],
+    ["flag without the equals", "--standard{profile}/gates/phpcs.xml"],
+    ["double equals tail", "--standard=={profile}/gates/phpcs.xml"],
+  ])("refuses a malformed shape (%s)", async (_label, token) => {
+    await writeProfile("demo", tok(`phpcs ${token}`));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/unrecognized shape/);
+  });
+});
