@@ -2274,7 +2274,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
 
   /**
    * GET /projects/:id/runs/:runId/report — the STORED Harness Execution Report for one
-   * run (`<stateDir>/reports/run-<runId>.json`). The report is written once the run has
+   * run (`<stateDir>/reports/<runId>.json`). The report is written once the run has
    * finished, so a 404 here means "not ready yet" (the run is still moving), not "no
    * such run" -- and it is deliberately NOT assembled on the fly: a report about a run
    * that is still moving would be wrong.
@@ -2288,10 +2288,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       sendJson(res, 400, { error: "invalid run id" });
       return;
     }
-    const text = await readBoundedFileText(
-      join(p.stateDir, "reports", `run-${id}.json`),
-      MAX_RUNTIME_FILE_READ_BYTES,
-    );
+    const text = await readBoundedFileText(join(p.stateDir, "reports", `${id}.json`), MAX_RUNTIME_FILE_READ_BYTES);
     if (text === null) {
       sendJson(res, 404, { error: "report not ready" });
       return;

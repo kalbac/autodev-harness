@@ -3954,8 +3954,9 @@ describe("createApiServer / GET /runs/:runId/report", () => {
   it("returns the stored execution report JSON once written", async () => {
     mkdirSync(join(stateDir, "reports"), { recursive: true });
     writeFileSync(
-      // The stored file is `run-<runId>.json`, and this run's id is itself `run-1`.
-      join(stateDir, "reports", "run-run-1.json"),
+      // The stored file is `<runId>.json` -- no added prefix: a run id already
+      // starts with `run-`, so one would bake `run-run-...` into every artifact name.
+      join(stateDir, "reports", "run-1.json"),
       JSON.stringify({ kind: "harness-execution", run: { runId: "run-1" } }),
     );
 
@@ -3970,11 +3971,12 @@ describe("createApiServer / GET /runs/:runId/report", () => {
   it("accepts a DOTTED run id -- the same allowlist the write side uses", async () => {
     mkdirSync(join(stateDir, "reports"), { recursive: true });
     writeFileSync(join(stateDir, "reports", "run-OVERVIEW.md-1.json"), JSON.stringify({ kind: "harness-execution" }));
+    // The request path carries the FULL run id, dots and all.
 
     handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/OVERVIEW.md-1/report")}`);
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-OVERVIEW.md-1/report")}`);
     expect(res.status).toBe(200);
   });
 
@@ -3988,7 +3990,7 @@ describe("createApiServer / GET /runs/:runId/report", () => {
 
   it("500s (never 404s) a report file that exists but does not parse", async () => {
     mkdirSync(join(stateDir, "reports"), { recursive: true });
-    writeFileSync(join(stateDir, "reports", "run-run-1.json"), "{not json");
+    writeFileSync(join(stateDir, "reports", "run-1.json"), "{not json");
 
     handle = createApiServer(projectDeps({ repo, stateDir }));
     const port = await handle.listen(0);

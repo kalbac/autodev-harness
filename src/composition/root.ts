@@ -1184,7 +1184,14 @@ export async function buildProjectRoot(
    */
   const executionReportPath = (runId: string, ext: "md" | "json"): string => {
     if (!isPathSafeId(runId)) throw new Error(`unsafe run id: ${JSON.stringify(runId)}`);
-    return join(reportsDir, `run-${runId}.${ext}`);
+    // `<runId>.<ext>` -- NOT `run-<runId>`: a run id already starts with `run-`
+    // (`slugifyIntent`), so a prefix here would bake `run-run-...` into every
+    // artifact name forever. ONE function builds this name for both the write and
+    // the `reportExists` probe: a probe looking at a different name than the writer
+    // writes would regenerate every report on every pass, which is the
+    // check-one-string/use-another shape this repo keeps getting bitten by
+    // (docs/gotchas/validated-one-string-used-another.md).
+    return join(reportsDir, `${runId}.${ext}`);
   };
 
   /** Best-effort read of every run manifest; one corrupt file is skipped (with a
