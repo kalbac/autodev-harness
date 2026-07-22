@@ -10,7 +10,7 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced.
+~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`, CI 4/4).
 
 **s51 shipped Profiles v1 — the qualification layer.** The harness proves the
 *process*; a profile proves the *product*. A profile (`profiles/wordpress-woocommerce@1`)
@@ -18,7 +18,7 @@ is a named, versioned per-project-type proof pack living in the **harness** repo
 is worker-immutable by construction -- which is how `adr/006` **Phase 3** lands without
 being a separate phase. It is an **oracle source, not a second judge**: its gates become
 gate step 1d and its `protectedPaths` become the fifth source in `resolveOracleSet`, so
-the entire Phase 1+2 protection is inherited unchanged. Five codex `gpt-5.6-luna` rounds;
+the entire Phase 1+2 protection is inherited unchanged. Six codex `gpt-5.6-luna` rounds;
 all three live directions proven on `woodev-shipping-plugin-test`.
 
 ## Phase status
@@ -71,12 +71,14 @@ all three live directions proven on `woodev-shipping-plugin-test`.
   ruleset reports **7069** errors tree-wide and **8** on the file a task actually
   changed, so a whole-tree gate would be red on every run -- blocking everything while
   proving nothing about the diff. GOTCHAS 73 -> 75.
-- **Five codex `gpt-5.6-luna` rounds**, the same convergence shape as Phase 1's four and
+- **Six codex `gpt-5.6-luna` rounds**, the same convergence shape as Phase 1's four and
   Phase 2's six: R1 conflated RED with UNRUNNABLE; R2 found the fix still admitted
   `={profile}/...` ("ends with `=`" is not proof of a flag); R3 found `<dir>/../outside`
   still escaped and `<dir>-evil/x` passed as a bare path; R4 found the trust boundary
   asserted but never verified; R5 found an absolute path hiding after a *second* `=`.
-  Two findings were declined with rationale verified against real code.
+  R6 found the R5 fix guarded only ONE side of the version comparison. Three findings
+  were declined or downgraded with rationale verified against real code -- R6's own
+  severity was cut after a test proved its exploit path unreachable.
 - **All three live directions proven** on `woodev-shipping-plugin-test`:
   1. a new PHP file drew two genuine WPCS errors -> `profile_green:false`, `RETRY`;
   2. a docs task -> phpcs correctly **skipped** (logged), `profile_green:true`,
@@ -120,7 +122,8 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
   it wastes every retry. Pre-existing for `checkCommand`; load-bearing for profiles.
   `gotchas/profile-gate-red-gives-the-worker-no-feedback.md`.
 - **CRLF vs WPCS on Windows.** WPCS demands `
-`; a worker on Windows writes `
+`; a worker on Windows writes `
+
 `, so
   every new PHP file draws an automatic line-ending error. A WP/WC profile needs either a
   normalization step or an explicit exclusion before it is usable on a Windows box.
@@ -160,7 +163,7 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
-- **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3.
+- **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3 (`ee0be38`).
 - **s50** — `adr/006` Phase 2: protected-oracle-path fence (`44aebd8`) + docs audit (`0a89a45`).
 - **s49** — `adr/006` Phase 1: trusted-root oracle definitions (`cc0db6f`).
 - **s48** — Authority Model audit + `adr/006` + `PRINCIPLES.md` #14/#15 (`c6c2343`).

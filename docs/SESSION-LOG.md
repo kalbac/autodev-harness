@@ -4,7 +4,7 @@
 
 ---
 
-## s51 (2026-07-22) — PROFILES v1 SHIPPED: the WP/WC Qualification Layer + `adr/006` Phase 3 — 5 codex-luna rounds, all three live directions proven
+## s51 (2026-07-22) — PROFILES v1 SHIPPED: the WP/WC Qualification Layer + `adr/006` Phase 3 — 6 codex-luna rounds, all three live directions proven — PR #82 MERGED (`ee0be38`, CI 4/4)
 
 Unattended build session (operator granted full autonomy before sleeping, including the standing merge grant and permission to run the live proof). Brainstorm → spec → plan → subagent-driven build, per the repo contract.
 
@@ -16,7 +16,8 @@ Unattended build session (operator granted full autonomy before sleeping, includ
 - **All three live directions proven** on `woodev-shipping-plugin-test`: (1) a new PHP file drew two *genuine* WPCS errors (class-file-name and CRLF) → `profile_green:false` → RETRY; (2) a docs task → phpcs correctly **skipped** and logged → `profile_green:true` → **committed** `35db1a4`; (3) a task whose `file_set` held `phpcs.xml` → `constitution` escalation naming the profile as the source, raised **before the critic** — no `critic-verdict.json` written at all.
 - **Two honest limitations the live run exposed, both now the top NEXT ACTIONS.** Diff-scoping is per FILE, not per LINE, so a task touching an existing file inherits its whole pre-existing debt — and every PHP file in the polygon is already non-zero, so v1 is practically green only for new files. And a red gate gives the worker **no feedback at all**: the RETRY branch writes no artifact, `critic-feedback.md` is written only on critic/escalation paths, and the tool's stdout is discarded — so the worker reproduces the same diff until its budget runs out. Fail-safe, not fail-open (nothing wrong merges; the task parks), pre-existing for `checkCommand`, but load-bearing for profiles. GOTCHAS 73 → 75.
 - **Process note, recorded rather than hidden:** the diff-scoping redesign was written before its tests (TDD violated by me, not by the implementer subagents). Corrected by extracting the decision into a pure `prepareGateInvocation` and pinning it with tests, then **mutation-checking** them — removing the skip and the whitespace refusal turned three tests red, so they are not vacuous.
-- **Result:** 1340+ tests green, typecheck clean, profile verified loading from the compiled `dist/` build (the test that exists specifically to defeat the `critic-schema-json-not-copied-to-dist` failure mode).
+- **R6 and the merge.** The sixth round found the R5 version fix guarded only the REFERENCE side, not the YAML side -- the half-applied-fix pattern one more time. Its HIGH was downgraded after a test proved the described round trip unreachable (it needs a reference pinning 2^53, which R5 already refuses); the guard was still added, because without it the failure surfaces as a version-mismatch message pointing at the wrong problem. R6 also cleared the end-to-end trace: no path where a gate silently does not run, a result never reaches the verdict, or a failure reads as a pass. CI initially failed on Linux -- my own dist-parity test needs a build, and CI ran `npm test` before `npm run build`; fixed by reordering CI, not by softening the test, since tolerating a missing dist/ would delete the test's whole purpose.
+- **Result:** 1358 tests green, typecheck clean, profile verified loading from the compiled `dist/` build (the test that exists specifically to defeat the `critic-schema-json-not-copied-to-dist` failure mode).
 
 ---
 
