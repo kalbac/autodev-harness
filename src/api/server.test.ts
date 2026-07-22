@@ -39,6 +39,7 @@ function projectDeps(
     ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
     onCiCapability?: () => Promise<AgentCiCapability>;
     threads?: ProjectView["threads"];
+    onQualificationReport?: ProjectView["onQualificationReport"];
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -60,6 +61,9 @@ function projectDeps(
                 ...(one.ci !== undefined ? { ci: one.ci } : {}),
                 ...(one.onCiCapability !== undefined ? { onCiCapability: one.onCiCapability } : {}),
                 ...(one.threads !== undefined ? { threads: one.threads } : {}),
+                ...(one.onQualificationReport !== undefined
+                  ? { onQualificationReport: one.onQualificationReport }
+                  : {}),
               },
             }
           : null,
@@ -3934,5 +3938,139 @@ describe("createApiServer / CI observability routes", () => {
     const text = new TextDecoder().decode(value);
     expect(text).toContain('data: {"kind":"run-start"}');
     await reader.cancel();
+  });
+});
+
+describe("createApiServer / GET /runs/:runId/report", () => {
+  it("404s with 'report not ready' before the run has produced one", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-1/report")}`);
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toEqual({ error: "report not ready" });
+  });
+
+  it("returns the stored execution report JSON once written", async () => {
+    mkdirSync(join(stateDir, "reports"), { recursive: true });
+    writeFileSync(
+      // The stored file is `run-<runId>.json`, and this run's id is itself `run-1`.
+      join(stateDir, "reports", "run-run-1.json"),
+      JSON.stringify({ kind: "harness-execution", run: { runId: "run-1" } }),
+    );
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-1/report")}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { kind: string }).toMatchObject({ kind: "harness-execution" });
+  });
+
+  it("accepts a DOTTED run id -- the same allowlist the write side uses", async () => {
+    mkdirSync(join(stateDir, "reports"), { recursive: true });
+    writeFileSync(join(stateDir, "reports", "run-OVERVIEW.md-1.json"), JSON.stringify({ kind: "harness-execution" }));
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/OVERVIEW.md-1/report")}`);
+    expect(res.status).toBe(200);
+  });
+
+  it("400s a traversal-shaped run id", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/..%2Fx/report")}`);
+    expect(res.status).toBe(400);
+  });
+
+  it("500s (never 404s) a report file that exists but does not parse", async () => {
+    mkdirSync(join(stateDir, "reports"), { recursive: true });
+    writeFileSync(join(stateDir, "reports", "run-run-1.json"), "{not json");
+
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-1/report")}`);
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("createApiServer / POST /qualification-report", () => {
+  it("404s when the project exposes no qualification-report capability", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/qualification-report")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("passes the range through and returns {json, markdown}", async () => {
+    const seen: { from?: string; to?: string }[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onQualificationReport: async (range) => {
+          seen.push(range);
+          return { json: { kind: "product-qualification" }, markdown: "# Product Qualification Report" };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/qualification-report")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ from: "abc123", to: "HEAD" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { markdown: string }).toMatchObject({ markdown: "# Product Qualification Report" });
+    expect(seen).toEqual([{ from: "abc123", to: "HEAD" }]);
+  });
+
+  it("400s a rev that git would read as a FLAG", async () => {
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onQualificationReport: async () => ({ json: {}, markdown: "" }),
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/qualification-report")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ from: "--all" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("500s when the range cannot be resolved -- never an empty report", async () => {
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onQualificationReport: async () => {
+          throw new Error("git rev-list bad..HEAD failed (exit 128)");
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/qualification-report")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ from: "bad" }),
+    });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain("rev-list");
   });
 });

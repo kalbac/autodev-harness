@@ -258,6 +258,16 @@ export interface ProjectView {
   /** OPTIONAL agent-ci capability probe for `GET /projects/:id/ci/capability`. Unset -> 404. */
   onCiCapability?: () => Promise<AgentCiCapability>;
   /**
+   * OPTIONAL on-demand Product Qualification Report for `POST
+   * /projects/:id/qualification-report`. When unset, that route 404s (mirrors
+   * `onOrchestrate`). A thin closure over the project's repoRoot + blackboard: it
+   * resolves the commit range with `git rev-list` and assembles the report from the
+   * per-task evidence ledger. The server never sees a git handle. It REJECTS when the
+   * range cannot be resolved -- an unresolvable range must surface as an error, never
+   * as an empty report, which would read as "nothing to prove" (spec 2026-07-22).
+   */
+  onQualificationReport?: (range: { from?: string; to?: string }) => Promise<{ json: unknown; markdown: string }>;
+  /**
    * OPTIONAL live-orchestrator thread capability for `GET/POST/DELETE
    * /projects/:id/threads*`. When unset, those routes 404 (mirrors `chat`/`ci`).
    * `store` is the persisted thread log, `bus` the per-thread SSE fan-out,
@@ -2262,6 +2272,106 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, buildRunUsageSummary(docs, ids.length));
   }
 
+  /**
+   * GET /projects/:id/runs/:runId/report — the STORED Harness Execution Report for one
+   * run (`<stateDir>/reports/run-<runId>.json`). The report is written once the run has
+   * finished, so a 404 here means "not ready yet" (the run is still moving), not "no
+   * such run" -- and it is deliberately NOT assembled on the fly: a report about a run
+   * that is still moving would be wrong.
+   *
+   * `runId` goes through `safeRunId` -- the SAME allowlist the other run routes and the
+   * write side use (`docs/gotchas/run-id-dot-validation-mismatch.md`).
+   */
+  async function handleGetRunReport(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeRunId(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+    const text = await readBoundedFileText(
+      join(p.stateDir, "reports", `run-${id}.json`),
+      MAX_RUNTIME_FILE_READ_BYTES,
+    );
+    if (text === null) {
+      sendJson(res, 404, { error: "report not ready" });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      // A file that EXISTS but does not parse is a defect, never "not ready" --
+      // folding it into the 404 would hide a corrupt artifact behind a normal state.
+      log("WARN", `api: execution report for run '${id}' is unreadable: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: "report unreadable" });
+      return;
+    }
+    sendJson(res, 200, parsed);
+  }
+
+  /**
+   * A `from`/`to` value is passed to `git rev-list` as an ARGV element (never a shell
+   * string), so there is no injection surface -- but a value starting with `-` would be
+   * read by git as a FLAG, so the allowlist rejects it outright along with whitespace,
+   * control characters and separators. Deliberately narrow: this endpoint takes a
+   * commit-ish, not an arbitrary rev expression.
+   */
+  const VALID_GIT_REV = /^[A-Za-z0-9][A-Za-z0-9._/^~-]{0,199}$/;
+
+  /**
+   * POST /projects/:id/qualification-report — assemble a Product Qualification Report
+   * over `{from?, to?}`. POST, not GET, because producing a claim about the product is
+   * a deliberate ACT rather than a read (spec D4). Returns `{json, markdown}`.
+   */
+  async function handleQualificationReport(
+    p: ProjectView,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!p.onQualificationReport) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { from?: unknown; to?: unknown } | null;
+    const range: { from?: string; to?: string } = {};
+    for (const key of ["from", "to"] as const) {
+      const raw = parsed?.[key];
+      if (raw === undefined || raw === null) continue;
+      if (typeof raw !== "string" || !VALID_GIT_REV.test(raw)) {
+        sendJson(res, 400, { error: `${key} must be a commit-ish` });
+        return;
+      }
+      range[key] = raw;
+    }
+
+    try {
+      const report = await p.onQualificationReport(range);
+      sendJson(res, 200, report);
+    } catch (err) {
+      // An unresolvable range is an ERROR the caller must see. Reporting it as an
+      // empty report would read as "nothing to prove" -- the exact overclaim this
+      // report exists to prevent.
+      log("WARN", `api: qualification report failed: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: `qualification report failed: ${safeErrorText(err)}` });
+    }
+  }
+
   async function handleListRuntimeFiles(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
@@ -2473,6 +2583,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       if (req.method === "PATCH" && runMatch) return void (await handlePatchRun(p, runMatch[1]!, req, res));
       const runUsageMatch = /^\/runs\/([^/]+)\/usage\/?$/.exec(sub);
       if (req.method === "GET" && runUsageMatch) return void (await handleGetRunUsage(p, runUsageMatch[1]!, res));
+      const runReportMatch = /^\/runs\/([^/]+)\/report\/?$/.exec(sub);
+      if (req.method === "GET" && runReportMatch) return void (await handleGetRunReport(p, runReportMatch[1]!, res));
+      if (req.method === "POST" && (sub === "/qualification-report" || sub === "/qualification-report/"))
+        return void (await handleQualificationReport(p, req, res));
       const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runtimeFileMatch)
         return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));

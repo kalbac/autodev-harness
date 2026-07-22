@@ -7,7 +7,7 @@
 // wiring. This module is integration glue that spawns real `claude`/`codex`/`git`,
 // so it is deliberately NOT unit-tested; every module it wires already has its
 // own unit tests against injected fakes (same status as src/index.ts).
-import { readFile, writeFile, appendFile, mkdir, lstat } from "node:fs/promises";
+import { readFile, writeFile, appendFile, mkdir, lstat, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -37,6 +37,10 @@ import {
   type OrchestratorCapabilities,
 } from "../orchestrator/capabilities.js";
 import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { refreshExecutionReports, type RunListEntry } from "../report/report-service.js";
+import { loadEvidence, EVIDENCE_FILE } from "../report/evidence-store.js";
+import { buildQualificationReport, type QualificationReport } from "../report/qualification-report.js";
+import { renderQualificationReport } from "../report/render.js";
 import { resolveOrchestratorExe } from "../config/roles.js";
 import { ThreadStore } from "../thread/thread-store.js";
 import { ThreadEventBus } from "../api/thread-events.js";
@@ -379,6 +383,22 @@ export interface ProjectRoot {
    *  drain, identical to the pre-existing `run` verb. Never touches the critic/gate/commit
    *  -- only the reply-B requeue + journal. */
   runOrSupervise(runOpts?: ConductorRunOptions): Promise<void>;
+  /** Write the Harness Execution Report for every run that has FINISHED and does not
+   *  have one yet (spec 2026-07-22 "two reports"). Called once after a run entry
+   *  resolves — never inside the iteration loop. Bookkeeping about the loop: it
+   *  swallows and logs its own failures and never throws. */
+  refreshReports(): Promise<void>;
+  /** The stored Execution Report Markdown for `runId`, or null when the run has not
+   *  produced one yet (it is still moving). */
+  readExecutionReport(runId: string): Promise<string | null>;
+  /** Assemble a Product Qualification Report over a commit range, ON DEMAND (D4).
+   *  `to` defaults to `HEAD`, `from` to the repository's root commit. A `git rev-list`
+   *  failure THROWS — never an empty commit list, which would read as "nothing to
+   *  prove". */
+  qualificationReport(range: { from?: string; to?: string }): Promise<{
+    json: QualificationReport;
+    markdown: string;
+  }>;
 }
 
 /** The threads capability object the HTTP `ProjectView.threads` consumes; also
@@ -876,8 +896,25 @@ export async function buildProjectRoot(
   // is the only place `orchestrator` is exposed), i.e. strictly after the
   // `runOrSupervise` const has already been initialized. See gotcha
   // [refactor/extraction-eagerness] -- verified, not assumed.
+  // The DAEMON's trigger path: the orchestrator's `trigger` capability is the only
+  // enforcement handle it has, and it routes through this entry. The report refresh
+  // hangs off the entry (once, AFTER the bounded run resolves) rather than off the
+  // conductor's iteration loop -- a report is about a FINISHED run, and refreshing it
+  // per iteration would write a report over a run that is still moving. `refreshReports`
+  // never throws by contract, so it cannot turn a completed run into a failed trigger.
+  // Same TDZ reasoning as `runEntry: runOrSupervise` above: this closure is only
+  // CREATED on first `handleIntent`, strictly after buildProjectRoot has returned.
   const getOrchestrator = () =>
-    (orchestrator ??= buildOrchestrator({ cfg, repoRoot, repo, runEntry: runOrSupervise, log }));
+    (orchestrator ??= buildOrchestrator({
+      cfg,
+      repoRoot,
+      repo,
+      runEntry: async (opts) => {
+        await runOrSupervise(opts);
+        await refreshReports();
+      },
+      log,
+    }));
 
   // Chat manager is built LAZILY on first access, same rationale as the
   // orchestrator above: the `run` CLI verb never opens a chat, so a config
@@ -1129,6 +1166,146 @@ export async function buildProjectRoot(
     }
   };
 
+  // ---- Reports (spec 2026-07-22 "two reports") ------------------------------
+  // Two documents that must never be mixed: the per-run Harness Execution Report
+  // (written automatically once a run has finished) and the Product Qualification
+  // Report (assembled ON DEMAND -- a claim about the product is a deliberate act,
+  // spec D4). Both are pure functions over the per-task evidence ledger.
+  const reportsDir = join(repoRoot, cfg.stateDir, "reports");
+  const runsDirAbs = join(repoRoot, cfg.stateDir, "runs");
+
+  /**
+   * A run id reaches this module from a manifest ON DISK or from an operator's CLI
+   * argument, and it is used to BUILD a path -- so it is re-validated with exactly
+   * the allowlist the write side uses (`isPathSafeId`, which permits the dots
+   * `slugifyIntent` preserves). Validating with a different, stricter function is
+   * how every filename-derived run silently disappeared once before
+   * (docs/gotchas/run-id-dot-validation-mismatch.md).
+   */
+  const executionReportPath = (runId: string, ext: "md" | "json"): string => {
+    if (!isPathSafeId(runId)) throw new Error(`unsafe run id: ${JSON.stringify(runId)}`);
+    return join(reportsDir, `run-${runId}.${ext}`);
+  };
+
+  /** Best-effort read of every run manifest; one corrupt file is skipped (with a
+   *  WARN), never allowed to hide every other run's report. */
+  const listRunEntries = async (): Promise<RunListEntry[]> => {
+    let files: string[];
+    try {
+      files = (await readdir(runsDirAbs)).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      // A missing runs/ dir is the normal "no orchestrator run yet" case.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log("WARN", `report: cannot list run manifests: ${String(err)}`);
+      }
+      return [];
+    }
+    const out: RunListEntry[] = [];
+    for (const f of files) {
+      try {
+        const parsed = JSON.parse(await readFile(join(runsDirAbs, f), "utf8")) as Partial<RunListEntry> | null;
+        if (
+          parsed === null ||
+          typeof parsed.runId !== "string" ||
+          !isPathSafeId(parsed.runId) ||
+          typeof parsed.intent !== "string" ||
+          typeof parsed.at !== "number" ||
+          !Number.isFinite(parsed.at) ||
+          !Array.isArray(parsed.taskIds) ||
+          !parsed.taskIds.every((t) => typeof t === "string")
+        ) {
+          log("WARN", `report: skipping invalid run manifest ${f}`);
+          continue;
+        }
+        out.push({ runId: parsed.runId, intent: parsed.intent, at: parsed.at, taskIds: parsed.taskIds });
+      } catch (err) {
+        log("WARN", `report: skipping unreadable run manifest ${f}: ${String(err)}`);
+      }
+    }
+    return out;
+  };
+
+  const REPORT_QUEUE_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
+
+  /** taskId -> the queue it currently sits in. Built once per report pass, so a
+   *  run with N tasks does not re-walk the whole blackboard N times. */
+  const loadTaskStates = async (): Promise<Map<string, QueueState>> => {
+    const map = new Map<string, QueueState>();
+    for (const state of REPORT_QUEUE_STATES) {
+      for (const t of await repo.listTasks(state)) map.set(t.id, state);
+    }
+    return map;
+  };
+
+  const readEvidenceText = (taskId: string): Promise<string | null> => repo.readRuntimeFile(taskId, EVIDENCE_FILE);
+
+  const refreshReports = async (): Promise<void> => {
+    let states: Map<string, QueueState> | null = null;
+    await refreshExecutionReports({
+      listRuns: listRunEntries,
+      taskState: async (taskId) => {
+        states ??= await loadTaskStates();
+        return states.get(taskId) ?? null;
+      },
+      readEvidence: readEvidenceText,
+      reportExists: async (runId) => existsSync(executionReportPath(runId, "json")),
+      writeReport: async (runId, markdown, json) => {
+        await mkdir(reportsDir, { recursive: true });
+        // Markdown FIRST, JSON second: `reportExists` probes the .json, so a
+        // half-written pair is retried on the next pass instead of being marked
+        // done with a missing rendering.
+        await writeFile(executionReportPath(runId, "md"), markdown, "utf8");
+        await writeFile(executionReportPath(runId, "json"), json, "utf8");
+      },
+      log,
+    });
+  };
+
+  const readExecutionReport = async (runId: string): Promise<string | null> => {
+    const p = executionReportPath(runId, "md");
+    return existsSync(p) ? readFile(p, "utf8") : null;
+  };
+
+  /** `git rev-list`, spawned as argv (never a shell string). A non-zero exit THROWS:
+   *  degrading it to "no commits" would produce an empty report that reads as
+   *  "nothing to prove" -- the exact silent overclaim this feature exists to avoid. */
+  const gitRevList = async (args: string[]): Promise<string[]> => {
+    const r = await runNative("git", ["rev-list", ...args], { cwd: repoRoot });
+    if (r.exitCode !== 0) {
+      throw new Error(`git rev-list ${args.join(" ")} failed (exit ${r.exitCode}): ${r.stderr.trim()}`);
+    }
+    return r.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  };
+
+  const qualificationReport = async (range: {
+    from?: string;
+    to?: string;
+  }): Promise<{ json: QualificationReport; markdown: string }> => {
+    const to = range.to ?? "HEAD";
+    // With an explicit `from` the operator's exclusive two-dot semantics apply.
+    // With the DEFAULT `from` (the repository's root commit) the range is the full
+    // history of `to` instead: `<root>..<to>` excludes `<root>` itself, which would
+    // silently drop a task that landed as the very first commit.
+    let from: string;
+    let commits: string[];
+    if (range.from === undefined) {
+      // Newest-first; the last entry is the oldest root of this history.
+      const roots = await gitRevList(["--max-parents=0", to]);
+      from = roots[roots.length - 1] ?? to;
+      commits = await gitRevList([to]);
+    } else {
+      from = range.from;
+      commits = await gitRevList([`${range.from}..${to}`]);
+    }
+    const taskIds = [...(await loadTaskStates()).keys()];
+    const slots = await loadEvidence(taskIds, readEvidenceText);
+    const doc = buildQualificationReport({ from, to, commits }, slots);
+    return { json: doc, markdown: renderQualificationReport(doc) };
+  };
+
   return {
     repoRoot,
     cfg,
@@ -1165,6 +1342,9 @@ export async function buildProjectRoot(
     closeThreads,
     rearmNarratorForTask,
     runOrSupervise,
+    refreshReports,
+    readExecutionReport,
+    qualificationReport,
   };
 }
 
