@@ -51,6 +51,42 @@ function foldSeparators(p: string): string {
   return p.split("\\").join("/");
 }
 
+/** Strip a Windows extended-length prefix (`\\?\`, folded to `//?/`) so a
+ *  path in that form normalizes identically to its ordinary equivalent
+ *  (R2-FIX4). Windows itself, PowerShell, and various tools emit this form
+ *  for paths near or over MAX_PATH -- `\\?\C:\repo\src\x.php` folds to
+ *  `//?/C:/repo/src/x.php`, which does not start with `C:/repo/` by ANY
+ *  string comparison, so without this the finding is flagged unattributed
+ *  and a legitimate merge is blocked. Unlike the other findings in this
+ *  round, that failure is in the SAFE direction (over-flagging, not
+ *  silently dropping) -- but a false block is still a broken gate.
+ *  The UNC variant, `\\?\UNC\server\share\...` (folded `//?/UNC/server/
+ *  share/...`), maps back to an ordinary UNC path `\\server\share\...`
+ *  (folded `//server/share/...`) -- one fewer path segment than the plain
+ *  extended-length case, hence the separate branch. */
+function stripExtendedLengthPrefix(folded: string): string {
+  const uncMatch = /^\/\/\?\/UNC\/(.*)$/i.exec(folded);
+  if (uncMatch) return "//" + (uncMatch[1] ?? "");
+  const longMatch = /^\/\/\?\/(.*)$/.exec(folded);
+  if (longMatch) return longMatch[1] ?? "";
+  return folded;
+}
+
+/** Case-insensitively find the key in `keys` that names the same path as
+ *  `target` (both already folded/stripped to the same normal form), or
+ *  `undefined` if none does. Used ONLY when the containment check that
+ *  produced `target` was itself case-insensitive (R2-FIX3) -- see the long
+ *  comment on `normalizeFindingPath` for why a case-insensitive prefix check
+ *  followed by an exact-case lookup is the exact "validated one string, used
+ *  another" shape that keeps recurring in this module. */
+function findCaseInsensitiveKey(target: string, keys: Iterable<string>): string | undefined {
+  const targetLower = target.toLowerCase();
+  for (const k of keys) {
+    if (k.toLowerCase() === targetLower) return k;
+  }
+  return undefined;
+}
+
 /** Is a (separator-folded) path Windows-shaped -- a drive letter (`C:/...`) or
  *  a UNC share (`//server/share/...`, folded from `\\server\share\...`)? Only
  *  these two shapes get a case-INsensitive comparison (FIX8): Windows'
@@ -94,10 +130,21 @@ function isWindowsShapedPath(folded: string): boolean {
  * un-attributable path (KEPT, flagged `unattributed: true` -- never silently
  * dropped, per the same fail-closed reasoning as rule 5 and
  * `docs/gotchas/oracle-protected-paths-must-be-worktree-relative.md`).
+ *
+ * R2-FIX3: the returned `rel` is sliced out of the finding's ORIGINAL case
+ * (never lowercased), because on a case-SENSITIVE (POSIX) path an exact-case
+ * `rel` is exactly what a `addedLines`/`newFiles` lookup needs. But when
+ * `caseInsensitive` is true, `rel`'s case is whatever the REPORT happened to
+ * use -- which is not necessarily the diff's own case for that path (a
+ * report can say `SRC/FOO.PHP` while the diff key is `src/Foo.php`). The
+ * caller MUST NOT do a bare `Map.get(rel)` in that case: it has to resolve
+ * `rel` against the diff's actual keys using the SAME case-insensitive rule
+ * that just decided this path was contained at all (`findCaseInsensitiveKey`
+ * below) -- that is what `caseInsensitive` is returned for.
  */
-function normalizeFindingPath(rawFile: string, worktreePath: string): string | null {
-  const file = foldSeparators(rawFile);
-  let root = foldSeparators(worktreePath);
+function normalizeFindingPath(rawFile: string, worktreePath: string): { rel: string; caseInsensitive: boolean } | null {
+  const file = stripExtendedLengthPrefix(foldSeparators(rawFile));
+  let root = stripExtendedLengthPrefix(foldSeparators(worktreePath));
   if (root.endsWith("/")) root = root.slice(0, -1);
   const prefix = root + "/";
 
@@ -107,7 +154,7 @@ function normalizeFindingPath(rawFile: string, worktreePath: string): string | n
 
   const rel = file.slice(prefix.length);
   if (rel.split("/").includes("..")) return null;
-  return rel;
+  return { rel, caseInsensitive };
 }
 
 /**
@@ -154,14 +201,29 @@ export function filterFindings(
   const kept: FilteredFinding[] = [];
 
   for (const f of findings) {
-    const normalizedPath = normalizeFindingPath(f.file, worktreePath);
+    const norm = normalizeFindingPath(f.file, worktreePath);
 
-    if (normalizedPath === null) {
+    if (norm === null) {
       // Rule 5. Keep the RAW `f.file` (not a normalized form -- there isn't
       // one) so the operator can see exactly what the tool printed.
       kept.push({ ...f, unattributed: true });
       continue;
     }
+
+    // R2-FIX3: the SAME fold that decided this path is contained under
+    // `worktreePath` must also govern the lookup against `addedLines`/
+    // `newFiles` -- a case-insensitive containment check followed by an
+    // exact-case `Map.get` is exactly the "validated one string, used
+    // another" bug this module's own doc comment warns about. When the
+    // containment check was case-sensitive (POSIX), `norm.rel` IS the key
+    // to use as-is. When it was case-insensitive (Windows-shaped), resolve
+    // `norm.rel` against the diff's actual keys case-insensitively; falling
+    // back to `norm.rel` itself when no key matches keeps the existing "not
+    // a file the diff touched" behaviour (rule 4) rather than inventing a
+    // match.
+    const normalizedPath = norm.caseInsensitive
+      ? (findCaseInsensitiveKey(norm.rel, addedLines.keys()) ?? norm.rel)
+      : norm.rel;
 
     const added = addedLines.get(normalizedPath);
     if (!added) {

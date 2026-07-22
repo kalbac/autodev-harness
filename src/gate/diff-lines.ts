@@ -44,7 +44,12 @@
  *      every one of its lines is an addition, and the `--- /dev/null` marker is
  *      the exact, reliable signal for "this whole file is new" — reported
  *      separately as `newFiles` rather than reconstructed later from the shape
- *      of the added-line set (see `newFiles` below).
+ *      of the added-line set (see `newFiles` below). Git's copy-detection
+ *      output produces a genuinely new file WITHOUT `/dev/null` (the old side
+ *      is the source file it was copied from), so `copy to <path>` and `new
+ *      file mode ...` are recognized as the same signal — but `rename to
+ *      <path>` deliberately is not: a rename moves existing content, it does
+ *      not originate it (see `sawNewFileSignal` below).
  *
  * Windows note: diffs captured on this platform can arrive with CRLF line endings.
  * Every line has its trailing `\r` stripped before any of the above logic runs —
@@ -107,6 +112,14 @@ export function addedLineNumbers(diffText: string): AddedLines {
   // Set on `--- ` and consumed on the very next `+++ ` — a well-formed diff
   // always pairs them adjacently, so this needs no stack or per-file map.
   let oldWasDevNull = false;
+  // Set on a `copy to <path>` or `new file mode ...` extended header and
+  // consumed on the very next `+++ ` header, exactly like `oldWasDevNull`
+  // above (R2-FIX2). A git COPY's old side is the source file, NOT
+  // `/dev/null` (`--- a/src.php`), so `oldWasDevNull` alone misses it even
+  // though a copy genuinely creates a new file the worker is responsible
+  // for. A RENAME must NOT set this — its content moved, it did not
+  // originate — so only `copy to` (never `rename to`) is recognized here.
+  let sawNewFileSignal = false;
 
   for (const line of lines) {
     // Trap #3 (formerly #1): while a hunk still has counted body lines
@@ -198,10 +211,11 @@ export function addedLineNumbers(diffText: string): AddedLines {
     if (line.startsWith("+++ ")) {
       const raw = line.slice(4).trim();
       currentPath = raw === "/dev/null" ? null : stripPrefix(raw);
-      if (oldWasDevNull && currentPath !== null) {
+      if ((oldWasDevNull || sawNewFileSignal) && currentPath !== null) {
         newFiles.add(currentPath);
       }
       oldWasDevNull = false;
+      sawNewFileSignal = false;
       continue;
     }
 
@@ -226,8 +240,53 @@ export function addedLineNumbers(diffText: string): AddedLines {
       );
     }
 
+    // `new file mode <mode>` and `copy to <path>` (R2-FIX2): extended-header
+    // signals for "this path is a genuinely NEW file", recognized alongside
+    // `--- /dev/null` rather than in place of it. Git's copy-detection output
+    // pairs `copy from <src>` / `copy to <dst>` with a `--- a/<src>` /
+    // `+++ b/<dst>` body -- the old side is the SOURCE file, not
+    // `/dev/null`, so `oldWasDevNull` alone misses it even though the
+    // destination is a file the worker created. `rename from`/`rename to` is
+    // deliberately NOT matched here: a rename moves existing content, it
+    // does not originate it, so its file-level findings stay pre-existing.
+    if (line.startsWith("copy to ") || line.startsWith("new file mode ")) {
+      sawNewFileSignal = true;
+      continue;
+    }
+
+    // A `diff --git` line opens a new file's section, so BOTH new-file signals
+    // are cleared here. They are normally consumed by the very next `+++`
+    // header, but a file with no hunk body at all -- a binary addition, or a
+    // pure mode change -- never reaches one, and the flag would then survive
+    // into the FOLLOWING file's header and mark an ordinary modified file as
+    // new. That misattributes the file's pre-existing file-level findings to
+    // the worker: a false block rather than a missed violation, so the safe
+    // direction, but wrong either way and cheap to close at the one boundary
+    // that unambiguously means "previous file's section is over".
+    if (line.startsWith("diff --git ")) {
+      oldWasDevNull = false;
+      sawNewFileSignal = false;
+      continue;
+    }
+
     // Everything else (the `diff --git` / `index` preamble, or a stray line
     // with no active path) is neither header nor content — ignored.
+  }
+
+  // R2-FIX1: symmetric with the overflow guard inside the loop above -- a
+  // hunk that reaches end-of-input still owing old- or new-side body lines
+  // means the diff was truncated (a killed `git diff`, a clipped buffer).
+  // The overflow guard alone only catches a hunk that received TOO MANY
+  // lines; without this, a hunk that received TOO FEW simply leaves the
+  // shortfall's line numbers absent from `added` with no visible symptom --
+  // and a finding that lands on one of them is then silently dropped as "not
+  // an added line" rather than flagged as unattributed input.
+  if (remainingOld > 0 || remainingNew > 0) {
+    throw new Error(
+      `addedLineNumbers: diff ended mid-hunk in ${currentPath ?? "<unknown file>"} -- the last hunk still ` +
+        `owed ${remainingNew} new-file and ${remainingOld} old-file line(s) that its header declared. The ` +
+        `diff is truncated (a killed process or a clipped buffer), not just short.`,
+    );
   }
 
   return { added, newFiles };

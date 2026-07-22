@@ -226,4 +226,53 @@ describe("filterFindings", () => {
     const result = filterFindings(findings, addedLines, "/wt", new Set()); // NOT in newFiles
     expect(result).toHaveLength(0);
   });
+
+  it("R2-FIX3: a Windows-shaped path whose remainder differs only in CASE from the diff's key still attributes (same fold governs prefix AND lookup)", () => {
+    // The diff key is "src/Foo.php" (mixed case, as git/PHPCS might report
+    // it), but the report's raw path is fully upper-case. The prefix check
+    // (FIX8) already tolerates this case difference for the WORKTREE ROOT
+    // portion -- but the REMAINDER after the prefix was sliced off in the
+    // report's original case and then used for an exact-case Map lookup,
+    // which misses "src/Foo.php" entirely and silently drops the finding.
+    const findings = [finding({ file: "C:\\REPO\\SRC\\FOO.PHP", line: 3, message: "case-folded lookup" })];
+    const addedLines = new Map([["src/Foo.php", new Set([3])]]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "src/Foo.php", line: 3, unattributed: false });
+  });
+
+  it("R2-FIX3: the same case-fold also governs the newFiles lookup for a file-level finding", () => {
+    const findings = [
+      finding({ file: "C:\\REPO\\SRC\\NEW.PHP", line: null, message: "missing file doc comment" }),
+    ];
+    const addedLines = new Map([["src/New.php", new Set([1, 2])]]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set(["src/New.php"]));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "src/New.php", line: null, unattributed: false });
+  });
+
+  it("R2-FIX3: a Windows-shaped path that does not case-insensitively match ANY added-file key is dropped as untouched, not kept unattributed", () => {
+    const findings = [finding({ file: "C:\\REPO\\SRC\\OTHER.PHP", line: 1, message: "genuinely untouched" })];
+    const addedLines = new Map([["src/Foo.php", new Set([1])]]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set());
+    expect(result).toHaveLength(0);
+  });
+
+  it("R2-FIX4: a Windows extended-length path (\\\\?\\C:\\...) normalizes and attributes normally", () => {
+    const findings = [finding({ file: "\\\\?\\C:\\repo\\src\\x.php", line: 3, message: "extended-length" })];
+    const addedLines = new Map([["src/x.php", new Set([3])]]);
+    const result = filterFindings(findings, addedLines, "C:\\repo", new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "src/x.php", unattributed: false });
+  });
+
+  it("R2-FIX4: a Windows extended-length UNC path (\\\\?\\UNC\\server\\share\\...) normalizes and attributes normally", () => {
+    const findings = [
+      finding({ file: "\\\\?\\UNC\\server\\share\\src\\x.php", line: 1, message: "extended-length unc" }),
+    ];
+    const addedLines = new Map([["src/x.php", new Set([1])]]);
+    const result = filterFindings(findings, addedLines, "\\\\server\\share", new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "src/x.php", unattributed: false });
+  });
 });

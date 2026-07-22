@@ -66,14 +66,47 @@ function unescapeXmlEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/** Is `codePoint` a character the XML spec actually permits in a document
+ *  (production `Char`, https://www.w3.org/TR/xml/#charsets)? Two shapes slip
+ *  past a bare range/`Number.isFinite` check and past `String.fromCodePoint`
+ *  (which happily returns a value for both -- surrogate code points are
+ *  valid arguments to it, just not valid standalone TEXT) -- R2-FIX5:
+ *    - `0` (NUL) and the other C0 control codes below `0x20`, except the
+ *      three the spec explicitly allows (tab, LF, CR).
+ *    - A LONE surrogate (`0xD800`-`0xDFFF`) -- a numeric character reference
+ *      names exactly ONE Unicode scalar value, so an entity like `&#55357;`
+ *      (a bare UTF-16 high surrogate with no paired low surrogate) is not a
+ *      legal reference in the first place, even though `String.fromCodePoint`
+ *      will construct a string containing it without throwing. A lone
+ *      surrogate is not valid UTF-8/well-formed Unicode text, and this
+ *      module's output ends up in an LLM prompt -- injecting one there is
+ *      exactly the "invented invalid character" this function exists to
+ *      prevent. A genuine astral character (`&#x1F600;`) is unaffected: as a
+ *      SINGLE code point it names one legal scalar value in the
+ *      `0x10000`-`0x10FFFF` range, decoded to its (paired) UTF-16 form by
+ *      `String.fromCodePoint` as normal. */
+function isValidXmlChar(codePoint: number): boolean {
+  return (
+    codePoint === 0x9 ||
+    codePoint === 0xa ||
+    codePoint === 0xd ||
+    (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+    (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+    (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+  );
+}
+
 /** A numeric XML character reference decodes to the Unicode code point it
  *  names. Guard against out-of-range (beyond `0x10FFFF`, the maximum valid
- *  Unicode code point) or otherwise invalid values -- `String.fromCodePoint`
- *  THROWS on those, and a malformed entity in a tool's message is not worth
+ *  Unicode code point), otherwise-invalid values (`String.fromCodePoint`
+ *  THROWS on those), and characters the XML spec itself forbids -- NUL and
+ *  other disallowed control codes, and lone surrogates (`isValidXmlChar`
+ *  above, R2-FIX5). A malformed entity in a tool's message is not worth
  *  failing the whole parse over, so the original entity text is left
  *  untouched (`m`) rather than invented or dropped. */
 function decodeCodePoint(codePoint: number, original: string): string {
   if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return original;
+  if (!isValidXmlChar(codePoint)) return original;
   try {
     return String.fromCodePoint(codePoint);
   } catch {

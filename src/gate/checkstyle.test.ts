@@ -146,4 +146,40 @@ describe("parseCheckstyle (pinned on a REAL PHPCS report)", () => {
     );
     expect(found[0]!.message).toBe("bad &#x110000; entity");
   });
+
+  it("R2-FIX5: &#0; (NUL) is left undecoded -- not a legal XML character", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="bad &#0; entity" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("bad &#0; entity");
+  });
+
+  it("R2-FIX5: a lone high-surrogate numeric reference (&#55357;) is left undecoded, never becomes a lone surrogate", () => {
+    // 0xD83D is a UTF-16 high surrogate with no paired low surrogate here --
+    // String.fromCodePoint happily returns the raw lone-surrogate code unit,
+    // which is not a legal standalone character and would land in an LLM
+    // prompt downstream.
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="bad &#55357; entity" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("bad &#55357; entity");
+  });
+
+  it("R2-FIX5: a lone low-surrogate numeric reference (&#56833;) is also left undecoded", () => {
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="bad &#56833; entity" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("bad &#56833; entity");
+  });
+
+  it("R2-FIX5: a valid astral-plane code point (a surrogate PAIR forming one character) still decodes normally", () => {
+    // 0x1F600 (grinning face emoji) requires a surrogate pair when represented
+    // in UTF-16, but as a SINGLE numeric character reference it names one
+    // legal Unicode scalar value -- must not be confused with the lone-
+    // surrogate case above and must still decode.
+    const found = parseCheckstyle(
+      '<checkstyle><file name="f.php"><error line="1" severity="error" message="&#x1F600;" source="s"/></file></checkstyle>',
+    );
+    expect(found[0]!.message).toBe("\u{1F600}");
+  });
 });
