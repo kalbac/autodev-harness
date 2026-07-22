@@ -41,7 +41,11 @@ export function renderExecutionReport(r: ExecutionReport): string {
 }
 
 export function renderQualificationReport(r: QualificationReport): string {
-  const p = r.profile === null ? "no profile attached" : `${r.profile.id}@${r.profile.version}`;
+  // Every profile that judged this range, not just the first: a range spanning a
+  // version bump was judged by BOTH rulesets, and naming one would credit work to a
+  // ruleset that never saw it.
+  const p =
+    r.profiles.length === 0 ? "no profile attached" : r.profiles.map((x) => `${x.id}@${x.version}`).join(", ");
   const lines: string[] = [
     `# Product Qualification Report`,
     "",

@@ -27,6 +27,27 @@ describe("buildQualificationReport", () => {
     expect(r.proven_whole_product).toEqual([]);
   });
 
+  it("names EVERY profile a range was judged under, not just the first", () => {
+    // A commit range can span a profile version bump. Naming one version would
+    // credit work to a ruleset that never judged it.
+    const r = buildQualificationReport({ from: "aaa", to: "bbb", commits: ["c1", "c2"] }, [
+      rec({ task_id: "t1", commit: "c1", profile: { id: "wordpress-woocommerce", version: 1 } }),
+      rec({ task_id: "t2", commit: "c2", profile: { id: "wordpress-woocommerce", version: 2 } }),
+    ]);
+    expect(r.profiles).toEqual([
+      { id: "wordpress-woocommerce", version: 1 },
+      { id: "wordpress-woocommerce", version: 2 },
+    ]);
+  });
+
+  it("deduplicates a profile shared by several records", () => {
+    const r = buildQualificationReport({ from: "aaa", to: "bbb", commits: ["c1", "c2"] }, [
+      rec({ task_id: "t1", commit: "c1" }),
+      rec({ task_id: "t2", commit: "c2" }),
+    ]);
+    expect(r.profiles).toEqual([{ id: "wordpress-woocommerce", version: 2 }]);
+  });
+
   it("puts a SKIPPED gate in 'not proven' with its reason (H2)", () => {
     const r = buildQualificationReport(
       { from: "aaa", to: "bbb", commits: ["abc"] },

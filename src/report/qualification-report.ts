@@ -22,7 +22,14 @@ export interface NotProvenEntry {
 
 export interface QualificationReport {
   kind: "product-qualification";
-  profile: { id: string; version: number } | null;
+  /**
+   * Every DISTINCT profile the selected evidence was judged under — a list, not a
+   * single value, because a commit range can legitimately span a profile version
+   * bump (the WordPress profile went `@1` -> `@2` inside one week). Naming only one
+   * of them would attribute work to a ruleset that never judged it, which is the
+   * same overclaim this report exists to avoid. Empty means no profile was attached.
+   */
+  profiles: { id: string; version: number }[];
   range: CommitRange;
   completeness: { total: number; selected: number; absent: number; unreadable: number };
   proven_on_change: ProvenEntry[];
@@ -45,6 +52,20 @@ const STANDING_RESIDUALS: NotProvenEntry[] = [
       "A profile gate runs a binary installed by the project's own manifest, so the analyzer itself is project-controlled. Not checked by this harness.",
   },
 ];
+
+/** Distinct `id@version` pairs, in first-seen order. */
+function distinctProfiles(records: { profile: { id: string; version: number } | null }[]): { id: string; version: number }[] {
+  const seen = new Set<string>();
+  const out: { id: string; version: number }[] = [];
+  for (const r of records) {
+    if (r.profile === null) continue;
+    const key = `${r.profile.id}@${r.profile.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r.profile);
+  }
+  return out;
+}
 
 /**
  * PRODUCT ONLY. Never reads tokens, rounds, or attempts (H5) — those are execution
@@ -115,7 +136,7 @@ export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot
   const entries = [...byGate.values()];
   return {
     kind: "product-qualification",
-    profile: selected.find((r) => r.profile !== null)?.profile ?? records.find((r) => r.profile !== null)?.profile ?? null,
+    profiles: distinctProfiles(selected.length > 0 ? selected : records),
     range,
     completeness: {
       total: slots.length,
