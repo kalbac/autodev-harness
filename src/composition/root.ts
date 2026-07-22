@@ -470,6 +470,14 @@ export async function buildProjectRoot(
   };
 
   // --- Gate --------------------------------------------------------------
+  /** Combine a subprocess's stdout+stderr into the single blob `gate-feedback.md`
+   *  reports for a failing step. Both streams, not just stdout: a linter may put
+   *  its report on either one (PHPCS writes to stdout; some tools write violations
+   *  to stderr and only a summary to stdout), and guessing which one to keep would
+   *  silently drop half the report the worker needs to fix the failure. */
+  const mergedOutput = (r: { stdout: string; stderr: string }): string =>
+    [r.stdout, r.stderr].filter((s) => s.trim() !== "").join("\n");
+
   function gateDeps(wt: Worktree): GateDeps {
     const checkCommand = cfg.gate.checkCommand;
     const agentCi = cfg.gate.agentCi;
@@ -488,13 +496,13 @@ export async function buildProjectRoot(
         ? async () => {
             const { c, a } = splitCommand(checkCommand);
             const r = await runNative(c, a, { cwd: wt.path });
-            return { green: r.exitCode === 0, exitCode: r.exitCode };
+            return { green: r.exitCode === 0, exitCode: r.exitCode, output: mergedOutput(r) };
           }
         : null,
       runSuccessCommand: async (cmd: string) => {
         const { c, a } = splitCommand(cmd);
         const r = await runNative(c, a, { cwd: wt.path });
-        return { exitCode: r.exitCode };
+        return { exitCode: r.exitCode, output: mergedOutput(r) };
       },
       // Profile gates (spec 2026-07-22) run in the WORKTREE -- that is the code
       // under judgement -- while their rulesets come from the profile directory in
@@ -516,7 +524,7 @@ export async function buildProjectRoot(
         profile === null || profile.gates.length === 0
           ? null
           : async (changedFiles: string[]) => {
-              const out: { id: string; green: boolean; exitCode: number }[] = [];
+              const out: { id: string; green: boolean; exitCode: number; output: string }[] = [];
               for (const g of profile.gates) {
                 const inv = prepareGateInvocation(g, changedFiles);
                 if (inv.skipped) {
@@ -535,7 +543,7 @@ export async function buildProjectRoot(
                       `worker-fixable failure)`,
                   );
                 }
-                out.push({ id: g.id, green: verdict === "green", exitCode: r.exitCode });
+                out.push({ id: g.id, green: verdict === "green", exitCode: r.exitCode, output: mergedOutput(r) });
               }
               return out;
             },
@@ -661,6 +669,18 @@ export async function buildProjectRoot(
       },
       writeVerdict: async (taskId: string, verdict: GateVerdict) => {
         await repo.writeRuntimeFile(taskId, "gate-verdict.json", JSON.stringify(verdict, null, 2));
+      },
+      // `content === null` means CLEAR -- actually delete the file, never write an
+      // empty one. An empty-but-present `gate-feedback.md` would still read as a
+      // present (if blank) feedback section to the next round's worker/conductor,
+      // which defeats the anti-staleness property `runGate`'s write-or-clear
+      // contract is built around (docs/gotchas/per-round-overwrite-artifact-stale.md).
+      writeGateFeedback: async (taskId: string, content: string | null) => {
+        if (content === null) {
+          await repo.removeRuntimeFile(taskId, "gate-feedback.md");
+          return;
+        }
+        await repo.writeRuntimeFile(taskId, "gate-feedback.md", content);
       },
     };
   }

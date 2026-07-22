@@ -42,7 +42,7 @@ export class ClaudeWorkerAdapter implements WorkerAdapter {
       throw new Error("ClaudeWorkerAdapter: ladder must be non-empty");
     }
 
-    const stdin = buildWorkerPrompt(input.task, this.cfg, input.criticFeedback);
+    const stdin = buildWorkerPrompt(input.task, this.cfg, input.criticFeedback, input.gateFeedback);
 
     let model = "";
     let result: WatchedRunResult | undefined;

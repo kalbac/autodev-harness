@@ -87,6 +87,9 @@ class FakeRepo implements BlackboardRepository {
   readRuntimeFile(_id: string, _name: string): Promise<string | null> {
     throw new Error("not used by scheduler");
   }
+  removeRuntimeFile(_id: string, _name: string): Promise<void> {
+    throw new Error("not used by scheduler");
+  }
   markDone(_id: string, _commitHash: string): Promise<void> {
     throw new Error("not used by scheduler");
   }

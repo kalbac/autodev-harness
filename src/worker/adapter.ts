@@ -32,6 +32,11 @@ export interface WorkerRunInput {
   ladder: string[];
   runtimeDir: string;
   criticFeedback?: string;
+  /** The previous round's gate-failure report (`gate-feedback.md`), read by the
+   *  conductor at claim time. Present only on a retry round following a gate
+   *  RETRY that had failing steps; absent on a fresh claim or after a clean run
+   *  (the conductor CLEARS the file then). See `gate/gate-feedback.ts`. */
+  gateFeedback?: string;
 }
 
 export interface WorkerAdapter {

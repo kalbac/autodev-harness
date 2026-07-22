@@ -84,6 +84,9 @@ function makeRepo(initialAttempts: Record<string, number> = {}): { repo: Blackbo
     async readRuntimeFile(id: string, name: string): Promise<string | null> {
       return state.runtimeFiles.get(id)?.get(name) ?? null;
     },
+    async removeRuntimeFile(id: string, name: string): Promise<void> {
+      state.runtimeFiles.get(id)?.delete(name);
+    },
     async markDone(id: string, hash: string): Promise<void> {
       state.doneMarks.set(id, hash);
     },
@@ -2100,5 +2103,101 @@ describe("runIteration -- reply-B rework feedback", () => {
 
     expect(workerCalls.length).toBe(1);
     expect(workerCalls[0]!.criticFeedback).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate feedback on retry (docs/superpowers/plans/2026-07-22-gate-feedback-on-
+// retry.md, Tasks 3+4): the claim-time read beside critic-feedback.md, and the
+// end-to-end loop closure a gate RETRY -> re-claim depends on. `runGate` itself
+// (and its write-or-clear contract) is covered by gate.test.ts; these tests
+// cover only what the CONDUCTOR does with the artifact runGate leaves behind.
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- gate feedback on retry", () => {
+  it("feeds an existing gate-feedback.md to the worker at round 0 on a re-claim", async () => {
+    const task = makeTask();
+    const { repo } = makeRepo();
+    // Pre-seed the persisted gate report as if a prior RETRY round wrote it.
+    await repo.writeRuntimeFile(task.id, "gate-feedback.md", "phpcs: 3 | ERROR | Missing docblock");
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }],
+      repo,
+    );
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(workerCalls.length).toBe(1);
+    expect(workerCalls[0]!.gateFeedback).toBe("phpcs: 3 | ERROR | Missing docblock");
+  });
+
+  it("passes no gate feedback to a fresh task's first worker run (no file present)", async () => {
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }],
+      repo,
+    );
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    expect(workerCalls.length).toBe(1);
+    expect(workerCalls[0]!.gateFeedback).toBeUndefined();
+  });
+
+  it("closes the loop: a gate RETRY persists gate-feedback.md, and the SAME task's next claim reaches the worker with it set", async () => {
+    // This is the test that proves the loop closes end to end -- the prompt test
+    // only proves rendering, and the two tests above only prove the claim-time
+    // read in isolation. Here `runGate` is scripted to behave like the real
+    // `runGateCore` + composition-root `writeGateFeedback` wiring would: on its
+    // first (RETRY) call it writes the failing step's content via the SAME
+    // `repo.writeRuntimeFile` the real `writeGateFeedback` dep uses, then on its
+    // second call (the re-claim after requeue) it returns a clean COMMIT.
+    const task = makeTask({ id: "t-gate-retry" });
+    const { repo, state } = makeRepo();
+    // The scheduler fake shifts tasks off a plain array -- re-enqueue the SAME
+    // task object to simulate the requeue a real RETRY performs via moveTask
+    // (active -> pending), which conductor.ts already does before returning.
+    const { scheduler } = makeScheduler([task, task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [
+        { result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" },
+        { result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" },
+      ],
+      repo,
+    );
+    const gateFeedbackDoc = "# Gate failure -- previous round\n\n## check command -- exit 1\n\n```\nPHPUnit: 1 failure\n```\n";
+    let gateCalls = 0;
+    const runGate = async () => {
+      gateCalls++;
+      if (gateCalls === 1) {
+        // Mirrors `composition/root.ts`'s `writeGateFeedback` dep at runGate's
+        // decisive RETRY exit (gate.ts): persist the failing step's output
+        // BEFORE returning the verdict.
+        await repo.writeRuntimeFile(task.id, "gate-feedback.md", gateFeedbackDoc);
+        return defaultGateVerdict({ decision: "RETRY", success_green: false, reasons: ["check command FAILED (exit 1)"] });
+      }
+      return defaultGateVerdict();
+    };
+
+    const deps = buildDeps({ repo, scheduler, worker, runGate });
+    const conductor = createConductor(deps);
+
+    const first = await conductor.runIteration();
+    expect(first.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("pending");
+    expect(state.runtimeFiles.get(task.id)?.get("gate-feedback.md")).toBe(gateFeedbackDoc);
+    expect(workerCalls[0]!.gateFeedback).toBeUndefined(); // round 0 of round 1 had no prior gate failure
+
+    const second = await conductor.runIteration();
+    expect(second.committed).toBe(true);
+    expect(workerCalls.length).toBe(2);
+    expect(workerCalls[1]!.gateFeedback).toBe(gateFeedbackDoc);
   });
 });
