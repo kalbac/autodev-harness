@@ -314,3 +314,19 @@ describe("R8-FIX2: a scrubbed region cannot JOIN fragments into markup", () => {
     expect(parseCheckstyle(xml)).toEqual([]);
   });
 });
+
+describe("R9-FIX2: a repeated attribute is refused, not resolved by last-one-wins", () => {
+  it("throws on a duplicated line attribute rather than silently moving the finding", () => {
+    // last-one-wins would place a real violation the worker wrote on line 1 at
+    // line 999, where the filter drops it as pre-existing debt.
+    const xml =
+      '<checkstyle><file name="x.php"><error line="1" line="999" severity="error" message="x" source="s"/></file></checkstyle>';
+    expect(() => parseCheckstyle(xml)).toThrow(/repeats the attribute/i);
+  });
+
+  it("a normal, non-repeating attribute list still parses", () => {
+    const xml =
+      '<checkstyle><file name="x.php"><error line="7" column="3" severity="error" message="x" source="s"/></file></checkstyle>';
+    expect(parseCheckstyle(xml)[0]).toMatchObject({ line: 7 });
+  });
+});

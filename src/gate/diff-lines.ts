@@ -412,11 +412,10 @@ export function addedLineNumbers(diffText: string): AddedLines {
         );
       }
 
-      // A context line (starts with a literal space) or a blank line inside a
-      // hunk (some diff producers emit a bare empty line for a blank context
-      // line instead of a line with a single leading space) — it exists in
-      // both old and new files, so both counts are consumed and the new-file
-      // cursor advances, but nothing is recorded as added.
+      // A context line — it starts with a literal space (git writes `" "` even
+      // for a BLANK context line; verified against a real capture, see R8-FIX1
+      // above). It exists in both old and new files, so both counts are consumed
+      // and the new-file cursor advances, but nothing is recorded as added.
       if (remainingOld <= 0 || remainingNew <= 0) {
         throw new Error(
           `addedLineNumbers: hunk in ${currentPath ?? "<unknown file>"} has more context lines than its header ` +

@@ -206,7 +206,21 @@ const ATTR_RE = /([A-Za-z_:][\w.:-]*)\s*=\s*"([^"]*)"/g;
 function parseAttrs(raw: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   for (const m of raw.matchAll(ATTR_RE)) {
-    attrs[m[1]!] = m[2]!;
+    const name = m[1]!;
+    // R9-FIX2: XML forbids a repeated attribute, and last-one-wins is the WRONG
+    // way to resolve one here. `<error line="1" line="999" .../>` would be read
+    // as sitting on line 999, so a real violation the worker wrote on line 1
+    // gets dropped by the line filter -- a finding silently lost to a malformed
+    // report. There is no defensible way to pick between the two values, so the
+    // parser refuses to pick.
+    if (Object.prototype.hasOwnProperty.call(attrs, name)) {
+      throw new Error(
+        `parseCheckstyle: <error> tag repeats the attribute ${JSON.stringify(name)}, which XML forbids -- ` +
+          `the report is malformed. Choosing one of the two values could place a real finding on the wrong ` +
+          `line and drop it, so it throws instead. Attributes: ${JSON.stringify(raw.trim().slice(0, 200))}`,
+      );
+    }
+    attrs[name] = m[2]!;
   }
   return attrs;
 }
