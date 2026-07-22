@@ -60,8 +60,18 @@ export async function refreshExecutionReports(deps: ReportServiceDeps): Promise<
       // is final enough to keep.
       if (!parked && (await deps.reportExists(run.runId))) continue;
 
+      // The finished-check above resolved each task's live state; capture it so the
+      // report can reconcile a stale record against the blackboard (Principle 11).
+      // Resolved once here, not re-fetched inside the pure builder.
+      const liveByTask = new Map<string, string | null>();
+      for (const id of run.taskIds) liveByTask.set(id, await deps.taskState(id));
+
       const slots = await loadEvidence(run.taskIds, deps.readEvidence);
-      const doc = buildExecutionReport({ runId: run.runId, intent: run.intent, at: run.at }, slots);
+      const doc = buildExecutionReport(
+        { runId: run.runId, intent: run.intent, at: run.at },
+        slots,
+        (id) => liveByTask.get(id) ?? null,
+      );
       await deps.writeReport(run.runId, renderExecutionReport(doc), JSON.stringify(doc, null, 2));
       deps.log("INFO", `report: wrote execution report for ${run.runId}`);
     }

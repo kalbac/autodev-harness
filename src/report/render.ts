@@ -24,7 +24,7 @@ export function renderExecutionReport(r: ExecutionReport): string {
     "|---|---|---|---|---|---|---|",
     ...r.tasks.map(
       (t) =>
-        `| ${t.task_id} | ${t.outcome}${t.escalation_type ? ` (${t.escalation_type})` : ""} | ${t.commit ?? "—"} | ${t.rounds} | ` +
+        `| ${t.task_id} | ${t.outcome}${t.escalation_type ? ` (${t.escalation_type})` : ""}${t.evidence_stale ? " [evidence stale — reconciled from the queue]" : ""} | ${t.commit ?? "—"} | ${t.rounds} | ` +
         `${t.critic ? `${t.critic.verdict} ${t.critic.confidence}` : "—"} | ${t.gate_decision ?? "—"} | ` +
         `${t.gate_failures.join(", ") || "—"} |`,
     ),

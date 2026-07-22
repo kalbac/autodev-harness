@@ -93,7 +93,11 @@ export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot
     for (const g of r.profile_gates) {
       if (g.status !== "skipped") continue;
       const reason = g.skip_reason ?? "(no reason recorded)";
-      const key = `${g.id}::${reason}`;
+      // Keyed via JSON, not `${id}::${reason}`: a `::` inside an id or a reason would
+      // let two genuinely-distinct skips collide on a concatenated key (the
+      // check-one-string/use-another shape this repo keeps hitting). A JSON tuple has
+      // no such ambiguity.
+      const key = JSON.stringify([g.id, reason]);
       if (seenSkips.has(key)) continue;
       seenSkips.add(key);
       notProven.push({ kind: "skipped-gate", subject: g.id, detail: reason });

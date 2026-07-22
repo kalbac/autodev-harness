@@ -42,7 +42,22 @@ const FindingCounts = z
     in_diff: z.number().int().nonnegative(),
     unattributed: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  // Reject an internally-contradictory count. `in_diff` is the diff-filtered SUBSET
+  // of the tool's findings, so a real record always has `total >= in_diff` (when the
+  // total was measured) and `unattributed <= in_diff` (an unattributed finding is one
+  // of the in-diff findings whose file could not be matched). A record violating
+  // either is impossible to produce honestly and, left accepted, would compute a
+  // NEGATIVE debt that the `debt > 0` test silently drops -- turning a tampered or
+  // corrupt ledger back into false coverage, the exact fail-open the fail-closed
+  // schema exists to stop. A violation makes the whole record UNREADABLE (H1), which
+  // the report names rather than trusts.
+  .refine((c) => c.total === null || c.total >= c.in_diff, {
+    message: "findings.total must be >= findings.in_diff (in_diff is a subset of total)",
+  })
+  .refine((c) => c.unattributed <= c.in_diff, {
+    message: "findings.unattributed must be <= findings.in_diff (unattributed is a subset of in_diff)",
+  });
 
 const ProfileGateEvidence = z
   .object({

@@ -23,7 +23,7 @@ describe("renderQualificationReport", () => {
 
 describe("renderExecutionReport", () => {
   it("does not leak product vocabulary (H5)", () => {
-    const md = renderExecutionReport(buildExecutionReport({ runId: "run-1", intent: "x", at: 0 }, []));
+    const md = renderExecutionReport(buildExecutionReport({ runId: "run-1", intent: "x", at: 0 }, [], () => null));
     for (const word of ["finding", "qualif", "debt", "proven"]) {
       expect(md.toLowerCase()).not.toContain(word);
     }
@@ -31,7 +31,7 @@ describe("renderExecutionReport", () => {
 
   it("states evidence completeness", () => {
     const md = renderExecutionReport(
-      buildExecutionReport({ runId: "run-1", intent: "x", at: 0 }, [{ taskId: "t1", state: "absent" }]),
+      buildExecutionReport({ runId: "run-1", intent: "x", at: 0 }, [{ taskId: "t1", state: "absent" }], () => null),
     );
     expect(md).toMatch(/evidence.*0 of 1/i);
   });

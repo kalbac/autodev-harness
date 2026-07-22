@@ -218,6 +218,20 @@ These are the acceptance criteria of the feature, and each gets a test.
   findings; the Qualification renderer does not read tokens, rounds, or attempts. A
   test asserts each renderer's output is free of the other's vocabulary.
 - **H6 — evidence never fails a task.** A throwing writer logs and continues.
+- **H7 — the blackboard outranks the ledger (Principle 11).** The Execution Report
+  reconciles each record's outcome against the task's live queue state. On a
+  positive contradiction (a locatable queue that differs from the one the outcome
+  implies) the record is stale: the live outcome is reported, the record's
+  iteration-derived detail is dropped, and the line is flagged `evidence_stale`. This
+  closes the residual the fail-soft writer cannot: if both the pre-work clear and the
+  post-work write fail on one iteration, a prior record survives, and only
+  reconciliation against the single source of truth stops the report repeating it. A
+  `null` (undeterminable) live state is never treated as a contradiction.
+- **H8 — an internally-contradictory finding count is unreadable, not silently
+  dropped.** The evidence schema rejects `total < in_diff` or `unattributed > in_diff`
+  (impossible for an honest record): a negative debt would pass the `debt > 0` test
+  and vanish, turning a corrupt or tampered ledger back into false coverage. A
+  violation makes the whole record unreadable, which the report names (H1).
 
 ## Modules
 
