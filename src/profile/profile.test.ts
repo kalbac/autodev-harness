@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpathSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { parseProfileRef, loadProfile, harnessRoot, prepareGateInvocation } from "./profile.js";
+import { parseProfileRef, loadProfile, harnessRoot, prepareGateInvocation, classifyGateExit } from "./profile.js";
 
 let root: string;
 
@@ -183,7 +183,7 @@ gates:
 });
 
 describe("prepareGateInvocation", () => {
-  const scoped = (run: string, filesGlob: string | null) => ({ id: "phpcs", run, filesGlob });
+  const scoped = (run: string, filesGlob: string | null) => ({ id: "phpcs", run, filesGlob, redExitCodes: [1] });
 
   it("passes a whole-project gate through untouched", () => {
     const inv = prepareGateInvocation(scoped("composer validate", null), ["a.php"]);
@@ -220,5 +220,126 @@ describe("prepareGateInvocation", () => {
     // an unrelated spaced path elsewhere in the diff is none of its business.
     const inv = prepareGateInvocation(scoped("phpcs {files}", "**/*.php"), ["a.php", "my docs/notes.md"]);
     expect(inv).toEqual({ skipped: false, command: "phpcs a.php" });
+  });
+});
+
+describe("classifyGateExit -- distinguishes RED from a gate that could not run at all (critic finding 1)", () => {
+  const gate = (redExitCodes: number[]) => ({ id: "phpcs", run: "phpcs .", filesGlob: null, redExitCodes });
+
+  it("exit 0 is always green, regardless of declared red codes", () => {
+    expect(classifyGateExit(gate([1]), 0)).toBe("green");
+    expect(classifyGateExit(gate([1, 2]), 0)).toBe("green");
+  });
+
+  it("a declared red code is RED (worker-fixable)", () => {
+    expect(classifyGateExit(gate([1]), 1)).toBe("red");
+    expect(classifyGateExit(gate([1, 2]), 2)).toBe("red");
+  });
+
+  it("an undeclared non-zero exit is UNRUNNABLE (the tool could not do its job -- escalate, don't loop the worker)", () => {
+    // PHPCS exit 3 = processing error (bad ruleset / unreadable file), not a code finding.
+    expect(classifyGateExit(gate([1, 2]), 3)).toBe("unrunnable");
+  });
+
+  it("defaults to [1] as the sole declared red code when a gate omits redExitCodes", () => {
+    // composer validate: 1 = a genuine validation failure (measured), 3 = 'composer.json not
+    // found' (measured) -- an infra/config problem, not something a worker can fix by editing
+    // the diff. The conservative default is therefore [1], not 'any non-zero'.
+    expect(classifyGateExit(gate([1]), 1)).toBe("red");
+    expect(classifyGateExit(gate([1]), 3)).toBe("unrunnable");
+  });
+});
+
+describe("loadProfile -- redExitCodes wiring onto ResolvedGate", () => {
+  it("defaults redExitCodes to [1] when the profile omits it", async () => {
+    await writeProfile("demo", GOOD);
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.redExitCodes).toEqual([1]);
+  });
+
+  it("carries an explicit redExitCodes array from the profile onto the resolved gate", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "vendor/bin/phpcs --standard={profile}/gates/phpcs.xml ."
+    redExitCodes: [1, 2]
+`;
+    await writeProfile("demo", yaml);
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.redExitCodes).toEqual([1, 2]);
+  });
+
+  it("rejects an empty redExitCodes array (must be non-empty when declared)", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "vendor/bin/phpcs --standard={profile}/gates/phpcs.xml ."
+    redExitCodes: []
+`;
+    await writeProfile("demo", yaml);
+    await expect(loadProfile("demo@1", root)).rejects.toThrow();
+  });
+});
+
+describe("loadProfile -- ruleset-probe token normal form (critic finding 2)", () => {
+  // The probe must validate the SAME string the runner receives. A token embedding the
+  // profile dir mid-word (no '=' immediately before it) is a shape the probe used to accept
+  // (it only checked the suffix from the dir onward) while the runner would receive the
+  // whole malformed token, e.g. "prefix<dir>/gates/phpcs.xml" instead of a real path.
+  it("throws at load when a {profile}-derived token embeds the dir without a bare-path or '=' prefix", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "vendor/bin/phpcs prefix{profile}/gates/phpcs.xml ."
+`;
+    await writeProfile("demo", yaml);
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/prefix.*gates[\\/]phpcs\.xml/);
+  });
+
+  it("still accepts the bare-path form (token starts with the profile dir)", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: "vendor/bin/phpcs {profile}/gates/phpcs.xml ."
+`;
+    await writeProfile("demo", yaml);
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
+
+  it("still accepts a flag-prefixed form whose prefix ends with '=' (the existing GOOD fixture)", async () => {
+    // Already covered by "expands {profile}..." above; this pins the same shape by name
+    // against the finding, so a regression here reads unambiguously against finding 2.
+    await writeProfile("demo", GOOD);
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
+});
+
+describe("loadProfile -- requires.provision must pass the same validation as worktree.provision (critic finding 3)", () => {
+  const withProvision = (entry: string) => `id: demo
+version: 1
+requires:
+  provision: [${JSON.stringify(entry)}]
+gates: []
+`;
+
+  it.each([
+    ["empty string", ""],
+    ["'..' segment", ".."],
+    ["multi-segment forward-slash path", "a/b"],
+    ["Windows-style absolute path", "C:\\x"],
+    ["POSIX absolute path", "/etc"],
+  ])("rejects %s", async (_label, entry) => {
+    await writeProfile("demo", withProvision(entry));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/provision/i);
+  });
+
+  it("still accepts a single top-level segment", async () => {
+    await writeProfile("demo", withProvision("vendor"));
+    const p = await loadProfile("demo@1", root);
+    expect(p.provision).toEqual(["vendor"]);
   });
 });

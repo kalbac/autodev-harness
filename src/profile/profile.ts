@@ -99,6 +99,30 @@ export function prepareGateInvocation(gate: ResolvedGate, changedFiles: string[]
 }
 
 /**
+ * What a gate's exit code means, given what IT declared as its red codes.
+ *
+ * Pure and exported (not inlined into the composition root) because this is a
+ * decision that must be pinned by tests, not untested glue --
+ * `src/composition/root.ts` is deliberately untested (it spawns real processes),
+ * so any judgement call that lives only there is a judgement call nobody is
+ * checking.
+ *
+ * - `0` -> `"green"`: always, regardless of what the profile declared as red.
+ * - exit code in `gate.redExitCodes` -> `"red"`: a genuine, worker-fixable finding.
+ * - anything else -> `"unrunnable"`: the tool could not do its job at all (a
+ *   processing error, a missing manifest, ...). This is NOT a code defect, so it
+ *   must never fold into the RETRY path the way a red gate does -- the caller is
+ *   expected to escalate instead (see `runProfileGates` in
+ *   `src/composition/root.ts`, which throws on this outcome the same way a
+ *   `runNative` ENOENT already does).
+ */
+export function classifyGateExit(gate: Pick<ResolvedGate, "redExitCodes">, exitCode: number): "green" | "red" | "unrunnable" {
+  if (exitCode === 0) return "green";
+  if (gate.redExitCodes.includes(exitCode)) return "red";
+  return "unrunnable";
+}
+
+/**
  * Load, validate and expand the profile pinned by `ref`. `root` defaults to the
  * harness package root and is injectable for tests.
  */
@@ -152,6 +176,8 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
     id: g.id,
     run: g.run.split("{profile}").join(dir),
     filesGlob: g.files ?? null,
+    // See ResolvedGate.redExitCodes for why the default is [1], not "any non-zero".
+    redExitCodes: g.redExitCodes ?? [1],
   }));
 
   // The two halves of diff-scoping must agree, and a mismatch in EITHER direction
@@ -191,11 +217,31 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
   // whitespace to find those tokens is safe, not merely convenient -- the
   // whitespace check above already refused any profile `dir` containing a space,
   // so a {profile}-derived token can never itself contain one.
+  //
+  // The probe must validate the SAME string the command runner will actually
+  // receive as an argument, not just a suffix of the token. There are exactly two
+  // shapes a {profile}-derived token can legitimately take: the bare path itself
+  // (`<dir>/...`, `at === 0`) or a flag-prefixed form whose prefix ends with `=`
+  // (`--standard=<dir>/...`). Anything else -- e.g. a token like
+  // "prefix{profile}/gates/phpcs.xml" expanding to "prefix<dir>/gates/phpcs.xml"
+  // -- is a malformed argument the runner would receive verbatim: `token.slice(at)`
+  // used to probe only the suffix from `dir` onward, so a probe like that would
+  // stat a real file and pass while the runner gets a path that does not exist,
+  // failing opaquely later as a non-zero gate exit. Fail loud here instead, naming
+  // both accepted shapes.
   for (const g of gates) {
     for (const token of g.run.split(/\s+/)) {
       const at = token.indexOf(dir);
       if (at === -1) continue; // not {profile}-derived
-      const rulesetPath = token.slice(at); // drop a leading "--standard=" / "-c" flag prefix
+      const prefix = token.slice(0, at);
+      if (at !== 0 && !prefix.endsWith("=")) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: gate '${g.id}' token '${token}' embeds the profile directory in an ` +
+            `unrecognized shape -- a {profile}-derived token must be either the bare path ('${dir}/...') or a ` +
+            `flag-prefixed form whose prefix ends with '=' (e.g. '--standard=${dir}/...')`,
+        );
+      }
+      const rulesetPath = token.slice(at);
       let st;
       try {
         st = await stat(rulesetPath);

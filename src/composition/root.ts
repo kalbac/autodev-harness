@@ -73,7 +73,7 @@ import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-d
 import { snapshot } from "../util/fingerprint.js";
 
 import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
-import { loadProfile, prepareGateInvocation } from "../profile/profile.js";
+import { loadProfile, prepareGateInvocation, classifyGateExit } from "../profile/profile.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
@@ -503,6 +503,15 @@ export async function buildProjectRoot(
       // `vendor` propagates OUT of runGate as the infra throw the conductor
       // escalates, instead of reading as a red gate that would loop the worker on
       // an environment it cannot fix -- the same contract as runAgentCi below.
+      //
+      // A ZERO exit code is not the only "the gate ran fine" outcome, and a
+      // non-zero exit code is not automatically a worker-fixable RED (critic
+      // finding 1). `classifyGateExit` (src/profile/profile.ts) makes that call
+      // per-gate against its declared `redExitCodes`; an "unrunnable" verdict
+      // THROWS here, naming the gate, the exit code and the declared red codes, so
+      // it propagates out of runGate exactly like the ENOENT case above -- the
+      // conductor escalates it as broken environment instead of RETRYing the
+      // worker against a defect that was never in the diff.
       runProfileGates:
         profile === null || profile.gates.length === 0
           ? null
@@ -518,7 +527,15 @@ export async function buildProjectRoot(
                 }
                 const { c, a } = splitCommand(inv.command);
                 const r = await runNative(c, a, { cwd: wt.path });
-                out.push({ id: g.id, green: r.exitCode === 0, exitCode: r.exitCode });
+                const verdict = classifyGateExit(g, r.exitCode);
+                if (verdict === "unrunnable") {
+                  throw new Error(
+                    `profile gate '${g.id}' exited ${r.exitCode}, which is neither 0 nor one of its declared red ` +
+                      `exit codes [${g.redExitCodes.join(", ")}] -- the gate could not complete (not a ` +
+                      `worker-fixable failure)`,
+                  );
+                }
+                out.push({ id: g.id, green: verdict === "green", exitCode: r.exitCode });
               }
               return out;
             },

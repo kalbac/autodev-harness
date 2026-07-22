@@ -20,8 +20,20 @@ requires:
 
 gates:
   # Whole-project by design: a manifest is not a file set, and it is cheap.
+  #
+  # redExitCodes: [1] -- measured directly (composer 2.9.5), not assumed:
+  #   - a composer.json with a genuine schema violation (e.g. an invalid `name`)
+  #     exits 1 -- a real validation failure, worker-fixable, RED.
+  #   - a directory with NO composer.json at all ("./composer.json not found.")
+  #     exits 3 -- broken environment, not a code defect. Left OUT of
+  #     redExitCodes on purpose so classifyGateExit reads it as "unrunnable" and
+  #     the gate step escalates instead of looping the worker on a manifest that
+  #     was never provisioned into the worktree.
+  #   - a valid composer.json, including one that only produces warnings (e.g.
+  #     missing `license`), exits 0.
   - id: composer-validate
     run: "composer validate --no-check-publish --no-check-all"
+    redExitCodes: [1]
 
   # DIFF-SCOPED. Measured on the real polygon before this was written: this same
   # ruleset reports 7069 pre-existing errors across the tree and 8 on the single
@@ -29,9 +41,16 @@ gates:
   # matter what the worker wrote -- blocking everything, proving nothing about the
   # diff. `--report=full` (not summary) because the worker needs the actual sniff
   # messages to fix them; a summary tells it only that a number is non-zero.
+  #
+  # redExitCodes: [1, 2] -- PHPCS's own documented exit contract: 0 = clean,
+  # 1 = errors were found, 2 = only warnings/fixable violations were found (both
+  # are genuine findings about the diff); 3 = a processing error (bad ruleset,
+  # unreadable file) -- left OUT on purpose so classifyGateExit reads a 3 as
+  # "unrunnable" rather than a RED the worker would loop against forever.
   - id: phpcs
     files: "**/*.php"
     run: "vendor/bin/phpcs -q --report=full --standard={profile}/gates/phpcs.xml {files}"
+    redExitCodes: [1, 2]
 
 # PHPStan is deliberately NOT a v1 gate, and the reason is technical, not modesty.
 # Useful WordPress analysis needs `szepeviktor/phpstan-wordpress`, whose
