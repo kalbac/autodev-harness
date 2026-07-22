@@ -34,6 +34,23 @@ export const ProfileGateSchema = z
      * of guessing.
      */
     redExitCodes: z.array(z.number().int().positive()).nonempty().optional(),
+    /**
+     * Declares the machine-readable report format this gate's stdout emits, so
+     * the harness can parse it, filter it to the diff's ADDED lines, and judge
+     * the gate by the filtered finding count instead of the exit code (line-
+     * scoped profile gates, `docs/superpowers/plans/2026-07-22-line-scoped-
+     * profile-gates.md`). Optional; a gate without `report` behaves exactly as
+     * before -- whole-file scoping, verdict from the exit code.
+     *
+     * A CLOSED enum, not a free string: an unknown format must fail loudly at
+     * profile load (a typo or an unimplemented format silently disabling
+     * line-scoping is the fail-OPEN this schema exists to prevent), not at gate
+     * run time when a parser lookup comes back empty. `"checkstyle"` is the
+     * only member today because it is the only format this harness has a
+     * parser for (`src/gate/checkstyle.ts`) -- add a member here exactly when a
+     * second parser is built, never speculatively.
+     */
+    report: z.enum(["checkstyle"]).optional(),
   })
   .strict();
 
@@ -236,6 +253,13 @@ export interface ResolvedGate {
    * unbounded number of runs.
    */
   redExitCodes: number[];
+  /** The gate's declared report format, or `null` when it declares none (today's
+   *  whole-file, exit-code-verdict behaviour, unchanged). See `ProfileGateSchema.
+   *  report` for why this is a closed enum rather than a free string. Non-optional
+   *  (always `null`, never `undefined`) for the same reason `filesGlob` is: a
+   *  resolved/normalized field states its "not declared" case explicitly rather
+   *  than leaving callers to distinguish "absent" from "not yet set". */
+  report: "checkstyle" | null;
 }
 
 /** A profile that has been located, validated and expanded. */

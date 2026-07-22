@@ -1,9 +1,57 @@
-import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { describe, it, expect, vi } from "vitest";
 import { runGate } from "./gate.js";
 import type { GateDeps, GateInput } from "./gate.js";
 import type { Invariants, ContractZone } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { AgentCiUnavailableError } from "./agent-ci-exec.js";
+import { parseCheckstyle } from "./checkstyle.js";
+import { filterFindings } from "./finding-filter.js";
+import { classifyGateExit } from "../profile/profile.js";
+
+// The REAL captured PHPCS checkstyle report, same fixture `checkstyle.test.ts` and
+// `finding-filter.test.ts` are pinned on -- never a hand-authored one (see
+// `docs/gotchas/agent-ci-ndjson-keyed-by-event-not-type.md`). 17 findings across
+// lines 1 (x2), 2 (x1), 3 (x14), against the absolute Windows path
+// `C:\Users\maksi\AppData\Local\Temp\tmp.e3mbbP7xGX\bad.php`.
+const CHECKSTYLE_XML = readFileSync(new URL("./__fixtures__/phpcs-checkstyle.xml", import.meta.url), "utf8");
+const CHECKSTYLE_WORKTREE = "C:\\Users\\maksi\\AppData\\Local\\Temp\\tmp.e3mbbP7xGX";
+
+/**
+ * Fakes the composition root's real `runProfileGates` algorithm (`src/composition/
+ * root.ts`) -- classify the exit code FIRST via the real `classifyGateExit`, and
+ * only reach for the real `parseCheckstyle`/`filterFindings` when the outcome is
+ * RED -- using the REAL functions those modules export, not a re-implementation.
+ * `root.ts` itself is untested glue by design (it spawns real subprocesses); this
+ * is how the safety-critical ordering it MUST follow gets pinned by an actual test
+ * instead of living only as a comment nobody checks.
+ */
+function makeReportGateRun(opts: {
+  exitCode: number;
+  redExitCodes: number[];
+  rawOutput: string;
+  worktreePath: string;
+  parseSpy?: typeof parseCheckstyle;
+}): NonNullable<GateDeps["runProfileGates"]> {
+  const parse = opts.parseSpy ?? parseCheckstyle;
+  return async (_changedFiles, addedLines) => {
+    const gate = { redExitCodes: opts.redExitCodes };
+    const classification = classifyGateExit(gate, opts.exitCode);
+    if (classification === "unrunnable") {
+      throw new Error(
+        `profile gate 'phpcs' exited ${opts.exitCode}, which is neither 0 nor one of its declared red exit codes ` +
+          `[${opts.redExitCodes.join(", ")}] -- the gate could not complete (not a worker-fixable failure)`,
+      );
+    }
+    if (classification === "green") {
+      return [{ id: "phpcs", green: true, exitCode: opts.exitCode }];
+    }
+    // classification === "red" -- only NOW is the parser reached.
+    const parsed = parse(opts.rawOutput);
+    const findings = filterFindings(parsed, addedLines, opts.worktreePath);
+    return [{ id: "phpcs", green: findings.length === 0, exitCode: opts.exitCode, findings }];
+  };
+}
 
 /** Builds a minimal unified diff whose body is exactly the given +/- lines. */
 function makeDiff(lines: string[]): string {
@@ -482,6 +530,140 @@ describe("profile gates (step 1d)", () => {
     const input: GateInput = { taskId: "P4", fileSet: ["a.ts"] };
 
     await expect(runGate(input, deps)).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe("profile gates -- 'report: checkstyle' line-scoping (Task 4)", () => {
+  // Both diffs below describe changes to the SAME file the real fixture's
+  // findings are attributed to (`bad.php`, under CHECKSTYLE_WORKTREE) -- only the
+  // ADDED line differs, which is exactly the variable under test.
+
+  // Adds line 10 only. None of the fixture's finding lines (1, 2, 3) match, so
+  // every finding is dropped as pre-existing debt outside this diff.
+  const DIFF_TOUCHES_LINE_10 = [
+    "diff --git a/bad.php b/bad.php",
+    "--- a/bad.php",
+    "+++ b/bad.php",
+    "@@ -9,1 +9,2 @@",
+    " context-line-9",
+    "+added-line-10",
+  ].join("\n");
+
+  // Adds line 2 only. Exactly ONE fixture finding sits on line 2 ("Missing doc
+  // comment for class Bad_Thing") -- every other finding (lines 1 and 3) is
+  // pre-existing debt on lines this diff never touched.
+  const DIFF_TOUCHES_LINE_2 = [
+    "diff --git a/bad.php b/bad.php",
+    "--- a/bad.php",
+    "+++ b/bad.php",
+    "@@ -1,2 +1,3 @@",
+    " context-line-1",
+    "+added-line-2",
+    " context-line-3",
+  ].join("\n");
+
+  it("is green and COMMITs when every finding sits OUTSIDE the diff, even though the fixture's exit code is non-zero (the whole feature)", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["bad.php"],
+      diffText: DIFF_TOUCHES_LINE_10,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2, // PHPCS real "errors+warnings" exit -- genuinely non-zero
+        redExitCodes: [1, 2],
+        rawOutput: CHECKSTYLE_XML,
+        worktreePath: CHECKSTYLE_WORKTREE,
+      }),
+    });
+    const input: GateInput = { taskId: "PR1", fileSet: ["bad.php"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
+    expect(result.reasons.some((r) => /profile gate/i.test(r))).toBe(false);
+  });
+
+  it("RETRYs on one in-diff finding, and the feedback names ONLY that finding", async () => {
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      changedFiles: ["bad.php"],
+      diffText: DIFF_TOUCHES_LINE_2,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2,
+        redExitCodes: [1, 2],
+        rawOutput: CHECKSTYLE_XML,
+        worktreePath: CHECKSTYLE_WORKTREE,
+      }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    const input: GateInput = { taskId: "PR2", fileSet: ["bad.php"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(false);
+    expect(result.decision).toBe("RETRY");
+    expect(written).toHaveLength(1);
+    const doc = written[0]!;
+    expect(doc).not.toBeNull();
+    expect(doc).toContain("Missing doc comment for class Bad_Thing");
+    // The line-1 and line-3 findings are pre-existing debt outside this diff --
+    // this is the assertion the whole feature exists to make true.
+    expect(doc).not.toContain("Missing file doc comment");
+    expect(doc).not.toContain("Missing doc comment for function x()");
+  });
+
+  it("THROWS (unrunnable), not green, when the report does not parse", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["bad.php"],
+      diffText: DIFF_TOUCHES_LINE_2,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2, // RED per redExitCodes -- reaches the parser
+        redExitCodes: [1, 2],
+        rawOutput: "phpcs: command not found", // not a checkstyle report at all
+        worktreePath: CHECKSTYLE_WORKTREE,
+      }),
+    });
+    const input: GateInput = { taskId: "PR3", fileSet: ["bad.php"] };
+
+    await expect(runGate(input, deps)).rejects.toThrow(/checkstyle/i);
+  });
+
+  it("classifies UNRUNNABLE before any parse is attempted for an exit code outside redExitCodes (proves the parser was never called)", async () => {
+    const parseSpy = vi.fn(parseCheckstyle);
+    const { deps } = makeDeps({
+      changedFiles: ["bad.php"],
+      diffText: DIFF_TOUCHES_LINE_2,
+      runProfileGates: makeReportGateRun({
+        exitCode: 3, // PHPCS processing-error exit -- neither 0 nor a declared red code
+        redExitCodes: [1, 2],
+        rawOutput: CHECKSTYLE_XML,
+        worktreePath: CHECKSTYLE_WORKTREE,
+        parseSpy,
+      }),
+    });
+    const input: GateInput = { taskId: "PR4", fileSet: ["bad.php"] };
+
+    await expect(runGate(input, deps)).rejects.toThrow(/neither 0 nor/);
+    expect(parseSpy).not.toHaveBeenCalled();
+  });
+
+  it("a gate WITHOUT 'report' is byte-identical to today: verdict from the exit code alone, raw output in the feedback", async () => {
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runProfileGates: async () => [{ id: "phpcs", green: false, exitCode: 2, output: "3 | ERROR | some finding" }],
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    const input: GateInput = { taskId: "PR5", fileSet: ["src/foo.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(false);
+    expect(result.decision).toBe("RETRY");
+    expect(written[0]).toContain("3 | ERROR | some finding");
   });
 });
 

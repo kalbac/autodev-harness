@@ -74,6 +74,8 @@ import { snapshot } from "../util/fingerprint.js";
 
 import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
 import { loadProfile, prepareGateInvocation, classifyGateExit } from "../profile/profile.js";
+import { parseCheckstyle } from "../gate/checkstyle.js";
+import { filterFindings, type FilteredFinding } from "../gate/finding-filter.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
 import { createLogger, type Logger } from "../util/log.js";
@@ -523,8 +525,14 @@ export async function buildProjectRoot(
       runProfileGates:
         profile === null || profile.gates.length === 0
           ? null
-          : async (changedFiles: string[]) => {
-              const out: { id: string; green: boolean; exitCode: number; output: string }[] = [];
+          : async (changedFiles: string[], addedLines: Map<string, Set<number>>) => {
+              const out: {
+                id: string;
+                green: boolean;
+                exitCode: number;
+                output: string;
+                findings?: FilteredFinding[];
+              }[] = [];
               for (const g of profile.gates) {
                 const inv = prepareGateInvocation(g, changedFiles);
                 if (inv.skipped) {
@@ -535,6 +543,28 @@ export async function buildProjectRoot(
                 }
                 const { c, a } = splitCommand(inv.command);
                 const r = await runNative(c, a, { cwd: wt.path });
+
+                // SAFETY-CRITICAL ORDERING (docs/superpowers/plans/2026-07-22-
+                // line-scoped-profile-gates.md, Task 4 step 4 -- do not reorder
+                // this without re-reading why): classify the exit code FIRST, and
+                // only reach for the report parser when the classification is
+                // RED. An "unrunnable" exit (tool crashed before producing a real
+                // report, missing dependency, bad ruleset -- any exit code outside
+                // both 0 and the gate's declared `redExitCodes`) must NEVER be fed
+                // to `parseCheckstyle`: a tool that failed to start can print an
+                // empty string or a shell error instead of its report, and if this
+                // were ever "simplified" to parse unconditionally, EITHER outcome
+                // is dangerous -- a genuine parse throw would misreport a broken
+                // environment as "bad report format" instead of "gate could not
+                // run", and (far worse, if `parseCheckstyle` were ever "fixed" to
+                // tolerate empty/garbage input instead of throwing) empty input
+                // parses to ZERO findings, which downstream means CLEAN. A broken
+                // gate would then read as a PASS -- the exact fail-open Principle
+                // 10 exists to forbid, in the one component whose entire job is
+                // deciding whether a change may merge. Classifying first and
+                // branching on the result is what keeps "could not run at all"
+                // and "ran fine and found nothing IN THIS DIFF" from ever being
+                // confused with each other.
                 const verdict = classifyGateExit(g, r.exitCode);
                 if (verdict === "unrunnable") {
                   throw new Error(
@@ -543,7 +573,51 @@ export async function buildProjectRoot(
                       `worker-fixable failure)`,
                   );
                 }
-                out.push({ id: g.id, green: verdict === "green", exitCode: r.exitCode, output: mergedOutput(r) });
+
+                if (verdict === "green") {
+                  out.push({ id: g.id, green: true, exitCode: r.exitCode, output: mergedOutput(r) });
+                  continue;
+                }
+
+                // verdict === "red" from here on -- the only branch that may ever
+                // reach the parser, per the ordering comment above.
+                if (g.report === null) {
+                  // No report format declared: byte-identical to pre-Task-4
+                  // behaviour -- the exit code alone decides RED, whole-file
+                  // scoped by `files:`/`{files}` as before.
+                  out.push({ id: g.id, green: false, exitCode: r.exitCode, output: mergedOutput(r) });
+                  continue;
+                }
+
+                // A `report` gate: the verdict comes from the FILTERED finding
+                // count, not the exit code -- a tool legitimately exits non-zero
+                // while every finding it reported sits outside this diff (debt
+                // pre-existing in a file the worker also happened to touch
+                // elsewhere), and THAT is a green gate; this is the entire
+                // feature (design doc, "The verdict comes from the filtered
+                // count, not the exit code"). `r.stdout` (not the merged
+                // stdout+stderr blob) is parsed, because the tool's machine
+                // report is what `--report=checkstyle` writes to stdout -- mixing
+                // stderr text into the parse input risks corrupting it for no
+                // benefit; `mergedOutput(r)` is still kept as `output` (a
+                // fallback for a non-report gate and for operator debugging), but
+                // `findings` is what `runGate` actually renders into the
+                // worker's feedback document. `parseCheckstyle` throws on
+                // unparseable stdout (fail-closed -- see `checkstyle.ts`'s own
+                // doc comment: zero findings reads as clean, so a parse failure
+                // must never silently become one) -- deliberately NOT caught
+                // here, so it propagates out of this closure exactly like the
+                // unrunnable throw above, and the conductor escalates it the
+                // same way.
+                const parsed = parseCheckstyle(r.stdout);
+                const filtered = filterFindings(parsed, addedLines, wt.path);
+                out.push({
+                  id: g.id,
+                  green: filtered.length === 0,
+                  exitCode: r.exitCode,
+                  output: mergedOutput(r),
+                  findings: filtered,
+                });
               }
               return out;
             },
