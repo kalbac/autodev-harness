@@ -29,6 +29,7 @@ import { z } from "zod";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
 import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { readBoundedFileText, READ_NO_FOLLOW_FLAGS, MAX_BOUNDED_READ_BYTES } from "../util/bounded-read.js";
 import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult, GitInitResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
@@ -72,9 +73,11 @@ const MAX_BODY_BYTES = 1_000_000;
  * memory. Runtime files (worker reports, gate verdicts) are written by agents and can
  * grow large; mirrors the digest-tail bounding philosophy above -- read only a bounded
  * prefix via a positioned read rather than loading an unbounded file whole. A file over
- * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500.
+ * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500. Shared
+ * with the composition root's report reader (`util/bounded-read.ts`) so one bound
+ * governs every agent-written artifact.
  */
-const MAX_RUNTIME_FILE_READ_BYTES = 1_000_000;
+const MAX_RUNTIME_FILE_READ_BYTES = MAX_BOUNDED_READ_BYTES;
 
 /** Appended to a runtime file's content when it exceeds `MAX_RUNTIME_FILE_READ_BYTES`. */
 const TRUNCATION_MARKER = "\n...[truncated]";
@@ -197,6 +200,16 @@ export interface ProjectView {
   repo: BlackboardRepository;
   /** Absolute `<repoRoot>/<stateDir>` for this project. digest.md + escalations/ live under here. */
   stateDir: string;
+  /**
+   * The STORED Harness Execution Report JSON for one run, as text -- `null` when the
+   * run has not produced one (it is still moving) or the file is unreadable. The
+   * project owns this because the composition root owns the report's filename
+   * (`executionReportPath`): exactly one function may build it, or a probe and a
+   * reader drift apart (docs/gotchas/validated-one-string-used-another.md). The read
+   * is bounded and TOCTOU-hardened (`util/bounded-read.ts`); parsing, and hence the
+   * distinction between "not ready" (404) and "unreadable" (500), stays in the route.
+   */
+  readExecutionReportJson: (runId: string) => Promise<string | null>;
   /**
    * OPTIONAL launcher for `POST /projects/:id/orchestrate` for THIS project.
    * When unset, that route -> 404 (read-only deployment). The callback receives
@@ -441,17 +454,6 @@ function isRunManifest(value: unknown): value is RunManifest {
 }
 
 /**
- * Read-only open flags that do NOT follow a final-component symlink on POSIX
- * (`O_NOFOLLOW` -> `ELOOP`). Windows has no reliable `O_NOFOLLOW`, so it opens
- * normally there -- a STATIC symlink is still caught by the caller's `lstat`/
- * `fstat` `isFile()` guard, and concurrent symlink creation on Windows is
- * privilege-gated. Reading from this one fd (fstat + read on the same handle)
- * also closes the `stat`->`read` TOCTOU where a file is swapped after the check.
- */
-const READ_NO_FOLLOW_FLAGS =
-  process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
-
-/**
  * Read-write open flags that do NOT follow a symlink on POSIX (`O_NOFOLLOW` ->
  * `ELOOP`) and do NOT create (`O_RDWR` only, no `O_CREAT`/`O_TRUNC`): the target
  * MUST already exist — a raced delete/symlink-swap fails the open (ENOENT/ELOOP),
@@ -487,44 +489,6 @@ async function readBoundedManifest(path: string): Promise<RunManifest | null> {
     const { bytesRead } = await fh.read(buf, 0, st.size, 0);
     const parsed: unknown = JSON.parse(buf.subarray(0, bytesRead).toString("utf8"));
     return isRunManifest(parsed) ? parsed : null;
-  } catch {
-    return null;
-  } finally {
-    await fh.close();
-  }
-}
-
-/**
- * Best-effort bounded read of one file's full text content, TOCTOU-hardened exactly
- * like `handleReadRuntimeFile`: a cheap `lstat` pre-check rejects a static symlink /
- * dir up front, then a single no-follow fd is opened and BOTH the size check
- * (`fstat` on that handle) and the read happen on it -- closing the lstat->read
- * TOCTOU. Returns `null` (never throws) for a missing / non-file / oversized file or
- * a raced symlink swap; callers (`handleGetEscalation`) treat `null` uniformly as
- * "this file doesn't exist; try elsewhere / 404".
- */
-async function readBoundedFileText(path: string, maxBytes: number): Promise<string | null> {
-  let lst;
-  try {
-    lst = await lstat(path);
-  } catch {
-    return null;
-  }
-  if (!lst.isFile()) return null;
-
-  let fh: FileHandle;
-  try {
-    fh = await open(path, READ_NO_FOLLOW_FLAGS);
-  } catch {
-    // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
-    return null;
-  }
-  try {
-    const st = await fh.stat();
-    if (!st.isFile() || st.size > maxBytes) return null;
-    const buf = Buffer.alloc(st.size);
-    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
-    return buf.subarray(0, bytesRead).toString("utf8");
   } catch {
     return null;
   } finally {
@@ -2280,7 +2244,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
    * that is still moving would be wrong.
    *
    * `runId` goes through `safeRunId` -- the SAME allowlist the other run routes and the
-   * write side use (`docs/gotchas/run-id-dot-validation-mismatch.md`).
+   * write side use (`docs/gotchas/run-id-dot-validation-mismatch.md`) -- and the file
+   * itself is read through `p.readExecutionReportJson`, which builds the name with the
+   * composition root's `executionReportPath`. The HTTP layer never spells that name
+   * itself: two builders of one filename is the check-one-string/use-another defect
+   * family this repo keeps getting bitten by
+   * (docs/gotchas/validated-one-string-used-another.md).
    */
   async function handleGetRunReport(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
@@ -2288,7 +2257,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       sendJson(res, 400, { error: "invalid run id" });
       return;
     }
-    const text = await readBoundedFileText(join(p.stateDir, "reports", `${id}.json`), MAX_RUNTIME_FILE_READ_BYTES);
+    const text = await p.readExecutionReportJson(id);
     if (text === null) {
       sendJson(res, 404, { error: "report not ready" });
       return;

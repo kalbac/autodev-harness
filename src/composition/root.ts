@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured, isContractFileConfigured } from "../config/config.js";
 import { realpathContains } from "../util/path-contain.js";
+import { readBoundedFileText, MAX_BOUNDED_READ_BYTES } from "../util/bounded-read.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import { createScheduler } from "../scheduler/scheduler.js";
 import { createWorktreeManager, type Worktree } from "../worktree/worktree.js";
@@ -391,6 +392,11 @@ export interface ProjectRoot {
   /** The stored Execution Report Markdown for `runId`, or null when the run has not
    *  produced one yet (it is still moving). */
   readExecutionReport(runId: string): Promise<string | null>;
+  /** The stored Execution Report JSON text for `runId`, bounded + TOCTOU-hardened,
+   *  or null when the run has produced none. The API layer reads reports ONLY
+   *  through this, so the report's filename has exactly one builder
+   *  (docs/gotchas/validated-one-string-used-another.md). */
+  readExecutionReportJson(runId: string): Promise<string | null>;
   /** Assemble a Product Qualification Report over a commit range, ON DEMAND (D4).
    *  `to` defaults to `HEAD`, `from` to the repository's root commit. A `git rev-list`
    *  failure THROWS — never an empty commit list, which would read as "nothing to
@@ -1273,6 +1279,25 @@ export async function buildProjectRoot(
     return existsSync(p) ? readFile(p, "utf8") : null;
   };
 
+  /**
+   * The stored report's JSON, for the API layer. It goes through
+   * `executionReportPath` for the same reason `reportExists` does: ONE function
+   * builds this filename. The read is bounded + TOCTOU-hardened, and an unsafe run
+   * id (which the route already rejects) degrades to `null` rather than throwing out
+   * of a request handler -- the route reports that as "not ready", which is the safe
+   * direction for a name this function refuses to build.
+   */
+  const readExecutionReportJson = async (runId: string): Promise<string | null> => {
+    let p: string;
+    try {
+      p = executionReportPath(runId, "json");
+    } catch (err) {
+      log("WARN", `report: refusing to read a report for an unsafe run id: ${String(err)}`);
+      return null;
+    }
+    return readBoundedFileText(p, MAX_BOUNDED_READ_BYTES);
+  };
+
   /** `git rev-list`, spawned as argv (never a shell string). A non-zero exit THROWS:
    *  degrading it to "no commits" would produce an empty report that reads as
    *  "nothing to prove" -- the exact silent overclaim this feature exists to avoid. */
@@ -1351,6 +1376,7 @@ export async function buildProjectRoot(
     runOrSupervise,
     refreshReports,
     readExecutionReport,
+    readExecutionReportJson,
     qualificationReport,
   };
 }

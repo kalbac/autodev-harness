@@ -315,6 +315,9 @@ async function main(): Promise<void> {
               // never sees a git handle. Rejects (never returns an empty report)
               // when the commit range cannot be resolved.
               onQualificationReport: (range) => root.qualificationReport(range),
+              // The stored Execution Report, read through the composition root so
+              // its filename keeps exactly ONE builder (`executionReportPath`).
+              readExecutionReportJson: (runId) => root.readExecutionReportJson(runId),
             },
           };
         },

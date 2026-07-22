@@ -23,6 +23,19 @@ import type { ReadSnapshot } from "../orchestrator/adapter.js";
 import { CiEventBus } from "./ci-events.js";
 import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 
+/**
+ * The reader the composition root supplies in production (`readExecutionReportJson`),
+ * modelled here over a temp stateDir. The endpoint never builds this name itself --
+ * one function owns `<stateDir>/reports/<runId>.json`, and in a test that function
+ * is this one.
+ */
+function storedReportReader(stateDir: string): (runId: string) => Promise<string | null> {
+  return async (runId) => {
+    const p = join(stateDir, "reports", `${runId}.json`);
+    return existsSync(p) ? readFileSync(p, "utf8") : null;
+  };
+}
+
 /** Wrap a single {repo, stateDir[, onOrchestrate]} as a one-project deps object
  *  (project id "p1") -- keeps the existing single-project test bodies unchanged
  *  except for the URL prefix. */
@@ -40,6 +53,8 @@ function projectDeps(
     onCiCapability?: () => Promise<AgentCiCapability>;
     threads?: ProjectView["threads"];
     onQualificationReport?: ProjectView["onQualificationReport"];
+    /** Overrides the default temp-dir-backed reader (see `storedReportReader`). */
+    readExecutionReportJson?: ProjectView["readExecutionReportJson"];
   },
   extra: Partial<ApiServerDeps> = {},
 ): ApiServerDeps {
@@ -52,6 +67,7 @@ function projectDeps(
               view: {
                 repo: one.repo,
                 stateDir: one.stateDir,
+                readExecutionReportJson: one.readExecutionReportJson ?? storedReportReader(one.stateDir),
                 ...(one.onOrchestrate !== undefined ? { onOrchestrate: one.onOrchestrate } : {}),
                 ...(one.config !== undefined ? { config: one.config } : {}),
                 ...(one.onScanExtensions !== undefined ? { onScanExtensions: one.onScanExtensions } : {}),
@@ -250,7 +266,10 @@ describe("createApiServer / watcher re-attach on stateDir change", () => {
     const deps: ApiServerDeps = {
       projects: {
         list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
-        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+        get: async (id) =>
+          id === "p1"
+            ? { view: { repo, stateDir: currentStateDir, readExecutionReportJson: storedReportReader(currentStateDir) } }
+            : null,
       },
       watchFactory,
     };
@@ -304,7 +323,10 @@ describe("createApiServer / watcher re-attach on stateDir change", () => {
     const deps: ApiServerDeps = {
       projects: {
         list: async () => [{ id: "p1", name: "p1", path: currentStateDir, status: "ready" }],
-        get: async (id) => (id === "p1" ? { view: { repo, stateDir: currentStateDir } } : null),
+        get: async (id) =>
+          id === "p1"
+            ? { view: { repo, stateDir: currentStateDir, readExecutionReportJson: storedReportReader(currentStateDir) } }
+            : null,
       },
       watchFactory,
     };
@@ -2430,6 +2452,7 @@ describe("createApiServer / POST /orchestrate", () => {
                 view: {
                   repo,
                   stateDir,
+                  readExecutionReportJson: storedReportReader(stateDir),
                   onOrchestrate: async (intent: string) => {
                     calls.push(`a:${intent}`);
                     await dA.promise;
@@ -2441,6 +2464,7 @@ describe("createApiServer / POST /orchestrate", () => {
                   view: {
                     repo,
                     stateDir,
+                    readExecutionReportJson: storedReportReader(stateDir),
                     onOrchestrate: async (intent: string) => {
                       calls.push(`b:${intent}`);
                     },
@@ -3017,7 +3041,11 @@ describe("createApiServer / multi-project routing", () => {
           { id: "bad", name: "bad", path: "/y", status: "error", error: "bad config.yaml" },
         ],
         get: async (id) =>
-          id === "ok" ? { view: { repo, stateDir } } : id === "bad" ? { error: "bad config.yaml" } : null,
+          id === "ok"
+            ? { view: { repo, stateDir, readExecutionReportJson: storedReportReader(stateDir) } }
+            : id === "bad"
+              ? { error: "bad config.yaml" }
+              : null,
       },
     };
     handle = createApiServer(deps);
@@ -3051,9 +3079,9 @@ describe("createApiServer / multi-project routing", () => {
           ],
           get: async (id) =>
             id === "a"
-              ? { view: { repo, stateDir } }
+              ? { view: { repo, stateDir, readExecutionReportJson: storedReportReader(stateDir) } }
               : id === "b"
-                ? { view: { repo: repoB, stateDir: stateDirB } }
+                ? { view: { repo: repoB, stateDir: stateDirB, readExecutionReportJson: storedReportReader(stateDirB) } }
                 : null,
         },
       };
@@ -3857,7 +3885,7 @@ describe("PATCH /projects/:id/config", () => {
           getCalls++;
           if (id !== "p1") return null;
           if (getCalls === 1) return { error: "config currently fails to build" };
-          return { view: { repo, stateDir, config: fixedConfig } };
+          return { view: { repo, stateDir, config: fixedConfig, readExecutionReportJson: storedReportReader(stateDir) } };
         },
       },
       admin,
@@ -3978,6 +4006,29 @@ describe("createApiServer / GET /runs/:runId/report", () => {
 
     const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-OVERVIEW.md-1/report")}`);
     expect(res.status).toBe(200);
+  });
+
+  it("reads through the project's report reader -- the route never builds the filename itself", async () => {
+    // The composition root owns `<stateDir>/reports/<runId>.json` (`executionReportPath`).
+    // Proof that the route goes through the injected reader and not its own `join`:
+    // NOTHING is written to stateDir here, and the reader is the only source of content.
+    const seen: string[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        readExecutionReportJson: async (runId) => {
+          seen.push(runId);
+          return JSON.stringify({ kind: "harness-execution", run: { runId } });
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/runs/run-1/report")}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { kind: string }).toMatchObject({ kind: "harness-execution" });
+    expect(seen).toEqual(["run-1"]);
   });
 
   it("400s a traversal-shaped run id", async () => {
