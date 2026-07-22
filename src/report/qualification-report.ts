@@ -82,12 +82,26 @@ export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot
   const byGate = new Map<string, ProvenEntry>();
   const notProven: NotProvenEntry[] = [];
 
+  // A SKIPPED gate is reported from EVERY record, selected or not (H2). "phpcs was
+  // unavailable" is a fact about the qualification ATTEMPT, and it stays true whether
+  // or not the task went on to land a commit -- reading skips only from the selected
+  // records hid every skip on an escalated or quarantined task, which is exactly the
+  // unreported bound that reads as coverage. De-duplicated by id + reason so one skip
+  // repeated across ten tasks is one line, not ten.
+  const seenSkips = new Set<string>();
+  for (const r of records) {
+    for (const g of r.profile_gates) {
+      if (g.status !== "skipped") continue;
+      const reason = g.skip_reason ?? "(no reason recorded)";
+      const key = `${g.id}::${reason}`;
+      if (seenSkips.has(key)) continue;
+      seenSkips.add(key);
+      notProven.push({ kind: "skipped-gate", subject: g.id, detail: reason });
+    }
+  }
+
   for (const r of selected) {
     for (const g of r.profile_gates) {
-      if (g.status === "skipped") {
-        notProven.push({ kind: "skipped-gate", subject: g.id, detail: g.skip_reason ?? "(no reason recorded)" });
-        continue;
-      }
       if (g.status !== "green") {
         // A red gate never landed a commit, so it cannot appear as proof. It is
         // not "not proven" either — the change simply did not pass. Nothing to add.
@@ -99,26 +113,51 @@ export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot
       for (const f of g.files) if (!entry.files.includes(f)) entry.files.push(f);
       byGate.set(key, entry);
 
-      const debt = g.findings === null ? 0 : g.findings.total - g.findings.in_diff;
-      if (debt > 0) {
+      const where = g.files.join(", ") || "the scanned files";
+      const counts = g.findings;
+      if (counts !== null && counts.total === null) {
+        // NOT MEASURED is not zero debt. The tool's pre-filter count was never
+        // taken, so the difference that IS the pre-existing debt cannot be
+        // computed -- and a green gate silently standing in for "nothing else is
+        // wrong with this file" is the overclaim this section exists to block.
         notProven.push({
           kind: "pre-existing-debt",
           subject: g.id,
-          detail: `${debt} finding(s) outside the judged lines remain unaddressed in ${g.files.join(", ") || "the scanned files"}`,
+          detail: `the tool's finding count before diff-filtering was never measured, so the pre-existing debt in ${where} is UNKNOWN -- not zero`,
         });
+      } else if (counts !== null && counts.total !== null) {
+        const debt = counts.total - counts.in_diff;
+        if (debt > 0) {
+          notProven.push({
+            kind: "pre-existing-debt",
+            subject: g.id,
+            detail: `${debt} finding(s) outside the judged lines remain unaddressed in ${where}`,
+          });
+        }
       }
     }
   }
 
   // Acceptance is reported for EVERY record, selected or not: the operator asked
   // for it, and a task that escalated without landing still leaves it unproven.
+  //
+  // EVERY entry is reported -- declaring a success_command suppresses NOTHING.
+  // Nothing in the schema links a free-text criterion to a specific command, and
+  // nothing can: `success_commands` is a flat list of shell strings. Treating one
+  // `npm test` as covering every acceptance line the task declared was an
+  // assertion the ledger cannot support, and it silently emptied this section for
+  // exactly the tasks that declared the most. When commands ARE declared the entry
+  // says so, so the reader can judge the link the harness cannot.
   for (const r of records) {
-    if (r.declared.success_commands.length > 0) continue;
+    const n = r.declared.success_commands.length;
     for (const a of r.declared.acceptance) {
       notProven.push({
         kind: "unchecked-acceptance",
         subject: a,
-        detail: `declared by task ${r.task_id}; no success_command covers it, so nothing machine-checked it`,
+        detail:
+          n === 0
+            ? `declared by task ${r.task_id}; the task declares no success_command at all, so nothing machine-checked it`
+            : `declared by task ${r.task_id}; the task declares ${n} success_command(s), but nothing links this criterion to any of them`,
       });
     }
   }
@@ -136,7 +175,10 @@ export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot
   const entries = [...byGate.values()];
   return {
     kind: "product-qualification",
-    profiles: distinctProfiles(selected.length > 0 ? selected : records),
+    // SELECTED only. A range that selected nothing was judged by no ruleset, and
+    // falling back to every loaded record would name a profile as if it had judged
+    // this range -- a claim about commits the report explicitly did not select.
+    profiles: distinctProfiles(selected),
     range,
     completeness: {
       total: slots.length,

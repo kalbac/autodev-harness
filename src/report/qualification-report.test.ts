@@ -64,12 +64,70 @@ describe("buildQualificationReport", () => {
     expect(r.not_proven).toContainEqual(expect.objectContaining({ kind: "unchecked-acceptance", subject: "cart total is right" }));
   });
 
-  it("does NOT flag acceptance when the task declares a success_command", () => {
+  it("STILL flags acceptance when the task declares a success_command -- nothing links the two", () => {
+    // Previously a single success_command suppressed every acceptance entry. No
+    // field links a free-text criterion to a command, so that suppression was an
+    // assertion the ledger cannot support; the entry now names the commands
+    // instead of hiding the criterion.
     const r = buildQualificationReport(
       { from: "aaa", to: "bbb", commits: ["abc"] },
       [rec({ declared: { file_set: [], acceptance: ["cart total is right"], success_commands: ["npm test"] } })],
     );
-    expect(r.not_proven.filter((e) => e.kind === "unchecked-acceptance")).toEqual([]);
+    expect(r.not_proven).toContainEqual(
+      expect.objectContaining({
+        kind: "unchecked-acceptance",
+        subject: "cart total is right",
+        detail: expect.stringContaining("1 success_command(s)"),
+      }),
+    );
+  });
+
+  it("reports a SKIPPED gate from a task that never landed (H2)", () => {
+    // A skip is a fact about the qualification ATTEMPT: it stays true whether or
+    // not the task's commit is in range. Reading skips from the selected records
+    // only hid every skip on an escalated or quarantined task.
+    const r = buildQualificationReport({ from: "aaa", to: "bbb", commits: [] }, [
+      rec({
+        outcome: "escalated",
+        commit: null,
+        profile_gates: [
+          { id: "phpcs", status: "skipped", exit_code: null, skip_reason: "phpcs binary not installed", scope: "changed-files", files: [], findings: null },
+        ],
+      }),
+    ]);
+    expect(r.not_proven).toContainEqual(
+      expect.objectContaining({ kind: "skipped-gate", subject: "phpcs", detail: "phpcs binary not installed" }),
+    );
+  });
+
+  it("de-duplicates one skip repeated across many tasks", () => {
+    const skipped = [
+      { id: "phpcs", status: "skipped", exit_code: null, skip_reason: "phpcs binary not installed", scope: "changed-files", files: [], findings: null },
+    ];
+    const r = buildQualificationReport({ from: "aaa", to: "bbb", commits: ["c1"] }, [
+      rec({ task_id: "t1", commit: "c1", profile_gates: skipped }),
+      rec({ task_id: "t2", commit: null, outcome: "escalated", profile_gates: skipped }),
+      rec({ task_id: "t3", commit: "zzz", profile_gates: skipped }),
+    ]);
+    expect(r.not_proven.filter((e) => e.kind === "skipped-gate")).toHaveLength(1);
+  });
+
+  it("reports an UNMEASURED finding total as unknown debt, never as zero debt", () => {
+    const r = buildQualificationReport(
+      { from: "aaa", to: "bbb", commits: ["abc"] },
+      [rec({ profile_gates: [{ id: "phpcs", status: "green", exit_code: 0, skip_reason: null, scope: "changed-lines", files: ["a.php"], findings: { total: null, in_diff: 0, unattributed: 0 } }] })],
+    );
+    expect(r.not_proven).toContainEqual(
+      expect.objectContaining({ kind: "pre-existing-debt", subject: "phpcs", detail: expect.stringContaining("UNKNOWN") }),
+    );
+  });
+
+  it("names NO profile for a range that selected nothing", () => {
+    const r = buildQualificationReport({ from: "aaa", to: "bbb", commits: ["zzz"] }, [
+      rec({ task_id: "t1", commit: "abc", profile: { id: "wordpress-woocommerce", version: 2 } }),
+    ]);
+    expect(r.completeness.selected).toBe(0);
+    expect(r.profiles).toEqual([]);
   });
 
   it("reports pre-existing debt as the difference between total and in_diff", () => {
