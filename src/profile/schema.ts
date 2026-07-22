@@ -74,15 +74,26 @@ function isInvalidProvisionEntry(p: string): boolean {
  * reason `isInvalidProvisionEntry` above duplicates `src/config/schema.ts`'s
  * predicate: `gate/` is not a module `profile/` owns, and the function is not
  * exported from it.
+ *
+ * EXPORTED (round-4 critic fix): `profile.ts`'s raw-`run`-string absolute-path
+ * check (guarding against a hard-coded machine-specific path like
+ * `--standard=C:\somewhere\phpcs.xml`, which is unportable the moment the
+ * harness is installed on a different machine) needs this exact predicate.
+ * Rather than adding a THIRD copy alongside this one and `oracle-paths.ts`'s,
+ * `profile.ts` imports this one -- it already lives in a module `profile/`
+ * owns, so the "don't reach into `gate/`" reason for duplicating in the first
+ * place does not apply here.
  */
-function isAbsoluteOnAnyPlatform(entry: string): boolean {
+export function isAbsoluteOnAnyPlatform(entry: string): boolean {
   return posix.isAbsolute(entry) || win32.isAbsolute(entry) || /^[A-Za-z]:/.test(entry);
 }
 
 /**
  * Fail-closed lexical check for a `protectedPaths` entry: refuses an empty
- * string, an absolute path on either platform, or any path containing a `..`
- * segment.
+ * string, an absolute path on either platform, any path containing a `..`
+ * segment, or -- round-4 critic fix -- any entry that lexically resolves to
+ * NOTHING (the declaring profile directory itself): `.`, `./`, `foo/..`, or any
+ * other shape whose segments fully cancel out.
  *
  * This is a HARDENING, not the closing of an open hole -- say so honestly.
  * `src/gate/oracle-paths.ts`'s `resolveOracleSet` already rejects an absolute or
@@ -93,11 +104,34 @@ function isAbsoluteOnAnyPlatform(entry: string): boolean {
  * purely about WHEN and HOW the operator finds out: a broken declaration should
  * fail loud immediately, naming the offending profile, rather than surface later
  * as an opaque failure while building a task's oracle set.
+ *
+ * The empty-normalization case (round-4 finding) is exactly that surface-later
+ * gap in a narrower form: `protectedPaths: ["."]` passed every check above (not
+ * empty, not absolute, no literal `..` segment) yet `normalizeLiteralEntry`
+ * computes `relative(root, root)` === `""` for it and throws "resolves to the
+ * repo root itself" the first time a task actually builds an oracle set --
+ * which is exactly the "later, opaque, per-task" failure mode this load-time
+ * check exists to prevent. Detecting it here requires no `root` (unlike
+ * `normalizeLiteralEntry`, which resolves against one): resolving the entry
+ * against ANY anchor and checking whether the result is that same anchor is a
+ * purely lexical property of the string, so `posix.normalize` against an
+ * implicit `.` anchor is enough -- it collapses `.`/`..` segments exactly like
+ * `path.resolve` does, without needing a real filesystem root to resolve
+ * against.
  */
 function isInvalidProtectedPathEntry(p: string): boolean {
   if (p === "") return true;
   if (isAbsoluteOnAnyPlatform(p)) return true;
-  return p.split(/[\\/]/).some((seg) => seg === "..");
+  if (p.split(/[\\/]/).some((seg) => seg === "..")) return true;
+  // Fold `\` to `/` first (mirrors `oracle-paths.ts`'s `foldSeparators`) so a
+  // Windows-authored entry is judged identically on every platform -- `posix.
+  // normalize` treats `\` as an ordinary filename byte, not a separator.
+  const folded = p.split("\\").join("/");
+  // `posix.normalize` preserves a trailing slash on the input ('./' stays
+  // './', not '.') -- strip it before comparing, since "the whole path
+  // collapses to nothing" must catch './' the same way it catches '.'.
+  const normalized = posix.normalize(folded).replace(/\/+$/, "");
+  return normalized === "." || normalized === "";
 }
 
 /**

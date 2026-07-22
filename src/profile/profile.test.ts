@@ -1,10 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { realpathSync, existsSync } from "node:fs";
+import { realpathSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseProfileRef, loadProfile, harnessRoot, prepareGateInvocation, classifyGateExit } from "./profile.js";
+
+/**
+ * Probed ONCE at module load (not inside a test) so `it.skipIf` can gate on it:
+ * some sandboxed environments (notably a Windows CI runner without the
+ * "Create symbolic links" privilege) refuse symlink/junction creation outright,
+ * and that must skip the test explicitly rather than let the assertion fail for
+ * an unrelated environment reason or, worse, get silently weakened to tolerate
+ * either outcome.
+ */
+const canSymlinkDir = (() => {
+  try {
+    const base = mkdtempSync(join(tmpdir(), "profile-symlink-probe-"));
+    try {
+      const target = join(base, "target");
+      mkdirSync(target);
+      symlinkSync(target, join(base, "link"), process.platform === "win32" ? "junction" : "dir");
+      return true;
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
 
 let root: string;
 
@@ -419,6 +443,50 @@ gates:
   });
 });
 
+describe("loadProfile -- refuses a hard-coded absolute path in the RAW 'run' string (round-4 critic finding)", () => {
+  // A profile ships inside the harness repo and runs on whatever machine the
+  // harness is installed on -- a hard-coded absolute path is unportable by
+  // construction, not merely unprobed by the {profile}-derived-token check
+  // (which only ever looks at tokens containing the expanded `dir`). This must
+  // be checked on the RAW string, BEFORE '{profile}' expansion: after
+  // expansion every legitimate {profile}-derived token IS absolute, which is
+  // the whole point, so checking post-expansion would refuse the good case.
+  //
+  // Single-quoted YAML scalar (not double-quoted like the rest of this file):
+  // a double-quoted YAML string interprets '\' as an escape introducer, so a
+  // literal Windows path like 'C:\somewhere\phpcs.xml' would need doubled
+  // backslashes to round-trip; single-quoted YAML treats '\' as an ordinary
+  // character, which is what these fixtures need to express a raw Windows path.
+  const tok = (run: string) => `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: '${run}'
+`;
+
+  it.each([
+    ["POSIX absolute, flag-prefixed", "phpcs --standard=/etc/passwd ."],
+    ["POSIX absolute, bare", "phpcs /etc/passwd ."],
+    ["Windows drive absolute, flag-prefixed", "phpcs --standard=C:\\somewhere\\phpcs.xml ."],
+    ["Windows drive-relative", "phpcs D:x ."],
+    ["UNC share", "phpcs \\\\srv\\share\\phpcs.xml ."],
+    ["lone leading backslash", "phpcs \\foo\\bar ."],
+  ])("refuses (%s)", async (_label, run) => {
+    await writeProfile("demo", tok(run));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/\{profile\}/);
+  });
+
+  it("checks the PATH PART of a flag-prefixed token, not the raw token including its --flag= prefix (the raw token '--standard=/etc/x' does not itself start with '/' or a drive letter)", async () => {
+    await writeProfile("demo", tok("phpcs --standard=/etc/x ."));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/\/etc\/x/);
+  });
+
+  it("still accepts a legitimate {profile}-based flag (unaffected by the new raw-string check)", async () => {
+    await writeProfile("demo", GOOD);
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
+});
+
 describe("loadProfile -- protectedPaths validated at load (round-3 critic finding)", () => {
   const withProtectedPaths = (entry: string) => `id: demo
 version: 1
@@ -445,4 +513,44 @@ protectedPaths: [${JSON.stringify(entry)}]
     const p = await loadProfile("demo@1", root);
     expect(p.protectedPaths).toEqual([entry]);
   });
+
+  // Round-4 critic finding: `protectedPaths: ["."]` passed every check above
+  // (non-empty, not absolute, no literal '..' segment) yet
+  // `gate/oracle-paths.ts`'s `normalizeLiteralEntry` computes an empty
+  // root-relative path for it and refuses it -- but only when a task actually
+  // builds an oracle set, not at profile load. Extend the load-time predicate
+  // so an entry that resolves to nothing is caught HERE instead.
+  it.each([
+    ["dot", "."],
+    ["dot slash", "./"],
+    ["segments that fully cancel out", "foo/.."],
+    ["nested cancel-out", "a/b/../.."],
+  ])("refuses an entry that resolves to nothing (%s)", async (_label, entry) => {
+    await writeProfile("demo", withProtectedPaths(entry));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/protectedPaths/);
+  });
+});
+
+describe("loadProfile -- profile directory must be realpath-contained under the harness root (round-4 critic finding: trust asserted, never verified)", () => {
+  // The module header claims a profile is "trusted by construction because it
+  // lives in the harness repository". Nothing previously PROVED that: `dir` is
+  // resolved as `resolve(root, "profiles", id)` and everything downstream reads
+  // through it unquestioned. If `profiles/<id>` is itself a symlink pointing
+  // OUTSIDE the harness root, the later `realpathContains(dir, rulesetPath)`
+  // canonicalizes both sides and compares the symlink's target against a path
+  // under that SAME target -- "contained", trivially -- without ever proving
+  // `dir` itself sits inside `root`.
+  it.skipIf(!canSymlinkDir)(
+    "rejects a profile directory that is a symlink pointing outside the harness root",
+    async () => {
+      const outside = realpathSync(await mkdtemp(join(tmpdir(), "profile-outside-")));
+      try {
+        await mkdir(join(root, "profiles"), { recursive: true });
+        await symlink(outside, join(root, "profiles", "demo"), process.platform === "win32" ? "junction" : "dir");
+        await expect(loadProfile("demo@1", root)).rejects.toThrow(/outside the harness root/i);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
 });

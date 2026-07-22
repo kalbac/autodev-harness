@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { globMatch, normalizePath } from "../util/glob.js";
 import { canonicalPathContains, realpathContains } from "../util/path-contain.js";
-import { ProfileFileSchema, type ResolvedProfile, type ResolvedGate } from "./schema.js";
+import { ProfileFileSchema, isAbsoluteOnAnyPlatform, type ResolvedProfile, type ResolvedGate } from "./schema.js";
 
 /**
  * The harness package root — the directory holding `package.json`, walking up from
@@ -156,6 +156,26 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
   const { id, version } = parseProfileRef(ref);
   const dir = resolve(root, "profiles", id);
 
+  // Verify the trust claim in this module's header, don't just assert it
+  // (round-4 critic finding). Everything below reads THROUGH `dir` -- `stat`,
+  // `readFile`, and the ruleset probe's own `realpathContains(dir, rulesetPath)`
+  // -- and that ruleset-probe check alone proves nothing about `dir` itself: it
+  // canonicalizes BOTH sides, so if `profiles/<id>` is a symlink pointing
+  // OUTSIDE `root`, a ruleset sitting under that same external target still
+  // reads as "contained" relative to the symlink's target, never checking that
+  // the target is inside `root` at all. Only skip the check when `dir` does not
+  // exist yet (`existsSync` follows the symlink, so a dangling link also counts
+  // as "not there"): that case must still fall through to the ordinary
+  // 'not found' error below, not this one, and `realpathContains` cannot tell
+  // "absent" apart from "escapes" on its own (it folds both into `false`).
+  if (existsSync(dir) && !(await realpathContains(root, dir))) {
+    throw new Error(
+      `profile ${JSON.stringify(ref)}: profile directory '${dir}' resolves OUTSIDE the harness root '${root}' -- ` +
+        `a profile is trusted by construction only because it lives inside the harness repository, and that is ` +
+        `not true of a path that escapes it (e.g. via a symlink); refusing to load it`,
+    );
+  }
+
   if (/\s/.test(dir)) {
     throw new Error(
       `profile ${JSON.stringify(ref)} resolves to '${dir}', whose path contains whitespace -- gate commands are ` +
@@ -194,6 +214,46 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
     throw new Error(
       `profile ${JSON.stringify(ref)}: pinned version ${version} does not match the file's version ${pf.version}`,
     );
+  }
+
+  // Refuse a hard-coded absolute path in the RAW `run` string, BEFORE
+  // `{profile}` expansion (round-4 critic finding). A profile ships inside the
+  // harness repo and runs on whatever machine the harness is installed on, so
+  // an author who writes a literal absolute path -- `--standard=C:\somewhere\
+  // phpcs.xml` -- instead of using `{profile}` has written something broken by
+  // construction, not merely something the existing {profile}-derived-token
+  // probe below happens not to cover (that probe only ever looks at tokens
+  // that embed the EXPANDED `dir`). This MUST run before expansion: after
+  // `{profile}` is substituted, every legitimate {profile}-derived token IS an
+  // absolute path -- that is the whole point of the substitution -- so
+  // checking post-expansion would refuse the good case along with the bad one.
+  //
+  // `isAbsoluteOnAnyPlatform` is imported from `./schema.js` rather than
+  // duplicated a third time: `src/gate/oracle-paths.ts` has the canonical
+  // (non-exported) version, `src/profile/schema.ts` already carries an
+  // identical copy from the round-3 `protectedPaths`/`requires.provision`
+  // fixes (now exported for this reuse) -- and `schema.ts` is a module
+  // `profile.ts` already owns/imports, so there is no dependency-direction
+  // reason left to keep a third copy.
+  for (const g of pf.gates) {
+    for (const token of g.run.split(/\s+/)) {
+      if (token === "") continue;
+      // A flag-prefixed token (`--standard=/etc/x`) must be judged on the PATH
+      // PART after its first '=', not the raw token: the raw token starts with
+      // '-', so it is never itself "absolute" by any platform's rule, and
+      // checking it whole would silently miss exactly the shape a real gate
+      // command actually uses.
+      const eq = token.indexOf("=");
+      const pathPart = token.startsWith("-") && eq !== -1 ? token.slice(eq + 1) : token;
+      if (isAbsoluteOnAnyPlatform(pathPart)) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: gate '${g.id}' run command '${g.run}' contains the hard-coded ` +
+            `absolute path '${pathPart}' -- a profile ships inside the harness repo and runs on whatever machine ` +
+            `the harness is installed on, so a baked-in absolute path is unportable by construction; use ` +
+            `'{profile}' to reference a file the profile itself ships instead`,
+        );
+      }
+    }
   }
 
   // `{profile}` is expanded now (the profile directory is known); `{files}` is NOT
@@ -319,6 +379,23 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
         );
       }
 
+      // Deliberately `stat` (follows a symlink), not `lstat` like the
+      // structurally similar probe in `src/gate/oracle-paths.ts` (round-4
+      // critic finding: the divergence was real but undocumented, which reads
+      // as an oversight rather than a decision -- comment only, no behaviour
+      // change). `oracle-paths.ts` refuses ANY symlinked leaf outright because
+      // it FINGERPRINTS the file's content across a worker's task: a worker
+      // could repoint the link (or swap the target for a same-content file)
+      // between the pre- and post- snapshot, and the hash would not move,
+      // silently defeating the fence it is part of. Nothing here is
+      // fingerprinted -- this probe only proves the ruleset file exists and is
+      // a regular file ONCE, at profile-load time, before any task runs. A
+      // ruleset that is a symlink pointing INWARD, to another file the profile
+      // itself ships, is harmless to follow here. This is not a blanket claim
+      // that symlinks are safe in this module in general -- FIX A above still
+      // refuses the profile DIRECTORY itself being a symlink out of `root` --
+      // only that this one probe has no content-integrity property for a
+      // symlinked leaf to defeat.
       let st;
       try {
         st = await stat(rulesetPath);
