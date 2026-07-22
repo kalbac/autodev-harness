@@ -1,0 +1,76 @@
+# WordPress / WooCommerce qualification profile, v1.
+#
+# The harness proves the PROCESS; this profile proves the PRODUCT. Every ruleset
+# referenced below ships INSIDE this directory: a gate that invoked a project
+# script (`composer check:static`) would let the repo under judgement define its
+# own standard of quality -- the oracle owned by the defendant, which is exactly
+# what adr/006 exists to prevent.
+#
+# v1 is deliberately STATIC only. PHPUnit / wp-env / Plugin Check / HPOS need
+# Docker and cannot run on a native-Windows polygon
+# (docs/gotchas/agent-ci-not-runnable-on-native-windows.md), where they would
+# escalate infra on every single run. Static tools over a junctioned `vendor` are
+# proven to work (docs/gotchas/vendor-junction-composer-autoload-basedir.md) --
+# which is why the set is shaped this way, and not out of modesty.
+id: wordpress-woocommerce
+version: 1
+
+requires:
+  provision: [vendor]
+
+gates:
+  # Whole-project by design: a manifest is not a file set, and it is cheap.
+  #
+  # redExitCodes: [1] -- measured directly (composer 2.9.5), not assumed:
+  #   - a composer.json with a genuine schema violation (e.g. an invalid `name`)
+  #     exits 1 -- a real validation failure, worker-fixable, RED.
+  #   - a directory with NO composer.json at all ("./composer.json not found.")
+  #     exits 3 -- broken environment, not a code defect. Left OUT of
+  #     redExitCodes on purpose so classifyGateExit reads it as "unrunnable" and
+  #     the gate step escalates instead of looping the worker on a manifest that
+  #     was never provisioned into the worktree.
+  #   - a valid composer.json, including one that only produces warnings (e.g.
+  #     missing `license`), exits 0.
+  - id: composer-validate
+    run: "composer validate --no-check-publish --no-check-all"
+    redExitCodes: [1]
+
+  # DIFF-SCOPED. Measured on the real polygon before this was written: this same
+  # ruleset reports 7069 pre-existing errors across the tree and 8 on the single
+  # file a task actually changed. A whole-tree gate would be red on every run no
+  # matter what the worker wrote -- blocking everything, proving nothing about the
+  # diff. `--report=full` (not summary) because the worker needs the actual sniff
+  # messages to fix them; a summary tells it only that a number is non-zero.
+  #
+  # redExitCodes: [1, 2] -- PHPCS's own documented exit contract: 0 = clean,
+  # 1 = errors were found, 2 = only warnings/fixable violations were found (both
+  # are genuine findings about the diff); 3 = a processing error (bad ruleset,
+  # unreadable file) -- left OUT on purpose so classifyGateExit reads a 3 as
+  # "unrunnable" rather than a RED the worker would loop against forever.
+  - id: phpcs
+    files: "**/*.php"
+    run: "vendor/bin/phpcs -q --report=full --standard={profile}/gates/phpcs.xml {files}"
+    redExitCodes: [1, 2]
+
+# PHPStan is deliberately NOT a v1 gate, and the reason is technical, not modesty.
+# Useful WordPress analysis needs `szepeviktor/phpstan-wordpress`, whose
+# `extension.neon` a profile-shipped config cannot portably reference: a neon
+# `includes:` path resolves relative to the neon FILE, which lives in the harness
+# repo where no project `vendor/` exists. Measured on the polygon, a profile neon
+# without that extension reports 14 "unknown class / function not found" findings
+# on a correct file -- a false-red machine. PHPCS has no such problem because
+# `--standard` is fully self-contained, which is exactly why it ships here.
+# Revisit when a profile can inject a project-resolved autoload/extension path.
+
+# Project-local analyzer configs. They are protected rather than merely ignored:
+# the gates above pass explicit --standard/-c paths, so a project-local ruleset
+# cannot override them -- but a worker CREATING one is an attempt to substitute
+# the oracle, and the Phase-2 fence registers exactly that (an absent literal
+# fingerprints as "<absent>", so its appearance is drift).
+protectedPaths:
+  - phpcs.xml
+  - phpcs.xml.dist
+  - .phpcs.xml
+  - .phpcs.xml.dist
+  - phpstan.neon
+  - phpstan.neon.dist

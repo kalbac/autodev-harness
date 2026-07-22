@@ -29,6 +29,7 @@ interface DepsOverrides {
   runSuccessCommand?: GateDeps["runSuccessCommand"];
   guardStillRed?: GateDeps["guardStillRed"];
   runAgentCi?: GateDeps["runAgentCi"];
+  runProfileGates?: GateDeps["runProfileGates"];
 }
 
 interface Calls {
@@ -62,6 +63,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     runSuccessCommand: overrides.runSuccessCommand ?? (async () => ({ exitCode: 0 })),
     guardStillRed: overrides.guardStillRed ?? (async () => true),
     runAgentCi: overrides.runAgentCi !== undefined ? overrides.runAgentCi : null,
+    runProfileGates: overrides.runProfileGates !== undefined ? overrides.runProfileGates : null,
   };
 
   return { deps, calls };
@@ -421,5 +423,62 @@ describe("runGate", () => {
     await runGate(input, deps);
 
     expect(seen).toEqual(["task-42"]);
+  });
+});
+
+describe("profile gates (step 1d)", () => {
+  it("is green and inert when no profile is attached", async () => {
+    const { deps } = makeDeps({ changedFiles: ["src/foo.ts"], runProfileGates: null });
+    const input: GateInput = { taskId: "P1", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(true);
+    expect(result.reasons.some((r) => /profile gate/i.test(r))).toBe(false);
+  });
+
+  it("passes when every profile gate exits 0", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runProfileGates: async () => [{ id: "phpcs", green: true, exitCode: 0 }],
+    });
+    const input: GateInput = { taskId: "P2", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("RETRYs and names the failing gate when one is red", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runProfileGates: async () => [
+        { id: "phpcs", green: false, exitCode: 2 },
+        { id: "phpstan", green: true, exitCode: 0 },
+      ],
+    });
+    const input: GateInput = { taskId: "P3", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.profile_green).toBe(false);
+    expect(result.decision).toBe("RETRY");
+    expect(result.reasons).toContain("profile gate 'phpcs' FAILED (exit 2)");
+  });
+
+  it("propagates a gate that could not run at all", async () => {
+    // A missing tool / absent vendor is an INFRA failure: not worker-fixable, so
+    // it must escape runGate for the conductor to escalate -- never be folded
+    // into a red verdict that loops the worker. Same contract as runAgentCi.
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runProfileGates: async () => {
+        throw new Error("spawn phpcs ENOENT");
+      },
+    });
+    const input: GateInput = { taskId: "P4", fileSet: ["a.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toThrow(/ENOENT/);
   });
 });

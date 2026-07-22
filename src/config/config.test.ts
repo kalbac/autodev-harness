@@ -201,6 +201,20 @@ describe("isPlannerExplicitlyConfigured", () => {
   });
 });
 
+describe("profile config field", () => {
+  it("defaults to null when absent", async () => {
+    const cfg = await loadConfig(dir);
+    expect(cfg.profile).toBeNull();
+  });
+
+  it("carries an explicit profile reference through", async () => {
+    mkdirSync(join(dir, ".autodev"), { recursive: true });
+    writeFileSync(join(dir, ".autodev", "config.yaml"), 'profile: "wordpress-woocommerce@1"\n');
+    const cfg = await loadConfig(dir);
+    expect(cfg.profile).toBe("wordpress-woocommerce@1");
+  });
+});
+
 describe("isContractFileConfigured", () => {
   // adr/006 Phase 1: the parsed HarnessConfig always defaults contract.invariantsFile
   // to "INVARIANTS.md" / contract.guardsFile to "GUARDS.md" (schema.ts), so only the

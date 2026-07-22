@@ -198,7 +198,22 @@ surface; dropping it is the point, not a regression.
   just `INVARIANTS.md`/`GUARDS.md`, and must cover **git-ignored paths** the
   git-visible fence (`git status --porcelain`) does not see (SOUND #3 scope). Closes
   Finding 4 and the executable-input residual Phase 1 leaves open.
-- **Phase 3 (folds into Profiles, s49+).** A profile carries its own protected
+- **Phase 3 — ✅ SHIPPED s51, inside Profiles v1** (as this ADR predicted it would
+  be). The profile lives in `<harnessRoot>/profiles/<id>/`, i.e. in the **harness**
+  repository, while a worker only ever writes a per-task worktree of the **target**
+  repository — the two trees do not intersect, so the profile is worker-immutable
+  by construction rather than by a guard. Its `protectedPaths` declaration is part
+  of the same worker-unreachable file, which is what stops the model from
+  self-authorizing. One thing the plan below did not anticipate: "it lives in the
+  harness repo" is a claim that must itself be **checked**, not assumed — a
+  symlinked `profiles/<id>` made the containment test vacuous (it canonicalized
+  both sides and compared the symlink's target against a path under that same
+  target), so `loadProfile` now realpath-contains the profile directory under the
+  harness root before reading anything through it. The residual is named, not
+  closed: when the harness is eventually run **on itself**, `profiles/` becomes an
+  ordinary project directory the worker can write, and it must then be listed in
+  `contract.constitutionPaths`. The original plan, for the record:
+  A profile carries its own protected
   oracle (hidden tests, critic-rubrics, release config) under this same model —
   **and the profile itself plus its protected-path declaration must live at a
   trusted, worker-unwritable root**, or the model becomes self-authorizing (a worker

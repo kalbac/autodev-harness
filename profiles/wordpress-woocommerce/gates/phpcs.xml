@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<ruleset name="autodev-harness WP/WC profile v1">
+  <description>WordPress coding standards, shipped by the profile so the project cannot soften them.</description>
+
+  <arg name="extensions" value="php"/>
+  <arg name="colors"/>
+  <arg value="p"/>
+
+  <exclude-pattern>*/vendor/*</exclude-pattern>
+  <exclude-pattern>*/node_modules/*</exclude-pattern>
+  <exclude-pattern>*/tests/*</exclude-pattern>
+
+  <rule ref="WordPress-Core"/>
+  <rule ref="WordPress-Docs"/>
+</ruleset>

@@ -31,14 +31,22 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
-
       # Build + postbuild asset copy, then assert the critic schema landed in
       # dist/ (gotcha [critic/codex]: tsc does not copy the .json; a compiled
       # critic's --output-schema path would break without the postbuild step).
+      #
+      # Build runs BEFORE the tests, not after: the profile suite asserts that
+      # `harnessRoot()` resolves identically from a COMPILED dist/ module, which
+      # is the test that exists to defeat the same class of bug the schema
+      # assertion below covers (green in tests, dead in the running daemon --
+      # gotcha [critic/codex] again). With the old order that test could only
+      # ever fail on a clean runner, since dist/ did not exist yet. Making the
+      # test tolerate a missing dist/ would have deleted its whole purpose.
       - name: Build
         run: npm run build
 
       - name: Assert critic schema copied into dist
         run: node -e "require('node:fs').accessSync('dist/critic/critic-verdict.schema.json')"
+
+      - name: Test
+        run: npm test

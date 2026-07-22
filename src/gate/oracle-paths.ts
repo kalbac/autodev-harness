@@ -410,11 +410,18 @@ function assertGlobNotEscaping(entry: string, source: string): string {
  *      `.github/workflows/**` glob covering the whole directory.
  *   4. `contract.constitutionPaths` — each entry classified literal-or-glob
  *      (`classifyOracleEntry`) into the matching arm.
+ *   5. The attached profile's `protectedPaths` — passed in by the composition root
+ *      (a `string[]`, not a ResolvedProfile: `gate/` must not depend on `profile/`,
+ *      the same dependency-direction rule this module already follows for
+ *      `composition/`). Classified literal-or-glob like `constitutionPaths`. The
+ *      profile itself needs no protection: it lives in the harness repo, which the
+ *      worker's worktree never intersects.
  */
 export async function resolveOracleSet(
   cfg: HarnessConfig,
   raw: Record<string, unknown>,
   root: string,
+  profileProtectedPaths: string[] = [],
 ): Promise<OracleSet> {
   const literals: string[] = [];
   const globs: string[] = [];
@@ -498,6 +505,17 @@ export async function resolveOracleSet(
       addGlob(entry, `contract.constitutionPaths: ${entry}`);
     } else {
       await addLiteral(entry, `contract.constitutionPaths: ${entry}`);
+    }
+  }
+
+  // 5. profile protectedPaths -- same classification and fail-closed normalization
+  // as source 4; only the attributed reason differs, so an escalation says which
+  // profile demanded the protection.
+  for (const entry of profileProtectedPaths) {
+    if (classifyOracleEntry(entry) === "glob") {
+      addGlob(entry, `profile protectedPaths: ${entry}`);
+    } else {
+      await addLiteral(entry, `profile protectedPaths: ${entry}`);
     }
   }
 

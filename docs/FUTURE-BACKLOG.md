@@ -35,6 +35,40 @@ server.ts should adopt the same `safeLog` pattern across all 10 sites for unifor
 hygiene. Surfaced by the s44 gpt-5.6-luna gate as a Medium against the reply-B fix; declined for that
 scoped diff (it is the file's convention, not a regression) and tracked here as the file-wide fix.
 
+## Profiles / Qualification Layer — v1.1 candidates (s51 2026-07-22)
+
+Shipped v1 = two facets (`gates` + `protectedPaths`), WP/WC first. What v1 named but
+did not build, in rough priority order:
+
+- **Per-LINE gate scoping.** v1 scopes to changed FILES, so a task touching an existing
+  file inherits its entire pre-existing debt (measured: every PHP file in the polygon is
+  already non-zero under the ruleset). Options: run the tool then intersect findings with
+  the diff's line ranges; a per-profile baseline file; or an explicit "you touched it, you
+  clean it" policy. A product decision, not a bug fix — it decides how useful profiles are
+  on real legacy code. `gotchas/profile-gates-must-be-diff-scoped.md`.
+- **Gate feedback on RETRY.** Capture each profile gate's stdout (bounded), persist it on a
+  RETRY as `gate-feedback.md`, and read it where `critic-feedback.md` is already read, so a
+  red gate tells the worker WHY. Pre-existing for `checkCommand`; load-bearing for
+  profiles. `gotchas/profile-gate-red-gives-the-worker-no-feedback.md`.
+- **Line-ending normalization for WPCS on Windows.** WPCS demands `
+`; a worker on Windows
+  writes `
+`, so every new PHP file draws an automatic error. Needs a normalization step
+  or an explicit, documented exclusion.
+- **PHPStan as a profile gate.** Blocked on a portable way for a profile-shipped config to
+  reference an extension living in the *project's* `vendor` (a neon `includes:` resolves
+  relative to the neon file, which sits in the harness repo). Needs a profile-injected
+  autoload/extension path.
+- **The remaining five facets** from the external review (`policies/`, `hidden-tests/`,
+  `compatibility/`, `critic-rubrics/`, `release/`) plus the `adr/004` **north-star**. Each
+  needs its own justification: v1 deliberately shipped only the mechanically provable ones.
+- **Docker-dependent WP/WC gates** (PHPUnit · wp-env · Plugin Check · HPOS · the WC
+  compatibility matrix) — these need a Linux/WSL polygon, not more code.
+- **Selective-disable with an audited waiver.** v1 is union-only by decision. If a project
+  ever genuinely needs a gate off, the honest shape is an explicit waiver with a recorded
+  reason that prints in the report as "qualified partially, excluded: X (reason)" — never a
+  silent per-gate toggle.
+
 ## Chat-runtime migration → TanStack AI + AG-UI (operator find, s45 2026-07-16)
 
 The operator surfaced shadcn's two AI helper pages

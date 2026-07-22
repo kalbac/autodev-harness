@@ -5,25 +5,21 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s50)
+## Where we are (leaving s51)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced — s50 merged PR #79 (`44aebd8`, CI 4/4) and
-PR #81 (`0a89a45`, CI 4/4).
+~5 slices). `main` is clean and synced.
 
-**s50 closed the `adr/006` enforcement tail — Phase 2, executable-input protected
-paths.** Phase 1 (s49) stopped a worker from changing *what the gate checks*; Phase 2
-stops it from editing the oracle *inputs the gate executes* — guard test files, mutation
-recipes, agent-ci workflow files, and operator-declared human-only paths. The set is
-declared at the trusted root and fenced by fingerprint **before the critic** (an oracle
-touch now costs no critic tokens) and **before the stray/forbidden fence** (so the
-reason is "the worker edited the oracle", not a generic "out of scope"). Literals are
-fingerprinted directly on disk, which is what covers **git-ignored** oracle files the
-porcelain fence cannot see. Six codex `gpt-5.6-luna` rounds; live-proven both
-directions. With Phase 1+2 landed, the Authority-Model prerequisite the profiles thrust
-depends on is **materially satisfied** — Phase 3 folds into Profiles itself.
+**s51 shipped Profiles v1 — the qualification layer.** The harness proves the
+*process*; a profile proves the *product*. A profile (`profiles/wordpress-woocommerce@1`)
+is a named, versioned per-project-type proof pack living in the **harness** repo, so it
+is worker-immutable by construction -- which is how `adr/006` **Phase 3** lands without
+being a separate phase. It is an **oracle source, not a second judge**: its gates become
+gate step 1d and its `protectedPaths` become the fifth source in `resolveOracleSet`, so
+the entire Phase 1+2 protection is inherited unchanged. Five codex `gpt-5.6-luna` rounds;
+all three live directions proven on `woodev-shipping-plugin-test`.
 
 ## Phase status
 
@@ -34,7 +30,8 @@ depends on is **materially satisfied** — Phase 3 folds into Profiles itself.
 | Attended live-orchestrator presence (`adr/004`) | ✅ shipped (s40, PR #72) |
 | Unattended autonomy (`adr/004`) | 🚧 partly built — see below |
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
-| Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) shipped; Phase 3 folds into Profiles |
+| Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
+| Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -43,43 +40,50 @@ depends on is **materially satisfied** — Phase 3 folds into Profiles itself.
 - ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
 - ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
 
-## What s50 delivered (`adr/006` Phase 2 — executable-input protected paths)
+## What s51 delivered (Profiles / WP-WC Qualification Layer v1)
 
-- **`src/gate/oracle-paths.ts`** — `resolveOracleSet(cfg, raw, repoRoot)` builds the
-  protected set from the **trusted root**: `contract.invariantsFile`/`guardsFile`,
-  **every** GUARDS.md row's `recipe` + `guard_test` (all rows, not only
-  mutation-verified — an unverified row's test file is still an oracle input), the
-  `gate.agentCi.workflows` files + `.github/workflows/**` when agent-ci is enabled, and
-  `contract.constitutionPaths`. `recipe.file` is deliberately **not** protected: it is
-  the code under test, and protecting it would make every guarded zone's own source
-  unwritable.
-- **Two arms, different guarantees, not conflated.** `literals` are fingerprinted
-  directly on the filesystem pre/post worker — this is what covers a **git-ignored**
-  oracle file (audit SOUND #3 scope); every *derived* entry is a literal, so the
-  concrete hole is closed. `globs` match the git-visible touched set only; a gitignored
-  path matching *only* an operator glob is a documented residual (needs a bounded,
-  junction-safe worktree walk → `FUTURE-BACKLOG.md`).
-- **Fenced early.** Runs before the critic (no critic tokens burned on an oracle touch)
-  and before the stray/forbidden fence (specific reason beats "out of scope").
-  Escalates the existing `constitution` type — already non-retryable in the overnight
-  supervisor, so no new plumbing through the journal/UI/reply path.
-- **Six codex `gpt-5.6-luna` rounds**, each closing a narrower fail-open inside the
-  previous round's own fix (absolute entries `join`ing to nonsense paths · a swallowed
-  containment error · a bare `catch` folding EACCES into "absent" · an empty-string key
-  `snapshot` skips · host-only absolute detection missing Windows forms on POSIX ·
-  separator folding applied to only one of the two probe paths). Verdict CLEAN at round
-  six. One invariant took five rounds to state properly: *every entry is
-  worktree-relative, `/`-separated, and names a real regular file*. GOTCHAS 72→73.
-- **Live-proven both directions** on `woodev-shipping-plugin-test`: a task whose
-  `file_set` held `.github/workflows/ci.yml` escalated `constitution` with oracle
-  evidence and never reached the critic (no `critic-verdict.json` written); a control
-  task on a non-oracle file passed the fence, critic and gate and **committed**
-  (`dd79ef4`). The live run also caught a reporting defect unit tests could not — a file
-  matched by both arms read as "modified 2 oracle artifact(s)" for one edit (fixed:
-  `mergeOracleHits`).
-- **Still open by design:** `success_command`/`checkCommand` *implementations* are
-  commands, not declared paths, so they are protected only if the operator lists them in
-  `constitutionPaths`. Deriving paths from a command string is not reliably decidable.
+- **A profile is an ORACLE SOURCE, not a second judge.** That was the load-bearing
+  design call: because the profile *is* the oracle, the whole `adr/006` Phase 1+2
+  protection is inherited for free. A parallel judge would have needed its own
+  protection story, and a profile over an unprotected oracle is theater.
+- **`src/profile/`** — a fail-closed loader. Unknown id, version mismatch, unknown key,
+  id/directory disagreement, path traversal in the id, a whitespace install path, a
+  ruleset the profile forgot to ship, an absolute path in a gate command, a profile
+  directory that resolves outside the harness root: all throw at load. A profile that
+  cannot be resolved exactly as pinned must stop the run, never degrade to "no profile"
+  -- the degraded mode means gates the operator believes are running are not running,
+  while a green verdict claims a qualification that never happened.
+- **Gate step 1d**, mirroring `agentCi`'s step 1c. `GateVerdict` gains `profile_green`
+  (deliberately its own field, never folded into `composer_green`, so a later Product
+  Qualification Report assembles from already-separated data). Gates declare
+  `redExitCodes`: exit 0 = pass, a declared code = worker-fixable RED -> RETRY, **any
+  other non-zero = the tool could not do its job** -> throw -> the conductor escalates.
+  Codes were MEASURED, not assumed (`composer validate` exits 3 with no manifest, 1 on a
+  schema violation; PHPCS 1/2 are findings, 3 is a processing error).
+- **The fifth oracle source.** A profile's `protectedPaths` go through the same
+  `addLiteral`/`addGlob` helpers as `constitutionPaths`, inheriting Phase 2's
+  fail-closed normalization verbatim.
+- **`adr/006` Phase 3 landed here**, as predicted: the profile lives in the harness
+  repo, which the worker's worktree never intersects, so it is worker-immutable by
+  construction. s51 also made that claim *checked* rather than asserted -- a symlinked
+  profile directory used to make the containment test vacuous (round-4 finding).
+- **Gates are DIFF-SCOPED**, and this was found by measurement before shipping: the WPCS
+  ruleset reports **7069** errors tree-wide and **8** on the file a task actually
+  changed, so a whole-tree gate would be red on every run -- blocking everything while
+  proving nothing about the diff. GOTCHAS 73 -> 75.
+- **Five codex `gpt-5.6-luna` rounds**, the same convergence shape as Phase 1's four and
+  Phase 2's six: R1 conflated RED with UNRUNNABLE; R2 found the fix still admitted
+  `={profile}/...` ("ends with `=`" is not proof of a flag); R3 found `<dir>/../outside`
+  still escaped and `<dir>-evil/x` passed as a bare path; R4 found the trust boundary
+  asserted but never verified; R5 found an absolute path hiding after a *second* `=`.
+  Two findings were declined with rationale verified against real code.
+- **All three live directions proven** on `woodev-shipping-plugin-test`:
+  1. a new PHP file drew two genuine WPCS errors -> `profile_green:false`, `RETRY`;
+  2. a docs task -> phpcs correctly **skipped** (logged), `profile_green:true`,
+     **committed** (`35db1a4`);
+  3. a task whose `file_set` held `phpcs.xml` -> `constitution` escalation naming the
+     profile (`profile protectedPaths: phpcs.xml [fs-fingerprint]`), raised **before the
+     critic** -- no `critic-verdict.json` written, no critic tokens spent.
 
 ## The thrust — Authority Model → Profiles (from the external review)
 
@@ -94,46 +98,69 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
   an unprotected oracle is theater) is now materially satisfied; Phase 3 is not a
   separate step — it folds into Profiles (the profile and its protected-path declaration
   must themselves live at the trusted root).
-- **Profiles / Qualification Layer** — a reusable per-project-type proof pack (WP/WC
-  first): the harness proves the *process*, the profile proves the *product*. Our
-  `gate.agentCi` is the substrate; a profile productizes it. (The `adr/004` **north-star**
-  doc likely folds into this.)
+- **Profiles / Qualification Layer** — **v1 shipped s51** (two facets: `gates` +
+  `protectedPaths`; WP/WC first). Next in the chain: the **two reports** (Harness
+  Execution vs Product Qualification), for which `profile_green` is already a separate
+  verdict field. (The `adr/004` **north-star** doc still folds into this.)
 
 ## NEXT ACTIONS
 
-- **(priority) Profiles / WP-WC Qualification Layer:** brainstorm→spec→build. The
-  Authority-Model prerequisite is now satisfied (Phase 1+2 shipped). Fold in the
-  `adr/004` north-star concept; `adr/006` Phase 3 lands here (the profile and its
-  protected-path declaration must live at a trusted, worker-unwritable root, or the
-  model is self-authorizing).
-- *(done s50)* Docs audit — the divisible-by-10 checkpoint ran after the Phase-2 work:
-  11 findings fixed (stale ADR-003 status · `AGENT-RULES` merge rule contradicting the
-  s49 reconciliation · audit hole-count · Aider listed as unanalyzed · `PRINCIPLES.md`
-  read-trigger · abandoned tag namespaces · `reference/` status banner · a broken
-  markdown table · Russian-quote carve-out · `superpowers/` missing from navigation ·
-  this file's own accumulated history). Next checkpoint: s60.
+- **(priority) Decide the per-FILE vs per-LINE scoping policy.** Profile gates scope to
+  changed FILES, so a task touching an existing file inherits that file's whole
+  pre-existing debt -- and every PHP file in the polygon is already non-zero under the
+  ruleset, so v1 is practically green only for new files and non-matching files. Options:
+  line-scoped filtering (run the tool, intersect with the diff's line ranges), a
+  per-profile baseline, or an explicit "you touched it, you clean it" policy. This is a
+  product decision, not a bug fix, and it gates how useful profiles are on real legacy
+  plugins. `gotchas/profile-gates-must-be-diff-scoped.md`.
+- **(priority) Gate feedback on RETRY.** A red gate tells the worker nothing: the RETRY
+  branch writes no artifact, `critic-feedback.md` is written only on critic/escalation
+  paths, and `runProfileGates` discards the tool's stdout -- so the worker reproduces the
+  same diff until its budget is exhausted, then escalates. Fail-safe, not fail-open, but
+  it wastes every retry. Pre-existing for `checkCommand`; load-bearing for profiles.
+  `gotchas/profile-gate-red-gives-the-worker-no-feedback.md`.
+- **CRLF vs WPCS on Windows.** WPCS demands `
+`; a worker on Windows writes `
+`, so
+  every new PHP file draws an automatic line-ending error. A WP/WC profile needs either a
+  normalization step or an explicit exclusion before it is usable on a Windows box.
+- **Two reports** (Harness Execution vs Product Qualification) — the next link in the
+  chain; `profile_green` is already separate, so this is assembly, not untangling.
 - **Remaining `adr/004` slices** (each own brainstorm→spec→plan): morning report ·
   mandatory anti-drift · (north-star → folded into profiles).
-- **Metrics / Evaluation Corpus** (GPT suggestion, decide if/when): autonomy-%,
-  rework-cycles, first-pass gate-success, critic FP/FN — the numbers that prove the gate.
-  "Oracle-tamper attempts caught" is now a real, measurable gate property.
-- **Carried:** agent-ci synthetic `GITHUB_REPO` for non-GitHub repos · overloaded
-  `blocked` EscalationType (v1 parks all) · chat-runtime → TanStack AI + AG-UI (`FUTURE-BACKLOG`).
+- **Metrics / Evaluation Corpus** (decide if/when): autonomy-%, rework-cycles, first-pass
+  gate-success, critic FP/FN. "Oracle-tamper attempts caught" is a real, measurable gate
+  property, and "profile-gate first-pass rate" is now another.
+- *(done s50)* Docs audit — next divisible-by-10 checkpoint: s60.
+- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked` EscalationType ·
+  chat-runtime → TanStack AI + AG-UI (`FUTURE-BACKLOG`).
 
 ## Open questions
 
+- **Per-FILE vs per-LINE gate scoping** — see NEXT ACTIONS. The honest v1 position is
+  that file-level scoping made the gate *meaningful* (7069 → 8) but not yet *practical*
+  on a legacy tree.
+- **PHPStan in a profile.** Deliberately not a v1 gate: useful WordPress analysis needs
+  `szepeviktor/phpstan-wordpress`, whose `extension.neon` a profile-shipped config cannot
+  portably reference (a neon `includes:` resolves relative to the neon file, which lives
+  in the harness repo where no project `vendor/` exists). Measured: without it, a correct
+  file draws 14 phantom "unknown class/function" findings. Needs a way for a profile to
+  inject a project-resolved autoload/extension path.
+- **The analyzer toolchain is project-controlled.** A profile's gates run
+  `vendor/bin/phpcs`, and `vendor` comes from the project's own `composer.json`. Named
+  residual, not closed: no mechanical rule separates "a project script" from "a project
+  binary", so pretending a check closes it would be worse than naming it.
 - **Oracle protection for `success_command`/`checkCommand` implementations** — they are
   commands, not declared paths, so Phase 2 protects them only when the operator lists
   them in `constitutionPaths`. Deriving a path set from a command string is not reliably
   decidable; is an explicit per-command path declaration worth the config surface?
-- *(closed s50)* `adr/006` Phase 2 → shipped. Phase 3 → confirmed as a Profiles facet,
-  not a standalone phase.
-- *(closed s49)* s45 PR status → PR #76 merged 17.07. Merge policy → reconciled in `AGENTS.md`.
+- *(closed s51)* `adr/006` Phase 3 → landed inside Profiles, as predicted.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3.
 - **s50** — `adr/006` Phase 2: protected-oracle-path fence (`44aebd8`) + docs audit (`0a89a45`).
 - **s49** — `adr/006` Phase 1: trusted-root oracle definitions (`cc0db6f`).
 - **s48** — Authority Model audit + `adr/006` + `PRINCIPLES.md` #14/#15 (`c6c2343`).
@@ -144,7 +171,6 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 - **s43** — reply-B cycle live-proven + `blocked` state (PR #74).
 - **s42** — `adr/005` critic-is-a-correctness-gate (PR #73).
 - **s41** — first real CI run on a real task, end-to-end DONE (`3609a2c`).
-- **s40** — attended live-orchestrator presence, chat = main screen (PR #72).
 
 ## Environment (verified s46)
 
