@@ -11,7 +11,16 @@
  * Pure and separately tested rather than inlined into `runGate`, because the
  * clamping rule is a judgement call (what to keep when the output does not fit)
  * and judgement calls in this repo get pinned by tests.
+ *
+ * Task 5 (`docs/superpowers/plans/2026-07-22-line-scoped-profile-gates.md`) adds a
+ * second failure shape: a `report: checkstyle` profile gate's `FailedStep` carries
+ * STRUCTURED findings (`FilteredFinding[]`) instead of raw tool output. Those are
+ * rendered here too, as a readable list, through the exact same clamps this file
+ * already enforces on raw output -- a finding list is just as unbounded as raw
+ * output was (a linter can report thousands of findings), so it gets no exemption
+ * from the per-step clamp or the global document cap.
  */
+import type { FilteredFinding } from "./finding-filter.js";
 
 /** One gate step that ran and failed. */
 export interface FailedStep {
@@ -21,8 +30,22 @@ export interface FailedStep {
    *  agent-ci returns `{ green, reasons }`, not an exit code) -- render that
    *  honestly rather than inventing a fake number that looks like a real one. */
   exitCode: number | null;
-  /** Whatever the step printed (stdout+stderr), possibly empty. */
+  /** Whatever the step printed (stdout+stderr), possibly empty. Ignored for
+   *  rendering when `findings` is present (see below); kept required so every
+   *  existing caller/test that builds a plain-output step keeps compiling
+   *  unchanged. */
   output: string;
+  /** Structured, already diff-filtered findings for a `report: checkstyle`
+   *  profile gate (`docs/superpowers/plans/2026-07-22-line-scoped-profile-
+   *  gates.md`, Task 5). When present, `formatGateFeedback` renders THESE --
+   *  as a readable `path:line  message  [source]` list -- instead of `output`.
+   *  The worker must never be shown the tool's raw Checkstyle XML: it is a
+   *  machine format the worker cannot act on and it costs tokens for nothing.
+   *  Optional so every step for a gate without `report` (the overwhelming
+   *  majority: check command, success_command, agent-ci, and a profile gate
+   *  that declares no report format) keeps rendering byte-identically to
+   *  before this field existed. */
+  findings?: FilteredFinding[];
 }
 
 /** Per-step output budget. Generous enough for a real PHPCS report, small enough
@@ -123,6 +146,57 @@ function fenceFor(body: string): string {
 }
 
 /**
+ * Render ONE finding as a single readable line: `path:line  message
+ * [source]`, or `path  message  [source]` when the finding has no line
+ * number. Never `path:null` and never an invented line -- `finding-filter.ts`
+ * hands this a real `number | null`, and inventing a number here would be a
+ * lie a worker would act on (the same discipline `checkstyle.ts` applies at
+ * parse time).
+ *
+ * This -- not the tool's raw Checkstyle XML -- is what the worker must be
+ * shown: the machine format is noise it cannot act on and it costs tokens the
+ * worker's prompt budget cannot spare.
+ */
+function renderFinding(f: FilteredFinding): string {
+  const loc = f.line === null ? f.file : `${f.file}:${f.line}`;
+  return `${loc}  ${f.message}  [${f.source}]`;
+}
+
+/** The label that opens the unattributed group. Defined once so the group
+ *  test in `formatGateFeedback`'s own tests and the text actually emitted can
+ *  never drift apart. */
+const UNATTRIBUTED_GROUP_LABEL =
+  "-- UNATTRIBUTED findings (the harness could not map these to a changed file; kept, not dropped -- fail-closed) --";
+
+/**
+ * Render a report gate's SURVIVING findings as the readable list a worker
+ * prompt can act on.
+ *
+ * Unattributed findings (`unattributed: true` -- `finding-filter.ts` could not
+ * map the tool's path to any file this diff touched, so it kept the finding
+ * rather than silently dropping a possible real violation) are rendered in
+ * their OWN clearly-labelled group, never interleaved with attributed ones.
+ * The two are qualitatively different -- one the worker definitely owns,
+ * because it landed on a line the worker added; the other is only a
+ * SUSPECTED violation the harness could not place, which both the worker and
+ * the operator need to be able to see is a different kind of claim. Flattening
+ * them together would hide that the fail-closed path fired at all.
+ */
+function renderFindings(findings: FilteredFinding[]): string {
+  const attributed = findings.filter((f) => !f.unattributed);
+  const unattributed = findings.filter((f) => f.unattributed);
+
+  const blocks: string[] = [];
+  if (attributed.length > 0) {
+    blocks.push(attributed.map(renderFinding).join("\n"));
+  }
+  if (unattributed.length > 0) {
+    blocks.push([UNATTRIBUTED_GROUP_LABEL, ...unattributed.map(renderFinding)].join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+
+/**
  * Build the feedback document, or `null` when nothing failed.
  *
  * `null` is a first-class result the caller must honour by CLEARING any previous
@@ -160,7 +234,15 @@ export function formatGateFeedback(failed: FailedStep[]): string | null {
     // colour codes is non-empty as bytes but carries no information, and testing
     // the raw text produced an empty fenced block instead of saying plainly that
     // the step printed nothing (round-2 critic finding).
-    const cleanBody = clampOutput(stripAnsi(step.output)).trim();
+    //
+    // A `findings`-bearing step renders from `renderFindings`, NOT `step.output`
+    // -- structured findings are the whole point of Task 5, and showing both
+    // would either duplicate the same violations or (worse) show the raw
+    // Checkstyle XML the worker must never see. `stripAnsi` does not apply to
+    // rendered findings: they come from decoded/unescaped XML attributes, not a
+    // terminal-aware tool's stdout, so there is nothing for it to strip.
+    const rawBody = step.findings !== undefined ? renderFindings(step.findings) : stripAnsi(step.output);
+    const cleanBody = clampOutput(rawBody).trim();
     const fence = fenceFor(cleanBody);
     const bodyBlock = cleanBody === "" ? "_(the step produced no output)_" : `${fence}\n${cleanBody}\n${fence}`;
     const stepParts = [`## ${label} — ${exitLabel}`, "", bodyBlock, ""];

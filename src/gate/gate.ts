@@ -131,31 +131,6 @@ export interface GateDeps {
 }
 
 /**
- * Render a `report` gate's SURVIVING findings (already diff-filtered by
- * `deps.runProfileGates` before `runGate` ever sees them) as the plain-text block
- * `failedSteps` carries into `gate-feedback.md`.
- *
- * Deliberately MINIMAL: this exists only so a report gate's RETRY feedback names
- * the finding it is actually about, right now, without Task 4 reaching into
- * `gate-feedback.ts` -- a file it does not own. `gate-feedback.ts` (Task 5 of
- * `docs/superpowers/plans/2026-07-22-line-scoped-profile-gates.md`) owns the RICH
- * rendering: unattributed findings grouped and clearly labelled, the existing
- * per-step/label/total clamps applied to this text the same as any other step's
- * output, fence selection, etc. Until then, one finding per line is enough to
- * prove the filtering is real and to unblock the worker.
- */
-function renderReportFindings(findings: FilteredFinding[]): string {
-  if (findings.length === 0) return "";
-  return findings
-    .map((f) => {
-      const loc = f.line === null ? f.file : `${f.file}:${f.line}`;
-      const flag = f.unattributed ? " [UNATTRIBUTED -- could not be matched to a changed file]" : "";
-      return `${loc}  ${f.message}  [${f.source}]${flag}`;
-    })
-    .join("\n");
-}
-
-/**
  * Parity: gate.ps1 Invoke-AutodevGate (parity spec §4). Checks in exact order
  * -> COMMIT|RETRY|ESCALATE.
  *
@@ -290,17 +265,30 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
           profileGreen = false;
           reasons.push(`profile gate '${r.id}' FAILED (exit ${r.exitCode})`);
           // A `report` gate's `findings` ARE the feedback: they are already the
-          // diff-filtered subset the worker is responsible for, and showing them
-          // instead of the tool's raw whole-file `output` is what keeps a legacy
-          // file's pre-existing debt out of the document -- the entire point of
-          // line-scoped profile gates. `findings` is checked for `undefined`
-          // (not truthiness / non-empty), because a report gate is only ever
-          // pushed here with `green: false`, which -- per the composition root's
-          // contract -- means `findings` is a NON-empty array whenever it is
-          // present at all; an ordinary gate (no `report`) simply never sets it,
-          // and falls back to raw `output`, byte-identical to pre-Task-4 behaviour.
-          const output = r.findings !== undefined ? renderReportFindings(r.findings) : (r.output ?? "");
-          failedSteps.push({ label: `profile gate '${r.id}'`, exitCode: r.exitCode, output });
+          // diff-filtered subset the worker is responsible for, and rendering
+          // them (`gate-feedback.ts`'s job, Task 5) instead of the tool's raw
+          // whole-file `output` is what keeps a legacy file's pre-existing debt
+          // out of the document -- the entire point of line-scoped profile
+          // gates. `findings` is passed through UNRENDERED here -- `gate.ts`
+          // does not own the rendering (grouping unattributed findings, the
+          // per-step/label/total clamps, fence selection); `formatGateFeedback`
+          // does. `findings` is checked for `undefined` (not truthiness /
+          // non-empty), because a report gate is only ever pushed here with
+          // `green: false`, which -- per the composition root's contract --
+          // means `findings` is a NON-empty array whenever it is present at
+          // all; an ordinary gate (no `report`) simply never sets it, and
+          // falls back to raw `output`, byte-identical to pre-Task-4 behaviour.
+          failedSteps.push({
+            label: `profile gate '${r.id}'`,
+            exitCode: r.exitCode,
+            output: r.output ?? "",
+            // `exactOptionalPropertyTypes` -- spread only when `findings` is
+            // actually present, rather than assigning `undefined` to an
+            // optional key (a real, meaningful difference under this
+            // tsconfig: an assigned-but-undefined key is not the same as an
+            // absent one).
+            ...(r.findings !== undefined ? { findings: r.findings } : {}),
+          });
         }
       }
     }
