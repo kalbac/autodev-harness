@@ -48,10 +48,17 @@ skip (Principle 10; identical to Phase 1's fail-closed contract for
 **Known trap, designed against explicitly.** `gotchas/critic-schema-json-not-copied-to-dist.md`:
 `critic-verdict.schema.json` is not copied to `dist/` by `tsc`, so its path breaks
 from a compiled build while working from source. `profiles/**` is data, not TS, and
-falls in exactly the same hole. Therefore the work includes (a) a build step that
-copies `profiles/` into `dist/`, and (b) **a test that resolves a profile through
-the dist path**, not only from source. Without (b) the feature is green in tests
-and dead in the running daemon.
+would fall in exactly the same hole.
+
+*(Amended during planning.)* No asset-copy step is needed, because resolution is
+**package-root-based** rather than module-relative: `harnessRoot()` walks up from
+`import.meta.url` to the directory holding `package.json`, which yields the same
+absolute path whether the caller was loaded from `src/` or from `dist/`. The critic
+schema needed a copy step precisely because its path *is* module-relative. The
+requirement that actually matters is kept in full: **a test resolves a profile
+through the dist path**, so the feature cannot be green in tests and dead in the
+running daemon. (Verified on the real build: `loadProfile` called from
+`dist/profile/profile.js` returns the repo's own `profiles/wordpress-woocommerce`.)
 
 ## 2. Profile format
 
