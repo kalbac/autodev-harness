@@ -74,8 +74,32 @@ describe("parseProfileRef", () => {
     ["path separator in id", "../escape@1"],
     ["backslash in id", "..\\escape@1"],
     ["uppercase id", "Demo@1"],
+    // "01" and "1" would parse to the identical Number, which is an ambiguity
+    // this module refuses rather than silently normalizes away -- canonical
+    // decimal form only (round-5 critic finding, leading-zero decision).
+    ["leading-zero version", "demo@01"],
   ])("refuses a malformed reference (%s)", (_label, ref) => {
     expect(() => parseProfileRef(ref)).toThrow(/profile reference/i);
+  });
+
+  // round-5 critic finding: `Number(versionText)` silently loses precision above
+  // Number.MAX_SAFE_INTEGER, so a reference like "demo@9007199254740993" would
+  // round to "...992" and a profile.yaml declaring THAT rounded value would then
+  // satisfy `pf.version !== version` and load -- pinning the wrong version while
+  // both sides believe they agree exactly.
+  it("refuses a version above Number.MAX_SAFE_INTEGER (precision loss would let the wrong pinned version silently match)", () => {
+    expect(() => parseProfileRef("demo@9007199254740993")).toThrow(/exact integer/i);
+  });
+
+  it("accepts version 1", () => {
+    expect(parseProfileRef("demo@1")).toEqual({ id: "demo", version: 1 });
+  });
+
+  it("accepts a large but still exactly-representable version", () => {
+    expect(parseProfileRef(`demo@${Number.MAX_SAFE_INTEGER}`)).toEqual({
+      id: "demo",
+      version: Number.MAX_SAFE_INTEGER,
+    });
   });
 });
 
@@ -483,6 +507,47 @@ gates:
 
   it("still accepts a legitimate {profile}-based flag (unaffected by the new raw-string check)", async () => {
     await writeProfile("demo", GOOD);
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
+});
+
+describe("loadProfile -- raw absolute-path check inspects EVERY '='-separated segment, not just the text after the FIRST '=' (round-5 critic finding)", () => {
+  // '--define=KEY=VALUE' is a legitimate CLI shape (repeatable key=value
+  // options are a real pattern, not a hypothetical spelling), so a token can
+  // legitimately contain a SECOND '=' whose presence must not be read as "no
+  // absolute path here". The check's job is to catch an absolute path
+  // ANYWHERE in the argument, not to parse any one tool's option grammar --
+  // so every '='-separated segment is a candidate, not just the one after the
+  // first '='.
+  const tok = (run: string) => `id: demo
+version: 1
+gates:
+  - id: phpcs
+    run: '${run}'
+`;
+
+  it.each([
+    ["absolute path after the SECOND '=' (Windows)", "vendor/bin/phpcs --define=KEY=C:\\outside\\x.xml ."],
+    ["absolute path after the SECOND '=' (POSIX)", "vendor/bin/phpcs --define=KEY=/etc/x.xml ."],
+    ["absolute path after the THIRD '=', token has no leading flag dash", "vendor/bin/phpcs A=B=D:\\x ."],
+    // Already-covered plain forms, re-pinned here so a regression in the new
+    // segment-splitting logic reads unambiguously against round 5.
+    ["plain flag, absolute after the only '='", "vendor/bin/phpcs --standard=C:\\x.xml ."],
+    ["bare absolute path, no '=' at all", "vendor/bin/phpcs /etc/x.xml ."],
+  ])("refuses (%s)", async (_label, run) => {
+    await writeProfile("demo", tok(run));
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/\{profile\}/);
+  });
+
+  it.each([
+    ["repeated key=value option, no absolute path in any segment", "vendor/bin/phpcs --define=KEY=VALUE ."],
+    ["legitimate {profile}-based flag", "vendor/bin/phpcs --standard={profile}/gates/phpcs.xml ."],
+    ["bare relative command, no arguments", "vendor/bin/phpcs"],
+    ["short flag with no value", "vendor/bin/phpcs -q ."],
+    ["flag with a relative value", "vendor/bin/phpcs --report=full ."],
+    ["lone dot argument", "vendor/bin/phpcs ."],
+  ])("still accepts (%s) -- must NOT regress", async (_label, run) => {
+    await writeProfile("demo", tok(run));
     await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
   });
 });

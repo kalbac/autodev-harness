@@ -41,6 +41,19 @@ export function harnessRoot(): string {
 const PROFILE_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
+ * The version text after '@': canonical decimal digits only, no leading zero
+ * (round-5 critic finding, leading-zero decision). "01" and "1" would parse to
+ * the identical `Number`, so accepting both would mean two different-looking
+ * references silently pin the same profile version -- an ambiguity this
+ * module refuses rather than silently normalizes away, the same way `PROFILE_ID`
+ * above refuses more than one spelling of the same id. "0" alone is
+ * syntactically accepted by this regex; `profile.yaml`'s
+ * `z.number().int().positive()` is what actually refuses a non-positive
+ * version, so there is no need to duplicate that rule here.
+ */
+const VERSION_TEXT = /^(0|[1-9][0-9]*)$/;
+
+/**
  * The only prefix a `{profile}`-derived command token may carry: a flag-SHAPED
  * string ending in `=`, e.g. `--standard=`, `-c=`, `--some_flag=`, `--some.flag=`.
  *
@@ -74,13 +87,28 @@ export function parseProfileRef(ref: string): { id: string; version: number } {
   const at = ref.lastIndexOf("@");
   const id = at === -1 ? "" : ref.slice(0, at);
   const versionText = at === -1 ? "" : ref.slice(at + 1);
-  if (!PROFILE_ID.test(id) || !/^[0-9]+$/.test(versionText)) {
+  if (!PROFILE_ID.test(id) || !VERSION_TEXT.test(versionText)) {
     throw new Error(
       `invalid profile reference ${JSON.stringify(ref)} -- expected "<id>@<version>" with a lowercase ` +
         `id ([a-z0-9-], no path separators) and an integer version, e.g. "wordpress-woocommerce@1"`,
     );
   }
-  return { id, version: Number(versionText) };
+  const version = Number(versionText);
+  // round-5 critic finding: `Number(versionText)` silently rounds any digit
+  // string above Number.MAX_SAFE_INTEGER, so "demo@9007199254740993" would
+  // become the SAME number as "demo@9007199254740992" and a profile.yaml
+  // declaring that rounded value would satisfy `pf.version !== version` and
+  // load below -- pinning a DIFFERENT version than the one the caller wrote,
+  // while both sides believe they resolved exactly. Refuse rather than
+  // resolve a reference this module cannot represent exactly.
+  if (!Number.isSafeInteger(version)) {
+    throw new Error(
+      `invalid profile reference ${JSON.stringify(ref)} -- version '${versionText}' cannot be represented ` +
+        `exactly as a number (must be a safe integer, i.e. <= ${Number.MAX_SAFE_INTEGER}); a profile version ` +
+        `must be an exact integer, since a larger one can silently round to a different value`,
+    );
+  }
+  return { id, version };
 }
 
 /**
@@ -238,20 +266,26 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
   for (const g of pf.gates) {
     for (const token of g.run.split(/\s+/)) {
       if (token === "") continue;
-      // A flag-prefixed token (`--standard=/etc/x`) must be judged on the PATH
-      // PART after its first '=', not the raw token: the raw token starts with
-      // '-', so it is never itself "absolute" by any platform's rule, and
-      // checking it whole would silently miss exactly the shape a real gate
-      // command actually uses.
-      const eq = token.indexOf("=");
-      const pathPart = token.startsWith("-") && eq !== -1 ? token.slice(eq + 1) : token;
-      if (isAbsoluteOnAnyPlatform(pathPart)) {
-        throw new Error(
-          `profile ${JSON.stringify(ref)}: gate '${g.id}' run command '${g.run}' contains the hard-coded ` +
-            `absolute path '${pathPart}' -- a profile ships inside the harness repo and runs on whatever machine ` +
-            `the harness is installed on, so a baked-in absolute path is unportable by construction; use ` +
-            `'{profile}' to reference a file the profile itself ships instead`,
-        );
+      // Check EVERY '='-separated segment of the token, not just the text
+      // after the FIRST '=' (round-5 critic finding). A flag-prefixed token
+      // like `--define=KEY=C:\outside\x.xml` has TWO '=' signs, and
+      // `--define=KEY=VALUE` (a repeatable key=value option) is a real CLI
+      // shape, not a hypothetical spelling -- so an option's VALUE can itself
+      // legitimately contain an assignment. This check's job is to catch an
+      // absolute path ANYWHERE in the argument, not to parse any one tool's
+      // option grammar, so every segment is a candidate, not only the last or
+      // only the one right after the first '='. A token with no '=' at all
+      // degenerates to a single segment (the whole token), which is exactly
+      // the pre-existing bare-path behaviour.
+      for (const segment of token.split("=")) {
+        if (isAbsoluteOnAnyPlatform(segment)) {
+          throw new Error(
+            `profile ${JSON.stringify(ref)}: gate '${g.id}' run command '${g.run}' contains the hard-coded ` +
+              `absolute path '${segment}' -- a profile ships inside the harness repo and runs on whatever machine ` +
+              `the harness is installed on, so a baked-in absolute path is unportable by construction; use ` +
+              `'{profile}' to reference a file the profile itself ships instead`,
+          );
+        }
       }
     }
   }
