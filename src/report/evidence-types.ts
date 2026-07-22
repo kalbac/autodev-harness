@@ -117,7 +117,21 @@ export const EvidenceSchema = z
       .strict()
       .nullable(),
   })
-  .strict();
+  .strict()
+  // A commit hash and a `committed` outcome are the same fact seen two ways: the
+  // conductor sets `commit` on exactly one exit, the one that also sets
+  // `outcome: "committed"`. So an honest record satisfies the biconditional
+  // `committed <=> commit !== null`. Enforcing it closes a product-report fail-open:
+  // the Qualification Report treats "a commit in the range" as proof the change
+  // landed, so a record carrying a real in-range commit while claiming an
+  // `abandoned`/`escalated`/`quarantined` outcome (a corrupt or truncated write)
+  // would be credited as product proof for work that never actually passed. A
+  // violation makes the whole record UNREADABLE (H1), named by the report, not
+  // trusted. This is the same fail-closed discipline as the finding-count refine
+  // above: reject the impossible rather than let it read as coverage.
+  .refine((r) => (r.outcome === "committed") === (r.commit !== null), {
+    message: 'a "committed" outcome requires a commit hash, and a commit hash requires a "committed" outcome',
+  });
 
 export type EvidenceRecord = z.infer<typeof EvidenceSchema>;
 export type ProfileGateEvidenceRecord = z.infer<typeof ProfileGateEvidence>;

@@ -41,6 +41,20 @@ const OUTCOME_IMPLIES_QUEUE: Record<string, string> = {
   escalated: "escalated",
 };
 
+/**
+ * The inverse: a live queue state expressed in the OUTCOME vocabulary. A stale line
+ * reports its outcome in the same words a trusted line does (`committed`, not the
+ * raw queue name `done`), so a reader -- and the rollups -- treat "committed while
+ * stale" and "committed" as the same outcome. Without this the rollup counted
+ * `outcome === "committed"` and silently dropped every reconciled-committed task,
+ * showing a done task in the table that no rollup counted.
+ */
+const QUEUE_AS_OUTCOME: Record<string, string> = {
+  done: "committed",
+  quarantine: "quarantined",
+  escalated: "escalated",
+};
+
 export interface ExecutionReport {
   kind: "harness-execution";
   run: RunRef;
@@ -87,10 +101,18 @@ export function buildExecutionReport(run: RunRef, slots: EvidenceSlot[], liveSta
       return {
         task_id: r.task_id,
         title: r.title,
-        outcome: live, // the blackboard's truth, not the record's
+        // The blackboard's truth, in the OUTCOME vocabulary so it counts in the
+        // rollups like any other line (`done` -> `committed`); a live state with no
+        // mapping falls back to its raw name rather than being invented away.
+        outcome: QUEUE_AS_OUTCOME[live] ?? live,
         commit: null,
+        // Every iteration-derived number is dropped, not just the objects: `attempts`
+        // here would be the STALE record's value (the comment that once claimed
+        // otherwise was wrong), so it is zeroed exactly like `rounds`. The
+        // `evidence_stale` flag is what tells the reader these zeros are "unknown",
+        // not "measured as zero".
         rounds: 0,
-        attempts: r.attempts, // monotonic retry counter on the task file, not iteration detail
+        attempts: 0,
         critic: null,
         gate_decision: null,
         gate_failures: [],

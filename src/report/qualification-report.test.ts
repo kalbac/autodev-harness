@@ -48,6 +48,18 @@ describe("buildQualificationReport", () => {
     expect(r.profiles).toEqual([{ id: "wordpress-woocommerce", version: 2 }]);
   });
 
+  it("does NOT credit a non-committed record even if it carries an in-range commit", () => {
+    // Defense-in-depth against a contradictory/corrupt record (the schema also
+    // rejects it): product proof requires a COMMITTED outcome, not merely a commit
+    // hash that happens to fall in range.
+    const r = buildQualificationReport(
+      { from: "aaa", to: "bbb", commits: ["abc"] },
+      [rec({ outcome: "escalated", commit: "abc", profile_gates: [{ id: "phpcs", status: "green", exit_code: 0, skip_reason: null, scope: "changed-lines", files: ["a.php"], findings: { total: 0, in_diff: 0, unattributed: 0 } }] })],
+    );
+    expect(r.proven_on_change).toEqual([]);
+    expect(r.completeness.selected).toBe(0);
+  });
+
   it("puts a SKIPPED gate in 'not proven' with its reason (H2)", () => {
     const r = buildQualificationReport(
       { from: "aaa", to: "bbb", commits: ["abc"] },

@@ -45,4 +45,16 @@ describe("EvidenceSchema", () => {
     const bad = { ...(minimal() as object), schema: 2 };
     expect(() => EvidenceSchema.parse(bad)).toThrow();
   });
+
+  it("REJECTS a commit hash on a non-committed outcome", () => {
+    // A commit in the range is how the Qualification Report proves a change landed;
+    // an abandoned/escalated record carrying one would forge product proof.
+    const bad = { ...(minimal() as object), outcome: "escalated", commit: "abc1234" };
+    expect(() => EvidenceSchema.parse(bad)).toThrow();
+  });
+
+  it("REJECTS a committed outcome with no commit hash", () => {
+    const bad = { ...(minimal() as object), outcome: "committed", commit: null };
+    expect(() => EvidenceSchema.parse(bad)).toThrow();
+  });
 });

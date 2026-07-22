@@ -227,11 +227,26 @@ These are the acceptance criteria of the feature, and each gets a test.
   post-work write fail on one iteration, a prior record survives, and only
   reconciliation against the single source of truth stops the report repeating it. A
   `null` (undeterminable) live state is never treated as a contradiction.
-- **H8 — an internally-contradictory finding count is unreadable, not silently
-  dropped.** The evidence schema rejects `total < in_diff` or `unattributed > in_diff`
-  (impossible for an honest record): a negative debt would pass the `debt > 0` test
-  and vanish, turning a corrupt or tampered ledger back into false coverage. A
-  violation makes the whole record unreadable, which the report names (H1).
+- **H8 — an internally-contradictory record is unreadable, not silently dropped.**
+  The evidence schema rejects (a) `total < in_diff` or `unattributed > in_diff`
+  (impossible finding counts — a negative debt would pass the `debt > 0` test and
+  vanish), and (b) any record where `outcome === "committed"` and `commit` disagree
+  (the conductor sets `commit` on exactly the `committed` exit, so the biconditional
+  holds for every honest record). Both would let a corrupt or tampered ledger read
+  as coverage: a negative debt hides real debt, and a commit-in-range on a
+  non-committed record forges the "this change landed" signal the Qualification
+  Report credits. A violation makes the whole record unreadable, which the report
+  names (H1).
+- **H9 — the Execution Report reconciles against tasks; the Qualification Report
+  reconciles against commits.** This asymmetry is deliberate. The Execution Report's
+  subject is task outcomes, so it reconciles each record against the live task queue
+  (H7). The Qualification Report's subject is *commits* — "what did commit `<abc>`
+  prove" — so it reconciles against git history (`git rev-list`, already its
+  selection basis) and credits only a `committed` record whose commit is in range. It
+  does **not** consult the live task queue: a commit that passed a green gate proved
+  that property at that commit no matter where its task later moved, and `committed`
+  is terminal with no path back out. Threading task-location state into a
+  commit-scoped report would be a category error.
 
 ## Modules
 

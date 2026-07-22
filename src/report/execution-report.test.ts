@@ -59,15 +59,19 @@ describe("buildExecutionReport", () => {
     // source of truth, evidence.json is a downstream projection.
     const slots = [ok("t1", { outcome: "abandoned", commit: null, critic: null, tokens: { worker_total: 9, critic_total: 9 } })];
     const r = buildExecutionReport({ runId: "run-1", intent: "x", at: 0 }, slots, () => "done");
-    expect(r.tasks[0]!.outcome).toBe("done");
+    // The blackboard says done -> reported in the OUTCOME vocabulary as committed,
+    // NOT the raw queue name, so it reads and counts like any other committed line.
+    expect(r.tasks[0]!.outcome).toBe("committed");
     expect(r.tasks[0]!.evidence_stale).toBe(true);
     // The untrusted detail from the wrong iteration is dropped, not reported.
     expect(r.tasks[0]!.commit).toBeNull();
     expect(r.tasks[0]!.tokens).toBeNull();
-    // A stale record must not inflate the committed/first-pass rollups...
-    expect(r.rollups.committed).toBe(0);
+    expect(r.tasks[0]!.attempts).toBe(0);
+    // It really committed (the blackboard says so), so it counts as committed...
+    expect(r.rollups.committed).toBe(1);
+    // ...but its round count is untrusted, so it is NEVER credited as first-pass,
+    // and the wrong iteration's tokens never enter the totals.
     expect(r.rollups.first_pass).toBe(0);
-    // ...but the reconciled truth is still counted in the completeness of the run.
     expect(r.rollups.tokens.worker_total).toBe(0);
   });
 

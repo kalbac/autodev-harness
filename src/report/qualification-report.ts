@@ -77,7 +77,22 @@ function distinctProfiles(records: { profile: { id: string; version: number } | 
 export function buildQualificationReport(range: CommitRange, slots: EvidenceSlot[]): QualificationReport {
   const inRange = new Set(range.commits);
   const records = slots.flatMap((s) => (s.state === "ok" ? [s.record] : []));
-  const selected = records.filter((r) => r.commit !== null && inRange.has(r.commit));
+  // A record is credited as product proof only when it COMMITTED and that commit is
+  // in the range. The `outcome === "committed"` guard is explicit rather than relying
+  // on `commit !== null` alone: the evidence schema enforces `committed <=> commit`,
+  // so the two are equivalent for an honest record, but stating the product predicate
+  // in product terms keeps it legible and survives a future schema change.
+  //
+  // Deliberately NOT reconciled against the live task queue (unlike the Execution
+  // Report). That asymmetry is principled, not an oversight: this report is about
+  // COMMITS, not tasks. Its subject is "what did commit <abc> prove", answered
+  // against git history (`range.commits`, from `git rev-list`) -- not "where does the
+  // task sit now". A commit that passed a green gate proved that property at that
+  // commit regardless of where its task later moved, and a `committed` outcome is
+  // terminal (`done/`) with no transition back out, so there is no stale-credit path
+  // to reconcile away. Threading task-location state into a commit-scoped report
+  // would be a category error.
+  const selected = records.filter((r) => r.outcome === "committed" && r.commit !== null && inRange.has(r.commit));
 
   const byGate = new Map<string, ProvenEntry>();
   const notProven: NotProvenEntry[] = [];
