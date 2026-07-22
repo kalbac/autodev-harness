@@ -50,18 +50,36 @@ Three sub-rules that are not obvious:
 3. **`{files}` cannot be expanded at load time** (no task exists yet), so it stays
    a placeholder in `ResolvedGate.run` and is substituted per invocation.
 
-## What is STILL not solved (read before trusting a green gate)
+## The second half: per FILE was not enough (RESOLVED s51, profile v2)
 
-**Diff-scoping is per FILE, not per LINE.** A task that touches an existing file
-inherits that file's entire pre-existing debt. Measured: *every* PHP file in the
-polygon exits non-zero under the profile ruleset, so any task modifying an
-existing file is red before the worker writes a line. v1 is therefore only
-practically green for tasks that add new files or touch non-matching files.
+File-level scoping made the gate *meaningful* (7069 → 8) but not yet *usable*: a
+task touching an existing file still inherited that file's entire pre-existing
+debt, and *every* PHP file in the polygon exits non-zero under the ruleset — so any
+task modifying existing code was red before the worker wrote a line. v1 was
+practically green only for new files.
 
-That is a real limitation, not a detail. The options — line-scoped filtering
-(`phpcs` then intersect with the diff's line ranges), a per-profile baseline file,
-or an explicit "you touched it, you clean it" policy — are a design decision, not
-a bug fix. See `FUTURE-BACKLOG.md`.
+**Resolved by line-scoping** (`docs/superpowers/specs/2026-07-22-line-scoped-profile-gates-design.md`).
+A gate may declare `report: checkstyle`; the harness parses the tool's machine
+report, keeps only findings landing on lines the diff **added**, and judges the
+gate by that filtered count instead of the exit code. A tool exiting non-zero
+because of debt elsewhere in the file is now a **green** gate.
+
+A **baseline file** was rejected on principle rather than taste: a baseline *is* an
+oracle, so a worker able to regenerate it could whitewash all debt in one commit —
+exactly the reward-hacking Principle 14 and `adr/006` exist to stop. Line-scoping
+introduces no new artifact at all.
+
+**Live-proven, all three directions:** a compliant change to a legacy file carrying
+10 pre-existing violations → gate **green**, committed `44bb027` (impossible under
+v1); a non-compliant addition to that same file → red, listing **only** lines
+146–148 with the file's line-1 `InvalidClassFileName` and `InvalidEOLChar`
+absent; a brand-new non-compliant file → line-1 findings correctly INCLUDED,
+because every line of a new file is added.
+
+**What the parser must never do:** return zero findings for input it could not
+parse. Zero findings means "clean" downstream, so a silent parse failure turns a
+broken gate into a PASS. The parser throws instead, and `classifyGateExit` runs
+BEFORE any parse so an unrunnable tool never reaches it.
 
 ## Related
 
