@@ -4,6 +4,22 @@
 
 ---
 
+## s51d (2026-07-22) — LINE-SCOPED PROFILE GATES MERGED — PR #84 (`c1ff87e`, CI 4/4), CLEAN at critic round 10
+
+Fourth and final block of s51, on the operator's instruction ("gate feedback first, then we discuss scoping"). Closes the last limitation the Profiles live proof exposed.
+
+- **The decision, taken with the operator:** the worker is responsible for the LINES IT WROTE, not the file it touched. Findings are filtered to the diff's added lines; the parse format is Checkstyle XML only (one parser, widest tool reach); out-of-diff debt is not shown to the worker (it would dilute a feedback channel the worker is required to act on).
+- **A baseline file was rejected on principle, not taste.** A baseline IS an oracle: a worker able to regenerate it whitewashes all debt in one commit -- exactly what Principle 14 and `adr/006` exist to stop. We would have reopened by hand the hole three sessions had just closed. Line-scoping adds no artifact at all.
+- **Ten codex `gpt-5.6-luna` rounds, 38 findings, CLEAN at round 10.** By far the longest convergence on this contour (Phase 1 took four, Phase 2 six). Roughly a third were fail-OPEN -- a finding the worker actually wrote could be dropped, or an invalid report could read as clean. The recurring shape, appearing in five separate rounds, was *validated one string, used another*: a case-insensitive containment check followed by an exact-case map lookup; then the same thing one key space over, in `newFiles`; and a probe that stat'd a path different from the one the runner received.
+- **Two of my own fixes created the opposite error and had to be corrected again.** Round 3 made a case-insensitive lookup UNION the colliding keys' line sets, curing under-attribution and introducing over-attribution; round 4 settled it -- an ambiguous path is neither picked nor unioned but flagged `unattributed`, kept so nothing is lost and pinned to no file so nothing is falsely attributed. Round 5's unclosed-`<file>` guard then REJECTED valid reports (a self-closing `<file/>` is a clean file), and round 7's comment/CDATA counters rejected valid XML in one direction while passing malformed XML in the other -- fixed by replacing counting with a state machine that knows which construct is open.
+- **One assumption was disproven by measurement, not argument.** The walker accepted a bare empty line as a blank context line, on an inherited comment claiming "some producers emit one". Capturing a real `git diff` over a file with a blank line showed git writes `" "`. The allowance protected nothing and let a corrupt hunk close with an empty added-set; both tests pinning it were rewritten around the verified behaviour.
+- **Two critic findings were DECLINED with verified rationale** (a global-cap check the critic could not see because my own brief pasted half a file -- my error, fixed for later rounds; and an undeclared XML entity, which is text, cannot conceal an `<error>`, and whose only real effect routes to the blocking `unattributed` path). Round 10 explicitly agreed with the second on the merits.
+- **Round 10 did more than fail to find defects:** it traced a multi-hunk diff line by line and confirmed no off-by-one in attribution, verified the three modules' contracts compose, and found no valid PHPCS output that any of the accumulated guards rejects.
+- **Live-proven twice** -- once when built, and again on the FINAL code after six further rounds of rewriting, rather than trusting the earlier proof: a compliant change to a legacy file carrying 10 pre-existing violations commits green (`50385f2`), and a non-compliant one reports ONLY the worker's own lines (155-157) with the file's line-1 violations verifiably absent.
+- **Result:** 1540 tests green, typecheck clean, `wordpress-woocommerce@2` shipped. Both limitations the Profiles v1 proof exposed are now closed.
+
+---
+
 ## s51c (2026-07-22) — LINE-SCOPED PROFILE GATES: the worker owns the lines it wrote, not the file it touched
 
 Third block of s51, on the operator's instruction ("gate feedback first, then we discuss scoping"). Closes the second and last limitation the Profiles live proof exposed.

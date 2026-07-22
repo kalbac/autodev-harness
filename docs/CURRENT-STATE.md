@@ -10,7 +10,7 @@
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** (chat as the project's main
 screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`) and PR #83 (`4745a9a`), both CI 4/4.
+~5 slices). `main` is clean and synced -- s51 merged PR #82 (`ee0be38`), #83 (`4745a9a`) and #84 (`c1ff87e`), all CI 4/4.
 
 **s51 shipped Profiles v1 — the qualification layer.** The harness proves the
 *process*; a profile proves the *product*. A profile (`profiles/wordpress-woocommerce@1`)
@@ -40,7 +40,7 @@ task that would have burned its whole budget converged in **one** retry (`c0fb8d
 | Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 | Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
-| Line-scoped profile gates | ✅ shipped (s51) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
+| Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
 
 **Unattended-autonomy half (`adr/004`) — built vs remaining:**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
