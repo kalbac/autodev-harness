@@ -30,6 +30,7 @@ interface DepsOverrides {
   guardStillRed?: GateDeps["guardStillRed"];
   runAgentCi?: GateDeps["runAgentCi"];
   runProfileGates?: GateDeps["runProfileGates"];
+  writeGateFeedback?: GateDeps["writeGateFeedback"];
 }
 
 interface Calls {
@@ -64,6 +65,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     guardStillRed: overrides.guardStillRed ?? (async () => true),
     runAgentCi: overrides.runAgentCi !== undefined ? overrides.runAgentCi : null,
     runProfileGates: overrides.runProfileGates !== undefined ? overrides.runProfileGates : null,
+    ...(overrides.writeGateFeedback !== undefined ? { writeGateFeedback: overrides.writeGateFeedback } : {}),
   };
 
   return { deps, calls };
@@ -480,5 +482,148 @@ describe("profile gates (step 1d)", () => {
     const input: GateInput = { taskId: "P4", fileSet: ["a.ts"] };
 
     await expect(runGate(input, deps)).rejects.toThrow(/ENOENT/);
+  });
+});
+
+describe("gate feedback persistence", () => {
+  it("writes the failing step's output when the decision is RETRY", async () => {
+    const written: { taskId: string; content: string | null }[] = [];
+    const { deps } = makeDeps({
+      runProfileGates: async () => [
+        { id: "phpcs", green: false, exitCode: 1, output: "3 | ERROR | Missing docblock" },
+      ],
+      writeGateFeedback: async (taskId: string, content: string | null) => {
+        written.push({ taskId, content });
+      },
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(v.decision).toBe("RETRY");
+    expect(written).toHaveLength(1);
+    expect(written[0]!.content).toContain("Missing docblock");
+  });
+
+  it("CLEARS the document when the gate run had no failures", async () => {
+    // A "latest value" artifact that survives a clean run would contradict the
+    // real outcome -- gotcha [conductor/per-round-overwrite-stale].
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(written).toEqual([null]);
+  });
+
+  it("includes a failing check command, not only profile gates", async () => {
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      runCheck: async () => ({ green: false, exitCode: 2, output: "PHPUnit: 1 failure" }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(written[0]).toContain("PHPUnit: 1 failure");
+  });
+
+  it("is optional -- a deps set without the hook behaves exactly as before", async () => {
+    const { deps } = makeDeps({
+      runProfileGates: async () => [{ id: "phpcs", green: false, exitCode: 1, output: "x" }],
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
+    expect(v.decision).toBe("RETRY");
+  });
+
+  // agent-ci pushes to `reasons` but, before this fix, never to `failedSteps` --
+  // so when it is the ONLY red component, `formatGateFeedback([])` returns null
+  // and write-or-clear DELETES any existing document: a RETRY with no
+  // explanation at all.
+  it("agent-ci red ALONE still produces gate-feedback content (does not wrongly CLEAR the previous document)", async () => {
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      runAgentCi: async () => ({ green: false, reasons: ["agent-ci workflow '.github/workflows/ci.yml' FAILED"] }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+    const input: GateInput = { taskId: "t1", fileSet: ["a.ts"] };
+
+    const result = await runGate(input, deps);
+
+    expect(result.decision).toBe("RETRY");
+    expect(written).toHaveLength(1);
+    expect(written[0]).not.toBeNull();
+    expect(written[0]).toContain("ci.yml");
+  });
+
+  // `runGate` can throw from many places (a loader, resolveScope, guardStillRed,
+  // an agent-ci/profile-gate infra failure, writeVerdict itself). Before this fix
+  // the write-or-clear call sat only at the normal decisive exit, so a throw left
+  // the PREVIOUS round's gate-feedback.md untouched -- presenting an old run's
+  // failure as feedback for a run that never completed.
+  it("a dep that throws AFTER a prior failing step still calls writeGateFeedback with that step, and the original error propagates unmasked", async () => {
+    const written: { taskId: string; content: string | null }[] = [];
+    const boom = new Error("guardStillRed boom");
+    const invariants = makeInvariants({ contract_zones: [zoneA] });
+    const { deps } = makeDeps({
+      invariants,
+      guardPairs: [pairA],
+      changedFiles: ["src/thing.ts"],
+      diffText: makeDiff(["+const x = 'value-a';"]),
+      runCheck: async () => ({ green: false, exitCode: 1, output: "prior failure output" }),
+      guardStillRed: async () => {
+        throw boom;
+      },
+      writeGateFeedback: async (taskId: string, content: string | null) => {
+        written.push({ taskId, content });
+      },
+    });
+    const input: GateInput = { taskId: "T-throw", fileSet: ["src/thing.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toBe(boom);
+    expect(written).toHaveLength(1);
+    expect(written[0]!.content).toContain("prior failure output");
+  });
+
+  // If the feedback write ITSELF throws while the gate is already unwinding from
+  // a real error, the original error must still be what the caller sees --
+  // otherwise a disk-full feedback write would mask the actual gate failure.
+  it("when the ORIGINAL gate step throws AND the feedback write also throws, the original error wins (not masked)", async () => {
+    const originalErr = new Error("guardStillRed boom");
+    const feedbackErr = new Error("disk full");
+    const invariants = makeInvariants({ contract_zones: [zoneA] });
+    const { deps } = makeDeps({
+      invariants,
+      guardPairs: [pairA],
+      changedFiles: ["src/thing.ts"],
+      diffText: makeDiff(["+const x = 'value-a';"]),
+      guardStillRed: async () => {
+        throw originalErr;
+      },
+      writeGateFeedback: async () => {
+        throw feedbackErr;
+      },
+    });
+    const input: GateInput = { taskId: "T-double-throw", fileSet: ["src/thing.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toBe(originalErr);
+  });
+
+  // The mirror case: on the NORMAL (non-throwing) path, a persistence failure in
+  // writeGateFeedback SHOULD reject runGate -- a failed clear that still returned
+  // COMMIT would be more dangerous than surfacing the write failure.
+  it("on a normal (non-throwing) gate run, a writeGateFeedback persistence failure REJECTS runGate rather than returning a silent COMMIT", async () => {
+    const feedbackErr = new Error("disk full");
+    const { deps } = makeDeps({
+      changedFiles: ["src/foo.ts"],
+      writeGateFeedback: async () => {
+        throw feedbackErr;
+      },
+    });
+    const input: GateInput = { taskId: "T-normal-write-fail", fileSet: ["src/foo.ts"] };
+
+    await expect(runGate(input, deps)).rejects.toBe(feedbackErr);
   });
 });

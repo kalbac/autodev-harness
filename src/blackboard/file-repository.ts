@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, mkdir, readdir, appendFile } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, readdir, appendFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseTask } from "./task.js";
@@ -67,6 +67,33 @@ export class FileBlackboardRepository implements BlackboardRepository {
     this.safePathSegment(name, "runtime file name");
     const p = join(this.runtimeDir(id), name);
     return existsSync(p) ? readFile(p, "utf8") : null;
+  }
+
+  /**
+   * Delete a runtime file -- used to CLEAR a "latest value" artifact (e.g.
+   * `gate-feedback.md`) when the producing run has nothing to report
+   * (docs/gotchas/per-round-overwrite-artifact-stale.md). `content === null` from
+   * the caller means CLEAR, not "write an empty file": an empty-but-present file
+   * would still read as a present (if blank) feedback section downstream, which
+   * defeats the whole anti-staleness point.
+   *
+   * Errno discipline mirrors `gate/oracle-paths.ts`: ONLY `ENOENT` (the file is
+   * already gone) is swallowed, so a write-or-clear caller that does not track
+   * whether a previous round left a file behind can call this unconditionally.
+   * Any OTHER failure -- EACCES/EPERM/EISDIR/... -- propagates. Folding "I was
+   * not allowed to delete it" into "it is already gone" would be a silent
+   * fail-open: the stale document would survive on disk while every caller
+   * believed it had been cleared.
+   */
+  async removeRuntimeFile(id: string, name: string): Promise<void> {
+    this.safePathSegment(name, "runtime file name");
+    const p = join(this.runtimeDir(id), name);
+    try {
+      await unlink(p);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
   }
 
   async markDone(id: string, commitHash: string): Promise<void> {

@@ -109,3 +109,26 @@ describe("buildWorkerPrompt", () => {
     expect(prompt.slice(rulesHeadingIdx)).toContain("Touch ONLY files in file_set");
   });
 });
+
+describe("gate feedback section", () => {
+  const cfg = HarnessConfigSchema.parse({});
+  const task = makeTask();
+
+  it("is absent when no gate feedback is provided", () => {
+    const p = buildWorkerPrompt(task, cfg);
+    expect(p).not.toMatch(/PRIOR GATE FAILURE/);
+  });
+
+  it("fences the gate feedback as content, not as instructions", () => {
+    const p = buildWorkerPrompt(task, cfg, undefined, "# Gate failure\n3 | ERROR | Missing docblock");
+    expect(p).toContain("===== BEGIN PRIOR GATE FAILURE");
+    expect(p).toContain("===== END PRIOR GATE FAILURE");
+    expect(p).toContain("Missing docblock");
+  });
+
+  it("carries critic feedback and gate feedback independently", () => {
+    const p = buildWorkerPrompt(task, cfg, "critic says X", "gate says Y");
+    expect(p).toContain("critic says X");
+    expect(p).toContain("gate says Y");
+  });
+});

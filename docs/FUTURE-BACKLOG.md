@@ -46,13 +46,12 @@ did not build, in rough priority order:
   the diff's line ranges; a per-profile baseline file; or an explicit "you touched it, you
   clean it" policy. A product decision, not a bug fix — it decides how useful profiles are
   on real legacy code. `gotchas/profile-gates-must-be-diff-scoped.md`.
-- **Gate feedback on RETRY.** Capture each profile gate's stdout (bounded), persist it on a
-  RETRY as `gate-feedback.md`, and read it where `critic-feedback.md` is already read, so a
-  red gate tells the worker WHY. Pre-existing for `checkCommand`; load-bearing for
-  profiles. `gotchas/profile-gate-red-gives-the-worker-no-feedback.md`.
+- ✅ *(done s51)* **Gate feedback on RETRY** -- shipped for all three output-producing
+  steps and live-proven (one retry to convergence instead of an exhausted budget).
 - **Line-ending normalization for WPCS on Windows.** WPCS demands `
 `; a worker on Windows
-  writes `
+  writes `
+
 `, so every new PHP file draws an automatic error. Needs a normalization step
   or an explicit, documented exclusion.
 - **PHPStan as a profile gate.** Blocked on a portable way for a profile-shipped config to

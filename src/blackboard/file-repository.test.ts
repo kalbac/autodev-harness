@@ -75,4 +75,30 @@ describe("FileBlackboardRepository", () => {
   it("listTasks returns [] when the queue dir was never created (no throw)", async () => {
     expect(await repo.listTasks("done")).toEqual([]);
   });
+
+  describe("removeRuntimeFile", () => {
+    it("removes an existing runtime file -- readRuntimeFile sees it gone (the CLEAR case)", async () => {
+      await repo.writeRuntimeFile("t1", "gate-feedback.md", "some feedback");
+      await repo.removeRuntimeFile("t1", "gate-feedback.md");
+      expect(await repo.readRuntimeFile("t1", "gate-feedback.md")).toBeNull();
+    });
+
+    it("is a no-op when the file was never written (idempotent CLEAR, swallows ENOENT)", async () => {
+      await expect(repo.removeRuntimeFile("t1", "never-written.md")).resolves.toBeUndefined();
+    });
+
+    it("propagates a non-ENOENT fs error instead of treating it as already-gone", async () => {
+      // unlink() on a DIRECTORY is not ENOENT on any platform (EISDIR on Linux/Mac,
+      // EPERM on Windows) -- this must NOT be swallowed the way a genuinely-absent
+      // file is. Folding "could not delete it" into "it is already gone" is exactly
+      // the fail-open this repo's errno discipline (oracle-paths.ts) exists to avoid.
+      await repo.writeRuntimeFile("t1", "placeholder", "x"); // ensures runtimeDir exists
+      mkdirSync(join(root, ".autodev", "runtime", "t1", "a-directory"));
+      await expect(repo.removeRuntimeFile("t1", "a-directory")).rejects.toThrow();
+    });
+
+    it("rejects an unsafe runtime file name the same way writeRuntimeFile does", async () => {
+      await expect(repo.removeRuntimeFile("t1", "../escape")).rejects.toThrow();
+    });
+  });
 });

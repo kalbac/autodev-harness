@@ -398,12 +398,22 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // only round-0-with-feedback case is a genuine re-claim (no cross-task bleed).
         const criticFeedback =
           (await repo.readRuntimeFile(task.id, "critic-feedback.md")) ?? undefined;
+        // Same claim-time read as criticFeedback above, and the same rationale:
+        // a gate RETRY (this task's own prior round) OR a re-claim after
+        // escalation + reply-B both need the worker to see it at round 0. The
+        // file is write-or-clear (`runGate`'s decisive-exit contract, gate.ts) --
+        // absent means either "no prior gate run" or "the last gate run was
+        // clean" -- so `?? undefined` collapsing "absent" and "empty" is correct
+        // here the same way it already is for criticFeedback.
+        const gateFeedback =
+          (await repo.readRuntimeFile(task.id, "gate-feedback.md")) ?? undefined;
         const wr = await worker.run({
           task,
           worktreePath: wt.path,
           ladder,
           runtimeDir,
           ...(criticFeedback !== undefined ? { criticFeedback } : {}),
+          ...(gateFeedback !== undefined ? { gateFeedback } : {}),
         });
 
         // Record worker usage BEFORE the rate-limit/timeout early returns so a
