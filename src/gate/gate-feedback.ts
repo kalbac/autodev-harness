@@ -27,6 +27,31 @@ export interface FailedStep {
 const PER_STEP_LIMIT = 8_000;
 
 /**
+ * Remove ANSI escape sequences (SGR colour, cursor moves) from tool output.
+ *
+ * Found by the LIVE proof rather than by any unit test: PHPCS's `--report=full`
+ * detects no terminal but still honours the ruleset's `colors` arg, so the first
+ * real `gate-feedback.md` carried `ESC[31mERROR ESC[0m` where the worker needed to
+ * read `ERROR`. Control bytes in a prompt are pure noise: they cost tokens, they
+ * can confuse the model, and they make the document unreadable to a human
+ * inspecting the artifact.
+ *
+ * Stripped centrally, HERE, rather than by disabling colour on each tool: a gate
+ * is an arbitrary operator-authored command, so any future profile would have to
+ * remember to pass the right no-colour flag for its own tool — and one that forgot
+ * would degrade silently and invisibly. The one place that formats every gate's
+ * output is the one place that can guarantee it.
+ */
+export function stripAnsi(text: string): string {
+  // Deliberately narrow: CSI sequences (`ESC [ ... final-byte`), which is what
+  // colour and cursor control actually use. A broader "strip every control
+  // character" rule would also eat tabs and newlines, destroying the layout of
+  // precisely the reports this exists to make readable.
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+/**
  * Clamp `text` to `limit` characters, keeping BOTH ends.
  *
  * Head and tail, not a plain prefix: the head holds the first (usually
@@ -63,7 +88,10 @@ export function formatGateFeedback(failed: FailedStep[]): string | null {
   for (const step of failed) {
     parts.push(`## ${step.label} — exit ${step.exitCode}`, "");
     const body = step.output.trim();
-    parts.push(body === "" ? "_(the step produced no output)_" : "```\n" + clampOutput(body) + "\n```", "");
+    // Strip BEFORE clamping, not after: escape bytes are invisible but still cost
+    // characters, so clamping first would spend the budget on them -- and a cut
+    // landing mid-sequence would leave a fragment in the prompt.
+    parts.push(body === "" ? "_(the step produced no output)_" : "```\n" + clampOutput(stripAnsi(body)) + "\n```", "");
   }
 
   return parts.join("\n");

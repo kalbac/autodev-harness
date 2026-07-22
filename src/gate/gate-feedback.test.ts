@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { clampOutput, formatGateFeedback, type FailedStep } from "./gate-feedback.js";
+import { clampOutput, formatGateFeedback, stripAnsi, type FailedStep } from "./gate-feedback.js";
+
+/** SGR colour sequence, written with an escaped ESC so the source stays plain ASCII. */
+const ESC = String.fromCharCode(27);
 
 describe("clampOutput", () => {
   it("returns short text unchanged", () => {
@@ -51,5 +54,38 @@ describe("formatGateFeedback", () => {
     const noisy = step({ output: "x".repeat(50_000) });
     const doc = formatGateFeedback([noisy, noisy, noisy])!;
     expect(doc.length).toBeLessThan(40_000);
+  });
+});
+
+describe("ANSI escape stripping", () => {
+  it("strips the colour codes a tool emits when it thinks it is on a terminal", () => {
+    // Found by the LIVE proof, not by unit tests: PHPCS's --report=full wrote SGR
+    // sequences into gate-feedback.md, so the worker prompt carried an escaped
+    // "ERROR" instead of a readable one. Stripped here rather than by disabling
+    // colour per tool, because otherwise every future profile gate has to remember
+    // to, and one that forgets fails silently and invisibly.
+    const coloured = ESC + "[31mERROR" + ESC + "[0m | Missing doc comment";
+    expect(stripAnsi(coloured)).toBe("ERROR | Missing doc comment");
+  });
+
+  it("leaves plain text untouched", () => {
+    expect(stripAnsi("no escapes here")).toBe("no escapes here");
+  });
+
+  it("is applied BY formatGateFeedback, not left to each caller", () => {
+    const doc = formatGateFeedback([
+      { label: "phpcs", exitCode: 1, output: ESC + "[31mERROR" + ESC + "[0m | boom" },
+    ])!;
+    expect(doc).toContain("ERROR | boom");
+    expect(doc).not.toContain(ESC);
+  });
+
+  it("strips BEFORE clamping, so escape bytes never eat the character budget", () => {
+    // Clamping first would spend the budget on invisible control bytes and could
+    // also slice a sequence in half, leaving a fragment in the prompt.
+    const noisy = (ESC + "[31m").repeat(2000) + "TAIL_MARKER";
+    const doc = formatGateFeedback([{ label: "s", exitCode: 1, output: noisy }])!;
+    expect(doc).toContain("TAIL_MARKER");
+    expect(doc).not.toMatch(/omitted/);
   });
 });
