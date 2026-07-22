@@ -15,6 +15,35 @@ describe("refreshExecutionReports", () => {
     expect(write).toHaveBeenCalledWith("run-1", expect.stringContaining("Harness Execution Report"), expect.any(String));
   });
 
+  it("RE-renders a parked run even when a report already exists", async () => {
+    // A parked run can still change: the operator answers, the task requeues and
+    // commits. Keeping the report written while it was parked would leave it
+    // saying "escalated" forever, contradicting the repository.
+    const write = vi.fn(async () => {});
+    await refreshExecutionReports({
+      listRuns: async () => [{ runId: "run-1", intent: "x", at: 0, taskIds: ["t1"] }],
+      taskState: async () => "escalated",
+      readEvidence: async () => null,
+      reportExists: async () => true,
+      writeReport: write,
+      log: vi.fn(),
+    });
+    expect(write).toHaveBeenCalled();
+  });
+
+  it("reuses an existing report once the run can no longer change", async () => {
+    const write = vi.fn(async () => {});
+    await refreshExecutionReports({
+      listRuns: async () => [{ runId: "run-1", intent: "x", at: 0, taskIds: ["t1"] }],
+      taskState: async () => "done",
+      readEvidence: async () => null,
+      reportExists: async () => true,
+      writeReport: write,
+      log: vi.fn(),
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("does NOT write while a task is still pending", async () => {
     const write = vi.fn(async () => {});
     await refreshExecutionReports({

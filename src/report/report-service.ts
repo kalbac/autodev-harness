@@ -36,17 +36,29 @@ export async function refreshExecutionReports(deps: ReportServiceDeps): Promise<
   try {
     const runs = await deps.listRuns();
     for (const run of runs) {
-      if (await deps.reportExists(run.runId)) continue;
-
       let finished = true;
+      let parked = false;
       for (const id of run.taskIds) {
         const state = await deps.taskState(id);
         if (state === null || UNFINISHED.has(state)) {
           finished = false;
           break;
         }
+        if (state === "escalated") {
+          parked = true;
+        }
       }
       if (!finished) continue;
+
+      // An existing report is reused ONLY when the run can no longer change. A
+      // PARKED run still can: the operator answers the escalation, the task is
+      // requeued, it commits -- and a report written while it was parked would keep
+      // saying "escalated" forever. That is the stale-artifact failure
+      // (docs/gotchas/per-round-overwrite-artifact-stale.md), and here it would be a
+      // report contradicting the repository. So a run holding any escalated task is
+      // re-rendered on every pass; only a run whose tasks are all done/quarantined
+      // is final enough to keep.
+      if (!parked && (await deps.reportExists(run.runId))) continue;
 
       const slots = await loadEvidence(run.taskIds, deps.readEvidence);
       const doc = buildExecutionReport({ runId: run.runId, intent: run.intent, at: run.at }, slots);
