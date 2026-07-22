@@ -8,6 +8,23 @@ import { AgentCiUnavailableError } from "./agent-ci-exec.js";
 import { parseCheckstyle } from "./checkstyle.js";
 import { filterFindings } from "./finding-filter.js";
 import { classifyGateExit } from "../profile/profile.js";
+import type { ProfileGateRecord } from "./profile-gate-record.js";
+
+/** A green whole-project gate record, the shape the composition root emits. */
+function gateRec(over: Partial<ProfileGateRecord> = {}): ProfileGateRecord {
+  return {
+    id: "phpcs",
+    status: "green",
+    exit_code: 0,
+    skip_reason: null,
+    scope: "whole-project",
+    files: [],
+    findings: null,
+    findings_total: null,
+    output: "",
+    ...over,
+  };
+}
 
 // The REAL captured PHPCS checkstyle report, same fixture `checkstyle.test.ts` and
 // `finding-filter.test.ts` are pinned on -- never a hand-authored one (see
@@ -44,12 +61,20 @@ function makeReportGateRun(opts: {
       );
     }
     if (classification === "green") {
-      return [{ id: "phpcs", green: true, exitCode: opts.exitCode }];
+      return [gateRec({ status: "green", exit_code: opts.exitCode, scope: "changed-lines" })];
     }
     // classification === "red" -- only NOW is the parser reached.
     const parsed = parse(opts.rawOutput);
     const findings = filterFindings(parsed, addedLines.added, opts.worktreePath, addedLines.newFiles);
-    return [{ id: "phpcs", green: findings.length === 0, exitCode: opts.exitCode, findings }];
+    return [
+      gateRec({
+        status: findings.length === 0 ? "green" : "red",
+        exit_code: opts.exitCode,
+        scope: "changed-lines",
+        findings,
+        findings_total: parsed.length,
+      }),
+    ];
   };
 }
 
@@ -490,7 +515,7 @@ describe("profile gates (step 1d)", () => {
   it("passes when every profile gate exits 0", async () => {
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
-      runProfileGates: async () => [{ id: "phpcs", green: true, exitCode: 0 }],
+      runProfileGates: async () => [gateRec({ status: "green", exit_code: 0 })],
     });
     const input: GateInput = { taskId: "P2", fileSet: ["a.ts"] };
 
@@ -504,8 +529,8 @@ describe("profile gates (step 1d)", () => {
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
       runProfileGates: async () => [
-        { id: "phpcs", green: false, exitCode: 2 },
-        { id: "phpstan", green: true, exitCode: 0 },
+        gateRec({ id: "phpcs", status: "red", exit_code: 2 }),
+        gateRec({ id: "phpstan", status: "green", exit_code: 0 }),
       ],
     });
     const input: GateInput = { taskId: "P3", fileSet: ["a.ts"] };
@@ -652,7 +677,7 @@ describe("profile gates -- 'report: checkstyle' line-scoping (Task 4)", () => {
     const written: (string | null)[] = [];
     const { deps } = makeDeps({
       changedFiles: ["src/foo.ts"],
-      runProfileGates: async () => [{ id: "phpcs", green: false, exitCode: 2, output: "3 | ERROR | some finding" }],
+      runProfileGates: async () => [gateRec({ status: "red", exit_code: 2, output: "3 | ERROR | some finding" })],
       writeGateFeedback: async (_t: string, content: string | null) => {
         written.push(content);
       },
@@ -672,7 +697,7 @@ describe("gate feedback persistence", () => {
     const written: { taskId: string; content: string | null }[] = [];
     const { deps } = makeDeps({
       runProfileGates: async () => [
-        { id: "phpcs", green: false, exitCode: 1, output: "3 | ERROR | Missing docblock" },
+        gateRec({ status: "red", exit_code: 1, output: "3 | ERROR | Missing docblock" }),
       ],
       writeGateFeedback: async (taskId: string, content: string | null) => {
         written.push({ taskId, content });
@@ -711,7 +736,7 @@ describe("gate feedback persistence", () => {
 
   it("is optional -- a deps set without the hook behaves exactly as before", async () => {
     const { deps } = makeDeps({
-      runProfileGates: async () => [{ id: "phpcs", green: false, exitCode: 1, output: "x" }],
+      runProfileGates: async () => [gateRec({ status: "red", exit_code: 1, output: "x" })],
     });
     const v = await runGate({ taskId: "t1", fileSet: ["a.php"] }, deps);
     expect(v.decision).toBe("RETRY");
@@ -807,5 +832,42 @@ describe("gate feedback persistence", () => {
     const input: GateInput = { taskId: "T-normal-write-fail", fileSet: ["src/foo.ts"] };
 
     await expect(runGate(input, deps)).rejects.toBe(feedbackErr);
+  });
+});
+
+describe("ProfileGateRecord (Task 1 -- per-gate records, including skipped)", () => {
+  it("a SKIPPED profile gate does not turn the verdict red but is recorded", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["docs/x.md"],
+      runProfileGates: async () => [
+        gateRec({ id: "phpcs", status: "skipped", exit_code: null, skip_reason: "no changed file matched **/*.php", scope: "changed-lines" }),
+        gateRec({ id: "composer-validate", status: "green" }),
+      ],
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["docs/x.md"] }, deps);
+    expect(v.profile_green).toBe(true);
+    expect(v.decision).not.toBe("RETRY");
+    expect(v.profile_gates.map((r) => [r.id, r.status])).toEqual([
+      ["phpcs", "skipped"],
+      ["composer-validate", "green"],
+    ]);
+    expect(v.profile_gates[0]!.skip_reason).toBe("no changed file matched **/*.php");
+  });
+
+  it("a RED profile gate record turns the verdict red and is recorded", async () => {
+    const { deps } = makeDeps({
+      changedFiles: ["src/a.php"],
+      runProfileGates: async () => [gateRec({ status: "red", exit_code: 1, scope: "changed-files", files: ["src/a.php"] })],
+    });
+    const v = await runGate({ taskId: "t1", fileSet: ["src/a.php"] }, deps);
+    expect(v.profile_green).toBe(false);
+    expect(v.decision).toBe("RETRY");
+    expect(v.profile_gates[0]!.status).toBe("red");
+  });
+
+  it("no profile attached leaves profile_gates empty, not absent", async () => {
+    const { deps } = makeDeps({ changedFiles: ["src/foo.ts"], runProfileGates: null });
+    const v = await runGate({ taskId: "t1", fileSet: ["src/foo.ts"] }, deps);
+    expect(v.profile_gates).toEqual([]);
   });
 });

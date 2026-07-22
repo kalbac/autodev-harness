@@ -16,6 +16,7 @@ import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 import type { OracleSet } from "../gate/oracle-paths.js";
+import { EvidenceSchema, type EvidenceRecord } from "../report/evidence-types.js";
 
 // ---------------------------------------------------------------------------
 // Fakes / test helpers. No real subprocesses, no real filesystem (except the
@@ -357,6 +358,7 @@ function defaultGateVerdict(overrides: Partial<GateVerdict> = {}): GateVerdict {
     decision: "COMMIT",
     reasons: [],
     changed_files: [],
+    profile_gates: [],
     ...overrides,
   };
 }
@@ -483,6 +485,7 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     snapshotFingerprints: partial.snapshotFingerprints ?? (() => new Map()),
     resolveOracleSet: partial.resolveOracleSet ?? (async () => EMPTY_ORACLE_SET),
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
+    ...(partial.profileRef !== undefined ? { profileRef: partial.profileRef } : {}),
     clock: partial.clock ?? { now: () => 0 },
     sleep: partial.sleep ?? (async () => {}),
     log: partial.log ?? (() => {}),
@@ -2199,5 +2202,324 @@ describe("runIteration -- gate feedback on retry", () => {
     expect(second.committed).toBe(true);
     expect(workerCalls.length).toBe(2);
     expect(workerCalls[1]!.gateFeedback).toBe(gateFeedbackDoc);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence ledger (spec 2026-07-22 "two reports")
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- evidence ledger", () => {
+  /** Parse the evidence record the iteration wrote, asserting it exists AND
+   *  satisfies the fail-closed schema (a record the harness cannot fully read
+   *  is worse than none). */
+  function readEvidence(state: RepoState, taskId: string): EvidenceRecord {
+    const raw = state.runtimeFiles.get(taskId)?.get("evidence.json");
+    expect(raw).toBeDefined();
+    return EvidenceSchema.parse(JSON.parse(raw!));
+  }
+
+  it("writes evidence.json for a COMMITTED task, with the commit hash and the gate verdict", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [
+        {
+          result: {
+            status: "DONE",
+            model: "sonnet",
+            rateLimited: false,
+            timedOut: false,
+            exitCode: 0,
+            usage: {
+              model: "sonnet",
+              input_tokens: 100,
+              output_tokens: 200,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+          report: "status: DONE",
+        },
+      ],
+      repo,
+    );
+    const { critic } = makeCritic([
+      {
+        result: {
+          verdict: makeCleanVerdict({ confidence: 0.9 }),
+          rateLimited: false,
+          usage: { model: "gpt", tokens: 77 },
+        },
+      },
+    ]);
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      worker,
+      critic,
+      profileRef: { id: "wordpress-woocommerce", version: 2 },
+      runGate: async () =>
+        defaultGateVerdict({
+          changed_files: ["a.ts"],
+          profile_gates: [
+            {
+              id: "phpcs",
+              status: "skipped",
+              exit_code: null,
+              skip_reason: "no changed file matched **/*.php",
+              scope: "changed-lines",
+              files: [],
+              findings: null,
+              findings_total: null,
+              output: "",
+            },
+          ],
+        }),
+    });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("committed");
+    expect(rec.commit).toBe("hash-t1");
+    expect(rec.escalation).toBeNull();
+    expect(rec.rounds).toBe(0);
+    expect(rec.attempts).toBe(1);
+    expect(rec.run_id).toBeNull();
+    expect(rec.title).toBe(task.title);
+    expect(rec.declared.file_set).toEqual(["a.ts"]);
+    expect(rec.profile).toEqual({ id: "wordpress-woocommerce", version: 2 });
+    expect(rec.critic).toEqual({ verdict: "clean", confidence: 0.9 });
+    expect(rec.gate?.decision).toBe("COMMIT");
+    expect(rec.gate?.changed_files).toEqual(["a.ts"]);
+    expect(rec.profile_gates.map((g) => [g.id, g.status])).toEqual([["phpcs", "skipped"]]);
+    expect(rec.tokens).toEqual({ worker_total: 300, critic_total: 77 });
+  });
+
+  it("writes evidence.json for an ESCALATED task, naming the escalation type and the critic verdict", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic } = makeCritic([
+      {
+        result: {
+          verdict: {
+            verdict: "broken",
+            broken_contracts: [{ zone: "z", file: "a.ts", line: 1, evidence: "e" }],
+            notes: "n",
+            confidence: 0.76,
+          },
+          rateLimited: false,
+        },
+      },
+    ]);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("escalated");
+    expect(rec.commit).toBeNull();
+    expect(rec.escalation).toEqual({ type: "disagreement", reason: "critic did not return a clean verdict" });
+    // The recorded reason must be the SAME string the escalation carries, never a retyped copy.
+    expect(rec.escalation?.reason).toBe(escalateCalls[0]!.reason);
+    expect(rec.critic).toEqual({ verdict: "broken", confidence: 0.76 });
+    expect(rec.gate).toBeNull();
+  });
+
+  it("records the QUARANTINED circuit-breaker exit, which returns before the worktree even exists", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo({ [task.id]: 3 });
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, escalate });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("quarantined");
+    expect(rec.escalation?.type).toBe("poison");
+    expect(rec.escalation?.reason).toBe(escalateCalls[0]!.reason);
+    expect(rec.attempts).toBe(4);
+  });
+
+  it("records a gate-threw escalation with the gate's OWN reason string", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      runGate: async () => {
+        throw new AgentCiUnavailableError(
+          "needs-wsl-on-windows",
+          "agent-ci gate requires WSL on Windows -- install WSL or run on Linux/Mac",
+        );
+      },
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("escalated");
+    expect(rec.escalation?.reason).toBe(escalateCalls[0]!.reason);
+    expect(rec.escalation?.reason).toBe("agent-ci gate requires WSL on Windows -- install WSL or run on Linux/Mac");
+  });
+
+  it("a stale record from a previous iteration does NOT survive an iteration whose own write fails", async () => {
+    // The write is fail-soft by contract (H6), so the only way to keep the ledger
+    // from repeating a lie is to remove the previous record BEFORE the work: a
+    // failed write must leave the record ABSENT (reported honestly as missing
+    // evidence, H1), never present and contradicting the task's real outcome.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    // What a previous RETRY iteration left behind.
+    await repo.writeRuntimeFile(task.id, "evidence.json", JSON.stringify({ schema: 1, outcome: "abandoned" }));
+
+    const { scheduler } = makeScheduler([task], repo);
+    const failingRepo: BlackboardRepository = {
+      ...repo,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "evidence.json") throw new Error("disk full");
+        await repo.writeRuntimeFile(id, name, content);
+      },
+    };
+
+    const deps = buildDeps({ repo: failingRepo, scheduler });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+    // Absent -- not the previous iteration's "abandoned" record beside a done task.
+    expect(state.runtimeFiles.get(task.id)?.has("evidence.json")).toBe(false);
+  });
+
+  it("records a RETRY as 'abandoned' -- this iteration decided nothing", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      runGate: async () => defaultGateVerdict({ decision: "RETRY", composer_green: false }),
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("abandoned");
+    expect(rec.escalation).toBeNull();
+    expect(rec.gate?.decision).toBe("RETRY");
+    expect(rec.gate?.composer_green).toBe(false);
+  });
+
+  it("records the worker-report BLOCKED exit, an exit with no gate at all", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [
+        {
+          result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 },
+          report: "status: BLOCKED",
+        },
+      ],
+      repo,
+    );
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, worker, escalate });
+    const conductor = createConductor(deps);
+
+    await conductor.runIteration();
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("escalated");
+    expect(rec.escalation?.type).toBe("blocked");
+    expect(rec.escalation?.reason).toBe(escalateCalls[0]!.reason);
+  });
+
+  it("records a rate-limited iteration as 'abandoned' with no escalation", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker } = makeWorker(
+      [{ result: { status: "RATE_LIMITED", model: "opus", rateLimited: true, timedOut: false, exitCode: 1 } }],
+      repo,
+    );
+
+    const deps = buildDeps({ repo, scheduler, worker });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.rateLimited).toBe(true);
+
+    const rec = readEvidence(state, task.id);
+    expect(rec.outcome).toBe("abandoned");
+    expect(rec.escalation).toBeNull();
+  });
+
+  it("an evidence write failure does NOT fail the iteration (H6)", async () => {
+    const task = makeTask();
+    const { repo: base, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], base);
+    const repo: BlackboardRepository = {
+      ...base,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "evidence.json") throw new Error("disk full");
+        return base.writeRuntimeFile(id, name, content);
+      },
+    };
+
+    const deps = buildDeps({ repo, scheduler });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+    expect(state.locations.get(task.id)).toBe("done");
+    expect(state.runtimeFiles.get(task.id)?.has("evidence.json")).toBe(false);
+  });
+
+  it("writes evidence BEFORE the worktree teardown, so a teardown throw cannot lose the record", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const worktree: WorktreeManager = {
+      async create(taskId: string): Promise<Worktree> {
+        return { path: `/wt/${taskId}`, branch: `autodev/wt-${taskId}`, taskId };
+      },
+      async diff(): Promise<string> {
+        return "";
+      },
+      async teardown(): Promise<void> {
+        throw new Error("teardown blew up");
+      },
+      async mergeAfterGate(): Promise<MergeResult> {
+        return { ok: true, conflict: false };
+      },
+    };
+
+    const deps = buildDeps({ repo, scheduler, worktree });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+    expect(res.committed).toBe(true);
+    expect(readEvidence(state, task.id).outcome).toBe("committed");
   });
 });

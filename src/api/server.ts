@@ -29,6 +29,7 @@ import { z } from "zod";
 import type { BlackboardRepository, QueueState } from "../blackboard/repository.js";
 import { parseEscalation } from "../escalate/escalate.js";
 import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { readBoundedFileText, READ_NO_FOLLOW_FLAGS, MAX_BOUNDED_READ_BYTES } from "../util/bounded-read.js";
 import type { RegisterInput, RegisterResult, RenameResult, ConfigUpdateResult, GitInitResult } from "../registry/admin.js";
 import type { FsDirsResult } from "../fsbrowse/fsbrowse.js";
 import type { DetectedAgent } from "../detect/detect-agents.js";
@@ -72,9 +73,11 @@ const MAX_BODY_BYTES = 1_000_000;
  * memory. Runtime files (worker reports, gate verdicts) are written by agents and can
  * grow large; mirrors the digest-tail bounding philosophy above -- read only a bounded
  * prefix via a positioned read rather than loading an unbounded file whole. A file over
- * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500.
+ * the cap is served truncated with `TRUNCATION_MARKER` appended, never a 500. Shared
+ * with the composition root's report reader (`util/bounded-read.ts`) so one bound
+ * governs every agent-written artifact.
  */
-const MAX_RUNTIME_FILE_READ_BYTES = 1_000_000;
+const MAX_RUNTIME_FILE_READ_BYTES = MAX_BOUNDED_READ_BYTES;
 
 /** Appended to a runtime file's content when it exceeds `MAX_RUNTIME_FILE_READ_BYTES`. */
 const TRUNCATION_MARKER = "\n...[truncated]";
@@ -198,6 +201,16 @@ export interface ProjectView {
   /** Absolute `<repoRoot>/<stateDir>` for this project. digest.md + escalations/ live under here. */
   stateDir: string;
   /**
+   * The STORED Harness Execution Report JSON for one run, as text -- `null` when the
+   * run has not produced one (it is still moving) or the file is unreadable. The
+   * project owns this because the composition root owns the report's filename
+   * (`executionReportPath`): exactly one function may build it, or a probe and a
+   * reader drift apart (docs/gotchas/validated-one-string-used-another.md). The read
+   * is bounded and TOCTOU-hardened (`util/bounded-read.ts`); parsing, and hence the
+   * distinction between "not ready" (404) and "unreadable" (500), stays in the route.
+   */
+  readExecutionReportJson: (runId: string) => Promise<string | null>;
+  /**
    * OPTIONAL launcher for `POST /projects/:id/orchestrate` for THIS project.
    * When unset, that route -> 404 (read-only deployment). The callback receives
    * the operator intent and MUST only enqueue+trigger via the orchestrator (R1) --
@@ -257,6 +270,16 @@ export interface ProjectView {
   ci?: { bus: CiEventBus; readEvents: (taskId: string) => Promise<string> };
   /** OPTIONAL agent-ci capability probe for `GET /projects/:id/ci/capability`. Unset -> 404. */
   onCiCapability?: () => Promise<AgentCiCapability>;
+  /**
+   * OPTIONAL on-demand Product Qualification Report for `POST
+   * /projects/:id/qualification-report`. When unset, that route 404s (mirrors
+   * `onOrchestrate`). A thin closure over the project's repoRoot + blackboard: it
+   * resolves the commit range with `git rev-list` and assembles the report from the
+   * per-task evidence ledger. The server never sees a git handle. It REJECTS when the
+   * range cannot be resolved -- an unresolvable range must surface as an error, never
+   * as an empty report, which would read as "nothing to prove" (spec 2026-07-22).
+   */
+  onQualificationReport?: (range: { from?: string; to?: string }) => Promise<{ json: unknown; markdown: string }>;
   /**
    * OPTIONAL live-orchestrator thread capability for `GET/POST/DELETE
    * /projects/:id/threads*`. When unset, those routes 404 (mirrors `chat`/`ci`).
@@ -431,17 +454,6 @@ function isRunManifest(value: unknown): value is RunManifest {
 }
 
 /**
- * Read-only open flags that do NOT follow a final-component symlink on POSIX
- * (`O_NOFOLLOW` -> `ELOOP`). Windows has no reliable `O_NOFOLLOW`, so it opens
- * normally there -- a STATIC symlink is still caught by the caller's `lstat`/
- * `fstat` `isFile()` guard, and concurrent symlink creation on Windows is
- * privilege-gated. Reading from this one fd (fstat + read on the same handle)
- * also closes the `stat`->`read` TOCTOU where a file is swapped after the check.
- */
-const READ_NO_FOLLOW_FLAGS =
-  process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
-
-/**
  * Read-write open flags that do NOT follow a symlink on POSIX (`O_NOFOLLOW` ->
  * `ELOOP`) and do NOT create (`O_RDWR` only, no `O_CREAT`/`O_TRUNC`): the target
  * MUST already exist — a raced delete/symlink-swap fails the open (ENOENT/ELOOP),
@@ -477,44 +489,6 @@ async function readBoundedManifest(path: string): Promise<RunManifest | null> {
     const { bytesRead } = await fh.read(buf, 0, st.size, 0);
     const parsed: unknown = JSON.parse(buf.subarray(0, bytesRead).toString("utf8"));
     return isRunManifest(parsed) ? parsed : null;
-  } catch {
-    return null;
-  } finally {
-    await fh.close();
-  }
-}
-
-/**
- * Best-effort bounded read of one file's full text content, TOCTOU-hardened exactly
- * like `handleReadRuntimeFile`: a cheap `lstat` pre-check rejects a static symlink /
- * dir up front, then a single no-follow fd is opened and BOTH the size check
- * (`fstat` on that handle) and the read happen on it -- closing the lstat->read
- * TOCTOU. Returns `null` (never throws) for a missing / non-file / oversized file or
- * a raced symlink swap; callers (`handleGetEscalation`) treat `null` uniformly as
- * "this file doesn't exist; try elsewhere / 404".
- */
-async function readBoundedFileText(path: string, maxBytes: number): Promise<string | null> {
-  let lst;
-  try {
-    lst = await lstat(path);
-  } catch {
-    return null;
-  }
-  if (!lst.isFile()) return null;
-
-  let fh: FileHandle;
-  try {
-    fh = await open(path, READ_NO_FOLLOW_FLAGS);
-  } catch {
-    // ELOOP (symlink swapped in after the lstat, POSIX) or a raced delete.
-    return null;
-  }
-  try {
-    const st = await fh.stat();
-    if (!st.isFile() || st.size > maxBytes) return null;
-    const buf = Buffer.alloc(st.size);
-    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
-    return buf.subarray(0, bytesRead).toString("utf8");
   } catch {
     return null;
   } finally {
@@ -2262,6 +2236,108 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
     sendJson(res, 200, buildRunUsageSummary(docs, ids.length));
   }
 
+  /**
+   * GET /projects/:id/runs/:runId/report — the STORED Harness Execution Report for one
+   * run (`<stateDir>/reports/<runId>.json`). The report is written once the run has
+   * finished, so a 404 here means "not ready yet" (the run is still moving), not "no
+   * such run" -- and it is deliberately NOT assembled on the fly: a report about a run
+   * that is still moving would be wrong.
+   *
+   * `runId` goes through `safeRunId` -- the SAME allowlist the other run routes and the
+   * write side use (`docs/gotchas/run-id-dot-validation-mismatch.md`) -- and the file
+   * itself is read through `p.readExecutionReportJson`, which builds the name with the
+   * composition root's `executionReportPath`. The HTTP layer never spells that name
+   * itself: two builders of one filename is the check-one-string/use-another defect
+   * family this repo keeps getting bitten by
+   * (docs/gotchas/validated-one-string-used-another.md).
+   */
+  async function handleGetRunReport(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
+    const id = decodeSegment(rawId);
+    if (id === null || !safeRunId(id)) {
+      sendJson(res, 400, { error: "invalid run id" });
+      return;
+    }
+    const text = await p.readExecutionReportJson(id);
+    if (text === null) {
+      sendJson(res, 404, { error: "report not ready" });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      // A file that EXISTS but does not parse is a defect, never "not ready" --
+      // folding it into the 404 would hide a corrupt artifact behind a normal state.
+      log("WARN", `api: execution report for run '${id}' is unreadable: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: "report unreadable" });
+      return;
+    }
+    sendJson(res, 200, parsed);
+  }
+
+  /**
+   * A `from`/`to` value is passed to `git rev-list` as an ARGV element (never a shell
+   * string), so there is no injection surface -- but a value starting with `-` would be
+   * read by git as a FLAG, so the allowlist rejects it outright along with whitespace,
+   * control characters and separators. Deliberately narrow: this endpoint takes a
+   * commit-ish, not an arbitrary rev expression.
+   */
+  const VALID_GIT_REV = /^[A-Za-z0-9][A-Za-z0-9._/^~-]{0,199}$/;
+
+  /**
+   * POST /projects/:id/qualification-report — assemble a Product Qualification Report
+   * over `{from?, to?}`. POST, not GET, because producing a claim about the product is
+   * a deliberate ACT rather than a read (spec D4). Returns `{json, markdown}`.
+   */
+  async function handleQualificationReport(
+    p: ProjectView,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!p.onQualificationReport) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        // Same 413 + teardown pattern as handleReply -- see `[api/413-teardown]`.
+        res.writeHead(413, { "content-type": "application/json; charset=utf-8", connection: "close" });
+        res.end(JSON.stringify({ error: "request body too large" }));
+        res.on("finish", () => req.destroy());
+        return;
+      }
+      sendJson(res, 400, { error: "invalid JSON body" });
+      return;
+    }
+
+    const parsed = body as { from?: unknown; to?: unknown } | null;
+    const range: { from?: string; to?: string } = {};
+    for (const key of ["from", "to"] as const) {
+      const raw = parsed?.[key];
+      if (raw === undefined || raw === null) continue;
+      if (typeof raw !== "string" || !VALID_GIT_REV.test(raw)) {
+        sendJson(res, 400, { error: `${key} must be a commit-ish` });
+        return;
+      }
+      range[key] = raw;
+    }
+
+    try {
+      const report = await p.onQualificationReport(range);
+      sendJson(res, 200, report);
+    } catch (err) {
+      // An unresolvable range is an ERROR the caller must see. Reporting it as an
+      // empty report would read as "nothing to prove" -- the exact overclaim this
+      // report exists to prevent.
+      log("WARN", `api: qualification report failed: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: `qualification report failed: ${safeErrorText(err)}` });
+    }
+  }
+
   async function handleListRuntimeFiles(p: ProjectView, rawId: string, res: ServerResponse): Promise<void> {
     const id = decodeSegment(rawId);
     if (id === null || !safeIdSegment(id)) {
@@ -2473,6 +2549,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       if (req.method === "PATCH" && runMatch) return void (await handlePatchRun(p, runMatch[1]!, req, res));
       const runUsageMatch = /^\/runs\/([^/]+)\/usage\/?$/.exec(sub);
       if (req.method === "GET" && runUsageMatch) return void (await handleGetRunUsage(p, runUsageMatch[1]!, res));
+      const runReportMatch = /^\/runs\/([^/]+)\/report\/?$/.exec(sub);
+      if (req.method === "GET" && runReportMatch) return void (await handleGetRunReport(p, runReportMatch[1]!, res));
+      if (req.method === "POST" && (sub === "/qualification-report" || sub === "/qualification-report/"))
+        return void (await handleQualificationReport(p, req, res));
       const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runtimeFileMatch)
         return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));

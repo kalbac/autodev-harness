@@ -73,7 +73,9 @@ function parseArgs(argv: string[]): ConductorRunOptions {
 type CliCommand =
   | { mode: "run"; runOpts: ConductorRunOptions }
   | { mode: "orchestrate"; intent: string }
-  | { mode: "serve"; port: number };
+  | { mode: "serve"; port: number }
+  | { mode: "report-run"; runId: string }
+  | { mode: "report-qualify"; from?: string; to?: string };
 
 /** Default bind port for `serve` when `--port` is omitted. */
 const DEFAULT_SERVE_PORT = 4319;
@@ -101,11 +103,69 @@ function parseServeArgs(argv: string[]): { port: number } {
   return { port };
 }
 
+const REPORT_USAGE = "usage: report run <runId> | report qualify [--from <sha>] [--to <sha>]";
+
+/** `--from <sha>` / `--from=<sha>` (and the same for `--to`) from the args after
+ *  `report qualify`. Mirrors the `--port` / `--max-iterations` parsing style: a flag
+ *  with no value is a LOUD usage error, never a silently-dropped bound. */
+function parseQualifyArgs(argv: string[]): { from?: string; to?: string } {
+  let from: string | undefined;
+  let to: string | undefined;
+
+  const take = (flag: "--from" | "--to", i: number): string => {
+    const val = argv[i + 1];
+    if (val === undefined || val.startsWith("-")) {
+      throw new Error(`${flag}: missing value (expected a commit-ish)`);
+    }
+    return val;
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+
+    if (arg === "--from") {
+      from = take("--from", i);
+      i++;
+    } else if (arg.startsWith("--from=")) {
+      from = arg.slice("--from=".length);
+    } else if (arg === "--to") {
+      to = take("--to", i);
+      i++;
+    } else if (arg.startsWith("--to=")) {
+      to = arg.slice("--to=".length);
+    } else {
+      throw new Error(`report qualify: unexpected argument ${JSON.stringify(arg)} (${REPORT_USAGE})`);
+    }
+  }
+
+  // Spread-built so an omitted flag is ABSENT, never an explicit `undefined`
+  // (exactOptionalPropertyTypes).
+  return { ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}) };
+}
+
+/** `report run <runId>` / `report qualify [--from <sha>] [--to <sha>]`. */
+function parseReportArgs(argv: string[]): CliCommand {
+  const verb = argv[0];
+  if (verb === "run") {
+    const runId = (argv[1] ?? "").trim();
+    if (runId === "") {
+      throw new Error(`report run: missing run id (${REPORT_USAGE})`);
+    }
+    return { mode: "report-run", runId };
+  }
+  if (verb === "qualify") {
+    return { mode: "report-qualify", ...parseQualifyArgs(argv.slice(1)) };
+  }
+  throw new Error(`report: unknown subcommand ${JSON.stringify(verb ?? "")} (${REPORT_USAGE})`);
+}
+
 /**
  * Top-level CLI dispatch. `orchestrate <intent...>` runs the LLM orchestrator
  * over the operator's intent (decompose → enqueue → bounded trigger); `serve
  * [--port N]` boots the read-only dashboard API (+ static UI bundle when built)
- * bound to loopback only; anything else is the default deterministic run mode,
+ * bound to loopback only; `report run <runId>` / `report qualify` print the two
+ * reports as Markdown; anything else is the default deterministic run mode,
  * honoring `--once` / `--max-iterations`. The remaining args after `orchestrate`
  * are joined so both `orchestrate "build X"` and `orchestrate build X` work.
  */
@@ -119,6 +179,9 @@ function parseCli(argv: string[]): CliCommand {
   }
   if (argv[0] === "serve") {
     return { mode: "serve", ...parseServeArgs(argv.slice(1)) };
+  }
+  if (argv[0] === "report") {
+    return parseReportArgs(argv.slice(1));
   }
   return { mode: "run", runOpts: parseArgs(argv) };
 }
@@ -247,6 +310,14 @@ async function main(): Promise<void> {
               }),
               ci: root.ci,
               onCiCapability: root.onCiCapability,
+              // On-demand Product Qualification Report (spec 2026-07-22 D4). Thin
+              // closure over the project's repoRoot + blackboard -- the HTTP layer
+              // never sees a git handle. Rejects (never returns an empty report)
+              // when the commit range cannot be resolved.
+              onQualificationReport: (range) => root.qualificationReport(range),
+              // The stored Execution Report, read through the composition root so
+              // its filename keeps exactly ONE builder (`executionReportPath`).
+              readExecutionReportJson: (runId) => root.readExecutionReportJson(runId),
             },
           };
         },
@@ -318,10 +389,44 @@ async function main(): Promise<void> {
     for (const t of result.enqueued) root.log("INFO", `  - ${t.id} -> ${t.path}`);
     return;
   }
+
+  if (command.mode === "report-run") {
+    // Refresh first so a run that finished under an older build (or whose report
+    // write was interrupted) still yields one; `refreshReports` skips any run that
+    // already has a report and never throws.
+    await root.refreshReports();
+    const markdown = await root.readExecutionReport(command.runId);
+    if (markdown === null) {
+      throw new Error(
+        `report run: no execution report for '${command.runId}' -- the run has no manifest, or it is not finished yet`,
+      );
+    }
+    printMarkdown(markdown);
+    return;
+  }
+
+  if (command.mode === "report-qualify") {
+    const { markdown } = await root.qualificationReport({
+      ...(command.from !== undefined ? { from: command.from } : {}),
+      ...(command.to !== undefined ? { to: command.to } : {}),
+    });
+    printMarkdown(markdown);
+    return;
+  }
   // Overnight autonomy (spec 2026-07-17): runOrSupervise drives the escalation supervisor
   // (drain + auto-rework/park sweep) when overnight is enabled, else a plain bounded run.
   // Either way it receives the operator's `runOpts` so no run option is silently dropped.
   await root.runOrSupervise(command.runOpts);
+  // The CLI `run` path's report refresh: ONCE, after the bounded run has resolved --
+  // never inside the conductor's iteration loop, because a report describes a run
+  // that has FINISHED. Never throws by contract (spec 2026-07-22 H6-style: reporting
+  // is bookkeeping about the loop and must not be able to fail it).
+  await root.refreshReports();
+}
+
+/** Print a report body to stdout with exactly one trailing newline. */
+function printMarkdown(markdown: string): void {
+  process.stdout.write(markdown.endsWith("\n") ? markdown : `${markdown}\n`);
 }
 
 main().catch((err) => {
