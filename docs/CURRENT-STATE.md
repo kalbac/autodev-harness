@@ -116,33 +116,44 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-- *(done s51)* **Line-scoped profile gates** -- shipped as `wordpress-woocommerce@2`.
-  Findings are filtered to the lines the diff ADDED, so a compliant change to a legacy
-  file commits green. A baseline file was rejected on principle (a baseline IS an oracle).
-- *(done s51)* **Gate feedback on RETRY** -- shipped and live-proven; the gotcha is
-  marked RESOLVED. Covers all three output-producing steps, not just profile gates.
-- **CRLF vs WPCS on Windows.** WPCS demands `
-`; a worker on Windows writes `
+Both limitations the Profiles v1 live proof exposed are now closed (gate feedback
+on RETRY, and line-scoping). What is left, in rough priority order:
 
-`, so
-  every new PHP file draws an automatic line-ending error. A WP/WC profile needs either a
-  normalization step or an explicit exclusion before it is usable on a Windows box.
-- **Two reports** (Harness Execution vs Product Qualification) — the next link in the
-  chain; `profile_green` is already separate, so this is assembly, not untangling.
-- **Remaining `adr/004` slices** (each own brainstorm→spec→plan): morning report ·
-  mandatory anti-drift · (north-star → folded into profiles).
-- **Metrics / Evaluation Corpus** (decide if/when): autonomy-%, rework-cycles, first-pass
-  gate-success, critic FP/FN. "Oracle-tamper attempts caught" is a real, measurable gate
-  property, and "profile-gate first-pass rate" is now another.
-- *(done s50)* Docs audit — next divisible-by-10 checkpoint: s60.
-- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked` EscalationType ·
-  chat-runtime → TanStack AI + AG-UI (`FUTURE-BACKLOG`).
+- **(priority) The two reports** — a **Harness Execution Report** (orchestration,
+  critic, gates, budgets) and a **Product Qualification Report** (requirements,
+  compatibility, security, release artifact), kept separate. This is the next link
+  in the `architecture-review-external-2026-07.md` chain, and it is assembly rather
+  than untangling: `profile_green` is already its own verdict field precisely so
+  this could be built without unpicking anything.
+- **CRLF vs WPCS on Windows** — WPCS demands `
+`; a worker on Windows writes
+  `
+`, so every NEW PHP file draws an automatic line-ending error. Line-scoping
+  made this survivable (an existing file's line-1 EOL finding is now filtered out
+  as pre-existing) but a new file still trips it. Needs a normalization step or an
+  explicit, documented exclusion.
+- **Remaining `adr/004` slices** (each its own brainstorm→spec→plan): morning
+  report · mandatory anti-drift critic.
+- **Metrics / Evaluation Corpus** — autonomy-%, rework-cycles, first-pass gate
+  success, critic FP/FN. Three measurable gate properties now exist that did not
+  before: oracle-tamper attempts caught, profile-gate first-pass rate, and
+  retries-to-convergence (the line-scoping proof went from "budget exhausted" to
+  one retry).
+- **PHPStan as a profile gate** — blocked on a portable way for a profile-shipped
+  neon to reference an extension living in the project's `vendor`.
+- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked`
+  EscalationType · chat-runtime → TanStack AI + AG-UI · timing-sensitive tests
+  flake under CPU load (`FUTURE-BACKLOG`).
 
 ## Open questions
 
 - *(closed s51)* **Per-FILE vs per-LINE gate scoping** → line-scoping shipped. File-level
   made the gate *meaningful* (7069 → 8); line-level made it *usable* (a legacy file with
   10 pre-existing violations now commits a compliant change).
+- **A profile gate's toolchain still comes from the project.** `vendor/bin/phpcs` is
+  installed by the project's own `composer.json`, so a worker could in principle weaken
+  the analyzer itself. Named residual, not closed: no mechanical rule separates "a project
+  script" from "a project binary".
 - **PHPStan in a profile.** Deliberately not a v1 gate: useful WordPress analysis needs
   `szepeviktor/phpstan-wordpress`, whose `extension.neon` a profile-shipped config cannot
   portably reference (a neon `includes:` resolves relative to the neon file, which lives
