@@ -850,6 +850,10 @@ export async function buildProjectRoot(
     snapshotFingerprints,
     resolveOracleSet: resolveProjectOracleSet,
     zonesTouchedInDiff,
+    // Identity only, from the already-loaded profile: the evidence ledger records
+    // WHICH ruleset judged the task, so a report can never present a qualification
+    // under one profile as if it were another's.
+    profileRef: profile === null ? null : { id: profile.id, version: profile.version },
     clock,
     sleep,
     log,
