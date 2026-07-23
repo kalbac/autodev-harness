@@ -486,6 +486,7 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     resolveOracleSet: partial.resolveOracleSet ?? (async () => EMPTY_ORACLE_SET),
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
     ...(partial.profileRef !== undefined ? { profileRef: partial.profileRef } : {}),
+    ...(partial.normalizeEol !== undefined ? { normalizeEol: partial.normalizeEol } : {}),
     clock: partial.clock ?? { now: () => 0 },
     sleep: partial.sleep ?? (async () => {}),
     log: partial.log ?? (() => {}),
@@ -882,6 +883,63 @@ describe("runIteration -- dirty-file fence (path-set)", () => {
     expect(escalateCalls.length).toBe(0);
     expect(res.committed).toBe(true);
     expect(state.locations.get(task.id)).toBe("done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5b. EOL normalization -- runs AFTER the fences, BEFORE the diff/gate/commit
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- EOL normalization", () => {
+  it("normalizes the worker's touched files (with the touched set) before the gate, then commits", async () => {
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    // baseline snapshot empty; post-worker snapshot shows the worker changed a.ts (in file_set -> fence passes).
+    const { gitChangedPaths, snapshotFingerprints } = makeFingerprintFakes([
+      { paths: [], map: new Map() },
+      { paths: ["a.ts"], map: new Map([["a.ts", "h"]]) },
+    ]);
+    const calls: string[][] = [];
+    const normalizeEol = async (_wt: unknown, relPaths: string[]) => {
+      calls.push(relPaths);
+      return { normalized: [] as string[], skippedBinary: [] as string[] };
+    };
+
+    const deps = buildDeps({ repo, scheduler, gitChangedPaths, snapshotFingerprints, normalizeEol: normalizeEol as NonNullable<ConductorDeps["normalizeEol"]> });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(true);
+    expect(calls.length).toBe(1);
+    expect(calls[0]).toEqual(["a.ts"]);
+  });
+
+  it("does NOT normalize when a fence escalates first (normalize runs after the fences)", async () => {
+    const task = makeTask({ file_set: ["a.ts"] });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate } = makeEscalate();
+    // worker touched a file OUTSIDE file_set -> dirty-file fence escalates before normalize.
+    const { gitChangedPaths, snapshotFingerprints } = makeFingerprintFakes([
+      { paths: [], map: new Map() },
+      { paths: ["other.ts"], map: new Map([["other.ts", "h"]]) },
+    ]);
+    let called = false;
+    const normalizeEol = async () => {
+      called = true;
+      return { normalized: [] as string[], skippedBinary: [] as string[] };
+    };
+
+    const deps = buildDeps({ repo, scheduler, escalate, gitChangedPaths, snapshotFingerprints, normalizeEol: normalizeEol as NonNullable<ConductorDeps["normalizeEol"]> });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(called).toBe(false);
   });
 });
 

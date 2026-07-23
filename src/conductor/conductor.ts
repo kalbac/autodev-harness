@@ -17,6 +17,7 @@ import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
 import type { HarnessConfig } from "../config/schema.js";
+import type { NormalizeResult } from "../normalize/eol.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
 import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
@@ -42,6 +43,12 @@ export interface ConductorDeps {
    *  When omitted the warning is skipped (keeps the fake-driven tests untouched).
    *  Best-effort — a throw here must never abort a run. */
   mainTreeStatus?: () => Promise<PorcelainEntry[]>;
+  /** Best-effort EOL normalization of the worker's changed files toward LF
+   *  (`src/normalize/eol.ts`), called on the happy path AFTER the fences and BEFORE
+   *  the diff, so the critic, the gate, and the commit all see LF. Optional so the
+   *  fake-driven conductor tests are untouched; when omitted the step is skipped.
+   *  Never throws (the module is best-effort). */
+  normalizeEol?: (wt: Worktree, relPaths: string[]) => Promise<NormalizeResult>;
   /** May THROW on a broken operator config; the conductor treats a throw as fail-closed ESCALATE. */
   runGate: (input: GateInput, wt: Worktree) => Promise<GateVerdict>;
   /** Never-throws contract; still called defensively. */
@@ -637,6 +644,23 @@ export function createConductor(deps: ConductorDeps): Conductor {
               evidence: `stray: ${stray.join(", ")}\nforbidden: ${forbidden.join(", ")}`,
             });
             return { claimedTaskId: task.id, committed: false, rateLimited: false };
+          }
+
+          // EOL NORMALIZATION -- the worker's Windows editor may have written CRLF, an
+          // environmental artifact the WPCS line-ending sniff would (correctly, on that
+          // platform) red on a brand-new file. Normalize the worker's changed files
+          // toward LF per the target repo's .gitattributes (default LF) BEFORE the diff,
+          // so the critic, the gate, and the commit all see the same LF content. Scoped
+          // to `touched` -- the files that actually changed; strays already escalated
+          // above. Best-effort: the module never throws, so no try/catch is needed here.
+          if (deps.normalizeEol && touched.length > 0) {
+            const eolResult = await deps.normalizeEol(wt, touched);
+            if (eolResult.normalized.length > 0) {
+              safeLog(
+                "INFO",
+                `conductor: normalized CRLF->LF in ${eolResult.normalized.length} file(s): ${eolResult.normalized.join(", ")}`,
+              );
+            }
           }
 
           // DIFF + CRITIC
