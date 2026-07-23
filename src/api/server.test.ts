@@ -53,6 +53,7 @@ function projectDeps(
     onCiCapability?: () => Promise<AgentCiCapability>;
     threads?: ProjectView["threads"];
     onQualificationReport?: ProjectView["onQualificationReport"];
+    onMorningReport?: ProjectView["onMorningReport"];
     /** Overrides the default temp-dir-backed reader (see `storedReportReader`). */
     readExecutionReportJson?: ProjectView["readExecutionReportJson"];
   },
@@ -80,6 +81,7 @@ function projectDeps(
                 ...(one.onQualificationReport !== undefined
                   ? { onQualificationReport: one.onQualificationReport }
                   : {}),
+                ...(one.onMorningReport !== undefined ? { onMorningReport: one.onMorningReport } : {}),
               },
             }
           : null,
@@ -4125,5 +4127,71 @@ describe("createApiServer / POST /qualification-report", () => {
     });
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain("rev-list");
+  });
+});
+
+describe("createApiServer / GET /morning-report", () => {
+  it("404s when the project exposes no morning-report capability", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the report doc itself (kind: 'morning'), not a {json,markdown} envelope", async () => {
+    const seen: { since?: string }[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onMorningReport: async (opts) => {
+          seen.push(opts);
+          return { kind: "morning", window: { since: opts.since ?? null, generated_at: "t" }, tasks: [] };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report?since=2026-07-23T00:00:00Z")}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { kind: string }).toMatchObject({ kind: "morning" });
+    expect(seen).toEqual([{ since: "2026-07-23T00:00:00Z" }]);
+  });
+
+  it("omits `since` from the call when the query param is absent", async () => {
+    const seen: { since?: string }[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onMorningReport: async (opts) => {
+          seen.push(opts);
+          return { kind: "morning" };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report")}`);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([{}]);
+  });
+
+  it("500s when the report assembly throws", async () => {
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onMorningReport: async () => {
+          throw new Error("decision journal unreadable");
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report")}`);
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain("decision journal unreadable");
   });
 });
