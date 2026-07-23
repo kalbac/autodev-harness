@@ -170,6 +170,17 @@ export async function normalizeWorktreeEol(
       // realpathContains additionally rejects an escape via an intermediate symlinked
       // directory or a `..` segment. An unverifiable target is skipped, never written.
       // (docs/gotchas/static-file-serving-symlink-traversal.md; util/path-contain.ts.)
+      //
+      // ACCEPTED RESIDUAL -- the check->use (lstat/realpathContains -> readFile/
+      // writeFile) window is a TOCTOU: a concurrent actor swapping `abs` (or a parent
+      // dir) for a symlink between the check and the write could still escape. This is
+      // the SAME residual the oracle fence accepts (the realpath->open gap in
+      // util/path-contain.ts consumers), and closing it needs `openat2`/O_NOFOLLOW on
+      // every path component, which Node does not expose portably (this is a
+      // cross-platform product). It is not exploitable in practice here: the conductor
+      // is single-threaded and the worker process has already terminated before
+      // normalization runs, so no harness actor writes the worktree during this window.
+      // Named, not closed -- do not pretend a portable full fix exists.
       const st = await deps.lstat(abs);
       if (!st.isFile() || st.isSymbolicLink()) {
         safeLog("WARN", `normalizeWorktreeEol: skipping ${rel} (not a regular file -- symlink/dir/other)`);
