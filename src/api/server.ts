@@ -281,6 +281,15 @@ export interface ProjectView {
    */
   onQualificationReport?: (range: { from?: string; to?: string }) => Promise<{ json: unknown; markdown: string }>;
   /**
+   * OPTIONAL on-demand Morning Report for `GET /projects/:id/morning-report`. When
+   * unset, that route 404s (mirrors `onQualificationReport`). GET, not POST --
+   * unlike the qualification report this is a plain READ over the overnight
+   * decision journal + the live blackboard, not an act that produces a new claim.
+   * Resolves to the report doc itself (`kind: "morning"`), not a `{json,markdown}`
+   * envelope. An optional `since` (ISO timestamp) narrows the journal window.
+   */
+  onMorningReport?: (opts: { since?: string }) => Promise<unknown>;
+  /**
    * OPTIONAL live-orchestrator thread capability for `GET/POST/DELETE
    * /projects/:id/threads*`. When unset, those routes 404 (mirrors `chat`/`ci`).
    * `store` is the persisted thread log, `bus` the per-thread SSE fan-out,
@@ -2276,6 +2285,42 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   /**
+   * GET /projects/:id/morning-report — assemble the Morning Report on demand
+   * (spec 2026-07-23). Mirrors `handleQualificationReport`'s missing-capability
+   * 404 and failure-mode 500, but is a GET (a read, not an act) and takes its one
+   * optional param (`since`, an ISO timestamp) from the query string, the same way
+   * `handleListRuns` reads `includeArchived`.
+   */
+  async function handleMorningReport(p: ProjectView, url: URL, res: ServerResponse): Promise<void> {
+    if (!p.onMorningReport) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    // Read ALL `since` values, not just the first: a repeated `?since=A&since=B` must
+    // not let a second (possibly invalid) value ride along unvalidated. Exactly one, or
+    // none, is accepted -- symmetric with the CLI's strict boundary parsing.
+    const sinceValues = url.searchParams.getAll("since");
+    if (sinceValues.length > 1) {
+      sendJson(res, 400, { error: "since must be a single ISO timestamp" });
+      return;
+    }
+    const since = sinceValues[0] ?? null;
+    // Reject an unparseable `since` loudly (400) rather than letting it silently apply
+    // no filter -- symmetric with the CLI's boundary validation.
+    if (since !== null && Number.isNaN(Date.parse(since))) {
+      sendJson(res, 400, { error: "since must be an ISO timestamp" });
+      return;
+    }
+    try {
+      const report = await p.onMorningReport({ ...(since !== null ? { since } : {}) });
+      sendJson(res, 200, report);
+    } catch (err) {
+      log("WARN", `api: morning report failed: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: `morning report failed: ${safeErrorText(err)}` });
+    }
+  }
+
+  /**
    * A `from`/`to` value is passed to `git rev-list` as an ARGV element (never a shell
    * string), so there is no injection surface -- but a value starting with `-` would be
    * read by git as a FLAG, so the allowlist rejects it outright along with whitespace,
@@ -2553,6 +2598,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       if (req.method === "GET" && runReportMatch) return void (await handleGetRunReport(p, runReportMatch[1]!, res));
       if (req.method === "POST" && (sub === "/qualification-report" || sub === "/qualification-report/"))
         return void (await handleQualificationReport(p, req, res));
+      if (req.method === "GET" && (sub === "/morning-report" || sub === "/morning-report/"))
+        return void (await handleMorningReport(p, url, res));
       const runtimeFileMatch = /^\/tasks\/([^/]+)\/runtime\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runtimeFileMatch)
         return void (await handleReadRuntimeFile(p, runtimeFileMatch[1]!, runtimeFileMatch[2]!, res));

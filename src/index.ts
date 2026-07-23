@@ -6,7 +6,7 @@
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 import { detectRepoRoot, loadConfig } from "./config/config.js";
@@ -75,7 +75,8 @@ type CliCommand =
   | { mode: "orchestrate"; intent: string }
   | { mode: "serve"; port: number }
   | { mode: "report-run"; runId: string }
-  | { mode: "report-qualify"; from?: string; to?: string };
+  | { mode: "report-qualify"; from?: string; to?: string }
+  | { mode: "report-morning"; since?: string };
 
 /** Default bind port for `serve` when `--port` is omitted. */
 const DEFAULT_SERVE_PORT = 4319;
@@ -103,7 +104,8 @@ function parseServeArgs(argv: string[]): { port: number } {
   return { port };
 }
 
-const REPORT_USAGE = "usage: report run <runId> | report qualify [--from <sha>] [--to <sha>]";
+const REPORT_USAGE =
+  "usage: report run <runId> | report qualify [--from <sha>] [--to <sha>] | report morning [--since <ISO>]";
 
 /** `--from <sha>` / `--from=<sha>` (and the same for `--to`) from the args after
  *  `report qualify`. Mirrors the `--port` / `--max-iterations` parsing style: a flag
@@ -144,8 +146,9 @@ function parseQualifyArgs(argv: string[]): { from?: string; to?: string } {
   return { ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}) };
 }
 
-/** `report run <runId>` / `report qualify [--from <sha>] [--to <sha>]`. */
-function parseReportArgs(argv: string[]): CliCommand {
+/** `report run <runId>` / `report qualify [--from <sha>] [--to <sha>]` /
+ *  `report morning [--since <ISO>]`. Exported for the CLI-parse test. */
+export function parseReportArgs(argv: string[]): CliCommand {
   const verb = argv[0];
   if (verb === "run") {
     const runId = (argv[1] ?? "").trim();
@@ -156,6 +159,31 @@ function parseReportArgs(argv: string[]): CliCommand {
   }
   if (verb === "qualify") {
     return { mode: "report-qualify", ...parseQualifyArgs(argv.slice(1)) };
+  }
+  if (verb === "morning") {
+    const argv2 = argv.slice(1);
+    let since: string | undefined;
+    for (let i = 0; i < argv2.length; i++) {
+      const arg = argv2[i];
+      if (arg === "--since") {
+        const val = argv2[i + 1];
+        if (val === undefined || val.startsWith("-")) {
+          throw new Error("--since: missing value (expected an ISO timestamp)");
+        }
+        since = val;
+        i++;
+      } else if (arg !== undefined && arg.startsWith("--since=")) {
+        since = arg.slice("--since=".length);
+      } else {
+        throw new Error(`report morning: unexpected argument ${JSON.stringify(arg ?? "")} (${REPORT_USAGE})`);
+      }
+    }
+    // Validate at the boundary: an unparseable `--since` must be a LOUD error, never a
+    // silently-ignored filter (the pure builder falls back to no-filter on a NaN sinceMs).
+    if (since !== undefined && Number.isNaN(Date.parse(since))) {
+      throw new Error(`report morning: --since must be an ISO timestamp, got ${JSON.stringify(since)}`);
+    }
+    return { mode: "report-morning", ...(since !== undefined ? { since } : {}) };
   }
   throw new Error(`report: unknown subcommand ${JSON.stringify(verb ?? "")} (${REPORT_USAGE})`);
 }
@@ -318,6 +346,11 @@ async function main(): Promise<void> {
               // The stored Execution Report, read through the composition root so
               // its filename keeps exactly ONE builder (`executionReportPath`).
               readExecutionReportJson: (runId) => root.readExecutionReportJson(runId),
+              // On-demand Morning Report (spec 2026-07-23): reconciles the overnight
+              // decision journal against the live blackboard and narrates it via the
+              // orchestrator model. GET-only (a read, not an action) -- unwrap to the
+              // report doc itself, which is what `GET .../morning-report` returns.
+              onMorningReport: (opts) => root.morningReport(opts).then(({ report }) => report),
             },
           };
         },
@@ -413,6 +446,14 @@ async function main(): Promise<void> {
     printMarkdown(markdown);
     return;
   }
+
+  if (command.mode === "report-morning") {
+    const { markdown } = await root.morningReport({
+      ...(command.since !== undefined ? { since: command.since } : {}),
+    });
+    printMarkdown(markdown);
+    return;
+  }
   // Overnight autonomy (spec 2026-07-17): runOrSupervise drives the escalation supervisor
   // (drain + auto-rework/park sweep) when overnight is enabled, else a plain bounded run.
   // Either way it receives the operator's `runOpts` so no run option is silently dropped.
@@ -429,7 +470,15 @@ function printMarkdown(markdown: string): void {
   process.stdout.write(markdown.endsWith("\n") ? markdown : `${markdown}\n`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-});
+// Only run the daemon when this module is the actual process entry point --
+// NOT when it is `import`ed (e.g. by src/index.test.ts for `parseReportArgs`).
+// Without this guard, importing this file for its pure CLI-parsing helpers
+// would also fire off the real `main()` (real config load, real subprocess
+// spawns) as an unintended side effect of loading the test file.
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}

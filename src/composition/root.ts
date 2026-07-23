@@ -42,6 +42,12 @@ import { refreshExecutionReports, type RunListEntry } from "../report/report-ser
 import { loadEvidence, EVIDENCE_FILE } from "../report/evidence-store.js";
 import { buildQualificationReport, type QualificationReport } from "../report/qualification-report.js";
 import { renderQualificationReport } from "../report/render.js";
+import {
+  buildMorningReport,
+  renderMorningReport,
+  buildMorningReportPrompt,
+  type MorningReport,
+} from "../report/morning-report.js";
 import { resolveOrchestratorExe } from "../config/roles.js";
 import { ThreadStore } from "../thread/thread-store.js";
 import { ThreadEventBus } from "../api/thread-events.js";
@@ -90,7 +96,7 @@ import { normalizeWorktreeEol, makeNormalizeEolDeps } from "../normalize/eol.js"
 import { createLogger, type Logger } from "../util/log.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supervisor.js";
-import { serializeDecision } from "../autonomy/decision-journal.js";
+import { serializeDecision, parseDecisionJournal } from "../autonomy/decision-journal.js";
 import { parseEscalation } from "../escalate/escalate.js";
 import { loadSettings, defaultSettingsFile } from "../settings/settings.js";
 
@@ -406,6 +412,11 @@ export interface ProjectRoot {
     json: QualificationReport;
     markdown: string;
   }>;
+  /** Assemble the Morning Report (spec 2026-07-23): parses the overnight decision
+   *  journal, reconciles each task against the live blackboard, and asks the
+   *  orchestrator model for a one-paragraph narration (best-effort -- a narration
+   *  failure degrades to the structured summary, it never fails the whole call). */
+  morningReport(opts?: { since?: string }): Promise<{ report: MorningReport; markdown: string }>;
 }
 
 /** The threads capability object the HTTP `ProjectView.threads` consumes; also
@@ -1345,6 +1356,53 @@ export async function buildProjectRoot(
     return { json: doc, markdown: renderQualificationReport(doc) };
   };
 
+  /** Assemble the Morning Report on demand (spec 2026-07-23): the decision journal
+   *  is the record of what unattended autonomy DECIDED; `loadTaskStates` is the
+   *  live blackboard's truth about where each task landed (Principle 11). Narration
+   *  reuses the same orchestrator one-shot as the thread narrator -- a failure there
+   *  is logged and swallowed, never allowed to fail the whole report. */
+  const morningReport = async (opts?: { since?: string }): Promise<{ report: MorningReport; markdown: string }> => {
+    let journalText = "";
+    try {
+      journalText = await readFile(decisionJournalPath, "utf8");
+    } catch (err) {
+      // Only a genuine "not there" is an empty report. A real read error (EACCES, EIO,
+      // ...) means the journal data is UNKNOWN, not absent -- fabricating "no overnight
+      // decisions" over an unreadable file would be a fail-open lie (Principle 11
+      // honesty). ENOENT (no overnight ran yet) is the one legitimately-empty case.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      journalText = "";
+    }
+    const { entries, skipped } = parseDecisionJournal(journalText);
+
+    const states = await loadTaskStates();
+
+    const report = buildMorningReport(
+      entries,
+      (id) => states.get(id) ?? null,
+      () => Date.now(),
+      { ...(opts?.since !== undefined ? { since: opts.since } : {}), skipped },
+    );
+
+    try {
+      const text = await narrate(buildMorningReportPrompt(report), () => {});
+      if (text.trim() !== "") {
+        report.narration = text.trim();
+      }
+    } catch (err) {
+      // Best-effort, and the logger itself may throw ([ts/fail-closed]): a narration
+      // miss -- including a throw from the narrate call OR from the logger recording it
+      // -- must never turn into a rejected report. The structured digest always stands.
+      try {
+        log("WARN", `morningReport: narration failed (ignored): ${String(err)}`);
+      } catch {
+        /* a broken logger must not resurrect the failure */
+      }
+    }
+
+    return { report, markdown: renderMorningReport(report) };
+  };
+
   return {
     repoRoot,
     cfg,
@@ -1385,6 +1443,7 @@ export async function buildProjectRoot(
     readExecutionReport,
     readExecutionReportJson,
     qualificationReport,
+    morningReport,
   };
 }
 

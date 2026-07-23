@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { serializeDecision, type DecisionJournalEntry } from "./decision-journal.js";
+import { serializeDecision, parseDecisionJournal, type DecisionJournalEntry } from "./decision-journal.js";
 
 describe("serializeDecision", () => {
   it("emits one JSON object per line, newline-terminated", () => {
@@ -26,5 +26,45 @@ describe("serializeDecision", () => {
       reason: "blocked: needs operator -- parked for morning review", reversible: true,
     });
     expect(JSON.parse(withRun.trimEnd()).runId).toBe("run-9");
+  });
+});
+
+describe("parseDecisionJournal", () => {
+  const good = (over: Partial<Record<string, unknown>> = {}) =>
+    JSON.stringify({
+      ts: "2026-07-23T02:00:00.000Z",
+      taskId: "t1",
+      escalationType: "needs-guard",
+      decision: "park",
+      reworkCount: 0,
+      reason: "needs a guard",
+      reversible: true,
+      ...over,
+    });
+
+  it("parses every valid NDJSON line", () => {
+    const text = `${good({ taskId: "a" })}\n${good({ taskId: "b", decision: "auto-rework" })}\n`;
+    const { entries, skipped } = parseDecisionJournal(text);
+    expect(entries.map((e) => e.taskId)).toEqual(["a", "b"]);
+    expect(skipped).toBe(0);
+  });
+
+  it("skips and counts a corrupt line without throwing", () => {
+    const text = `${good({ taskId: "a" })}\nnot json\n${good({ taskId: "b" })}\n`;
+    const { entries, skipped } = parseDecisionJournal(text);
+    expect(entries.map((e) => e.taskId)).toEqual(["a", "b"]);
+    expect(skipped).toBe(1);
+  });
+
+  it("skips a JSON line missing a required field", () => {
+    const text = `${good()}\n${JSON.stringify({ ts: "x", taskId: "y" })}\n`;
+    const { entries, skipped } = parseDecisionJournal(text);
+    expect(entries.length).toBe(1);
+    expect(skipped).toBe(1);
+  });
+
+  it("treats blank/absent input as empty, zero skipped", () => {
+    expect(parseDecisionJournal("")).toEqual({ entries: [], skipped: 0 });
+    expect(parseDecisionJournal("\n  \n")).toEqual({ entries: [], skipped: 0 });
   });
 });
