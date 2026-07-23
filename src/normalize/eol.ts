@@ -23,8 +23,9 @@
  * Design: `docs/superpowers/specs/2026-07-23-eol-normalization-design.md`.
  */
 import { runNative } from "../util/native.js";
-import { readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { readFile as fsReadFile, writeFile as fsWriteFile, lstat as fsLstat } from "node:fs/promises";
 import { join } from "node:path";
+import { realpathContains } from "../util/path-contain.js";
 
 /** git's own attribute vocabulary. `text: "unset"` is the `-text` "binary"
  *  declaration; `"unspecified"` means no attribute matched the path. */
@@ -43,6 +44,11 @@ export interface NormalizeResult {
 
 export interface NormalizeEolDeps {
   checkAttr: (worktreePath: string, relPaths: string[]) => Promise<Map<string, GitAttr>>;
+  /** lstat (does NOT follow a leaf symlink) for the regular-file guard. */
+  lstat: (absPath: string) => Promise<{ isFile: () => boolean; isSymbolicLink: () => boolean }>;
+  /** True iff absPath, fully realpath-resolved, is contained under worktreePath.
+   *  Closes an intermediate-symlinked-directory / `..` escape that lstat alone cannot see. */
+  realpathContains: (worktreePath: string, absPath: string) => Promise<boolean>;
   readFile: (absPath: string) => Promise<Buffer>;
   writeFile: (absPath: string, data: Buffer) => Promise<void>;
   log: (level: string, message: string) => void;
@@ -111,6 +117,16 @@ function crlfToLf(buf: Buffer): { out: Buffer; changed: boolean } {
   return { out: Buffer.from(result), changed };
 }
 
+/** Guarded string conversion -- a broken/hostile `err.toString` must not itself throw
+ *  out of the best-effort path. */
+function describeError(err: unknown): string {
+  try {
+    return String(err);
+  } catch {
+    return "<unstringifiable error>";
+  }
+}
+
 /**
  * Normalize the worker's changed files toward LF. Best-effort and non-throwing: a
  * `checkAttr` failure normalizes nothing (WARN + empty result); a per-file read/write
@@ -124,11 +140,23 @@ export async function normalizeWorktreeEol(
   const result: NormalizeResult = { normalized: [], skippedBinary: [] };
   if (relPaths.length === 0) return result;
 
+  // The module's contract is "never throws" and the conductor calls it with no
+  // try/catch on that promise -- so even the error path (logging) must be guarded:
+  // `deps.log` is the composition root's file logger, which can throw a failed write.
+  // (docs/gotchas/never-throws-catch-block-logging.md.)
+  const safeLog = (level: string, message: string): void => {
+    try {
+      deps.log(level, message);
+    } catch {
+      /* a best-effort module must not fail because its logger failed */
+    }
+  };
+
   let attrs: Map<string, GitAttr>;
   try {
     attrs = await deps.checkAttr(worktreePath, relPaths);
   } catch (err) {
-    deps.log("WARN", `normalizeWorktreeEol: git check-attr failed, normalizing nothing this task: ${String(err)}`);
+    safeLog("WARN", `normalizeWorktreeEol: git check-attr failed, normalizing nothing this task: ${describeError(err)}`);
     return result;
   }
 
@@ -136,6 +164,22 @@ export async function normalizeWorktreeEol(
     const attr = attrs.get(rel) ?? { text: "unspecified", eol: "unspecified" };
     const abs = join(worktreePath, rel);
     try {
+      // CONTAINMENT + REGULAR-FILE GUARD (fail-closed, Principle 10). A worker can put
+      // a SYMLINK in its file_set; normalizing through it would read/write OUTSIDE the
+      // worktree. lstat (no leaf-link follow) rejects a symlink/dir/fifo leaf;
+      // realpathContains additionally rejects an escape via an intermediate symlinked
+      // directory or a `..` segment. An unverifiable target is skipped, never written.
+      // (docs/gotchas/static-file-serving-symlink-traversal.md; util/path-contain.ts.)
+      const st = await deps.lstat(abs);
+      if (!st.isFile() || st.isSymbolicLink()) {
+        safeLog("WARN", `normalizeWorktreeEol: skipping ${rel} (not a regular file -- symlink/dir/other)`);
+        continue;
+      }
+      if (!(await deps.realpathContains(worktreePath, abs))) {
+        safeLog("WARN", `normalizeWorktreeEol: skipping ${rel} (resolves outside the worktree)`);
+        continue;
+      }
+
       const buf = await deps.readFile(abs);
       const looksBinary = buf.includes(NUL_BYTE);
       const action = decide(attr, looksBinary);
@@ -149,7 +193,7 @@ export async function normalizeWorktreeEol(
       await deps.writeFile(abs, out);
       result.normalized.push(rel);
     } catch (err) {
-      deps.log("WARN", `normalizeWorktreeEol: skipping ${rel} (read/write failed): ${String(err)}`);
+      safeLog("WARN", `normalizeWorktreeEol: skipping ${rel} (read/write failed): ${describeError(err)}`);
     }
   }
 
@@ -176,6 +220,8 @@ export async function gitCheckAttr(worktreePath: string, relPaths: string[]): Pr
 export function makeNormalizeEolDeps(log: (level: string, message: string) => void): NormalizeEolDeps {
   return {
     checkAttr: gitCheckAttr,
+    lstat: (abs) => fsLstat(abs),
+    realpathContains: (wt, abs) => realpathContains(wt, abs),
     readFile: (abs) => fsReadFile(abs),
     writeFile: (abs, data) => fsWriteFile(abs, data),
     log,

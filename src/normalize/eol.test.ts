@@ -39,6 +39,8 @@ describe("normalizeWorktreeEol", () => {
         for (const p of relPaths) m.set(p, attrs[p] ?? { text: "unspecified", eol: "unspecified" });
         return m;
       },
+      lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+      realpathContains: async () => true,
       readFile: async (abs) => {
         const rel = abs.split(/[\\/]/).pop()!;
         return Buffer.from(files[rel] ?? "", "latin1");
@@ -135,6 +137,8 @@ describe("normalizeWorktreeEol", () => {
       checkAttr: async () => {
         throw new Error("git boom");
       },
+      lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+      realpathContains: async () => true,
       readFile: async () => Buffer.from(""),
       writeFile: async () => {
         throw new Error("should not write");
@@ -155,6 +159,8 @@ describe("normalizeWorktreeEol", () => {
         for (const p of relPaths) m.set(p, { text: "unspecified", eol: "unspecified" });
         return m;
       },
+      lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+      realpathContains: async () => true,
       readFile: async (abs) => {
         if (abs.endsWith("bad.php")) throw new Error("EIO");
         return Buffer.from("z\r\n", "latin1");
@@ -168,5 +174,76 @@ describe("normalizeWorktreeEol", () => {
     expect(r.normalized).toEqual(["ok.php"]);
     expect(writes["ok.php"]).toBe("z\n");
     expect(logs.some((l) => l.startsWith("WARN"))).toBe(true);
+  });
+
+  it("skips a symlink leaf without reading or writing it", async () => {
+    const { deps, writes, logs } = makeDeps(
+      { "link.php": { text: "unspecified", eol: "unspecified" } },
+      { "link.php": "x\r\n" },
+    );
+    // override lstat to report a symlink leaf
+    deps.lstat = async () => ({ isFile: () => false, isSymbolicLink: () => true });
+    const r = await normalizeWorktreeEol(deps, "/wt", ["link.php"]);
+    expect(r.normalized).toEqual([]);
+    expect(writes["link.php"]).toBeUndefined();
+    expect(logs.some((l) => l.startsWith("WARN") && /regular file/.test(l))).toBe(true);
+  });
+
+  it("skips a file that resolves outside the worktree", async () => {
+    const { deps, writes, logs } = makeDeps(
+      { "escape.php": { text: "unspecified", eol: "unspecified" } },
+      { "escape.php": "x\r\n" },
+    );
+    deps.realpathContains = async () => false;
+    const r = await normalizeWorktreeEol(deps, "/wt", ["escape.php"]);
+    expect(r.normalized).toEqual([]);
+    expect(writes["escape.php"]).toBeUndefined();
+    expect(logs.some((l) => l.startsWith("WARN") && /outside the worktree/.test(l))).toBe(true);
+  });
+
+  it("never throws even when the logger throws AND checkAttr throws", async () => {
+    const deps: NormalizeEolDeps = {
+      checkAttr: async () => {
+        throw new Error("git boom");
+      },
+      lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+      realpathContains: async () => true,
+      readFile: async () => Buffer.from(""),
+      writeFile: async () => {},
+      log: () => {
+        throw new Error("logger boom");
+      },
+    };
+    // Must RESOLVE (not reject) to an empty result -- the whole point of the guard.
+    await expect(normalizeWorktreeEol(deps, "/wt", ["a.php"])).resolves.toEqual({
+      normalized: [],
+      skippedBinary: [],
+    });
+  });
+
+  it("never throws when the logger throws during a per-file read failure, and continues", async () => {
+    const writes: Record<string, string> = {};
+    const deps: NormalizeEolDeps = {
+      checkAttr: async (_wt, relPaths) => {
+        const m = new Map<string, GitAttr>();
+        for (const p of relPaths) m.set(p, { text: "unspecified", eol: "unspecified" });
+        return m;
+      },
+      lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+      realpathContains: async () => true,
+      readFile: async (abs) => {
+        if (abs.endsWith("bad.php")) throw new Error("EIO");
+        return Buffer.from("z\r\n", "latin1");
+      },
+      writeFile: async (abs, data) => {
+        writes[abs.split(/[\\/]/).pop()!] = data.toString("latin1");
+      },
+      log: () => {
+        throw new Error("logger boom");
+      },
+    };
+    const r = await normalizeWorktreeEol(deps, "/wt", ["bad.php", "ok.php"]);
+    expect(r.normalized).toEqual(["ok.php"]);
+    expect(writes["ok.php"]).toBe("z\n");
   });
 });
