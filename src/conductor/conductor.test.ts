@@ -13,6 +13,8 @@ import type { Git, MergeResult } from "../util/git.js";
 import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
+import type { DecisionJournalEntry } from "../autonomy/decision-journal.js";
+import { NORTH_STAR_UNFILLED_SENTINEL } from "../anti-drift/north-star.js";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
 import type { OracleSet } from "../gate/oracle-paths.js";
@@ -487,6 +489,8 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
     ...(partial.profileRef !== undefined ? { profileRef: partial.profileRef } : {}),
     ...(partial.normalizeEol !== undefined ? { normalizeEol: partial.normalizeEol } : {}),
+    ...(partial.readNorthStar !== undefined ? { readNorthStar: partial.readNorthStar } : {}),
+    ...(partial.writeDecision !== undefined ? { writeDecision: partial.writeDecision } : {}),
     clock: partial.clock ?? { now: () => 0 },
     sleep: partial.sleep ?? (async () => {}),
     log: partial.log ?? (() => {}),
@@ -1471,6 +1475,155 @@ describe("run -- anti-drift routing", () => {
 
     const driftCalls = escalateCalls.filter((c) => c.type === "drift");
     expect(driftCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mandatory anti-drift + north-star (spec 2026-07-23; adr/004 last slice).
+// The unattended POLICY: a silent north-star refuses the whole run before any
+// task is claimed, and a DRIFT halts the drain. The DEFAULT policy (omitted) must
+// reproduce today's attended behavior byte-for-byte (regression pin).
+// ---------------------------------------------------------------------------
+describe("run -- anti-drift policy (north-star preflight + halt-on-drift)", () => {
+  it("requireNorthStar + a SILENT north-star: refuses before claiming any task, escalates blocked, journals a park", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const journal: DecisionJournalEntry[] = [];
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      // A GOAL.md that still carries the unfilled sentinel reads as silent.
+      readNorthStar: async () => `# GOAL\n## What it is\n${NORTH_STAR_UNFILLED_SENTINEL}\n`,
+      writeDecision: async (e) => {
+        journal.push(e);
+      },
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true, antiDrift: { onDrift: "halt-drain", requireNorthStar: true } });
+
+    // No task ever claimed -> no worker/critic tokens burned.
+    expect(claimCalls.count).toBe(0);
+    expect(state.locations.get(task.id)).toBeUndefined();
+    // A distinct operator escalation, keyed on the synthetic (north-star) task.
+    const nsEsc = escalateCalls.filter((c) => c.taskId === "(north-star)");
+    expect(nsEsc.length).toBe(1);
+    expect(nsEsc[0]!.type).toBe("blocked");
+    // A park entry the morning report will surface.
+    expect(journal.length).toBe(1);
+    expect(journal[0]).toMatchObject({ taskId: "(north-star)", escalationType: "blocked", decision: "park" });
+  });
+
+  it("requireNorthStar + an ABSENT north-star (readNorthStar -> null): refuses (fail-closed)", async () => {
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({ repo, scheduler, escalate, readNorthStar: async () => null });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true, antiDrift: { onDrift: "halt-drain", requireNorthStar: true } });
+
+    expect(claimCalls.count).toBe(0);
+    expect(escalateCalls.filter((c) => c.taskId === "(north-star)").length).toBe(1);
+  });
+
+  it("requireNorthStar + a FILLED north-star: does NOT refuse -- the drain proceeds normally", async () => {
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      readNorthStar: async () =>
+        "# GOAL\n## What it is\nA real WooCommerce shipping plugin.\n## What it must never do\nNever alter the checkout total.\n",
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true, antiDrift: { onDrift: "halt-drain", requireNorthStar: true } });
+
+    // The task was processed to done -- a filled north-star must not brick the run.
+    expect(claimCalls.count).toBeGreaterThanOrEqual(1);
+    expect(state.locations.get(task.id)).toBe("done");
+    expect(escalateCalls.filter((c) => c.taskId === "(north-star)").length).toBe(0);
+  });
+
+  it("onDrift 'halt-drain': a DRIFT escalates AND stops the drain -- a second queued task stays unclaimed", async () => {
+    const tasks = [
+      makeTask({ id: "h1", file_set: ["a.ts"], path: "queue/pending/h1.md" }),
+      makeTask({ id: "h2", file_set: ["b.ts"], path: "queue/pending/h2.md" }),
+    ];
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([...tasks], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const journal: DecisionJournalEntry[] = [];
+    const cfg: HarnessConfig = HarnessConfigSchema.parse({ antiDrift: { everyCommits: 1 } });
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      cfg,
+      runAntiDrift: async () => "DRIFT: wandered off scope",
+      writeDecision: async (e) => {
+        journal.push(e);
+      },
+    });
+    const conductor = createConductor(deps);
+
+    // requireNorthStar:false isolates halt-on-drift from the preflight.
+    await conductor.run({ drain: true, antiDrift: { onDrift: "halt-drain", requireNorthStar: false } });
+
+    // Exactly one task claimed + committed, then the drift halted the drain before h2.
+    expect(claimCalls.count).toBe(1);
+    expect(state.locations.get("h1")).toBe("done");
+    expect(state.locations.get("h2")).toBeUndefined();
+    expect(escalateCalls.filter((c) => c.type === "drift").length).toBe(1);
+    // The halt is journaled as a park keyed on (anti-drift).
+    const parks = journal.filter((e) => e.taskId === "(anti-drift)" && e.decision === "park");
+    expect(parks.length).toBe(1);
+  });
+
+  it("DEFAULT policy (antiDrift omitted): a DRIFT escalates but the drain CONTINUES (regression pin)", async () => {
+    const tasks = [
+      makeTask({ id: "c1", file_set: ["a.ts"], path: "queue/pending/c1.md" }),
+      makeTask({ id: "c2", file_set: ["b.ts"], path: "queue/pending/c2.md" }),
+    ];
+    const { repo, state } = makeRepo();
+    const { scheduler, claimCalls } = makeScheduler([...tasks], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const journal: DecisionJournalEntry[] = [];
+    const cfg: HarnessConfig = HarnessConfigSchema.parse({ antiDrift: { everyCommits: 1 } });
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      cfg,
+      runAntiDrift: async () => "DRIFT: wandered off scope",
+      writeDecision: async (e) => {
+        journal.push(e);
+      },
+    });
+    const conductor = createConductor(deps);
+
+    await conductor.run({ drain: true }); // no policy -> attended default
+
+    // Both tasks processed despite a DRIFT after each: the drain did NOT halt.
+    expect(state.locations.get("c1")).toBe("done");
+    expect(state.locations.get("c2")).toBe("done");
+    expect(claimCalls.count).toBe(3); // c1, c2, then a null claim -> idle stop
+    expect(escalateCalls.filter((c) => c.type === "drift").length).toBe(2);
+    // Attended default never journals an anti-drift decision.
+    expect(journal.length).toBe(0);
   });
 });
 

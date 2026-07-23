@@ -130,12 +130,18 @@ export const HarnessConfigSchema = z.object({
 
   antiDrift: z
     .object({
-      intentSource: z.string().nullable().default(null),
-      headers: z.array(z.string()).default([]), // empty = feed whole file
+      // Default to the scaffolded north-star (`.autodev/GOAL.md`) so anti-drift is
+      // ARMED out of the box (spec 2026-07-23): with `null` it degraded to a
+      // placeholder intent and could never fire DRIFT. A project missing the file
+      // still degrades gracefully (getIntent -> "(intent source not found)" ->
+      // UNCERTAIN, never a false ON-TRACK). Resolved against the project repoRoot at
+      // the composition root.
+      intentSource: z.string().nullable().default(".autodev/GOAL.md"),
+      headers: z.array(z.string()).default([]), // empty = feed whole file (GOAL.md is short by design)
       everyCommits: z.number().int().positive().default(5),
       model: z.string().default("sonnet"),
     })
-    .default({ intentSource: null, headers: [], everyCommits: 5, model: "sonnet" }),
+    .default({ intentSource: ".autodev/GOAL.md", headers: [], everyCommits: 5, model: "sonnet" }),
 
   contract: z
     .object({

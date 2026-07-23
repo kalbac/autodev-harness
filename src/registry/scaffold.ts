@@ -18,6 +18,7 @@ import { z } from "zod";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
 import { loadConfigWithRaw, isContractFileConfigured } from "../config/config.js";
+import { NORTH_STAR_UNFILLED_SENTINEL } from "../anti-drift/north-star.js";
 import { realpathContains } from "../util/path-contain.js";
 import { runNative } from "../util/native.js";
 
@@ -93,13 +94,35 @@ const CONFIG_HEADER =
   "# Autodev Harness — per-project config. Scaffolded by the New Project flow; edit freely.\n" +
   "# Contract stubs live under .autodev/ (see contract.invariantsFile / guardsFile below).\n";
 
-const GOAL_STUB = [
-  "# GOAL",
+/**
+ * The scaffolded north-star (`adr/004` tenet 4): the project's immutable intent
+ * anchor, fed WHOLE to the anti-drift critic (`cfg.antiDrift.intentSource` defaults
+ * here). Four fill-in sections -- what it is / why / must do / must never do -- each
+ * carrying `NORTH_STAR_UNFILLED_SENTINEL` until the operator replaces it. While ANY
+ * sentinel remains the stub reads as SILENT (`isNorthStarSilent`), which fail-closes
+ * unattended autonomy: the overnight run refuses to build a project whose intent is
+ * still the boilerplate. Exported so `north-star.test.ts` can pin the sentinel
+ * contract (the two files must agree on the exact string or the fail-open reopens).
+ */
+export const GOAL_STUB = [
+  "# GOAL -- North-Star",
   "",
-  "> Scaffolded by the autodev harness New Project flow. Replace with 3-5 lines",
-  "> describing what this project is and why — the operator's immutable anchor.",
+  "> The operator's immutable intent anchor, scaffolded by the New Project flow and",
+  "> fed whole to the anti-drift critic. Replace each section's placeholder with real",
+  "> content. Until every placeholder is gone, unattended (overnight) autonomy REFUSES",
+  "> to run this project -- an autonomous night must not build against an unwritten intent.",
   "",
-  "(describe the project goal here)",
+  "## What it is",
+  `${NORTH_STAR_UNFILLED_SENTINEL} (describe what this project is)`,
+  "",
+  "## Why",
+  `${NORTH_STAR_UNFILLED_SENTINEL} (describe why it exists / who it is for)`,
+  "",
+  "## What it must do",
+  `${NORTH_STAR_UNFILLED_SENTINEL} (the core things it must always do)`,
+  "",
+  "## What it must never do",
+  `${NORTH_STAR_UNFILLED_SENTINEL} (the boundaries it must never cross)`,
   "",
 ].join("\n");
 
