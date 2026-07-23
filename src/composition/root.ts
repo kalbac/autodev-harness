@@ -1365,8 +1365,13 @@ export async function buildProjectRoot(
     let journalText = "";
     try {
       journalText = await readFile(decisionJournalPath, "utf8");
-    } catch {
-      journalText = ""; // ENOENT (no overnight ran yet) is not an error
+    } catch (err) {
+      // Only a genuine "not there" is an empty report. A real read error (EACCES, EIO,
+      // ...) means the journal data is UNKNOWN, not absent -- fabricating "no overnight
+      // decisions" over an unreadable file would be a fail-open lie (Principle 11
+      // honesty). ENOENT (no overnight ran yet) is the one legitimately-empty case.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      journalText = "";
     }
     const { entries, skipped } = parseDecisionJournal(journalText);
 
@@ -1385,7 +1390,14 @@ export async function buildProjectRoot(
         report.narration = text.trim();
       }
     } catch (err) {
-      log("WARN", `morningReport: narration failed (ignored): ${String(err)}`);
+      // Best-effort, and the logger itself may throw ([ts/fail-closed]): a narration
+      // miss -- including a throw from the narrate call OR from the logger recording it
+      // -- must never turn into a rejected report. The structured digest always stands.
+      try {
+        log("WARN", `morningReport: narration failed (ignored): ${String(err)}`);
+      } catch {
+        /* a broken logger must not resurrect the failure */
+      }
     }
 
     return { report, markdown: renderMorningReport(report) };

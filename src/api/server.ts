@@ -2297,6 +2297,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       return;
     }
     const since = url.searchParams.get("since");
+    // Reject an unparseable `since` loudly (400) rather than letting it silently apply
+    // no filter -- symmetric with the CLI's boundary validation.
+    if (since !== null && Number.isNaN(Date.parse(since))) {
+      sendJson(res, 400, { error: "since must be an ISO timestamp" });
+      return;
+    }
     try {
       const report = await p.onMorningReport({ ...(since !== null ? { since } : {}) });
       sendJson(res, 200, report);

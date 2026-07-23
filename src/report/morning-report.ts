@@ -55,7 +55,21 @@ export function buildMorningReport(
   const since = opts?.since ?? null;
   const skipped = opts?.skipped ?? 0;
 
-  const windowed = since === null ? entries : entries.filter((e) => e.ts >= since);
+  // Compare timestamps as MOMENTS (epoch ms), never as strings. Journal ts are UTC-Z
+  // today, but `since` is operator input and may carry a timezone offset, where a
+  // lexicographic compare is simply wrong (`...T00:00:00+03:00` sorts after `...T00:00:00Z`
+  // yet is three hours EARLIER). An entry whose ts does not parse is KEPT (fail toward
+  // showing it), never silently dropped. A NaN `sinceMs` (unparseable operator input --
+  // the CLI/endpoint reject that at the boundary, so this is only a defensive fallback)
+  // applies no filter rather than hiding everything.
+  const sinceMs = since === null ? null : Date.parse(since);
+  const windowed =
+    sinceMs === null || Number.isNaN(sinceMs)
+      ? entries
+      : entries.filter((e) => {
+          const t = Date.parse(e.ts);
+          return Number.isNaN(t) ? true : t >= sinceMs;
+        });
 
   const byTask = new Map<string, DecisionJournalEntry[]>();
   for (const e of windowed) {
@@ -66,7 +80,13 @@ export function buildMorningReport(
 
   const tasks: MorningTaskLine[] = [];
   for (const [taskId, group] of byTask) {
-    const ordered = [...group].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+    const ordered = [...group].sort((a, b) => {
+      // Order by MOMENT, not string (see the `since` note above). An unparseable ts
+      // sorts as epoch 0 (stable); real journal ts always parse.
+      const ta = Date.parse(a.ts);
+      const tb = Date.parse(b.ts);
+      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb);
+    });
     const last = ordered[ordered.length - 1]!;
     const autoReworks = ordered.filter((e) => e.decision === "auto-rework").length;
     const current = liveState(taskId);

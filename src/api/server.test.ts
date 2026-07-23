@@ -4159,6 +4159,25 @@ describe("createApiServer / GET /morning-report", () => {
     expect(seen).toEqual([{ since: "2026-07-23T00:00:00Z" }]);
   });
 
+  it("400s on a `since` query param that is not a valid ISO timestamp (never calls the capability)", async () => {
+    const seen: { since?: string }[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onMorningReport: async (opts) => {
+          seen.push(opts);
+          return { kind: "morning" };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report?since=not-a-date")}`);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]); // rejected at the boundary, capability never invoked
+  });
+
   it("omits `since` from the call when the query param is absent", async () => {
     const seen: { since?: string }[] = [];
     handle = createApiServer(

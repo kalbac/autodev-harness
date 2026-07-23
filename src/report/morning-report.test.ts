@@ -69,6 +69,30 @@ describe("buildMorningReport", () => {
     const r = buildMorningReport([], () => null, now, { skipped: 3 });
     expect(r.completeness.skipped).toBe(3);
   });
+
+  it("orders 'last decision' by MOMENT, not lexicographically (timezone offsets)", () => {
+    // 2026-07-23T00:30:00+03:00 == 2026-07-22T21:30:00Z, which is EARLIER than the Z
+    // entry at 2026-07-23T00:00:00Z. A string compare would wrongly call the +03:00
+    // entry "later" (it sorts after "...Z" lexicographically).
+    const entries = [
+      entry({ taskId: "a", ts: "2026-07-23T00:30:00+03:00", decision: "auto-rework", reworkCount: 1, reason: "earlier" }),
+      entry({ taskId: "a", ts: "2026-07-23T00:00:00Z", decision: "park", reason: "later" }),
+    ];
+    const r = buildMorningReport(entries, () => "escalated", now);
+    const a = r.tasks[0]!;
+    expect(a.parked).toBe(true); // the Z entry is the last by moment
+    expect(a.last_reason).toBe("later");
+  });
+
+  it("filters `since` by MOMENT for a timezone-offset boundary", () => {
+    // since 2026-07-23T00:00:00+03:00 == 2026-07-22T21:00:00Z
+    const entries = [
+      entry({ taskId: "keep", ts: "2026-07-22T22:00:00Z" }), // 22:00Z >= 21:00Z -> kept
+      entry({ taskId: "drop", ts: "2026-07-22T20:00:00Z" }), // 20:00Z <  21:00Z -> dropped
+    ];
+    const r = buildMorningReport(entries, () => null, now, { since: "2026-07-23T00:00:00+03:00" });
+    expect(r.tasks.map((t) => t.task_id)).toEqual(["keep"]);
+  });
 });
 
 describe("renderMorningReport / buildMorningReportPrompt", () => {

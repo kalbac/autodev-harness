@@ -178,6 +178,11 @@ export function parseReportArgs(argv: string[]): CliCommand {
         throw new Error(`report morning: unexpected argument ${JSON.stringify(arg ?? "")} (${REPORT_USAGE})`);
       }
     }
+    // Validate at the boundary: an unparseable `--since` must be a LOUD error, never a
+    // silently-ignored filter (the pure builder falls back to no-filter on a NaN sinceMs).
+    if (since !== undefined && Number.isNaN(Date.parse(since))) {
+      throw new Error(`report morning: --since must be an ISO timestamp, got ${JSON.stringify(since)}`);
+    }
     return { mode: "report-morning", ...(since !== undefined ? { since } : {}) };
   }
   throw new Error(`report: unknown subcommand ${JSON.stringify(verb ?? "")} (${REPORT_USAGE})`);
