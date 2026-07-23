@@ -86,6 +86,7 @@ import type { ProfileGateRecord } from "../gate/profile-gate-record.js";
 import { globMatch } from "../util/glob.js";
 import { harvestWorkerReport as harvestWorkerReportCore } from "../worker/report.js";
 import { createConductor, type Conductor, type ConductorDeps, type ConductorRunOptions } from "../conductor/conductor.js";
+import { normalizeWorktreeEol, makeNormalizeEolDeps } from "../normalize/eol.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { HarnessConfig } from "../config/schema.js";
 import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supervisor.js";
@@ -857,6 +858,11 @@ export async function buildProjectRoot(
   const clock = { now: () => Date.now() };
   const sleep = (seconds: number): Promise<void> => new Promise((r) => setTimeout(r, seconds * 1000));
 
+  // EOL normalization dep: bind the real git check-attr + node fs, with the same
+  // `log` the rest of the conductor uses. Best-effort; see src/normalize/eol.ts.
+  const eolDeps = makeNormalizeEolDeps(log);
+  const normalizeEol = (wt: Worktree, relPaths: string[]) => normalizeWorktreeEol(eolDeps, wt.path, relPaths);
+
   const deps: ConductorDeps = {
     cfg,
     repo,
@@ -872,6 +878,7 @@ export async function buildProjectRoot(
     escalate,
     runAntiDrift,
     harvestWorkerReport,
+    normalizeEol,
     gitChangedPaths,
     snapshotFingerprints,
     resolveOracleSet: resolveProjectOracleSet,
