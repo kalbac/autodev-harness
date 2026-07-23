@@ -4178,6 +4178,27 @@ describe("createApiServer / GET /morning-report", () => {
     expect(seen).toEqual([]); // rejected at the boundary, capability never invoked
   });
 
+  it("400s on a repeated `since` query param (never calls the capability)", async () => {
+    const seen: { since?: string }[] = [];
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onMorningReport: async (opts) => {
+          seen.push(opts);
+          return { kind: "morning" };
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}${p1("/morning-report?since=2026-07-24T00:00:00Z&since=not-a-date")}`,
+    );
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]); // a repeated value is rejected before the capability runs
+  });
+
   it("omits `since` from the call when the query param is absent", async () => {
     const seen: { since?: string }[] = [];
     handle = createApiServer(

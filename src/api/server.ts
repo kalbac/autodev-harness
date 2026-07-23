@@ -2296,7 +2296,15 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
       sendJson(res, 404, { error: "not found" });
       return;
     }
-    const since = url.searchParams.get("since");
+    // Read ALL `since` values, not just the first: a repeated `?since=A&since=B` must
+    // not let a second (possibly invalid) value ride along unvalidated. Exactly one, or
+    // none, is accepted -- symmetric with the CLI's strict boundary parsing.
+    const sinceValues = url.searchParams.getAll("since");
+    if (sinceValues.length > 1) {
+      sendJson(res, 400, { error: "since must be a single ISO timestamp" });
+      return;
+    }
+    const since = sinceValues[0] ?? null;
     // Reject an unparseable `since` loudly (400) rather than letting it silently apply
     // no filter -- symmetric with the CLI's boundary validation.
     if (since !== null && Number.isNaN(Date.parse(since))) {
