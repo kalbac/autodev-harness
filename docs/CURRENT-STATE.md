@@ -5,38 +5,43 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s53)
+## Where we are (leaving s54)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
-shipped; the attended **live-orchestrator presence** is shipped; the
-**unattended-autonomy half** of `adr/004` is nearly complete (the last slice is spec'd,
-implementation next session). `main` is synced -- **s53 merged two tail items**:
-the **CRLF-vs-WPCS papercut** (PR #114, `2a0b326`, CI 4/4) and the **Morning Report**
-(PR #115, `d8badd4`, CI 4/4).
+shipped; the attended **live-orchestrator presence** is shipped; and with s54 the
+**unattended-autonomy half** of `adr/004` is **COMPLETE** — its last slice (mandatory
+anti-drift + north-star) is implemented, codex-gated, and live-proven. That work sits on
+`feat/mandatory-anti-drift` (feature `114d66d` + s53 docs), **awaiting the merge word**;
+`main` is still at `d8badd4`.
 
-**s53 closed the operator's "tails" (items 2 and 3 of his plan), then spec'd the last
-`adr/004` slice.** Two full brainstorm→spec→plan→subagent→codex-critic→live-proof→merge
-cycles, plus a handed-off spec:
+**s54 implemented the last `adr/004` slice — Mandatory Anti-Drift + North-Star.** One full
+brainstorm(spec was s53)→subagent-TDD→codex-critic→live-proof cycle:
 
-- **CRLF-vs-WPCS papercut (merged).** `src/normalize/eol.ts` rewrites `\r\n`→`\n` in a
-  worker's changed files (after the fences, before the gate) per the target repo's
-  `.gitattributes` (default LF), so a new PHP file written CRLF on Windows no longer trips
-  the line-ending sniff. Live-proven: a worker's CRLF new file → normalization → phpcs
-  green → DONE+commit `fb21553` with an LF committed file.
-- **Morning Report (merged).** The third report type: narrate the overnight
-  `decision-journal.ndjson` (auto-rework/park), reconciled against the live blackboard
-  (Principle 11). `report morning [--since]` + `GET /projects/:id/morning-report`. Pure
-  builder + tolerant parser + fail-closed narration (reuses the s40 narrator).
-- **Mandatory Anti-Drift + North-Star (spec'd, impl next session).** Arm the existing
-  (toothless) anti-drift critic: `intentSource` defaults to `.autodev/GOAL.md`; a DRIFT in
-  **unattended** halts the overnight drain; an empty/stub north-star fails closed in
-  unattended. Attended unchanged. Spec:
-  `docs/superpowers/specs/2026-07-23-mandatory-anti-drift-north-star-design.md`.
+- **North-star = `.autodev/GOAL.md`, and it is now MANDATORY unattended.** `intentSource`
+  defaults to `.autodev/GOAL.md` (was `null` → toothless); `GOAL_STUB` restructured to the
+  4-part north-star with an "unfilled" sentinel. New pure `src/anti-drift/north-star.ts`
+  (`isNorthStarSilent`).
+- **Two unattended-only enforcements, both ABOVE the gate (Principles 8/10/12):** a
+  **north-star preflight** refuses to claim any task when the north-star is silent
+  (absent/empty/still the sentinel) → synthetic `blocked` escalation + a decision-journal
+  park, no worker tokens burned; and **halt-on-drift** — a DRIFT verdict escalates AND
+  stops the drain. Attended is byte-for-byte unchanged (default policy = escalate-task,
+  no north-star required, regression-pinned).
+- **Policy plumbing:** `ConductorRunOptions.antiDrift` (default = today's attended
+  behavior); the overnight supervisor is the only caller setting the unattended policy,
+  via the new `supervisorDrainOpts` (spread last → not operator-overridable). A shared
+  `makeIntentReader` resolves the intent path against the trusted repoRoot for BOTH the
+  anti-drift model check and the preflight (no validated-one-string split) and is
+  fail-soft. Both new outcomes surface in the **morning report** as parks.
 
-**The recurring lesson, twice this session:** the `[ts/fail-closed]` gotcha (a best-effort
-module must guard its OWN catch-block logger, or a throwing logger re-throws the fail-safe
-path) fired in BOTH new modules and codex caught it both times — it and "validated one
-string, used another" are this repo's two most-repeated defect shapes.
+**codex gpt-5.6-luna gate:** R1 **NOT SAFE** — found `intentSource: ""` → `resolve(repoRoot,"")`
+returns repoRoot → `readFile(<dir>)` EISDIR-crashes attended anti-drift → fixed +
+regression-pinned (`makeIntentReader`, GOTCHAS 81 `[path/empty-resolves-to-root]`) → R2
+**SAFE**. 1673 tests green (15 new). **Live-proven three ways** on the polygon: silent GOAL
++ a claimable task → refused, task stays pending, morning report narrates it; filled GOAL
++ empty queue → clean idle drain (no false refuse); and the heavy one — a real committing
+postal-file task against a courier-only north-star → **DRIFT halted the drain, the second
+queued task stayed pending**, all in the morning report.
 
 ## Phase status
 
@@ -45,7 +50,7 @@ string, used another" are this repo's two most-repeated defect shapes.
 | Core loop (P1, headless) | ✅ shipped, parity-proven against the PS oracle |
 | Web dashboard (P2) | ✅ product-track items 1–4 done; general polish ongoing |
 | Attended live-orchestrator presence (`adr/004`) | ✅ shipped (s40, PR #72) |
-| Unattended autonomy (`adr/004`) | 🚧 partly built — see below |
+| Unattended autonomy (`adr/004`) | ✅ COMPLETE (s54 shipped the last slice) — see below |
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
 | Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
@@ -54,13 +59,13 @@ string, used another" are this repo's two most-repeated defect shapes.
 | Two reports (Execution + Qualification) | ✅ shipped s52 (PR #113, `4fc1e87`, CI 4/4) -- per-task evidence ledger + both reports; 4 critic rounds -> SAFE |
 | CRLF-vs-WPCS-on-Windows papercut | ✅ shipped s53 (PR #114, `2a0b326`, CI 4/4) -- `src/normalize/eol.ts`, `.gitattributes`-governed CRLF→LF; live-proven `fb21553` |
 | Morning Report (3rd report type) | ✅ shipped s53 (PR #115, `d8badd4`, CI 4/4) -- narrate the decision journal, Principle-11 reconciled |
-| Mandatory anti-drift + north-star | 📝 spec'd s53 (impl next session, `feat/mandatory-anti-drift`) |
+| Mandatory anti-drift + north-star | ✅ shipped s54 (`feat/mandatory-anti-drift`, `114d66d`) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. **Awaiting merge word.** |
 
-**Unattended-autonomy half (`adr/004`) — built vs remaining:**
+**Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
 - ✅ Slice 2 — overnight presence toggle (global presence × per-project opt-in, s46)
 - ✅ Morning report — narrate `.autodev/decision-journal.ndjson`, reconciled vs the live queue (s53, PR #115)
-- 📝 Mandatory anti-drift + per-project **north-star** (`.autodev/GOAL.md`) — **spec'd s53, impl next session** (these two folded into one slice: the north-star IS the anti-drift intent anchor)
+- ✅ Mandatory anti-drift + per-project **north-star** (`.autodev/GOAL.md`) — **shipped s54** (`114d66d`, awaiting merge); the north-star IS the anti-drift intent anchor, and a silent one fails closed unattended while a DRIFT halts the overnight drain
 
 ## What s51 delivered (Profiles / WP-WC Qualification Layer v1)
 
@@ -130,16 +135,13 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-s53 closed the two "tail" items (CRLF papercut, morning report) and spec'd the last
-`adr/004` slice. In priority order:
+s54 shipped the last `adr/004` unattended slice (mandatory anti-drift + north-star),
+codex-gated and live-proven; it awaits the merge word on `feat/mandatory-anti-drift`.
+In priority order:
 
-- **(NEXT SESSION, spec ready) Mandatory Anti-Drift + North-Star** — implement
-  `docs/superpowers/specs/2026-07-23-mandatory-anti-drift-north-star-design.md` on
-  `feat/mandatory-anti-drift`. Arm the toothless anti-drift critic (`intentSource`
-  default → `.autodev/GOAL.md`, 4-part north-star stub + "unfilled" sentinel), add the
-  conductor anti-drift POLICY (attended = escalate-task, unattended = halt-drain +
-  require-north-star), wired by the overnight supervisor. All above the gate. This is the
-  LAST unattended-autonomy slice of `adr/004`.
+- **(first) Merge `feat/mandatory-anti-drift`** — push + PR (carries s54 feature `114d66d`
+  + s53 docs + this s54 session-save), green CI 4/4, then merge on the operator's word.
+  With it, the unattended-autonomy half of `adr/004` is closed.
 - **(then, priority) Evaluation Corpus** — the last link of the
   `architecture-review-external-2026-07.md` chain. Real tasks
   (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports now
@@ -180,6 +182,7 @@ s53 closed the two "tail" items (CRLF papercut, morning report) and spec'd the l
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s54** — Mandatory Anti-Drift + North-Star implemented (`114d66d`, last `adr/004` slice); codex R1→fix→R2 SAFE; live-proven 3 ways (refuse / proceed / drift-halt). Awaiting merge.
 - **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
 - **s52** — the two reports (Execution + Qualification) + evidence ledger (PR #113, `4fc1e87`).
 - **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3 (`ee0be38`).
