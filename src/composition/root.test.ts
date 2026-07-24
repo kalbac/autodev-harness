@@ -1,18 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, basename } from "node:path";
+import { join, basename, resolve } from "node:path";
 import { runNative } from "../util/native.js";
 import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import {
   buildProjectRoot,
   supervisorRunOpts,
+  supervisorDrainOpts,
+  makeIntentReader,
   shouldSupervise,
   buildOrchestratorCapabilities,
   loadInvariantsFrom,
   loadGuardPairsFrom,
 } from "./root.js";
 import { HarnessConfigSchema } from "../config/schema.js";
+import type { ConductorRunOptions } from "../conductor/conductor.js";
 
 let repoRoot: string;
 
@@ -111,6 +114,78 @@ describe("supervisorRunOpts", () => {
 
   it("handles an absent options object", () => {
     expect(supervisorRunOpts(undefined)).toEqual({});
+  });
+});
+
+describe("supervisorDrainOpts (unattended anti-drift policy)", () => {
+  it("adds drain:true + the unattended anti-drift policy (halt-drain + requireNorthStar)", () => {
+    expect(supervisorDrainOpts(undefined)).toEqual({
+      drain: true,
+      antiDrift: { onDrift: "halt-drain", requireNorthStar: true },
+    });
+  });
+
+  it("preserves inherited operator bounds alongside the policy", () => {
+    expect(supervisorDrainOpts({ maxIterations: 5 })).toEqual({
+      maxIterations: 5,
+      drain: true,
+      antiDrift: { onDrift: "halt-drain", requireNorthStar: true },
+    });
+  });
+
+  it("forces the unattended policy even if an inherited opt tried to weaken it", () => {
+    // The unattended policy is spread LAST, so an operator-supplied attended policy
+    // can never downgrade enforcement on the overnight path.
+    const weakened = { antiDrift: { onDrift: "escalate-task", requireNorthStar: false } } as ConductorRunOptions;
+    expect(supervisorDrainOpts(weakened).antiDrift).toEqual({ onDrift: "halt-drain", requireNorthStar: true });
+  });
+});
+
+describe("makeIntentReader (fail-soft north-star / intent reader)", () => {
+  const root = "/repo";
+
+  it("returns null for an empty intentSource WITHOUT resolving it to the repo root (codex P2 regression)", async () => {
+    // resolve('/repo', '') === '/repo' (a directory); a naive existsSync+readFile would
+    // EISDIR-throw and crash the anti-drift run. The empty path must short-circuit to null.
+    let readCalled = false;
+    const read = makeIntentReader(root, {
+      existsSync: () => true,
+      readFile: async () => {
+        readCalled = true;
+        throw new Error("EISDIR: illegal operation on a directory");
+      },
+    });
+    await expect(read("")).resolves.toBeNull();
+    await expect(read("   ")).resolves.toBeNull();
+    expect(readCalled).toBe(false); // never even attempted the read
+  });
+
+  it("returns null (never throws) when the underlying readFile throws, e.g. the path is a directory", async () => {
+    const read = makeIntentReader(root, {
+      existsSync: () => true,
+      readFile: async () => {
+        throw new Error("EISDIR");
+      },
+    });
+    await expect(read(".autodev/GOAL.md")).resolves.toBeNull();
+  });
+
+  it("returns null for an absent file", async () => {
+    const read = makeIntentReader(root, { existsSync: () => false, readFile: async () => "unused" });
+    await expect(read(".autodev/GOAL.md")).resolves.toBeNull();
+  });
+
+  it("returns the file content, resolved against repoRoot, for a real relative path", async () => {
+    const seen: string[] = [];
+    const read = makeIntentReader(root, {
+      existsSync: () => true,
+      readFile: async (p) => {
+        seen.push(p);
+        return "# GOAL\nreal content\n";
+      },
+    });
+    await expect(read(".autodev/GOAL.md")).resolves.toBe("# GOAL\nreal content\n");
+    expect(seen[0]).toBe(resolve(root, ".autodev/GOAL.md"));
   });
 });
 

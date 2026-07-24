@@ -5,32 +5,43 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s52)
+## Where we are (leaving s54)
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
-shipped; the attended **live-orchestrator presence** (chat as the project's main
-screen) is shipped; the **unattended-autonomy half** of `adr/004` is partly built (2 of
-~5 slices). `main` is synced -- **s52 merged the two reports as PR #113 (`4fc1e87`, CI
-4/4)**, and PR #111 (`bc842fb`) moved the backlog to GitHub Issues.
+shipped; the attended **live-orchestrator presence** is shipped; and with s54 the
+**unattended-autonomy half** of `adr/004` is **COMPLETE** — its last slice (mandatory
+anti-drift + north-star) is implemented, codex-gated, and live-proven. That work sits on
+`feat/mandatory-anti-drift` (feature `114d66d` + s53 docs), **awaiting the merge word**;
+`main` is still at `d8badd4`.
 
-**s52 built the two reports — the third link of the external-review chain.** Separate a
-successful *Run* from a successful *Product*: a **Harness Execution Report** (per-run
-diagnostics — rounds, critic, gates, budgets) and a **Product Qualification Report**
-(per-commit-range, on-demand — requirements, compatibility, security, release artifact),
-never mixed. Both are pure functions over a new per-task **evidence ledger**
-(`runtime/<taskId>/evidence.json`) written once per iteration in the conductor's
-`finally`; `profile_green` was already a separate verdict field, so this is assembly.
+**s54 implemented the last `adr/004` slice — Mandatory Anti-Drift + North-Star.** One full
+brainstorm(spec was s53)→subagent-TDD→codex-critic→live-proof cycle:
 
-**The honesty is the product.** The Qualification Report's "not proven" section is
-load-bearing: skipped gates, unchecked `acceptance[]`, pre-existing debt (`total -
-in_diff`), missing/unreadable evidence, the analyzer-toolchain residual. Four codex
-`gpt-5.6-luna` rounds (5 -> 3 -> 4 -> SAFE), one finding declined with verified
-rationale (the Qualification Report is about commits not tasks, so it does not reconcile
-against the live queue — R4 agreed). The deepest fix made **Principle 11** mechanical:
-the Execution Report reconciles each record against the live blackboard, which wins on a
-contradiction. **Live-proven, two numbers appearing AND differing:** `phpcs` green on the
-added lines (`in_diff: 0`) while the file carries 10 pre-existing findings (`total: 10`),
-committed `0590e9f`.
+- **North-star = `.autodev/GOAL.md`, and it is now MANDATORY unattended.** `intentSource`
+  defaults to `.autodev/GOAL.md` (was `null` → toothless); `GOAL_STUB` restructured to the
+  4-part north-star with an "unfilled" sentinel. New pure `src/anti-drift/north-star.ts`
+  (`isNorthStarSilent`).
+- **Two unattended-only enforcements, both ABOVE the gate (Principles 8/10/12):** a
+  **north-star preflight** refuses to claim any task when the north-star is silent
+  (absent/empty/still the sentinel) → synthetic `blocked` escalation + a decision-journal
+  park, no worker tokens burned; and **halt-on-drift** — a DRIFT verdict escalates AND
+  stops the drain. Attended is byte-for-byte unchanged (default policy = escalate-task,
+  no north-star required, regression-pinned).
+- **Policy plumbing:** `ConductorRunOptions.antiDrift` (default = today's attended
+  behavior); the overnight supervisor is the only caller setting the unattended policy,
+  via the new `supervisorDrainOpts` (spread last → not operator-overridable). A shared
+  `makeIntentReader` resolves the intent path against the trusted repoRoot for BOTH the
+  anti-drift model check and the preflight (no validated-one-string split) and is
+  fail-soft. Both new outcomes surface in the **morning report** as parks.
+
+**codex gpt-5.6-luna gate:** R1 **NOT SAFE** — found `intentSource: ""` → `resolve(repoRoot,"")`
+returns repoRoot → `readFile(<dir>)` EISDIR-crashes attended anti-drift → fixed +
+regression-pinned (`makeIntentReader`, GOTCHAS 81 `[path/empty-resolves-to-root]`) → R2
+**SAFE**. 1673 tests green (15 new). **Live-proven three ways** on the polygon: silent GOAL
++ a claimable task → refused, task stays pending, morning report narrates it; filled GOAL
++ empty queue → clean idle drain (no false refuse); and the heavy one — a real committing
+postal-file task against a courier-only north-star → **DRIFT halted the drain, the second
+queued task stayed pending**, all in the morning report.
 
 ## Phase status
 
@@ -39,20 +50,22 @@ committed `0590e9f`.
 | Core loop (P1, headless) | ✅ shipped, parity-proven against the PS oracle |
 | Web dashboard (P2) | ✅ product-track items 1–4 done; general polish ongoing |
 | Attended live-orchestrator presence (`adr/004`) | ✅ shipped (s40, PR #72) |
-| Unattended autonomy (`adr/004`) | 🚧 partly built — see below |
+| Unattended autonomy (`adr/004`) | ✅ COMPLETE (s54 shipped the last slice) — see below |
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
 | Authority Model (`adr/006`) | ✅ Phase 1 (s49) + Phase 2 (s50) + Phase 3 (s51, via Profiles) shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) -- 2 facets (`gates` + `protectedPaths`), WP/WC first |
 | Gate feedback on RETRY | ✅ shipped (s51) -- the worker now sees WHY the gate rejected it |
 | Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
 | Two reports (Execution + Qualification) | ✅ shipped s52 (PR #113, `4fc1e87`, CI 4/4) -- per-task evidence ledger + both reports; 4 critic rounds -> SAFE |
+| CRLF-vs-WPCS-on-Windows papercut | ✅ shipped s53 (PR #114, `2a0b326`, CI 4/4) -- `src/normalize/eol.ts`, `.gitattributes`-governed CRLF→LF; live-proven `fb21553` |
+| Morning Report (3rd report type) | ✅ shipped s53 (PR #115, `d8badd4`, CI 4/4) -- narrate the decision journal, Principle-11 reconciled |
+| Mandatory anti-drift + north-star | ✅ shipped s54 (`feat/mandatory-anti-drift`, `114d66d`) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. **Awaiting merge word.** |
 
-**Unattended-autonomy half (`adr/004`) — built vs remaining:**
+**Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
 - ✅ Slice 2 — overnight presence toggle (global presence × per-project opt-in, s46)
-- ⬜ Morning report (batch-narrate `.autodev/decision-journal.ndjson`, reuses the s40 narrator)
-- ⬜ Per-project **north-star** concept doc (onboarding-created anti-drift anchor)
-- ⬜ Mandatory anti-drift critic (intent vs cumulative diff)
+- ✅ Morning report — narrate `.autodev/decision-journal.ndjson`, reconciled vs the live queue (s53, PR #115)
+- ✅ Mandatory anti-drift + per-project **north-star** (`.autodev/GOAL.md`) — **shipped s54** (`114d66d`, awaiting merge); the north-star IS the anti-drift intent anchor, and a silent one fails closed unattended while a DRIFT halts the overnight drain
 
 ## What s51 delivered (Profiles / WP-WC Qualification Layer v1)
 
@@ -122,32 +135,23 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-The two reports shipped (PR #113). The `architecture-review-external-2026-07.md`
-chain is now down to its last link. In rough priority order:
+s54 shipped the last `adr/004` unattended slice (mandatory anti-drift + north-star),
+codex-gated and live-proven; it awaits the merge word on `feat/mandatory-anti-drift`.
+In priority order:
 
-- **(priority) Evaluation Corpus** — the chain's last link. Real tasks
-  (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports
-  now produce the raw material: first-pass gate rate, retries-to-convergence,
-  escalations-by-type, and (from the Qualification Report) proven-on-change vs debt.
-- **CRLF vs WPCS on Windows** — WPCS demands `
-`; a worker on Windows writes
-  `
-`, so every NEW PHP file draws an automatic line-ending error. Line-scoping
-  made this survivable (an existing file's line-1 EOL finding is now filtered out
-  as pre-existing) but a new file still trips it. Needs a normalization step or an
-  explicit, documented exclusion.
-- **Remaining `adr/004` slices** (each its own brainstorm→spec→plan): morning
-  report · mandatory anti-drift critic.
-- **Metrics / Evaluation Corpus** — autonomy-%, rework-cycles, first-pass gate
-  success, critic FP/FN. Three measurable gate properties now exist that did not
-  before: oracle-tamper attempts caught, profile-gate first-pass rate, and
-  retries-to-convergence (the line-scoping proof went from "budget exhausted" to
-  one retry).
-- **PHPStan as a profile gate** — blocked on a portable way for a profile-shipped
-  neon to reference an extension living in the project's `vendor`.
-- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked`
-  EscalationType · chat-runtime → TanStack AI + AG-UI · timing-sensitive tests
-  flake under CPU load (`FUTURE-BACKLOG`).
+- **(first) Merge `feat/mandatory-anti-drift`** — push + PR (carries s54 feature `114d66d`
+  + s53 docs + this s54 session-save), green CI 4/4, then merge on the operator's word.
+  With it, the unattended-autonomy half of `adr/004` is closed.
+- **(then, priority) Evaluation Corpus** — the last link of the
+  `architecture-review-external-2026-07.md` chain. Real tasks
+  (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports now
+  produce the raw material: first-pass gate rate, retries-to-convergence,
+  escalations-by-type, proven-on-change vs debt.
+- **PHPStan as a profile gate** — blocked on a portable way for a profile-shipped neon to
+  reference an extension living in the project's `vendor`.
+- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked` EscalationType ·
+  chat-runtime → TanStack AI + AG-UI · timing-sensitive tests flake under CPU load
+  (`FUTURE-BACKLOG`).
 
 ## Open questions
 
@@ -178,6 +182,9 @@ chain is now down to its last link. In rough priority order:
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s54** — Mandatory Anti-Drift + North-Star implemented (`114d66d`, last `adr/004` slice); codex R1→fix→R2 SAFE; live-proven 3 ways (refuse / proceed / drift-halt). Awaiting merge.
+- **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
+- **s52** — the two reports (Execution + Qualification) + evidence ledger (PR #113, `4fc1e87`).
 - **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3 (`ee0be38`).
 - **s50** — `adr/006` Phase 2: protected-oracle-path fence (`44aebd8`) + docs audit (`0a89a45`).
 - **s49** — `adr/006` Phase 1: trusted-root oracle definitions (`cc0db6f`).

@@ -16,6 +16,8 @@ import type { Git, PorcelainEntry } from "../util/git.js";
 import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput, EscalationType } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
+import { isNorthStarSilent } from "../anti-drift/north-star.js";
+import type { DecisionJournalEntry } from "../autonomy/decision-journal.js";
 import type { HarnessConfig } from "../config/schema.js";
 import type { NormalizeResult } from "../normalize/eol.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
@@ -54,6 +56,21 @@ export interface ConductorDeps {
   /** Never-throws contract; still called defensively. */
   escalate: (input: EscalationInput) => Promise<unknown>;
   runAntiDrift: (input: AntiDriftInput) => Promise<string>;
+  /** Read the project's north-star (`cfg.antiDrift.intentSource`, e.g. `.autodev/GOAL.md`)
+   *  as raw text, or `null` when it is not configured, absent, or unreadable (every
+   *  "could not read" collapses to `null` -- the fail-closed case for the unattended
+   *  preflight, spec 2026-07-23). Wired at the composition root against the TRUSTED
+   *  repoRoot, resolved identically to the anti-drift `readFile`. Consulted ONLY when a
+   *  run's anti-drift policy sets `requireNorthStar`; omitted -> treated as silent (the
+   *  conservative default). */
+  readNorthStar?: () => Promise<string | null>;
+  /** Append one decision-journal entry (`.autodev/decision-journal.ndjson`) so the
+   *  morning report surfaces an unattended park/refusal (spec 2026-07-23). Best-effort:
+   *  a throw is swallowed (the run's decision already stands; only the audit line is
+   *  lost). Called ONLY on the two unattended anti-drift outcomes (north-star refusal,
+   *  drift-halt); omitted -> journaling is skipped, which is how the fake-driven tests
+   *  stay untouched. */
+  writeDecision?: (entry: DecisionJournalEntry) => Promise<void>;
   /** Move <worktree>/worker-report.md -> runtimeDir/worker-report.md, called right after the
    * worker's rate-limit/timeout early-returns and BEFORE the status read + dirty-file fence
    * (parity spec §6): the report belongs in runtimeDir, never in the worktree. */
@@ -83,9 +100,38 @@ export interface ConductorDeps {
   log: (level: string, message: string) => void;
 }
 
+/**
+ * How a run responds to the anti-drift check + whether it demands a written north-star
+ * (spec 2026-07-23, `adr/004` last slice). Both enforcements live ABOVE the gate
+ * (Principle 8): they park / stop / refuse; they never skip the critic or force a
+ * commit. Attended runs use the default (below); the overnight supervisor passes
+ * `{ onDrift: "halt-drain", requireNorthStar: true }`.
+ */
+export interface AntiDriftPolicy {
+  /** What a `DRIFT:` verdict does. `"escalate-task"` (attended, default) escalates the
+   *  current task and the drain continues -- the operator is present to steer.
+   *  `"halt-drain"` (unattended) escalates AND stops the drain: cumulative drift means
+   *  the whole direction is off, so continuing burns the night on more wrong code. */
+  onDrift: "escalate-task" | "halt-drain";
+  /** When true (unattended), a run refuses to process any task if the north-star is
+   *  silent (absent/empty/still the scaffold stub) -- a fail-closed preflight that
+   *  burns no worker tokens. Default false (attended): the operator may run a project
+   *  whose GOAL is still a stub, because they are there to steer. */
+  requireNorthStar: boolean;
+}
+
+/** The default anti-drift policy = today's attended behavior, byte-for-byte: a DRIFT
+ *  escalates one task and the run continues, and no north-star is required. A run that
+ *  omits `opts.antiDrift` gets exactly this, so every existing caller/test is untouched. */
+const DEFAULT_ANTI_DRIFT_POLICY: AntiDriftPolicy = { onDrift: "escalate-task", requireNorthStar: false };
+
 export interface ConductorRunOptions {
   once?: boolean;
   maxIterations?: number;
+  /** Anti-drift response + north-star requirement for THIS run (spec 2026-07-23).
+   *  Omitted = `DEFAULT_ANTI_DRIFT_POLICY` (attended behavior). Only the overnight
+   *  supervisor sets a non-default policy. */
+  antiDrift?: AntiDriftPolicy;
   /** Drain mode: keep processing while the queue yields claimable work and stop
    * the moment an iteration finds nothing to claim OR hits a rate limit. Used by
    * the orchestrator's trigger so ONE launch clears the whole pending pool (its
@@ -148,6 +194,32 @@ function buildDriftEscalation(line: string, nowMs: number): EscalationInput {
     optionB: "Halt the loop and course-correct before more tasks land.",
     costOfWrong: "Undetected drift compounds silently across many small commits.",
     evidence: line,
+  };
+}
+
+/**
+ * The synthetic escalation raised when an UNATTENDED run refuses to start because the
+ * north-star is silent (spec 2026-07-23; `adr/004` "if the north star is silent ->
+ * escalate to class 3"). Not tied to a real task -- the run never claimed one -- so it
+ * uses the `(north-star)` sentinel taskId, mirroring `(anti-drift)` above. Type
+ * `blocked`: it needs an operator (write the GOAL), it is not worker-fixable.
+ */
+function buildNorthStarEscalation(nowMs: number): EscalationInput {
+  return {
+    id: `north-star-${nowMs}`,
+    taskId: "(north-star)",
+    title: "No north-star -- cannot run unattended",
+    reason: "north-star is silent",
+    type: "blocked",
+    what:
+      "Unattended autonomy refused to run: the project north-star (.autodev/GOAL.md) is absent, " +
+      "empty, or still the unfilled scaffold stub. An autonomous night must not build against an " +
+      "intent that is not written down.",
+    decision: "Fill in .autodev/GOAL.md (what it is / why / must do / must never do), then re-run.",
+    optionA: "Write the north-star and let the overnight run proceed next window.",
+    optionB: "Leave overnight autonomy off for this project until the goal is written.",
+    costOfWrong: "Building autonomously against an unwritten intent risks a whole night of confidently-wrong work.",
+    evidence: "isNorthStarSilent(.autodev/GOAL.md) = true (absent / empty / unfilled sentinel).",
   };
 }
 
@@ -235,6 +307,19 @@ export function createConductor(deps: ConductorDeps): Conductor {
       log(level, message);
     } catch {
       // a broken logger must never break the loop's control flow
+    }
+  };
+
+  // safeJournal: best-effort decision-journal append for the two unattended anti-drift
+  // outcomes (north-star refusal, drift-halt). The run's decision already stands by the
+  // time we journal, so a write failure -- OR a throwing injected logger inside the
+  // catch ([ts/fail-closed]) -- must never propagate. Omitted dep -> a silent no-op,
+  // which keeps the fake-driven tests untouched.
+  const safeJournal = async (entry: DecisionJournalEntry): Promise<void> => {
+    try {
+      await deps.writeDecision?.(entry);
+    } catch (err) {
+      safeLog("WARN", `conductor: decision-journal write failed (ignored): ${String(err)}`);
     }
   };
 
@@ -970,6 +1055,43 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
     await warnIfMainTreeDirty();
 
+    const policy = opts?.antiDrift ?? DEFAULT_ANTI_DRIFT_POLICY;
+
+    // North-star preflight (spec 2026-07-23; Principle 10). Only the unattended path
+    // sets `requireNorthStar`; when it does, a silent north-star fail-CLOSES the whole
+    // run BEFORE any task is claimed -- no worktree, no worker tokens. Every "could not
+    // read" collapses to `null` in `readNorthStar`, and `null` reads as silent, so an
+    // unreadable GOAL.md refuses rather than proceeds (cannot confirm intent -> do not
+    // build). The refusal is an operator escalation + a decision-journal park so the
+    // morning report surfaces it.
+    if (policy.requireNorthStar) {
+      const readNorthStar = deps.readNorthStar ?? (async () => null);
+      let northStar: string | null;
+      try {
+        northStar = await readNorthStar();
+      } catch (err) {
+        // Defensive: readNorthStar is contracted to map its own failures to null, but
+        // if it throws anyway, treat that as silent (fail-closed) rather than crash.
+        northStar = null;
+        safeLog("WARN", `conductor: north-star read threw (${String(err)}); treating as silent.`);
+      }
+      if (isNorthStarSilent(northStar)) {
+        const nowMs = clock.now();
+        await escalate(buildNorthStarEscalation(nowMs));
+        await safeJournal({
+          ts: new Date(nowMs).toISOString(),
+          taskId: "(north-star)",
+          escalationType: "blocked",
+          decision: "park",
+          reworkCount: 0,
+          reason: "no north-star: refusing to run unattended until .autodev/GOAL.md is written",
+          reversible: true,
+        });
+        safeLog("INFO", "conductor: north-star is silent -> refusing to run unattended (no tasks claimed).");
+        return;
+      }
+    }
+
     const startMs = clock.now();
     let iterations = 0;
     let commitsSinceDrift = 0;
@@ -989,6 +1111,24 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const line = await runAntiDrift({ sinceRef: `HEAD~${window}`, commitsSinceLast: window });
           if (/^\s*DRIFT:/i.test(line)) {
             await escalate(buildDriftEscalation(line, clock.now()));
+            // Unattended (halt-drain): cumulative drift means the whole direction is off,
+            // so stop claiming further tasks rather than burn the night building more of
+            // the wrong thing (spec 2026-07-23). The drifted task is ALREADY parked by the
+            // escalation above; this only stops MORE work. Attended (escalate-task) leaves
+            // the loop running -- the operator is present to decide (regression-pinned).
+            if (policy.onDrift === "halt-drain") {
+              await safeJournal({
+                ts: new Date(clock.now()).toISOString(),
+                taskId: "(anti-drift)",
+                escalationType: "drift",
+                decision: "park",
+                reworkCount: 0,
+                reason: `drift: halting the unattended drain -- ${line}`,
+                reversible: true,
+              });
+              safeLog("INFO", "conductor: DRIFT under the unattended policy -> halting the drain.");
+              break;
+            }
           }
           commitsSinceDrift = 0;
         }

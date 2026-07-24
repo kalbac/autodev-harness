@@ -9,7 +9,7 @@
 // own unit tests against injected fakes (same status as src/index.ts).
 import { readFile, writeFile, appendFile, mkdir, lstat, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured, isContractFileConfigured } from "../config/config.js";
@@ -120,6 +120,50 @@ function splitCommand(cmd: string): { c: string; a: string[] } {
 export function supervisorRunOpts(runOpts: ConductorRunOptions | undefined): ConductorRunOptions {
   const { once: _once, ...rest } = runOpts ?? {};
   return rest;
+}
+
+/**
+ * The exact options the overnight supervisor's DRAIN hands to `conductor.run`: the
+ * operator's inherited bounds, plus `drain: true` (the supervisor's inherent mode) and
+ * the UNATTENDED anti-drift policy (spec 2026-07-23) -- halt the drain on a DRIFT and
+ * refuse a run whose north-star is silent. The policy is spread LAST so unattended
+ * enforcement cannot be overridden by an inherited operator opt; it is not negotiable.
+ * The plain-run path (`runOrSupervise`'s else branch) never calls this, so an attended
+ * run keeps the byte-for-byte default policy. Exported so a wiring test can pin it.
+ */
+export function supervisorDrainOpts(runOpts: ConductorRunOptions | undefined): ConductorRunOptions {
+  return { ...runOpts, drain: true, antiDrift: { onDrift: "halt-drain", requireNorthStar: true } };
+}
+
+/**
+ * Build the intent-source (north-star) reader shared by anti-drift's `readFile` and the
+ * north-star preflight. It honors the anti-drift `readFile` contract -- "return null if
+ * it does not exist" -- and hardens it to NEVER THROW (Principle 10): an empty/whitespace
+ * path, an absent file, a path that resolves to a directory (EISDIR), or any other read
+ * error all return `null`, never a rejected promise.
+ *
+ * The empty-path guard is load-bearing: `resolve(repoRoot, "")` collapses to `repoRoot`
+ * itself, whose `readFile` would EISDIR-throw -- so an operator's explicit
+ * `intentSource: ""` (or the previous default's spirit) must be treated as "not
+ * configured" and short-circuit to `null` BEFORE resolving, not resolve to the repo root.
+ * Exported so the fail-soft contract can be unit-pinned without a full project root.
+ */
+export function makeIntentReader(
+  repoRoot: string,
+  fs: { existsSync: (p: string) => boolean; readFile: (p: string) => Promise<string> },
+): (p: string) => Promise<string | null> {
+  return async (p: string): Promise<string | null> => {
+    if (p.trim() === "") return null; // "" resolves to repoRoot (a dir) -> treat as not configured
+    const abs = resolve(repoRoot, p);
+    try {
+      return fs.existsSync(abs) ? await fs.readFile(abs) : null;
+    } catch {
+      // Unreadable for ANY reason (a directory target, EACCES, a race between existsSync
+      // and readFile, ...) -> null, never a throw. getIntent turns null into a benign
+      // "(intent source not found)" and the north-star preflight reads null as silent.
+      return null;
+    }
+  };
 }
 
 /** Reads daemon-global operator presence. Injected so tests never touch `~`, and
@@ -816,9 +860,20 @@ export async function buildProjectRoot(
     });
 
   // --- Anti-drift ----------------------------------------------------------
+  // The intent-source (north-star) reader, resolved against the TRUSTED repoRoot (never
+  // the process cwd: `serve` is daemon-global, so a cwd-relative read would miss
+  // `.autodev/GOAL.md` entirely). This SAME reader backs `readNorthStar` below so the
+  // anti-drift model check and the north-star preflight can never read two different
+  // files (the recurring validated-one-string/used-another shape in this repo). See
+  // `makeIntentReader` for the fail-soft contract (empty/absent/unreadable -> null,
+  // never a throw).
+  const readIntentText = makeIntentReader(repoRoot, {
+    existsSync,
+    readFile: (p: string) => readFile(p, "utf8"),
+  });
   const runAntiDrift = (input: AntiDriftInput): Promise<string> =>
     runAntiDriftCore(input, cfg.antiDrift, {
-      readFile: async (p: string) => (existsSync(p) ? await readFile(p, "utf8") : null),
+      readFile: readIntentText,
       gitLog: async (sinceRef: string) =>
         (await runNative("git", ["log", `${sinceRef}..HEAD`, "--oneline"], { cwd: repoRoot })).stdout,
       gitDiff: async (sinceRef: string) =>
@@ -874,6 +929,30 @@ export async function buildProjectRoot(
   const eolDeps = makeNormalizeEolDeps(log);
   const normalizeEol = (wt: Worktree, relPaths: string[]) => normalizeWorktreeEol(eolDeps, wt.path, relPaths);
 
+  // The decision journal both the overnight supervisor and the conductor's unattended
+  // anti-drift outcomes append to. Defined ONCE here (was a local const near the
+  // supervisor deps) so the two writers can never target different files.
+  const decisionJournalPath = join(repoRoot, cfg.stateDir, "decision-journal.ndjson");
+
+  // North-star read for the conductor's unattended preflight (spec 2026-07-23): the raw
+  // GOAL.md text or null. Uses the SAME `readIntentText` resolver as anti-drift's
+  // readFile above, and maps EVERY failure (unconfigured, absent, unreadable) to null --
+  // the fail-closed case (`isNorthStarSilent(null) === true`). `intentSource` is nullable
+  // in the schema, though it now defaults to `.autodev/GOAL.md`.
+  const readNorthStar = async (): Promise<string | null> => {
+    const src = cfg.antiDrift.intentSource;
+    if (src === null) return null;
+    try {
+      return await readIntentText(src);
+    } catch (err) {
+      log("WARN", `north-star: read of ${src} failed (treating as silent): ${String(err)}`);
+      return null;
+    }
+  };
+
+  const writeDecision = (entry: Parameters<typeof serializeDecision>[0]): Promise<void> =>
+    appendFile(decisionJournalPath, serializeDecision(entry), "utf8");
+
   const deps: ConductorDeps = {
     cfg,
     repo,
@@ -888,6 +967,8 @@ export async function buildProjectRoot(
     runGate,
     escalate,
     runAntiDrift,
+    readNorthStar,
+    writeDecision,
     harvestWorkerReport,
     normalizeEol,
     gitChangedPaths,
@@ -1149,14 +1230,18 @@ export async function buildProjectRoot(
   // Overnight escalation supervisor (spec 2026-07-17). Above-gate: it only drives the
   // reply-B triple (setAttempts + move) and reads escalation artifacts -- never the gate.
   // Reuses the `escalationsDir` already built for the escalate() wiring above.
-  const decisionJournalPath = join(repoRoot, cfg.stateDir, "decision-journal.ndjson");
+  // `decisionJournalPath` is defined once, up near the conductor deps (both writers share it).
   const buildSupervisorDeps = (runOpts?: ConductorRunOptions) => ({
     enabled: cfg.autonomy.overnight.enabled,
     maxAutoReworks: cfg.autonomy.overnight.maxAutoReworks,
     // Each supervisor drain honors the operator's run options (e.g. maxIterations) --
     // `drain: true` is the supervisor's inherent mode (it must sweep the whole queue),
-    // but the other bounds are NOT silently dropped when overnight is enabled.
-    drain: () => conductor.run({ ...runOpts, drain: true }).then(() => undefined),
+    // but the other bounds are NOT silently dropped when overnight is enabled. It ALSO
+    // carries the UNATTENDED anti-drift policy via `supervisorDrainOpts` (spec
+    // 2026-07-23): a silent north-star refuses the run, and a DRIFT halts the drain. The
+    // plain-run path (runOrSupervise's else branch) never routes through here, so an
+    // attended run keeps the byte-identical default policy.
+    drain: () => conductor.run(supervisorDrainOpts(runOpts)).then(() => undefined),
     listEscalated: async () => (await repo.listTasks("escalated")).map((t) => ({ id: t.id })),
     readEscalationType: async (taskId: string) => {
       const md = await readFile(join(escalationsDir, `${taskId}.md`), "utf8").catch(() => null);
