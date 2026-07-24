@@ -2191,8 +2191,9 @@ describe("createApiServer / POST /orchestrate", () => {
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ accepted: true, intent: "build X" });
 
-    await tick();
-    expect(calls).toEqual(["build X"]);
+    await vi.waitFor(() => {
+      expect(calls).toEqual(["build X"]);
+    });
   });
 
   it("returns 202 promptly even when onOrchestrate never resolves (response does not wait on it)", async () => {
@@ -2233,10 +2234,11 @@ describe("createApiServer / POST /orchestrate", () => {
     expect(await res2.json()).toEqual({ error: "an orchestrate run is already in progress" });
 
     d.resolve();
-    await tick();
 
-    const res3 = await post("third");
-    expect(res3.status).toBe(202);
+    await vi.waitFor(async () => {
+      const res3 = await post("third");
+      expect(res3.status).toBe(202);
+    });
 
     expect(callCount).toBe(2); // "first" + "third" -- "second" was rejected before invoking onOrchestrate
   });
@@ -2258,8 +2260,9 @@ describe("createApiServer / POST /orchestrate", () => {
     });
     expect(res1.status).toBe(202);
 
-    await tick();
-    expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("boom"))).toBe(true);
+    await vi.waitFor(() => {
+      expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("boom"))).toBe(true);
+    });
 
     // Flag reset in `finally` -- a subsequent POST must be accepted again.
     const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
@@ -2287,8 +2290,9 @@ describe("createApiServer / POST /orchestrate", () => {
     });
     expect(res1.status).toBe(202);
 
-    await tick();
-    expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("sync boom"))).toBe(true);
+    await vi.waitFor(() => {
+      expect(logs.some((l) => l.startsWith("ERROR:") && l.includes("sync boom"))).toBe(true);
+    });
 
     const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
       method: "POST",
@@ -2325,14 +2329,15 @@ describe("createApiServer / POST /orchestrate", () => {
     });
     expect(res1.status).toBe(202);
 
-    await tick();
     // Flag cleared despite BOTH the error-stringify and the logger throwing.
-    const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ intent: "y" }),
+    await vi.waitFor(async () => {
+      const res2 = await fetch(`http://127.0.0.1:${port}${p1("/orchestrate")}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intent: "y" }),
+      });
+      expect(res2.status).toBe(202);
     });
-    expect(res2.status).toBe(202);
   });
 
   it("flattens control chars in the logged intent (no log forging); the 202 body still echoes the intent verbatim", async () => {
@@ -2353,11 +2358,12 @@ describe("createApiServer / POST /orchestrate", () => {
     // The JSON 202 body echoes the intent verbatim (JSON-encoded -> safe).
     expect(await res.json()).toEqual({ accepted: true, intent });
 
-    await tick();
-    const completed = logs.find((l) => l.includes("orchestrate run completed"));
-    expect(completed).toBeDefined();
-    expect(completed).not.toContain("\n"); // newline flattened -> cannot forge a second log line
-    expect(completed).toContain("build X ERROR: forged log line");
+    await vi.waitFor(() => {
+      const completed = logs.find((l) => l.includes("orchestrate run completed"));
+      expect(completed).toBeDefined();
+      expect(completed).not.toContain("\n"); // newline flattened -> cannot forge a second log line
+      expect(completed).toContain("build X ERROR: forged log line");
+    });
   });
 
   it("400s on a missing intent field, and does not call onOrchestrate", async () => {
@@ -2490,8 +2496,9 @@ describe("createApiServer / POST /orchestrate", () => {
     expect((await post("b")).status).toBe(202); // B is NOT blocked by A
 
     dA.resolve();
-    await tick();
-    expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+    await vi.waitFor(() => {
+      expect(calls).toEqual(["a:do the thing", "b:do the thing"]);
+    });
   });
 });
 
@@ -2613,8 +2620,9 @@ describe("createApiServer / chat routes", () => {
 
     expect(manager.hasOpenSession("p1")).toBe(false);
 
-    await tick();
-    expect(calls).toEqual(["build X, refined"]);
+    await vi.waitFor(() => {
+      expect(calls).toEqual(["build X, refined"]);
+    });
   });
 
   it("GET /chat/:id/stream on an unknown session returns a real 404 JSON response, not a 200 SSE frame", async () => {
@@ -2771,8 +2779,9 @@ describe("createApiServer / chat routes", () => {
     });
     // Let the message POST actually reach the manager and set turnInFlight
     // before firing confirm.
-    await tick();
-    expect(manager.isTurnInFlight(sessionId)).toBe(true);
+    await vi.waitFor(() => {
+      expect(manager.isTurnInFlight(sessionId)).toBe(true);
+    });
 
     const confirmRes = await fetch(`http://127.0.0.1:${port}${p1("/chat/confirm")}`, {
       method: "POST",

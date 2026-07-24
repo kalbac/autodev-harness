@@ -16,7 +16,8 @@ export type EscalationType =
   | "poison"
   | "blocked"
   | "dirty-file"
-  | "drift";
+  | "drift"
+  | "critic-unavailable";
 
 export interface EscalationInput {
   id: string;
@@ -87,6 +88,7 @@ const ESCALATION_TYPES: readonly EscalationType[] = [
   "blocked",
   "dirty-file",
   "drift",
+  "critic-unavailable",
 ];
 
 function isEscalationType(value: string): value is EscalationType {

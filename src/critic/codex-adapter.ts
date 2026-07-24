@@ -75,29 +75,40 @@ export class CodexCriticAdapter implements CriticAdapter {
       // means "this run wrote it" — never a leftover from an earlier round.
       await rm(outfile, { force: true });
 
-      const result = await this.runner(
-        resolveCriticExe(this.cfg),
-        [
-          "exec",
-          "-m",
-          this.cfg.roles.critic.model,
-          "-c",
-          `model_reasoning_effort="${this.cfg.roles.critic.effort}"`,
-          "-c",
-          `approval_policy="never"`,
-          "-s",
-          "read-only",
-          "-C",
-          this.repoRoot,
-          "--skip-git-repo-check",
-          "--output-schema",
-          this.schemaPath,
-          "-o",
-          outfile,
-          "-",
-        ],
-        { cwd: this.repoRoot, stdin: prompt },
-      );
+      // A spawn failure (the codex binary is missing/unlaunchable) makes `runNative`
+      // REJECT -- fold it into the same no-verdict result shape as a non-zero exit, so
+      // BOTH channels of "the critic could not deliver a verdict" reach the conductor as
+      // one thing. The adapter does not throw for a provider being down (parity with its
+      // "never rejects on a non-zero exit" contract); the conductor decides what to do.
+      let result: NativeResult;
+      try {
+        result = await this.runner(
+          resolveCriticExe(this.cfg),
+          [
+            "exec",
+            "-m",
+            this.cfg.roles.critic.model,
+            "-c",
+            `model_reasoning_effort="${this.cfg.roles.critic.effort}"`,
+            "-c",
+            `approval_policy="never"`,
+            "-s",
+            "read-only",
+            "-C",
+            this.repoRoot,
+            "--skip-git-repo-check",
+            "--output-schema",
+            this.schemaPath,
+            "-o",
+            outfile,
+            "-",
+          ],
+          { cwd: this.repoRoot, stdin: prompt },
+        );
+      } catch (err) {
+        const detail = (err instanceof Error ? err.message : String(err)).slice(-500);
+        return { verdict: null, rateLimited: false, failure: { exitCode: -1, detail } };
+      }
 
       let verdict = existsSync(outfile) ? parseVerdict(await readFile(outfile, "utf8")) : null;
       if (verdict === null) {
@@ -116,7 +127,15 @@ export class CodexCriticAdapter implements CriticAdapter {
         return { verdict: attachDiffSha256(verdict, input.diff), rateLimited: false, ...usage };
       }
 
-      return { verdict: null, rateLimited: result.exitCode === 4, ...usage };
+      // No parseable verdict. Carry the raw exit code + an output tail as diagnostic
+      // evidence (not a classification) so the conductor can escalate honestly.
+      const detailSource = result.stderr.trim() || result.stdout.trim() || "(no output)";
+      return {
+        verdict: null,
+        rateLimited: result.exitCode === 4,
+        failure: { exitCode: result.exitCode, detail: detailSource.slice(-500) },
+        ...usage,
+      };
     });
   }
 }

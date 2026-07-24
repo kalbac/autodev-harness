@@ -22,6 +22,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The staleness/timeout decision for a single poll tick. */
+export type WatchTickDecision = { kill: false } | { kill: true; reason: "stale" | "timeout" };
+
+/**
+ * Pure decision for one poll tick: given the current clock reading, the run's start,
+ * the newest activity signal, and the two windows, decide whether to kill the child and
+ * why. Extracted from the poll loop so the timing logic is proven on plain numbers — it
+ * has no wall-clock and no subprocess, so it cannot flake under CPU load. Semantics match
+ * the loop exactly: `staleSeconds` is checked BEFORE `timeoutSeconds`, and both use a
+ * strict `>` (a value exactly at the threshold does not kill).
+ */
+export function classifyWatchTick(args: {
+  now: number;
+  start: number;
+  newestActivity: number;
+  staleSeconds: number;
+  timeoutSeconds: number;
+}): WatchTickDecision {
+  const idleMs = args.now - args.newestActivity;
+  const elapsedMs = args.now - args.start;
+  if (idleMs > args.staleSeconds * 1000) return { kill: true, reason: "stale" };
+  if (elapsedMs > args.timeoutSeconds * 1000) return { kill: true, reason: "timeout" };
+  return { kill: false };
+}
+
 /** Best-effort newest mtime (ms) under a single file or directory. Missing paths and
  * unreadable entries are ignored — parity with the PS `-ErrorAction SilentlyContinue`
  * walk over `ActivityPaths`. */
@@ -87,23 +112,35 @@ function killTree(child: ChildProcess): Promise<void> {
   return Promise.resolve();
 }
 
+/** Injection seam for `runWatched`. Both default to the real implementations; tests
+ *  override them to drive staleness/timeout decisions off a controlled clock and a fake
+ *  child, so the liveness logic is proven deterministically instead of via a wall-clock
+ *  race. `now` is the SINGLE clock source for the whole run — one coherent reading per
+ *  decision, not two sub-microsecond-apart `Date.now()` calls. */
+export interface RunWatchedDeps {
+  now?: () => number;
+  spawn?: (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
+}
+
 /**
  * Spawn `input.command`, monitor process liveness (stdout/stderr activity,
  * heartbeat file mtime, newest mtime under `activityPaths`), and kill the
  * whole process tree on staleness or hard timeout. Parity port of the PS
  * `Start-WatchedProcess` (watchdog.ps1) — see parity spec §1 + §6.
  */
-export async function runWatched(input: WatchedRunInput): Promise<WatchedRunResult> {
+export async function runWatched(input: WatchedRunInput, deps: RunWatchedDeps = {}): Promise<WatchedRunResult> {
   const pollMs = input.pollMs ?? DEFAULT_POLL_MS;
+  const now = deps.now ?? Date.now;
+  const spawnFn = deps.spawn ?? spawn;
 
   await mkdir(dirname(input.heartbeatPath), { recursive: true });
   await writeFile(input.heartbeatPath, "start", "utf8");
 
-  let lastActivity = Date.now();
+  let lastActivity = now();
   let stdout = "";
   let stderr = "";
 
-  const child = spawn(input.command, input.args, {
+  const child = spawnFn(input.command, input.args, {
     cwd: input.cwd,
     env: process.env,
     detached: process.platform !== "win32",
@@ -113,11 +150,11 @@ export async function runWatched(input: WatchedRunInput): Promise<WatchedRunResu
   child.stderr?.setEncoding("utf8");
   child.stdout?.on("data", (d: string) => {
     stdout += d;
-    lastActivity = Date.now();
+    lastActivity = now();
   });
   child.stderr?.on("data", (d: string) => {
     stderr += d;
-    lastActivity = Date.now();
+    lastActivity = now();
   });
   child.stdin?.end(input.stdin);
 
@@ -136,7 +173,7 @@ export async function runWatched(input: WatchedRunInput): Promise<WatchedRunResu
   child.on("close", (code) => settle(code));
   child.on("error", () => settle(null)); // spawn failure — never rejects the caller
 
-  const start = Date.now();
+  const start = now();
   let timedOut = false;
 
   while (!exited) {
@@ -149,15 +186,15 @@ export async function runWatched(input: WatchedRunInput): Promise<WatchedRunResu
     const hbMtime = await heartbeatMtime(input.heartbeatPath);
     const activityMtime = await newestActivityPathsMtime(input.activityPaths);
     const newestActivity = Math.max(lastActivity, hbMtime, activityMtime);
-    const idleMs = Date.now() - newestActivity;
-    const elapsedMs = Date.now() - start;
 
-    if (idleMs > input.staleSeconds * 1000) {
-      timedOut = true;
-      await killTree(child);
-      break;
-    }
-    if (elapsedMs > input.timeoutSeconds * 1000) {
+    const decision = classifyWatchTick({
+      now: now(),
+      start,
+      newestActivity,
+      staleSeconds: input.staleSeconds,
+      timeoutSeconds: input.timeoutSeconds,
+    });
+    if (decision.kill) {
       timedOut = true;
       await killTree(child);
       break;
