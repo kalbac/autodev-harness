@@ -9,10 +9,18 @@
 
 A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
 shipped; the attended **live-orchestrator presence** is shipped; and with s54 the
-**unattended-autonomy half** of `adr/004` is **COMPLETE** — its last slice (mandatory
-anti-drift + north-star) is implemented, codex-gated, and live-proven. That work sits on
-`feat/mandatory-anti-drift` (feature `114d66d` + s53 docs), **awaiting the merge word**;
-`main` is still at `d8badd4`.
+**unattended-autonomy half** of `adr/004` is **COMPLETE and MERGED** — its last slice
+(mandatory anti-drift + north-star) is implemented, codex-gated, live-proven, and landed
+on `main` via **PR #117** (squash `955e05b`, CI 4/4). `main` is at `955e05b`.
+
+**s54 also reconciled a stale backlog:** six cards were closed as already-shipped after
+verifying against the code (the s52 lesson — verify before assuming) — #86 (CRLF), #101
+(git-exclude churn dirs), #99 (shadcn MCP), #102 (intent dedup), #100 (apply-on-accept);
+#104 (periodic intent-vs-diff) recommended-closed as armed by this session, #105 (Telegram
+channel) noted outbound-done. The honestly-open tech-debt is **#106** (a down critic
+provider wastes maxRounds worker retries + has no distinct status — real gate value, a
+mini-feature) and **#85** (flaky timing tests → fake clocks; harder than a swap — the
+watchdog measures real time of real subprocesses).
 
 **s54 implemented the last `adr/004` slice — Mandatory Anti-Drift + North-Star.** One full
 brainstorm(spec was s53)→subagent-TDD→codex-critic→live-proof cycle:
@@ -59,13 +67,13 @@ queued task stayed pending**, all in the morning report.
 | Two reports (Execution + Qualification) | ✅ shipped s52 (PR #113, `4fc1e87`, CI 4/4) -- per-task evidence ledger + both reports; 4 critic rounds -> SAFE |
 | CRLF-vs-WPCS-on-Windows papercut | ✅ shipped s53 (PR #114, `2a0b326`, CI 4/4) -- `src/normalize/eol.ts`, `.gitattributes`-governed CRLF→LF; live-proven `fb21553` |
 | Morning Report (3rd report type) | ✅ shipped s53 (PR #115, `d8badd4`, CI 4/4) -- narrate the decision journal, Principle-11 reconciled |
-| Mandatory anti-drift + north-star | ✅ shipped s54 (`feat/mandatory-anti-drift`, `114d66d`) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. **Awaiting merge word.** |
+| Mandatory anti-drift + north-star | ✅ shipped + MERGED s54 (PR #117, `955e05b`, CI 4/4) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. Closes the unattended-autonomy half of `adr/004`. |
 
 **Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
 - ✅ Slice 2 — overnight presence toggle (global presence × per-project opt-in, s46)
 - ✅ Morning report — narrate `.autodev/decision-journal.ndjson`, reconciled vs the live queue (s53, PR #115)
-- ✅ Mandatory anti-drift + per-project **north-star** (`.autodev/GOAL.md`) — **shipped s54** (`114d66d`, awaiting merge); the north-star IS the anti-drift intent anchor, and a silent one fails closed unattended while a DRIFT halts the overnight drain
+- ✅ Mandatory anti-drift + per-project **north-star** (`.autodev/GOAL.md`) — **shipped + MERGED s54** (PR #117, `955e05b`); the north-star IS the anti-drift intent anchor, and a silent one fails closed unattended while a DRIFT halts the overnight drain
 
 ## What s51 delivered (Profiles / WP-WC Qualification Layer v1)
 
@@ -135,23 +143,28 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-s54 shipped the last `adr/004` unattended slice (mandatory anti-drift + north-star),
-codex-gated and live-proven; it awaits the merge word on `feat/mandatory-anti-drift`.
-In priority order:
+s54 shipped + MERGED the last `adr/004` unattended slice (PR #117), closing the
+unattended-autonomy half, and reconciled a stale backlog. In priority order:
 
-- **(first) Merge `feat/mandatory-anti-drift`** — push + PR (carries s54 feature `114d66d`
-  + s53 docs + this s54 session-save), green CI 4/4, then merge on the operator's word.
-  With it, the unattended-autonomy half of `adr/004` is closed.
-- **(then, priority) Evaluation Corpus** — the last link of the
+- **(NEXT, priority) Evaluation Corpus** — the last link of the
   `architecture-review-external-2026-07.md` chain. Real tasks
   (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports now
   produce the raw material: first-pass gate rate, retries-to-convergence,
   escalations-by-type, proven-on-change vs debt.
-- **PHPStan as a profile gate** — blocked on a portable way for a profile-shipped neon to
-  reference an extension living in the project's `vendor`.
-- **Carried:** agent-ci synthetic `GITHUB_REPO` · overloaded `blocked` EscalationType ·
-  chat-runtime → TanStack AI + AG-UI · timing-sensitive tests flake under CPU load
-  (`FUTURE-BACKLOG`).
+- **Honestly-open tech-debt (verified against code s54):** **#106** — a down critic
+  provider falls to the null-not-rate-limited path and RETRIES the worker up to
+  `maxRounds` (wasteful — a worker re-run cannot fix a down critic) then escalates
+  `uncertain` (mislabeled); no fail-OPEN commit exists (commit needs an explicit `clean`),
+  so this is efficiency + a distinct "critic unavailable" status, a mini-feature. **#85** —
+  `watchdog.test.ts`/`server.test.ts` flake under CPU load; not a clean fake-timer swap
+  (the watchdog measures REAL time of REAL subprocesses), needs an injected clock or
+  tolerance rework.
+- **PHPStan as a profile gate (#87)** — blocked on a portable way for a profile-shipped
+  neon to reference an extension living in the project's `vendor`.
+- **Carried:** overloaded `blocked` EscalationType (low value — the `reason` string already
+  disambiguates; routing is uniform park) · chat-runtime → TanStack AI + AG-UI (#91) ·
+  agent-ci synthetic `GITHUB_REPO`. `FUTURE-BACKLOG` is FROZEN; open items live as GitHub
+  issues (six stale-done closed s54: #86/#101/#99/#102/#100).
 
 ## Open questions
 
@@ -182,7 +195,7 @@ In priority order:
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
-- **s54** — Mandatory Anti-Drift + North-Star implemented (`114d66d`, last `adr/004` slice); codex R1→fix→R2 SAFE; live-proven 3 ways (refuse / proceed / drift-halt). Awaiting merge.
+- **s54** — Mandatory Anti-Drift + North-Star **MERGED** (PR #117, `955e05b`, last `adr/004` slice; codex R1→fix→R2 SAFE; live-proven 3 ways) + backlog reconciliation (6 stale-done closed). Incident: a `git reset --hard` to sync main discarded the operator's uncommitted `package.json`/lock/`.claude/settings.json` (GOTCHAS 82).
 - **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
 - **s52** — the two reports (Execution + Qualification) + evidence ledger (PR #113, `4fc1e87`).
 - **s51** — Profiles / WP-WC Qualification Layer v1 + `adr/006` Phase 3 (`ee0be38`).
