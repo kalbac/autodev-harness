@@ -241,6 +241,59 @@ describe("CodexCriticAdapter", () => {
     expect(result.rateLimited).toBe(false);
   });
 
+  it("non-4 exit + no verdict -> failure carries the exit code and an output detail", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      { result: okResult({ exitCode: 1, stdout: "", stderr: "auth error: could not reach provider" }) },
+    ]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict).toBeNull();
+    expect(result.rateLimited).toBe(false);
+    expect(result.failure).toBeDefined();
+    expect(result.failure!.exitCode).toBe(1);
+    expect(result.failure!.detail).toContain("auth error");
+  });
+
+  it("runner reject (spawn failure, e.g. missing codex binary) -> null verdict, not rate-limited, failure detail", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const rejectingRunner = async (): Promise<NativeResult> => {
+      throw new Error("spawn codex ENOENT");
+    };
+    const adapter = new CodexCriticAdapter({
+      cfg,
+      repoRoot: "/repo",
+      runner: rejectingRunner,
+      schemaPath: "/schema.json",
+    });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict).toBeNull();
+    expect(result.rateLimited).toBe(false);
+    expect(result.failure).toBeDefined();
+    expect(result.failure!.exitCode).toBe(-1);
+    expect(result.failure!.detail).toContain("ENOENT");
+  });
+
+  it("a parsed clean verdict carries no failure field", async () => {
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([
+      { result: okResult({ exitCode: 0 }), onCall: (args) => writeFileSync(findOutfile(args), cleanVerdictJson) },
+    ]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+
+    const result = await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null });
+
+    expect(result.verdict).not.toBeNull();
+    expect("failure" in result).toBe(false);
+  });
+
   it("fences the worker report for the duration of the codex call and restores it after", async () => {
     const dir = makeTempDir();
     const reportPath = join(dir, "worker-report.md");

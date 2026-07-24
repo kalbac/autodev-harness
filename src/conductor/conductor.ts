@@ -767,6 +767,35 @@ export function createConductor(deps: ConductorDeps): Conductor {
             return { claimedTaskId: task.id, committed: false, rateLimited: true };
           }
 
+          if (cr.verdict === null) {
+            // Not rate-limited (handled above) -> the critic produced no usable verdict at
+            // all (provider down / spawn failure / unparseable output). Re-running the
+            // WORKER cannot help -- its diff is fine, and a down or garbled critic will just
+            // fail again -- so escalate immediately, burning zero further worker rounds,
+            // with an honest, actionable status instead of looping to maxRounds and then
+            // mislabeling the escalation `uncertain` (a verdict the critic never gave). This
+            // sits ABOVE the gate and fails closed: no verdict means nothing merges (#106).
+            const failure = cr.failure;
+            const exitInfo = failure ? ` (exit ${failure.exitCode})` : "";
+            await repo.moveTask(task.id, "active", "escalated");
+            evidence.rounds = round;
+            await escalateAndRecord({
+              reason: `critic returned no usable verdict${exitInfo} -- the critic provider may be unavailable`,
+              type: "critic-unavailable",
+              what: `Task ${task.id}: the critic could not deliver a verdict${exitInfo}.`,
+              decision:
+                "Ensure the critic provider (codex / its model) is reachable, then re-queue the task; or abandon it.",
+              optionA: "Re-queue the task once the critic provider is healthy.",
+              optionB: "Abandon the task.",
+              costOfWrong:
+                "Without a critic verdict the change cannot be safely accepted; accepting it would merge unreviewed code.",
+              evidence: failure
+                ? `exitCode=${failure.exitCode} detail=${failure.detail}`
+                : "critic returned no parseable verdict and no failure detail",
+            });
+            return { claimedTaskId: task.id, committed: false, rateLimited: false };
+          }
+
           if (cr.verdict?.verdict === "clean") {
             // Decisive: this verdict is what commits. Persist it (see the
             // persistCriticVerdict comment) BEFORE breaking to the gate.

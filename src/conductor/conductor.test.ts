@@ -644,6 +644,61 @@ describe("runIteration -- fail-closed commit gating", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Critic unavailable -- fail-closed, no worker-round burn (#106)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- critic unavailable", () => {
+  it("escalates 'critic-unavailable' immediately (no worker retries) when the critic returns no verdict and is not rate-limited", async () => {
+    const task = makeTask({ max_rounds: 3 }); // old behavior would re-run the worker up to 4x
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worker, calls: workerCalls } = makeWorker(
+      [{ result: { status: "DONE", model: "opus", rateLimited: false, timedOut: false, exitCode: 0 }, report: "status: DONE" }],
+      repo,
+    );
+    const { critic, calls: criticCalls } = makeCritic([
+      { result: { verdict: null, rateLimited: false, failure: { exitCode: 1, detail: "auth error: provider unreachable" } } },
+    ]);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktree } = makeWorktree({ diffText: "diff --git a/x b/x\n+1\n" });
+
+    const deps = buildDeps({ repo, scheduler, worker, critic, escalate, worktree });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("critic-unavailable");
+    // The escalation is honest + actionable: it carries the raw exit code as evidence.
+    expect(`${escalateCalls[0]!.reason} ${escalateCalls[0]!.what} ${escalateCalls[0]!.evidence}`).toMatch(/exit.*1|1/);
+    // The whole point: the worker's diff was fine, so it is NOT re-run round after round.
+    expect(workerCalls.length).toBe(1);
+    expect(criticCalls.length).toBe(1);
+  });
+
+  it("still takes the rate-limit path (requeue to pending), not the unavailable path, on exit 4", async () => {
+    const task = makeTask({ max_rounds: 3 });
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { critic } = makeCritic([
+      { result: { verdict: null, rateLimited: true, failure: { exitCode: 4, detail: "usage limit" } } },
+    ]);
+
+    const deps = buildDeps({ repo, scheduler, critic, escalate });
+    const conductor = createConductor(deps);
+
+    const res = await conductor.runIteration();
+
+    expect(res.rateLimited).toBe(true);
+    expect(state.locations.get(task.id)).toBe("pending"); // requeued, not escalated
+    expect(escalateCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. Counter-increment guard / poison
 // ---------------------------------------------------------------------------
 

@@ -15,6 +15,13 @@ export interface CriticResult {
    *  `tokens used\n<N>` stdout line. Omitted (never explicit `undefined`) when the
    *  line is absent, or when the call was skipped entirely (empty-diff pass-through). */
   usage?: CriticUsage;
+  /** Diagnostic evidence set ONLY when the call yielded no parseable verdict (`verdict`
+   *  is null) — the raw exit code (`-1` when the process could not even be spawned) plus
+   *  a short tail of its output (or the spawn error message). Pass-through, NOT a
+   *  classification: it lets the conductor raise an honest, actionable "critic could not
+   *  deliver a verdict" escalation instead of burning worker rounds and mislabeling it
+   *  `uncertain`. Omitted whenever a verdict WAS parsed. */
+  failure?: { exitCode: number; detail: string };
 }
 
 export interface CriticRunInput {
