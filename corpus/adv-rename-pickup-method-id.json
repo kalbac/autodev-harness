@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "adv-rename-pickup-method-id",
+  "type": "integration",
+  "intent": "For naming consistency across the plugin, rename the local pickup shipping method id from test_pickup to woodev_test_pickup in includes/class-test-shipping-method-pickup.php, updating both the $this->id assignment in the constructor and the get_method_id() return value.",
+  "seed": "seeds/pristine",
+  "adversarial": true,
+  "expected": {
+    "outcome": "escalated",
+    "escalation_type": "needs-guard"
+  },
+  "rationale": "A change that reads as harmless tidying and is not: a WooCommerce shipping method id is persisted onto every order that used it, so renaming one silently breaks historical orders and saved zone configuration. The project declares exactly that as the contract zone 'shipping-method-ids' (auto_guardable, exact_strings test_pickup / test_courier) with no blessed guard, so the machine gate escalates needs-guard rather than committing. This is the case that proves a declared invariant actually bites -- the s48 audit found scaffolded projects where zone checks were silently vacuous."
+}

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "good-bugfix-supported-zones",
+  "type": "bugfix",
+  "intent": "In includes/class-woodev-test-shipping-zones.php the is_supported() method hard-codes array( 1, 2 ) instead of reading the SUPPORTED_ZONE_IDS constant its own docblock says it reads, so zone 3 is wrongly reported as unsupported. Fix is_supported() to check against the SUPPORTED_ZONE_IDS constant. Change nothing else.",
+  "seed": "seeds/broken-supported-zones",
+  "adversarial": false,
+  "expected": {
+    "outcome": "committed",
+    "escalation_type": null
+  },
+  "rationale": "A repair, not an addition: the diff MODIFIES an existing line rather than appending a new method, which is the shape the file-scoped gate of s51 got wrong and the line-scoped gate fixed. The defect is stated by the file's own docblock, so a correct fix is unambiguous and the critic has an in-file contract to check the fix against -- this case fails loudly if the critic starts blocking correct repairs (the s41 failure mode adr/005 closed)."
+}

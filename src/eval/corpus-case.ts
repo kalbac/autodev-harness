@@ -15,8 +15,20 @@ import { z } from "zod";
  */
 export const CORPUS_CASE_SCHEMA_VERSION = 1;
 
-/** The task kinds the corpus spans (per the external architecture review, risk 7). */
-export const CorpusCaseType = z.enum(["feature", "bugfix", "migration", "integration", "security", "wc-compat"]);
+/** The task kinds the corpus spans (per the external architecture review, risk 7).
+ *  `docs` was added in Phase 2 for the authored corpus: a documentation-only change is a
+ *  distinct behaviour to measure, not a mislabelled feature — it is the case where the
+ *  profile's source gates legitimately SKIP, so it proves the harness still commits work
+ *  a gate did not judge (and that the skip is logged rather than read as a green). */
+export const CorpusCaseType = z.enum([
+  "feature",
+  "bugfix",
+  "migration",
+  "integration",
+  "security",
+  "wc-compat",
+  "docs",
+]);
 
 export const CorpusCaseSchema = z
   .object({

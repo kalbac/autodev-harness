@@ -5,6 +5,7 @@
 // deliberately NOT unit-tested; every module it wires already has its own
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -29,6 +30,11 @@ import { ensureAutodevBranch } from "./util/ensure-branch.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
 import { loadSettings, saveSettings, defaultSettingsFile } from "./settings/settings.js";
 import { countOptedIn } from "./settings/opt-in-count.js";
+import { parseEvalArgs, runEval, type EvalArgs } from "./eval/eval-cli.js";
+import { loadCorpus } from "./eval/corpus-loader.js";
+import { createCaseExecutor } from "./eval/case-executor.js";
+import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
+import { runNative } from "./util/native.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
  * silently disable the limit (NaN would make the conductor's `iterations >= max`
@@ -76,7 +82,8 @@ type CliCommand =
   | { mode: "serve"; port: number }
   | { mode: "report-run"; runId: string }
   | { mode: "report-qualify"; from?: string; to?: string }
-  | { mode: "report-morning"; since?: string };
+  | { mode: "report-morning"; since?: string }
+  | { mode: "eval"; args: EvalArgs };
 
 /** Default bind port for `serve` when `--port` is omitted. */
 const DEFAULT_SERVE_PORT = 4319;
@@ -193,9 +200,11 @@ export function parseReportArgs(argv: string[]): CliCommand {
  * over the operator's intent (decompose → enqueue → bounded trigger); `serve
  * [--port N]` boots the read-only dashboard API (+ static UI bundle when built)
  * bound to loopback only; `report run <runId>` / `report qualify` print the two
- * reports as Markdown; anything else is the default deterministic run mode,
- * honoring `--once` / `--max-iterations`. The remaining args after `orchestrate`
- * are joined so both `orchestrate "build X"` and `orchestrate build X` work.
+ * reports as Markdown; `eval` drives the Evaluation Corpus against the cwd's repo
+ * and prints the Corpus Report; anything else is the default deterministic run
+ * mode, honoring `--once` / `--max-iterations`. The remaining args after
+ * `orchestrate` are joined so both `orchestrate "build X"` and `orchestrate build
+ * X` work.
  */
 function parseCli(argv: string[]): CliCommand {
   if (argv[0] === "orchestrate") {
@@ -210,6 +219,9 @@ function parseCli(argv: string[]): CliCommand {
   }
   if (argv[0] === "report") {
     return parseReportArgs(argv.slice(1));
+  }
+  if (argv[0] === "eval") {
+    return { mode: "eval", args: parseEvalArgs(argv.slice(1)) };
   }
   return { mode: "run", runOpts: parseArgs(argv) };
 }
@@ -452,6 +464,51 @@ async function main(): Promise<void> {
       ...(command.since !== undefined ? { since: command.since } : {}),
     });
     printMarkdown(markdown);
+    return;
+  }
+
+  if (command.mode === "eval") {
+    // Evaluation Corpus (Phase 2). ON DEMAND only, never in CI: every case drives real
+    // worker/critic calls, which are costly and non-deterministic. The corpus ships with
+    // the HARNESS install (not the target repo) so the cases the harness is measured
+    // against cannot be edited by the worker whose work they measure.
+    const moduleDir2 = dirname(fileURLToPath(import.meta.url));
+    const corpusDir = command.args.corpus ?? join(moduleDir2, "..", "corpus");
+
+    // Capture the baseline ONCE, before the first case: cases commit, so re-reading HEAD
+    // per case would let each case's baseline drift to the previous case's result.
+    let baseline = command.args.baseline;
+    if (baseline === undefined) {
+      const head = await runNative("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
+      if (head.exitCode !== 0) {
+        throw new Error(`eval: cannot resolve the target repo's HEAD as a baseline: ${head.stderr.trim()}`);
+      }
+      baseline = head.stdout.trim();
+    }
+
+    const cases = await loadCorpus(corpusDir);
+    root.log("INFO", `eval: ${cases.length} case(s) from ${corpusDir}; baseline ${baseline}; target ${repoRoot}`);
+    process.stdout.write(`Evaluation Corpus: ${cases.length} case(s) from ${corpusDir}\n`);
+    process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n\n`);
+
+    const executor = createCaseExecutor(
+      createHarnessCaseEnvironment({ root, corpusRoot: corpusDir, baseline, maxIterations: command.args.maxIterations }),
+    );
+    const { markdown, passBar } = await runEval(cases, executor, (line) => process.stdout.write(`${line}\n`));
+
+    process.stdout.write("\n");
+    printMarkdown(markdown);
+    if (command.args.out !== undefined) {
+      await writeFile(command.args.out, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+      process.stdout.write(`\nreport written to ${command.args.out}\n`);
+    }
+
+    if (!passBar.met) {
+      // A non-zero exit makes the bar MECHANICAL rather than a number the reader has to
+      // interpret -- the same discipline the gate itself is held to.
+      for (const reason of passBar.reasons) process.stderr.write(`PASS BAR NOT MET: ${reason}\n`);
+      process.exitCode = 1;
+    }
     return;
   }
   // Overnight autonomy (spec 2026-07-17): runOrSupervise drives the escalation supervisor
