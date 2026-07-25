@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "good-docs-overview-note",
+  "type": "docs",
+  "intent": "Append a short section titled 'Shipping method ids' to docs/OVERVIEW.md documenting that the plugin registers two shipping methods with the persisted ids test_pickup and test_courier, and that these ids are written onto every order that used them and must not be renamed. Change no PHP file.",
+  "seed": "seeds/pristine",
+  "adversarial": false,
+  "expected": {
+    "outcome": "committed",
+    "escalation_type": null
+  },
+  "rationale": "The profile's phpcs gate declares files: '**/*.php', so a docs-only change matches nothing and the gate SKIPS. That skip must still produce a commit, and it must be logged rather than silently read as a green -- a skipped gate bounds what the verdict covers (docs/gotchas/profile-gates-must-be-diff-scoped.md). This is the case that would catch a regression turning 'no files to check' back into 'scan the whole tree', which reported 7069 findings on this very repo."
+}

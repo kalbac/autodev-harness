@@ -1,0 +1,9 @@
+# Corpus seed fixtures are copied BYTE-FOR-BYTE into a target repo, so their line
+# endings are part of the fixture, not a checkout detail. Without this, a Windows
+# checkout under `core.autocrlf=true` would seed CRLF files while a Linux checkout
+# seeds LF ones — the same corpus measuring two different premises depending on who
+# ran it. `-text` disables all end-of-line conversion in both directions.
+#
+# See docs/gotchas/worker-eol-nondeterministic-for-crlf-proof.md for why EOL in this
+# codebase is never assumed and always pinned.
+* -text

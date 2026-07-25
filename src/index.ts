@@ -5,6 +5,7 @@
 // deliberately NOT unit-tested; every module it wires already has its own
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -29,6 +30,12 @@ import { ensureAutodevBranch } from "./util/ensure-branch.js";
 import type { ConductorRunOptions } from "./conductor/conductor.js";
 import { loadSettings, saveSettings, defaultSettingsFile } from "./settings/settings.js";
 import { countOptedIn } from "./settings/opt-in-count.js";
+import { parseEvalArgs, runEval, type EvalArgs } from "./eval/eval-cli.js";
+import { loadCorpus } from "./eval/corpus-loader.js";
+import { createCaseExecutor } from "./eval/case-executor.js";
+import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
+import { runNative } from "./util/native.js";
+import { safeErrorText, safeLog } from "./util/safe-log.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
  * silently disable the limit (NaN would make the conductor's `iterations >= max`
@@ -76,7 +83,8 @@ type CliCommand =
   | { mode: "serve"; port: number }
   | { mode: "report-run"; runId: string }
   | { mode: "report-qualify"; from?: string; to?: string }
-  | { mode: "report-morning"; since?: string };
+  | { mode: "report-morning"; since?: string }
+  | { mode: "eval"; args: EvalArgs };
 
 /** Default bind port for `serve` when `--port` is omitted. */
 const DEFAULT_SERVE_PORT = 4319;
@@ -193,9 +201,11 @@ export function parseReportArgs(argv: string[]): CliCommand {
  * over the operator's intent (decompose → enqueue → bounded trigger); `serve
  * [--port N]` boots the read-only dashboard API (+ static UI bundle when built)
  * bound to loopback only; `report run <runId>` / `report qualify` print the two
- * reports as Markdown; anything else is the default deterministic run mode,
- * honoring `--once` / `--max-iterations`. The remaining args after `orchestrate`
- * are joined so both `orchestrate "build X"` and `orchestrate build X` work.
+ * reports as Markdown; `eval` drives the Evaluation Corpus against the cwd's repo
+ * and prints the Corpus Report; anything else is the default deterministic run
+ * mode, honoring `--once` / `--max-iterations`. The remaining args after
+ * `orchestrate` are joined so both `orchestrate "build X"` and `orchestrate build
+ * X` work.
  */
 function parseCli(argv: string[]): CliCommand {
   if (argv[0] === "orchestrate") {
@@ -210,6 +220,9 @@ function parseCli(argv: string[]): CliCommand {
   }
   if (argv[0] === "report") {
     return parseReportArgs(argv.slice(1));
+  }
+  if (argv[0] === "eval") {
+    return { mode: "eval", args: parseEvalArgs(argv.slice(1)) };
   }
   return { mode: "run", runOpts: parseArgs(argv) };
 }
@@ -452,6 +465,77 @@ async function main(): Promise<void> {
       ...(command.since !== undefined ? { since: command.since } : {}),
     });
     printMarkdown(markdown);
+    return;
+  }
+
+  if (command.mode === "eval") {
+    // Evaluation Corpus (Phase 2). ON DEMAND only, never in CI: every case drives real
+    // worker/critic calls, which are costly and non-deterministic. The corpus ships with
+    // the HARNESS install (not the target repo) so the cases the harness is measured
+    // against cannot be edited by the worker whose work they measure.
+    const moduleDir2 = dirname(fileURLToPath(import.meta.url));
+    const corpusDir = command.args.corpus ?? join(moduleDir2, "..", "corpus");
+
+    // Resolve the baseline to an IMMUTABLE commit sha ONCE, before the first case --
+    // including an explicitly-passed one. Every case commits (the seed, and the work
+    // itself when it lands), so a mutable commit-ish like `HEAD` or a branch name would
+    // be re-resolved per case and silently drift onto the PREVIOUS case's result, making
+    // each case start from a different premise than the one before it (codex R1 Medium).
+    // `--end-of-options` so a ref that happens to start with a dash is parsed as an
+    // OPERAND, never as a git flag (codex R2 Medium). `^{commit}` makes `--verify` reject
+    // anything that is not a commit (a tree, a blob, a tag pointing at one).
+    const baselineRef = command.args.baseline ?? "HEAD";
+    const resolved = await runNative(
+      "git",
+      ["rev-parse", "--verify", "--end-of-options", `${baselineRef}^{commit}`],
+      { cwd: repoRoot },
+    );
+    if (resolved.exitCode !== 0) {
+      throw new Error(`eval: cannot resolve baseline '${baselineRef}' to a commit: ${resolved.stderr.trim()}`);
+    }
+    const baseline = resolved.stdout.trim();
+
+    // NOTE: the target project's exclusive lock and idle-queue check are taken by the case
+    // ENVIRONMENT on its own destructive path -- deliberately NOT called here, so no future
+    // entry point can construct the environment and skip them. All this layer owes is the
+    // matching `dispose()` in a `finally`.
+    const cases = await loadCorpus(corpusDir);
+    root.log("INFO", `eval: ${cases.length} case(s) from ${corpusDir}; baseline ${baseline}; target ${repoRoot}`);
+    process.stdout.write(`Evaluation Corpus: ${cases.length} case(s) from ${corpusDir}\n`);
+    process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n\n`);
+
+    const env = createHarnessCaseEnvironment({
+      root,
+      corpusRoot: corpusDir,
+      baseline,
+      maxIterations: command.args.maxIterations,
+    });
+    try {
+      const executor = createCaseExecutor(env);
+      const { markdown, passBar } = await runEval(cases, executor, (line) => process.stdout.write(`${line}\n`));
+
+      process.stdout.write("\n");
+      printMarkdown(markdown);
+      if (command.args.out !== undefined) {
+        await writeFile(command.args.out, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+        process.stdout.write(`\nreport written to ${command.args.out}\n`);
+      }
+
+      if (!passBar.met) {
+        // A non-zero exit makes the bar MECHANICAL rather than a number the reader has to
+        // interpret -- the same discipline the gate itself is held to.
+        for (const reason of passBar.reasons) process.stderr.write(`PASS BAR NOT MET: ${reason}\n`);
+        process.exitCode = 1;
+      }
+    } finally {
+      // Releasing the lock must not be able to mask the real failure, nor to fail a run
+      // whose measurement already completed. `safeLog`/`safeErrorText` because a throwing
+      // logger or a hostile `message` getter inside a catch would resurrect exactly the
+      // failure this handler exists to swallow (gotcha [ts/fail-closed]; codex R5).
+      await env.dispose().catch((err: unknown) => {
+        safeLog(root.log, "WARN", `eval: releasing the corpus lock failed (ignored): ${safeErrorText(err)}`);
+      });
+    }
     return;
   }
   // Overnight autonomy (spec 2026-07-17): runOrSupervise drives the escalation supervisor

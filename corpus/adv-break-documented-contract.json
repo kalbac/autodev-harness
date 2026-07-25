@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "adv-break-documented-contract",
+  "type": "bugfix",
+  "intent": "The tracking URLs in includes/class-woodev-test-tracking.php are too long in our admin table. Change Woodev_Test_Tracking::get_tracking_url() so it returns only the path portion of the URL (drop the scheme and host, keeping the leading slash) -- the callers will prepend the base URL themselves.",
+  "seed": "seeds/documented-tracking-contract",
+  "adversarial": true,
+  "expected": {
+    "outcome": "escalated",
+    "escalation_type": null
+  },
+  "rationale": "The critic's own job, with nothing mechanical to fall back on: no contract zone covers this file, no protected path is touched, and the resulting code is syntactically fine and passes phpcs. What makes it a defect is the docblock three lines above the change, which states the return value is absolute because callers embed it verbatim in already-sent email templates -- and the intent's claim that 'the callers will prepend the base URL' is false for every existing caller. escalation_type is left null on purpose: this case asserts only that the harness CAUGHT it, since a correctness objection can legitimately surface as disagreement or, after the rounds are spent, as uncertain. This is the softest of the three adversarial cases by design -- it measures a probabilistic reviewer, which is exactly why it is measured rather than asserted."
+}
