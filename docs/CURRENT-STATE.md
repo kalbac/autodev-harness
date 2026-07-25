@@ -5,51 +5,49 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s54)
+## Where we are (leaving s55)
 
-A working **Node daemon + web dashboard**. The core loop (P1) and dashboard (P2) are
-shipped; the attended **live-orchestrator presence** is shipped; and with s54 the
-**unattended-autonomy half** of `adr/004` is **COMPLETE and MERGED** — its last slice
-(mandatory anti-drift + north-star) is implemented, codex-gated, live-proven, and landed
-on `main` via **PR #117** (squash `955e05b`, CI 4/4). `main` is at `955e05b`.
+A working **Node daemon + web dashboard**. P1 core loop + P2 dashboard shipped; attended
+live-orchestrator presence shipped; the **unattended-autonomy half** of `adr/004` COMPLETE
+and merged (s54). `main` is at **`510617f`**. s55 was a tail-clearing + capstone-start
+session: **four PRs merged** — the whole architecture-review chain is now shipped except the
+Evaluation Corpus's *Phase 2* (real executor + authored cases + live run).
 
-**s54 also reconciled a stale backlog:** six cards were closed as already-shipped after
-verifying against the code (the s52 lesson — verify before assuming) — #86 (CRLF), #101
-(git-exclude churn dirs), #99 (shadcn MCP), #102 (intent dedup), #100 (apply-on-accept);
-#104 (periodic intent-vs-diff) recommended-closed as armed by this session, #105 (Telegram
-channel) noted outbound-done. The honestly-open tech-debt is **#106** (a down critic
-provider wastes maxRounds worker retries + has no distinct status — real gate value, a
-mini-feature) and **#85** (flaky timing tests → fake clocks; harder than a swap — the
-watchdog measures real time of real subprocesses).
+**s55 shipped (all merged to `main`):**
+- **PR #118** — the s54 session-save docs (a tail: its PR was never opened in s54 due to a
+  GitHub API outage; opened + merged first thing s55).
+- **PR #119 — tech-debt #85 + #106** (both issues closed):
+  - **#85** — de-flaked the wall-clock-dependent watchdog tests. Extracted a pure
+    `classifyWatchTick` (timing decision on plain numbers) + a `RunWatchedDeps` seam
+    (`now`/`spawn`); two deterministic wiring tests drive a fake child + injected clock,
+    **mutation-verified**. `server.test.ts`: 9 fixed-delay `tick()` waits → polled
+    `vi.waitFor`. codex R1 NOT SAFE (single-vs-double clock read; alive test vacuous at the
+    strict-`>` boundary) → fixed → R2 SAFE.
+  - **#106** — fail-closed when the critic provider is unavailable. `CriticResult.failure`
+    (exit code + detail); the codex adapter folds a spawn-reject into a null-verdict result
+    (no longer throws for a down provider); a new `EscalationType "critic-unavailable"`; the
+    conductor now escalates a null-not-rate-limited verdict **immediately at round 0** (zero
+    wasted worker rounds) instead of looping to maxRounds and mislabeling it `uncertain`.
+    Above the gate, fail-closed. codex SAFE.
+- **PR #120 — Evaluation Corpus, Phase 1 (deterministic machinery)** — the last link of the
+  `architecture-review-external-2026-07.md` chain. Five pure modules in `src/eval/`:
+  `corpus-case` (fail-closed schema: seed + intent + expected outcome + an `adversarial`
+  flag), `corpus-metrics` (pure aggregator → first-pass rate, **escaped-defect rate** over
+  adversarial cases only, escalations-by-type, wall-clock, token counts — never $),
+  `corpus-report` (metrics→markdown), `corpus-runner` (`runCorpus` drives cases through an
+  injected `CaseExecutor` sequentially; a throwing case → null evidence, not an abort),
+  `corpus-loader` (fail-closed `*.json` case loading). codex R1 NOT SAFE (escaped-defect
+  conflated adversarial vs ambiguous; unescaped markdown cells) → fixed → R2 SAFE; runner +
+  loader SAFE. 31 eval tests.
 
-**s54 implemented the last `adr/004` slice — Mandatory Anti-Drift + North-Star.** One full
-brainstorm(spec was s53)→subagent-TDD→codex-critic→live-proof cycle:
+Also: removed a mis-filed card (autodev-harness #116 was on the Woodev Base-Theme board #5
+as well as its own board #2 — a one-off wrong-board add; deleted from #5).
 
-- **North-star = `.autodev/GOAL.md`, and it is now MANDATORY unattended.** `intentSource`
-  defaults to `.autodev/GOAL.md` (was `null` → toothless); `GOAL_STUB` restructured to the
-  4-part north-star with an "unfilled" sentinel. New pure `src/anti-drift/north-star.ts`
-  (`isNorthStarSilent`).
-- **Two unattended-only enforcements, both ABOVE the gate (Principles 8/10/12):** a
-  **north-star preflight** refuses to claim any task when the north-star is silent
-  (absent/empty/still the sentinel) → synthetic `blocked` escalation + a decision-journal
-  park, no worker tokens burned; and **halt-on-drift** — a DRIFT verdict escalates AND
-  stops the drain. Attended is byte-for-byte unchanged (default policy = escalate-task,
-  no north-star required, regression-pinned).
-- **Policy plumbing:** `ConductorRunOptions.antiDrift` (default = today's attended
-  behavior); the overnight supervisor is the only caller setting the unattended policy,
-  via the new `supervisorDrainOpts` (spread last → not operator-overridable). A shared
-  `makeIntentReader` resolves the intent path against the trusted repoRoot for BOTH the
-  anti-drift model check and the preflight (no validated-one-string split) and is
-  fail-soft. Both new outcomes surface in the **morning report** as parks.
-
-**codex gpt-5.6-luna gate:** R1 **NOT SAFE** — found `intentSource: ""` → `resolve(repoRoot,"")`
-returns repoRoot → `readFile(<dir>)` EISDIR-crashes attended anti-drift → fixed +
-regression-pinned (`makeIntentReader`, GOTCHAS 81 `[path/empty-resolves-to-root]`) → R2
-**SAFE**. 1673 tests green (15 new). **Live-proven three ways** on the polygon: silent GOAL
-+ a claimable task → refused, task stays pending, morning report narrates it; filled GOAL
-+ empty queue → clean idle drain (no false refuse); and the heavy one — a real committing
-postal-file task against a courier-only north-star → **DRIFT halted the drain, the second
-queued task stayed pending**, all in the morning report.
+**Discipline held throughout:** every substantial change went TDD → independent codex
+`gpt-5.6-luna` gate (pinned) → fix → re-gate; every merge on green CI 4/4. The operator was
+emphatic this session about **not stopping to ask** — once a plan is set, execute the whole
+chain to merge and report results, reserving questions for true product forks (see
+`[[feedback-decide-dont-ask]]`, sharpened s55).
 
 ## Phase status
 
@@ -68,6 +66,9 @@ queued task stayed pending**, all in the morning report.
 | CRLF-vs-WPCS-on-Windows papercut | ✅ shipped s53 (PR #114, `2a0b326`, CI 4/4) -- `src/normalize/eol.ts`, `.gitattributes`-governed CRLF→LF; live-proven `fb21553` |
 | Morning Report (3rd report type) | ✅ shipped s53 (PR #115, `d8badd4`, CI 4/4) -- narrate the decision journal, Principle-11 reconciled |
 | Mandatory anti-drift + north-star | ✅ shipped + MERGED s54 (PR #117, `955e05b`, CI 4/4) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. Closes the unattended-autonomy half of `adr/004`. |
+| Tech-debt: flaky wall-clock tests (#85) | ✅ shipped s55 (PR #119) — pure `classifyWatchTick` + injected clock/spawn seam; mutation-verified deterministic wiring tests; `vi.waitFor` in server tests. codex R1→R2 SAFE. |
+| Tech-debt: critic-unavailable (#106) | ✅ shipped s55 (PR #119) — `CriticResult.failure` + new `critic-unavailable` EscalationType; null-not-rate-limited verdict escalates at round 0 (no wasted worker rounds), fail-closed. codex SAFE. |
+| Evaluation Corpus — Phase 1 (machinery) | ✅ shipped s55 (PR #120, `510617f`) — 5 pure modules in `src/eval/` (case schema, aggregator, report, runner, loader); 31 tests; codex R1→R2 SAFE. **Phase 2 = real executor + cases + live run → issue #121.** |
 
 **Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -143,28 +144,27 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-s54 shipped + MERGED the last `adr/004` unattended slice (PR #117), closing the
-unattended-autonomy half, and reconciled a stale backlog. In priority order:
+s55 cleared both open tech-debt items (#85, #106) and shipped **Evaluation Corpus Phase 1**
+(the deterministic machinery). The architecture-review chain is now shipped end-to-end
+except the Corpus's Phase 2. In priority order:
 
-- **(NEXT, priority) Evaluation Corpus** — the last link of the
-  `architecture-review-external-2026-07.md` chain. Real tasks
-  (feature/bugfix/migration/integration/security-WC-compat) with metrics. The reports now
-  produce the raw material: first-pass gate rate, retries-to-convergence,
-  escalations-by-type, proven-on-change vs debt.
-- **Honestly-open tech-debt (verified against code s54):** **#106** — a down critic
-  provider falls to the null-not-rate-limited path and RETRIES the worker up to
-  `maxRounds` (wasteful — a worker re-run cannot fix a down critic) then escalates
-  `uncertain` (mislabeled); no fail-OPEN commit exists (commit needs an explicit `clean`),
-  so this is efficiency + a distinct "critic unavailable" status, a mini-feature. **#85** —
-  `watchdog.test.ts`/`server.test.ts` flake under CPU load; not a clean fake-timer swap
-  (the watchdog measures REAL time of REAL subprocesses), needs an injected clock or
-  tolerance rework.
-- **PHPStan as a profile gate (#87)** — blocked on a portable way for a profile-shipped
-  neon to reference an extension living in the project's `vendor`.
-- **Carried:** overloaded `blocked` EscalationType (low value — the `reason` string already
-  disambiguates; routing is uniform park) · chat-runtime → TanStack AI + AG-UI (#91) ·
-  agent-ci synthetic `GITHUB_REPO`. `FUTURE-BACKLOG` is FROZEN; open items live as GitHub
-  issues (six stale-done closed s54: #86/#101/#99/#102/#100).
+- **(NEXT, priority) Evaluation Corpus — Phase 2 (issue #121).** The capstone. Three parts:
+  1. **Real `CaseExecutor`** — the technical piece (no operator input needed): wires
+     seed-repo → compose run from `case.intent` → drive the headless conductor to a terminal
+     → read the `EvidenceRecord` (via `loadEvidence`). Environment-bound (real git/worktrees/
+     drain), the biggest single brick. Build it as a thin adapter over the existing daemon
+     composition; keep the orchestration testable (the runner already injects the executor).
+  2. **Authored cases** (operator product fork) — ~6-8 good + adversarial cases on the
+     polygon + a couple synthetic. Bring a concrete proposed set, not a menu. Proposed pass
+     bar: every case's actual outcome == expected, with **escaped-defect-rate == 0** the
+     headline gate.
+  3. **Live measurement run** — on-demand `eval` command (NOT in CI: real codex calls are
+     costly/non-deterministic), operator-observable. The capstone proof.
+- **PHPStan as a profile gate (#87)** — blocked on a portable way for a profile-shipped neon
+  to reference an extension living in the project's `vendor`.
+- **Carried:** overloaded `blocked` EscalationType (low value) · chat-runtime → TanStack AI +
+  AG-UI (#91) · agent-ci synthetic `GITHUB_REPO`. `FUTURE-BACKLOG` is FROZEN; open items are
+  GitHub issues.
 
 ## Open questions
 
@@ -195,6 +195,7 @@ unattended-autonomy half, and reconciled a stale backlog. In priority order:
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s55** — Tail-clearing + capstone-start, **4 PRs merged**: #118 (s54 docs tail), #119 (tech-debt #85 flaky-clock de-flake + #106 critic-unavailable, both issues closed), #120 (Evaluation Corpus **Phase 1** machinery — 5 pure `src/eval/` modules). All codex R→R SAFE. Fixed a mis-filed board card (#116 off board #5). Corpus Phase 2 → issue #121. Operator feedback (hard): stop over-asking/checkpointing — execute the whole chain to merge.
 - **s54** — Mandatory Anti-Drift + North-Star **MERGED** (PR #117, `955e05b`, last `adr/004` slice; codex R1→fix→R2 SAFE; live-proven 3 ways) + backlog reconciliation (6 stale-done closed). Incident: a `git reset --hard` to sync main discarded the operator's uncommitted `package.json`/lock/`.claude/settings.json` (GOTCHAS 82).
 - **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
 - **s52** — the two reports (Execution + Qualification) + evidence ledger (PR #113, `4fc1e87`).
