@@ -5,7 +5,46 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s55)
+## Where we are (leaving s56)
+
+A working **Node daemon + web dashboard**, and — for the first time — a **measured** one. s56
+built Evaluation Corpus **Phase 2** (real executor + `eval` command + 7 authored cases), gated it
+through five codex rounds to SAFE, and **ran it live**. The run is the deliverable, and it
+says two very different things about the two halves of the harness:
+
+| | Measured | Meaning |
+|---|---|---|
+| **Catching power** | `escaped_defect_rate: 0%` (3/3 adversarial caught) | The thing the project claims — "never merge bullshit" — **holds**. |
+| **Throughput** | `first_pass_commit_rate: 0%` (0/4 good cases landed) | Correct work does not get through. |
+
+**2/7 cases passed; the pass bar is NOT met.** This is not a green capstone and must not be
+reported as one. It is the first honest number the project has had about its own throughput.
+
+**Why throughput is zero — two distinct modes** (the Corpus Report cannot yet tell them apart,
+issue #126):
+1. **The critic's evidence window is the diff hunk** (`[critic/diff-hunk-only-evidence]`,
+   GOTCHAS 84, issue **#123** — the important one). It reasons fail-closed, and the prompt
+   carries only `diff.patch`, so a clean verdict is structurally unreachable for anything whose
+   correctness depends on code outside the changed lines. Replacing `array(1,2)` with
+   `self::SUPPORTED_ZONE_IDS` — constant declared 15 lines above, same file — returned
+   `uncertain`; so did a **docs-only** append.
+2. **Attempt-budget exhaustion** against the profile gate: `poison` → `quarantine` at
+   `attempts=4 > maxAttempts=3`.
+
+**Why five sessions of green live proofs missed this:** every prior committing proof
+(`44bb027`, `35db1a4`, `fb21553`, `c0fb8de`) was **additive and self-contained**. Green proofs
+characterize the harness only over the shapes of work they contain — which is exactly the gap
+an evaluation corpus exists to close, and it closed it on its first run.
+
+The corpus also caught **its own author**: `adv-rename-pickup-method-id` expected `needs-guard`
+and got `disagreement` (the critic preempts the mechanical zone check). Deliberately **not**
+silently relaxed — editing an oracle to fit an observed result is indistinguishable from tuning
+it (Principle 14 applied to ourselves), so it is issue **#127** for the operator.
+
+`main` is at **`879781a`**; the work sits on `feat/eval-corpus-phase-2` (2 commits) awaiting the
+merge word.
+
+## Where we were (leaving s55)
 
 A working **Node daemon + web dashboard**. P1 core loop + P2 dashboard shipped; attended
 live-orchestrator presence shipped; the **unattended-autonomy half** of `adr/004` COMPLETE
@@ -68,7 +107,9 @@ chain to merge and report results, reserving questions for true product forks (s
 | Mandatory anti-drift + north-star | ✅ shipped + MERGED s54 (PR #117, `955e05b`, CI 4/4) — north-star preflight + halt-on-drift, above the gate; codex R1→fix→R2 SAFE; live-proven 3 ways. Closes the unattended-autonomy half of `adr/004`. |
 | Tech-debt: flaky wall-clock tests (#85) | ✅ shipped s55 (PR #119) — pure `classifyWatchTick` + injected clock/spawn seam; mutation-verified deterministic wiring tests; `vi.waitFor` in server tests. codex R1→R2 SAFE. |
 | Tech-debt: critic-unavailable (#106) | ✅ shipped s55 (PR #119) — `CriticResult.failure` + new `critic-unavailable` EscalationType; null-not-rate-limited verdict escalates at round 0 (no wasted worker rounds), fail-closed. codex SAFE. |
-| Evaluation Corpus — Phase 1 (machinery) | ✅ shipped s55 (PR #120, `510617f`) — 5 pure modules in `src/eval/` (case schema, aggregator, report, runner, loader); 31 tests; codex R1→R2 SAFE. **Phase 2 = real executor + cases + live run → issue #121.** |
+| Evaluation Corpus — Phase 1 (machinery) | ✅ shipped s55 (PR #120, `510617f`) — 5 pure modules in `src/eval/` (case schema, aggregator, report, runner, loader); 31 tests; codex R1→R2 SAFE. |
+| Evaluation Corpus — Phase 2 (executor + cases + live run) | ✅ BUILT + RAN s56 (`feat/eval-corpus-phase-2`, awaiting merge) — real `CaseExecutor`, `eval` CLI, 7 authored cases; codex R1–R4 NOT SAFE → **R5 SAFE**. Live run: **2/7 passed, pass bar NOT met**; escaped-defect **0%**, first-pass commit **0%**. Findings → #123–#127. |
+| Critic evidence window | ❌ **BROKEN — the top open defect (#123).** Prompt carries `diff.patch` only ⇒ clean verdict unreachable for any change referencing context outside the hunk. Blocks correct work; measured, not inferred. |
 
 **Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
 - ✅ Slice 1 — overnight escalation supervisor (deterministic reason-routing, s45)
@@ -144,22 +185,28 @@ Authority Model  →  Profiles / Qualification Layer  →  two reports  →  Eva
 
 ## NEXT ACTIONS
 
-s55 cleared both open tech-debt items (#85, #106) and shipped **Evaluation Corpus Phase 1**
-(the deterministic machinery). The architecture-review chain is now shipped end-to-end
-except the Corpus's Phase 2. In priority order:
+The architecture-review chain is now shipped end to end — and the corpus, its last link,
+immediately turned the next priority from "build more" into "fix what it just measured". In
+priority order:
 
-- **(NEXT, priority) Evaluation Corpus — Phase 2 (issue #121).** The capstone. Three parts:
-  1. **Real `CaseExecutor`** — the technical piece (no operator input needed): wires
-     seed-repo → compose run from `case.intent` → drive the headless conductor to a terminal
-     → read the `EvidenceRecord` (via `loadEvidence`). Environment-bound (real git/worktrees/
-     drain), the biggest single brick. Build it as a thin adapter over the existing daemon
-     composition; keep the orchestration testable (the runner already injects the executor).
-  2. **Authored cases** (operator product fork) — ~6-8 good + adversarial cases on the
-     polygon + a couple synthetic. Bring a concrete proposed set, not a menu. Proposed pass
-     bar: every case's actual outcome == expected, with **escaped-defect-rate == 0** the
-     headline gate.
-  3. **Live measurement run** — on-demand `eval` command (NOT in CI: real codex calls are
-     costly/non-deterministic), operator-observable. The capstone proof.
+- **(NEXT, top priority) Fix the critic's evidence window — #123.** The single defect behind
+  `first_pass_commit_rate: 0%`. Candidate directions, cheapest first: widen the diff context
+  (`git diff -U50`), attach the full before/after text of each changed file, or give the critic
+  file access (blocked on Windows by the codex sandbox). **This is now a measurable change** —
+  re-run `eval` and compare `first_pass_commit_rate` before/after. That is the corpus paying
+  for itself, and it is the first time a harness change has had a number attached to it.
+- **Merge `feat/eval-corpus-phase-2`** (2 commits, R5 SAFE, 1796 tests green) — awaiting the
+  operator's word.
+- **#127 (operator fork):** correct `adv-rename-pickup-method-id`'s expectation
+  (`needs-guard` → `null`) now that the layer ordering is known. Not agent-decidable: it is an
+  oracle edit.
+- **#126:** make a corpus run self-diagnosing — archive each case's `runtime/` before the purge
+  and persist raw `EvidenceRecord`s beside the report. Without it, every failed case costs a
+  re-run to understand.
+- **#124** (a `broken` verdict whose escalation names no defect) · **#125** (`critic_total`
+  tokens always 0).
+- **#122:** autodev-harness cards auto-add to the Woodev boards #5/#6 — only fixable in the
+  board UI (the s55 "one-off wrong add" reading was wrong).
 - **PHPStan as a profile gate (#87)** — blocked on a portable way for a profile-shipped neon
   to reference an extension living in the project's `vendor`.
 - **Carried:** overloaded `blocked` EscalationType (low value) · chat-runtime → TanStack AI +
@@ -195,6 +242,7 @@ except the Corpus's Phase 2. In priority order:
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s56** — **Evaluation Corpus Phase 2 built + RAN** (`feat/eval-corpus-phase-2`, codex R1–R4 NOT SAFE → R5 SAFE). Live: **2/7, pass bar NOT met** — escaped-defect **0%** (catching works), first-pass commit **0%** (throughput doesn't). Root cause: the critic sees only the diff hunk (GOTCHAS 84, #123). Five findings filed (#123–#127) + #122 (board auto-add). The corpus caught its own author too (#127) and it was NOT silently relaxed.
 - **s55** — Tail-clearing + capstone-start, **4 PRs merged**: #118 (s54 docs tail), #119 (tech-debt #85 flaky-clock de-flake + #106 critic-unavailable, both issues closed), #120 (Evaluation Corpus **Phase 1** machinery — 5 pure `src/eval/` modules). All codex R→R SAFE. Fixed a mis-filed board card (#116 off board #5). Corpus Phase 2 → issue #121. Operator feedback (hard): stop over-asking/checkpointing — execute the whole chain to merge.
 - **s54** — Mandatory Anti-Drift + North-Star **MERGED** (PR #117, `955e05b`, last `adr/004` slice; codex R1→fix→R2 SAFE; live-proven 3 ways) + backlog reconciliation (6 stale-done closed). Incident: a `git reset --hard` to sync main discarded the operator's uncommitted `package.json`/lock/`.claude/settings.json` (GOTCHAS 82).
 - **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
