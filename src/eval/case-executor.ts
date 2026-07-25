@@ -34,6 +34,13 @@ export interface CaseEnvironment {
   /** Read each task's evidence slot — `ok` / `absent` / `unreadable` kept DISTINCT,
    *  because they mean different things to the measurement (see `evidence-store.ts`). */
   readEvidence(taskIds: string[]): Promise<EvidenceSlot[]>;
+  /** Wall-clock epoch ms. A seam rather than a direct `Date.now()` so the staleness
+   *  check below is deterministic under test. */
+  now(): number;
+  /** Release whatever the environment took hold of for the run (the exclusive corpus
+   *  lock). Idempotent; the caller invokes it from a `finally`, including after a
+   *  failure. */
+  dispose(): Promise<void>;
   log(level: string, msg: string): void;
 }
 
@@ -96,6 +103,10 @@ export function createCaseExecutor(env: CaseEnvironment): CaseExecutor {
 
   return {
     async execute(c: CorpusCase): Promise<EvidenceRecord | null> {
+      // Stamped BEFORE anything runs, so it is strictly earlier than any task this case
+      // starts. Used below to reject a record that predates the case entirely.
+      const caseStartedMs = env.now();
+
       env.log("INFO", `corpus case '${c.id}': restoring the baseline`);
       await env.resetToBaseline();
 
@@ -125,9 +136,71 @@ export function createCaseExecutor(env: CaseEnvironment): CaseExecutor {
         fail(c, `unreadable evidence for ${unreadable.length} task(s): ${detail}`);
       }
 
+      // EVERY enqueued task must have produced a record. Dropping the `absent` ones and
+      // deciding the case from whatever survived is a fail-OPEN, and the dangerous
+      // direction is not obvious: a case is `committed` only when every task committed,
+      // so an adversarial task whose record went missing beside a committed sibling
+      // would read as "committed as expected", and a missing record beside an escalated
+      // sibling would read as CAUGHT — scoring an escaped-defect rate of 0% over a task
+      // whose fate nobody knows. An incomplete measurement is an errored case, not a
+      // verdict (Principle 10; codex R1 High).
+      const absent = slots.filter((s) => s.state === "absent").map((s) => s.taskId);
+      if (absent.length > 0) {
+        fail(
+          c,
+          `no evidence record was written for ${absent.length} of ${taskIds.length} task(s) ` +
+            `(${absent.join(", ")}) -- the case's outcome is not fully measured`,
+        );
+      }
+
       const records = slots.flatMap((s) => (s.state === "ok" ? [s.record] : []));
-      if (records.length === 0) {
-        fail(c, `no evidence record was written for any of the ${taskIds.length} task(s): ${taskIds.join(", ")}`);
+      /* c8 ignore next */
+      if (records.length === 0) fail(c, `no evidence record for any of: ${taskIds.join(", ")}`);
+
+      // A record is read from `runtime/<taskId>/evidence.json`, so a record whose own
+      // `task_id` disagrees with the directory it was found in is a stale or corrupt
+      // artifact — exactly the projection-vs-truth confusion of
+      // docs/gotchas/stale-projection-needs-ssot-reconciliation.md. Attributing it to
+      // this task would silently score the case on another task's outcome (codex R1
+      // Medium).
+      const misattributed = slots.flatMap((s) =>
+        s.state === "ok" && s.record.task_id !== s.taskId ? [`${s.taskId} -> '${s.record.task_id}'`] : [],
+      );
+      if (misattributed.length > 0) {
+        fail(c, `evidence misattributed -- record task_id does not match its task: ${misattributed.join("; ")}`);
+      }
+
+      // Matching task ids are not enough: a record left behind by an EARLIER run under the
+      // same task id would pass that check and be scored as this case's outcome (codex R2
+      // High). Every record must therefore also be NEWER than the case itself — a task
+      // this case enqueued cannot have started before the case did.
+      //
+      // This is the SECOND of two independent barriers, not the only one. The primary
+      // guarantee is that `resetToBaseline` deletes the whole `runtime/` tree and THROWS if
+      // it cannot, so after a successful reset there is no prior record left to read at
+      // all; the conductor independently clears a task's `evidence.json` at the start of
+      // every iteration. This check exists so that a failure of those does not silently
+      // become a verdict.
+      //
+      // STRICTLY newer, not "not older" (codex R4 High): equality would admit a leftover
+      // record stamped in the same millisecond. Nothing legitimate is lost — a reset, a
+      // seed commit and an LLM decomposition all run between this stamp and any task's
+      // start, so a real record is seconds newer, never simultaneous.
+      //
+      // Compared as MOMENTS, never as ISO strings: with mixed offsets the lexical order is
+      // not the chronological one (docs/gotchas/iso-string-compare-vs-moment.md). An
+      // unparseable timestamp fails the case rather than being waved through — a record
+      // whose age cannot be established is not evidence (Principle 10). RESIDUAL, named:
+      // a system clock moved BACKWARDS between runs can date an old record after this
+      // stamp; no timestamp comparison can survive an untrustworthy clock, which is why it
+      // is the second barrier rather than the first.
+      const stale = records.flatMap((r) => {
+        const startedMs = Date.parse(r.started_at);
+        if (!Number.isFinite(startedMs)) return [`${r.task_id} (unparseable started_at '${r.started_at}')`];
+        return startedMs <= caseStartedMs ? [`${r.task_id} (started_at ${r.started_at}, not after this case began)`] : [];
+      });
+      if (stale.length > 0) {
+        fail(c, `stale evidence -- ${stale.length} record(s) do not postdate this case: ${stale.join("; ")}`);
       }
 
       const decisive = selectDecisiveEvidence(records);

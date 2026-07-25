@@ -35,6 +35,7 @@ import { loadCorpus } from "./eval/corpus-loader.js";
 import { createCaseExecutor } from "./eval/case-executor.js";
 import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
 import { runNative } from "./util/native.js";
+import { safeErrorText, safeLog } from "./util/safe-log.js";
 
 /** Parse a `--max-iterations` value; a non-positive-integer must fail LOUD, never
  * silently disable the limit (NaN would make the conductor's `iterations >= max`
@@ -475,39 +476,65 @@ async function main(): Promise<void> {
     const moduleDir2 = dirname(fileURLToPath(import.meta.url));
     const corpusDir = command.args.corpus ?? join(moduleDir2, "..", "corpus");
 
-    // Capture the baseline ONCE, before the first case: cases commit, so re-reading HEAD
-    // per case would let each case's baseline drift to the previous case's result.
-    let baseline = command.args.baseline;
-    if (baseline === undefined) {
-      const head = await runNative("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
-      if (head.exitCode !== 0) {
-        throw new Error(`eval: cannot resolve the target repo's HEAD as a baseline: ${head.stderr.trim()}`);
-      }
-      baseline = head.stdout.trim();
+    // Resolve the baseline to an IMMUTABLE commit sha ONCE, before the first case --
+    // including an explicitly-passed one. Every case commits (the seed, and the work
+    // itself when it lands), so a mutable commit-ish like `HEAD` or a branch name would
+    // be re-resolved per case and silently drift onto the PREVIOUS case's result, making
+    // each case start from a different premise than the one before it (codex R1 Medium).
+    // `--end-of-options` so a ref that happens to start with a dash is parsed as an
+    // OPERAND, never as a git flag (codex R2 Medium). `^{commit}` makes `--verify` reject
+    // anything that is not a commit (a tree, a blob, a tag pointing at one).
+    const baselineRef = command.args.baseline ?? "HEAD";
+    const resolved = await runNative(
+      "git",
+      ["rev-parse", "--verify", "--end-of-options", `${baselineRef}^{commit}`],
+      { cwd: repoRoot },
+    );
+    if (resolved.exitCode !== 0) {
+      throw new Error(`eval: cannot resolve baseline '${baselineRef}' to a commit: ${resolved.stderr.trim()}`);
     }
+    const baseline = resolved.stdout.trim();
 
+    // NOTE: the target project's exclusive lock and idle-queue check are taken by the case
+    // ENVIRONMENT on its own destructive path -- deliberately NOT called here, so no future
+    // entry point can construct the environment and skip them. All this layer owes is the
+    // matching `dispose()` in a `finally`.
     const cases = await loadCorpus(corpusDir);
     root.log("INFO", `eval: ${cases.length} case(s) from ${corpusDir}; baseline ${baseline}; target ${repoRoot}`);
     process.stdout.write(`Evaluation Corpus: ${cases.length} case(s) from ${corpusDir}\n`);
     process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n\n`);
 
-    const executor = createCaseExecutor(
-      createHarnessCaseEnvironment({ root, corpusRoot: corpusDir, baseline, maxIterations: command.args.maxIterations }),
-    );
-    const { markdown, passBar } = await runEval(cases, executor, (line) => process.stdout.write(`${line}\n`));
+    const env = createHarnessCaseEnvironment({
+      root,
+      corpusRoot: corpusDir,
+      baseline,
+      maxIterations: command.args.maxIterations,
+    });
+    try {
+      const executor = createCaseExecutor(env);
+      const { markdown, passBar } = await runEval(cases, executor, (line) => process.stdout.write(`${line}\n`));
 
-    process.stdout.write("\n");
-    printMarkdown(markdown);
-    if (command.args.out !== undefined) {
-      await writeFile(command.args.out, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
-      process.stdout.write(`\nreport written to ${command.args.out}\n`);
-    }
+      process.stdout.write("\n");
+      printMarkdown(markdown);
+      if (command.args.out !== undefined) {
+        await writeFile(command.args.out, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+        process.stdout.write(`\nreport written to ${command.args.out}\n`);
+      }
 
-    if (!passBar.met) {
-      // A non-zero exit makes the bar MECHANICAL rather than a number the reader has to
-      // interpret -- the same discipline the gate itself is held to.
-      for (const reason of passBar.reasons) process.stderr.write(`PASS BAR NOT MET: ${reason}\n`);
-      process.exitCode = 1;
+      if (!passBar.met) {
+        // A non-zero exit makes the bar MECHANICAL rather than a number the reader has to
+        // interpret -- the same discipline the gate itself is held to.
+        for (const reason of passBar.reasons) process.stderr.write(`PASS BAR NOT MET: ${reason}\n`);
+        process.exitCode = 1;
+      }
+    } finally {
+      // Releasing the lock must not be able to mask the real failure, nor to fail a run
+      // whose measurement already completed. `safeLog`/`safeErrorText` because a throwing
+      // logger or a hostile `message` getter inside a catch would resurrect exactly the
+      // failure this handler exists to swallow (gotcha [ts/fail-closed]; codex R5).
+      await env.dispose().catch((err: unknown) => {
+        safeLog(root.log, "WARN", `eval: releasing the corpus lock failed (ignored): ${safeErrorText(err)}`);
+      });
     }
     return;
   }

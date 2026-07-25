@@ -78,4 +78,30 @@ describe("resetHarnessState", () => {
   it("refuses a filesystem root", async () => {
     await expect(resetHarnessState(parse(stateDir).root)).rejects.toThrow(/filesystem root/);
   });
+
+  it("refuses a path that only NORMALIZES to a filesystem root", async () => {
+    const root = parse(stateDir).root;
+    // `C:\work\..` is absolute and is not literally the root, but resolves to it — so a
+    // check on the raw string would pass while `join` later targets `C:\queue`.
+    await expect(resetHarnessState(join(root, "work", ".."))).rejects.toThrow(/filesystem root/);
+  });
+
+  it("refuses when the state directory itself is a reparse point", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "adh-state-link-"));
+    mkdirSync(join(outside, "queue"), { recursive: true });
+    writeFileSync(join(outside, "queue", "precious.md"), "not ours");
+    const linkParent = mkdtempSync(join(tmpdir(), "adh-state-lp-"));
+    const link = join(linkParent, ".autodev");
+    symlinkSync(outside, link, "junction");
+
+    await expect(resetHarnessState(link)).rejects.toThrow(/not a real directory/);
+    expect(existsSync(join(outside, "queue", "precious.md"))).toBe(true);
+
+    rmSync(linkParent, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("refuses an absent state directory rather than treating it as nothing to do", async () => {
+    await expect(resetHarnessState(join(stateDir, "does-not-exist"))).rejects.toThrow(/not a real directory/);
+  });
 });

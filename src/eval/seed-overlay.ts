@@ -81,6 +81,16 @@ async function lstatOrNull(p: string): Promise<Awaited<ReturnType<typeof lstat>>
  * Walking the segments we are about to create is exact and needs no `realpath`: the first
  * ancestor that does not exist ends the walk (everything below it will be created as real
  * directories).
+ *
+ * Two boundaries this deliberately does NOT police (codex R1, declined with reasons):
+ *  - `repoRoot` ITSELF being a symlink is not an escape. Every other component — git, the
+ *    conductor, the blackboard — takes `repoRoot` exactly as given and follows it too, so
+ *    the seed lands wherever "the repo" already is. Refusing here would reject a working
+ *    setup while changing nothing about where the harness operates.
+ *  - the TOCTOU window between this walk and the `mkdir`/`copyFile` below. Closing it
+ *    needs an `openat2`-style API Node does not expose (the residual already accepted in
+ *    docs/gotchas/static-file-serving-symlink-traversal.md), and reaching it requires
+ *    write access inside a target repo the corpus has just verified clean and reset.
  */
 async function assertNoSymlinkedAncestor(seedDir: string, rootResolved: string, rel: string): Promise<void> {
   const segments = rel.split("/");

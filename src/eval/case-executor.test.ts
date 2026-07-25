@@ -76,6 +76,12 @@ function fakeEnv(over: Partial<CaseEnvironment> = {}): FakeEnv {
       calls.push(`read:${taskIds.join(",")}`);
       return taskIds.map((taskId): EvidenceSlot => ({ taskId, state: "ok", record: record(taskId) }));
     },
+    // Fixed records are stamped 2026-07-25; a case "starting" before that keeps every
+    // fixture record legitimately newer than its case.
+    now: () => Date.parse("2026-07-24T00:00:00.000Z"),
+    async dispose() {
+      calls.push("dispose");
+    },
     log() {
       /* silent in tests */
     },
@@ -191,7 +197,10 @@ describe("createCaseExecutor", () => {
     await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/no evidence record was written/);
   });
 
-  it("still decides the case when SOME tasks are merely absent", async () => {
+  it("throws when SOME task is absent -- an incomplete measurement is not a verdict", async () => {
+    // The fail-open this closes: the absent task is the adversarial one, its committed
+    // sibling would have made the case read as "committed as expected" while the task
+    // that mattered was never measured at all.
     const env = fakeEnv({
       async compose() {
         return ["t1", "t2"];
@@ -203,8 +212,19 @@ describe("createCaseExecutor", () => {
         ];
       },
     });
-    const out = await createCaseExecutor(env).execute(makeCase());
-    expect(out?.task_id).toBe("t2");
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/no evidence record was written for 1 of 2/);
+  });
+
+  it("throws when a record's own task_id disagrees with the task it was read for", async () => {
+    const env = fakeEnv({
+      async readEvidence(ids: string[]) {
+        // A stale record left under `runtime/t1/` from an earlier, different task.
+        return [{ taskId: ids[0]!, state: "ok", record: record("some-other-task") }];
+      },
+    });
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(
+      /misattributed.*t1 -> 'some-other-task'/,
+    );
   });
 
   it("names the case id in every failure so a corpus log points at the culprit", async () => {
@@ -216,6 +236,47 @@ describe("createCaseExecutor", () => {
     await expect(createCaseExecutor(env).execute(makeCase({ id: "adv-hidden-bug" }))).rejects.toThrow(
       /corpus case 'adv-hidden-bug'/,
     );
+  });
+
+  it("throws when a record PREDATES the case -- a leftover from an earlier run is not evidence", async () => {
+    const env = fakeEnv({
+      // The case starts AFTER the fixture record's started_at (2026-07-25T00:00:00Z).
+      now: () => Date.parse("2026-07-26T00:00:00.000Z"),
+    });
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(
+      /stale evidence.*do not postdate this case/s,
+    );
+  });
+
+  it("rejects a record stamped in the SAME millisecond the case began (equality is a leftover, not a race)", async () => {
+    const env = fakeEnv({ now: () => Date.parse("2026-07-25T00:00:00.000Z") });
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/do not postdate this case/);
+  });
+
+  it("accepts a record stamped one millisecond after the case began", async () => {
+    const env = fakeEnv({ now: () => Date.parse("2026-07-25T00:00:00.000Z") - 1 });
+    await expect(createCaseExecutor(env).execute(makeCase())).resolves.not.toBeNull();
+  });
+
+  it("throws on an unparseable started_at rather than treating unknown age as fresh", async () => {
+    const env = fakeEnv({
+      async readEvidence(ids: string[]) {
+        return [{ taskId: ids[0]!, state: "ok", record: record(ids[0]!, { started_at: "not a date" }) }];
+      },
+    });
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/unparseable started_at/);
+  });
+
+  it("compares timestamps as moments, not strings (a +03:00 stamp is EARLIER than it sorts)", async () => {
+    // "2026-07-25T01:00:00+03:00" == 22:00Z on the 24th -- lexically it sorts AFTER
+    // "2026-07-25T00:00:00.000Z" while being chronologically before it.
+    const env = fakeEnv({
+      now: () => Date.parse("2026-07-25T00:00:00.000Z"),
+      async readEvidence(ids: string[]) {
+        return [{ taskId: ids[0]!, state: "ok", record: record(ids[0]!, { started_at: "2026-07-25T01:00:00+03:00" }) }];
+      },
+    });
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/not after this case began/);
   });
 
   it("propagates a reset failure instead of running the case from an unknown state", async () => {

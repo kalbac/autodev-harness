@@ -4,6 +4,8 @@ import type { CorpusCase } from "./corpus-case.js";
 import type { CaseEnvironment } from "./case-executor.js";
 import { applySeedOverlay } from "./seed-overlay.js";
 import { resetHarnessState } from "./harness-state-reset.js";
+import { createOneShotQueueGuard } from "./eval-preflight.js";
+import { acquireCorpusLock, type CorpusLock } from "./corpus-lock.js";
 import type { ProjectRoot } from "../composition/root.js";
 import { loadEvidence, EVIDENCE_FILE, type EvidenceSlot } from "../report/evidence-store.js";
 import { mainTreeStatus } from "../util/git.js";
@@ -30,7 +32,9 @@ export interface HarnessCaseEnvironmentOptions {
   root: ProjectRoot;
   /** Absolute path of the corpus directory; `case.seed` resolves under it. */
   corpusRoot: string;
-  /** The commit-ish every case resets the target repo to before it runs. */
+  /** The commit every case resets the target repo to before it runs. The caller must
+   *  pass an IMMUTABLE sha, not a symbolic ref: cases commit, so a `HEAD`/branch ref
+   *  would be re-resolved per case and drift onto the previous case's result. */
   baseline: string;
   /** Bound on the per-case drain, so a pathological case cannot spin forever. */
   maxIterations: number;
@@ -52,6 +56,17 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   const corpusRoot = resolve(opts.corpusRoot);
   const log = root.log;
 
+  // Ownership of the target project, established once and in this order:
+  //  1. take the EXCLUSIVE lock, so no second corpus run can be between its own check and
+  //     its own purge (codex R4 High — a point-in-time check cannot settle that alone);
+  //  2. only then ask whether the queue is idle, which is now a question about the
+  //     operator's work rather than a race with another run.
+  // The guard belongs HERE, on the destructive path itself, not at whichever caller
+  // happens to remember it (codex R2 High), and is retired only once a purge has really
+  // happened (codex R3 High).
+  const queueGuard = createOneShotQueueGuard(root.repo);
+  let lock: CorpusLock | null = null;
+
   async function git(args: string[], label: string): Promise<string> {
     const r = await runNative("git", args, { cwd: repoRoot });
     if (r.exitCode !== 0) {
@@ -63,7 +78,18 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   return {
     log,
 
+    now: () => Date.now(),
+
+    async dispose(): Promise<void> {
+      const held = lock;
+      lock = null;
+      if (held !== null) await held.release();
+    },
+
     async resetToBaseline(): Promise<void> {
+      if (lock === null) lock = await acquireCorpusLock(root.stateDirAbs);
+      await queueGuard.check();
+
       // The conductor refuses to run off the loop branch, so a corpus started on the
       // wrong branch would reset the tree and then fail every case for a reason that
       // has nothing to do with the harness under test. Check FIRST, mutate after.
@@ -76,6 +102,15 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
       }
 
       // Fail-closed on ANY uncommitted work rather than deciding what may be discarded.
+      // RESIDUAL, named rather than papered over (codex R1): the check and the reset are
+      // two git invocations, so an edit landing between them is still lost. Nothing short
+      // of holding the repo exclusively closes that, and `eval` is an operator-invoked,
+      // operator-watched command over a repo they were told the corpus owns. The window
+      // this DOES close is the one that actually bit s54 — starting a destructive sync on
+      // a tree that was already carrying someone's work
+      // (docs/gotchas/reset-hard-discards-others-uncommitted.md). Work under the
+      // git-excluded `.autodev` is invisible here by construction and is guarded
+      // separately, once, by `assertTargetQueueIsIdle` before the first case.
       const dirty = await mainTreeStatus(repoRoot);
       if (dirty.length > 0) {
         const listed = dirty
@@ -91,6 +126,9 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
 
       await git(["reset", "--hard", baseline], `reset --hard ${baseline}`);
       const purged = await resetHarnessState(root.stateDirAbs);
+      // Only NOW is the queue the corpus's rather than the operator's — retiring the
+      // guard any earlier would leave a failed first attempt unguarded on retry.
+      queueGuard.satisfied();
       log("INFO", `corpus: reset ${repoRoot} to ${baseline}; purged blackboard [${purged.join(", ") || "nothing"}]`);
     },
 
