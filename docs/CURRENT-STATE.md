@@ -38,11 +38,14 @@ an evaluation corpus exists to close, and it closed it on its first run.
 
 The corpus also caught **its own author**: `adv-rename-pickup-method-id` expected `needs-guard`
 and got `disagreement` (the critic preempts the mechanical zone check). Deliberately **not**
-silently relaxed — editing an oracle to fit an observed result is indistinguishable from tuning
-it (Principle 14 applied to ourselves), so it is issue **#127** for the operator.
+silently relaxed mid-analysis — editing an oracle to fit an observed result is indistinguishable
+from tuning it (Principle 14 applied to ourselves) — so it went to the operator as #127 and was
+corrected to `escalation_type: null` **on his approval**, with the layer ordering written into
+the case's rationale. `RESULTS-2026-07-26.md` is left as the run exactly as executed; the
+corrected corpus would read 3/7, which is a projection, not a measurement.
 
-`main` is at **`879781a`**; the work sits on `feat/eval-corpus-phase-2` (2 commits) awaiting the
-merge word.
+**MERGED** — PR #128, squash `3191a76`, CI 4/4. `main` is at **`3191a76`**. Issue #121 (Phase 2)
+closed; #127 closed by the same PR after the operator approved the oracle correction.
 
 ## Where we were (leaving s55)
 
@@ -108,7 +111,7 @@ chain to merge and report results, reserving questions for true product forks (s
 | Tech-debt: flaky wall-clock tests (#85) | ✅ shipped s55 (PR #119) — pure `classifyWatchTick` + injected clock/spawn seam; mutation-verified deterministic wiring tests; `vi.waitFor` in server tests. codex R1→R2 SAFE. |
 | Tech-debt: critic-unavailable (#106) | ✅ shipped s55 (PR #119) — `CriticResult.failure` + new `critic-unavailable` EscalationType; null-not-rate-limited verdict escalates at round 0 (no wasted worker rounds), fail-closed. codex SAFE. |
 | Evaluation Corpus — Phase 1 (machinery) | ✅ shipped s55 (PR #120, `510617f`) — 5 pure modules in `src/eval/` (case schema, aggregator, report, runner, loader); 31 tests; codex R1→R2 SAFE. |
-| Evaluation Corpus — Phase 2 (executor + cases + live run) | ✅ BUILT + RAN s56 (`feat/eval-corpus-phase-2`, awaiting merge) — real `CaseExecutor`, `eval` CLI, 7 authored cases; codex R1–R4 NOT SAFE → **R5 SAFE**. Live run: **2/7 passed, pass bar NOT met**; escaped-defect **0%**, first-pass commit **0%**. Findings → #123–#127. |
+| Evaluation Corpus — Phase 2 (executor + cases + live run) | ✅ shipped + MERGED s56 (PR #128, `3191a76`, CI 4/4) — real `CaseExecutor`, `eval` CLI, 7 authored cases; codex R1–R4 NOT SAFE → **R5 SAFE**. Live run: **2/7 passed, pass bar NOT met**; escaped-defect **0%**, first-pass commit **0%**. Closes #121. Findings → #123–#126 (#127 fixed in-PR). |
 | Critic evidence window | ❌ **BROKEN — the top open defect (#123).** Prompt carries `diff.patch` only ⇒ clean verdict unreachable for any change referencing context outside the hunk. Blocks correct work; measured, not inferred. |
 
 **Unattended-autonomy half (`adr/004`) — COMPLETE (all four slices shipped):**
@@ -195,11 +198,6 @@ priority order:
   file access (blocked on Windows by the codex sandbox). **This is now a measurable change** —
   re-run `eval` and compare `first_pass_commit_rate` before/after. That is the corpus paying
   for itself, and it is the first time a harness change has had a number attached to it.
-- **Merge `feat/eval-corpus-phase-2`** (2 commits, R5 SAFE, 1796 tests green) — awaiting the
-  operator's word.
-- **#127 (operator fork):** correct `adv-rename-pickup-method-id`'s expectation
-  (`needs-guard` → `null`) now that the layer ordering is known. Not agent-decidable: it is an
-  oracle edit.
 - **#126:** make a corpus run self-diagnosing — archive each case's `runtime/` before the purge
   and persist raw `EvidenceRecord`s beside the report. Without it, every failed case costs a
   re-run to understand.
@@ -242,7 +240,7 @@ priority order:
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
-- **s56** — **Evaluation Corpus Phase 2 built + RAN** (`feat/eval-corpus-phase-2`, codex R1–R4 NOT SAFE → R5 SAFE). Live: **2/7, pass bar NOT met** — escaped-defect **0%** (catching works), first-pass commit **0%** (throughput doesn't). Root cause: the critic sees only the diff hunk (GOTCHAS 84, #123). Five findings filed (#123–#127) + #122 (board auto-add). The corpus caught its own author too (#127) and it was NOT silently relaxed.
+- **s56** — **Evaluation Corpus Phase 2 MERGED** (PR #128, `3191a76`, CI 4/4; codex R1–R4 NOT SAFE → R5 SAFE; closes #121). Live run: **2/7, pass bar NOT met** — escaped-defect **0%** (catching works), first-pass commit **0%** (throughput doesn't). Root cause: the critic sees only the diff hunk (GOTCHAS 84, #123). Findings #123–#126 open, #127 fixed in-PR on the operator's word, #122 (board auto-add) filed. Five sessions of green live proofs missed this because all of them were additive.
 - **s55** — Tail-clearing + capstone-start, **4 PRs merged**: #118 (s54 docs tail), #119 (tech-debt #85 flaky-clock de-flake + #106 critic-unavailable, both issues closed), #120 (Evaluation Corpus **Phase 1** machinery — 5 pure `src/eval/` modules). All codex R→R SAFE. Fixed a mis-filed board card (#116 off board #5). Corpus Phase 2 → issue #121. Operator feedback (hard): stop over-asking/checkpointing — execute the whole chain to merge.
 - **s54** — Mandatory Anti-Drift + North-Star **MERGED** (PR #117, `955e05b`, last `adr/004` slice; codex R1→fix→R2 SAFE; live-proven 3 ways) + backlog reconciliation (6 stale-done closed). Incident: a `git reset --hard` to sync main discarded the operator's uncommitted `package.json`/lock/`.claude/settings.json` (GOTCHAS 82).
 - **s53** — CRLF papercut merged (PR #114) + Morning Report merged (PR #115) + mandatory-anti-drift spec'd.
