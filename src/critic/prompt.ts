@@ -1,3 +1,4 @@
+import { isProseOnlyChange } from "./evidence.js";
 import type { CriticEvidence, OmissionReason } from "./evidence.js";
 
 /**
@@ -41,6 +42,15 @@ import type { CriticEvidence, OmissionReason } from "./evidence.js";
  */
 export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): string {
   const sections: string[] = [];
+
+  // `adr/007`'s leniency is gated on a MECHANICAL determination, made here and never by
+  // the model (codex called the first version's "you decide whether this is code" a
+  // blocker, correctly — Principles 1 and 3 put that class of decision in code). Note
+  // it needs the evidence set to know which files changed: with no evidence there is no
+  // file list, so there is no leniency either, which is the fail-closed direction.
+  const proseOnly =
+    evidence !== undefined &&
+    isProseOnlyChange([...evidence.attached, ...evidence.omitted].map((f) => f.path), diff);
 
   sections.push(
     "# Independent adversarial critic review",
@@ -86,12 +96,14 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "",
   );
 
-  sections.push(
+  if (proseOnly) {
+    sections.push(
     "## A claim you cannot verify is not a defect you found",
     "",
-    "This applies ONLY when the changed files contain no executable code (a docs,",
-    "markdown, or plain-text change) — for anything touching code, ignore this",
-    "section entirely and judge normally.",
+    "The harness has already determined, MECHANICALLY, that this change touches only",
+    "prose files and adds no fenced code block. That determination is not yours to",
+    "make or to revisit — this section is simply ABSENT from the prompt for every",
+    "other change, so you will never see it on a diff that touches code.",
     "",
     "When such a change ADDS prose that asserts something about the rest of the",
     "codebase — \"the plugin registers the ids `x` and `y`\", \"this method is called",
@@ -112,7 +124,8 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "that a later change can claim to match it is exactly the kind of thing you are",
     "here to catch.",
     "",
-  );
+    );
+  }
 
   sections.push(
     "## Fencing — judge the change, not the worker's account of it",

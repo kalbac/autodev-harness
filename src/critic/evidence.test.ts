@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   planEvidence,
+  isProseOnlyChange,
   collectCriticEvidence,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
@@ -227,5 +228,54 @@ describe("summarizeEvidence", () => {
     });
     expect(line).toContain("attached 1 file(s), 10 byte(s)");
     expect(line).toContain("b.png (not-text)");
+  });
+});
+
+describe("isProseOnlyChange (the mechanical gate on adr/007's leniency)", () => {
+  const add = (path: string, ...body: string[]): string =>
+    [`diff --git a/${path} b/${path}`, `+++ b/${path}`, ...body.map((l) => `+${l}`)].join("\n");
+
+  it("accepts a change that touches only prose files", () => {
+    expect(isProseOnlyChange(["docs/OVERVIEW.md"], add("docs/OVERVIEW.md", "some prose"))).toBe(true);
+    expect(isProseOnlyChange(["NOTES.txt", "docs/a.rst"], add("NOTES.txt", "x"))).toBe(true);
+  });
+
+  it("REFUSES as soon as one changed file is not prose", () => {
+    // The determination is about the whole change, not the file the critic happens to
+    // be looking at: one code file means the normal mandate applies to all of it.
+    expect(isProseOnlyChange(["docs/a.md", "includes/x.php"], add("docs/a.md", "x"))).toBe(false);
+  });
+
+  it("REFUSES an unknown extension rather than assuming it is safe", () => {
+    // Fail-closed: `.yml` (a workflow), `.sql` (a migration), `.env.example`, or no
+    // extension at all are all "unknown risk", never "no risk".
+    for (const p of [".github/workflows/ci.yml", "db/001.sql", "Makefile", "scripts/run"]) {
+      expect(isProseOnlyChange([p], add(p, "x"))).toBe(false);
+    }
+  });
+
+  it("REFUSES a prose file that adds a FENCED code block", () => {
+    // codex's concrete counter-example against the first version of adr/007: a `.md`
+    // whose fenced shell block a CI step executes is a code change wearing a prose
+    // extension. Blunter than "does anything run this" -- and blunt in the safe direction.
+    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "run:", "```sh", "./deploy.sh", "```"))).toBe(false);
+    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "~~~python", "os.system('x')", "~~~"))).toBe(false);
+    // Indented inside a list item -- still a fence.
+    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "  - step:", "    ```sh", "    x", "    ```"))).toBe(false);
+  });
+
+  it("does not mistake a FILE HEADER for an added line", () => {
+    // `+++ b/<path>` starts with `+` but is a header; treating it as content would be
+    // the same class of bug `diff-lines.ts` documents at length.
+    expect(isProseOnlyChange(["docs/a.md"], add("docs/a.md", "plain prose"))).toBe(true);
+  });
+
+  it("REFUSES an empty or blank path set — 'I do not know what changed' is not leniency", () => {
+    expect(isProseOnlyChange([], "")).toBe(false);
+    expect(isProseOnlyChange(["", "   "], "")).toBe(false);
+  });
+
+  it("matches the extension case-insensitively", () => {
+    expect(isProseOnlyChange(["docs/README.MD"], add("docs/README.MD", "x"))).toBe(true);
   });
 });

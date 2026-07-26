@@ -37,7 +37,7 @@
  * now by failing.
  */
 import { open, lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { READ_NO_FOLLOW_FLAGS } from "../util/bounded-read.js";
 import { realpathContains } from "../util/path-contain.js";
 
@@ -69,6 +69,57 @@ export const CRITIC_DIFF_CONTEXT_LINES = 25;
  *  reasons — never contents). Named here so the writer and any reader of the archived
  *  corpus artifacts agree on it by construction. */
 export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
+
+/**
+ * File extensions that carry PROSE and nothing a machine executes. Deliberately short:
+ * every extension here is one whose contents no toolchain in this project runs, and
+ * anything not listed is treated as code (fail-closed — an unknown extension is an
+ * unknown risk, not a safe one).
+ */
+const PROSE_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"]);
+
+/**
+ * Does this change touch ONLY prose?
+ *
+ * This exists because `adr/007` narrows what the critic may reject for a change that
+ * contains no executable code — and the FIRST version of that narrowing left the
+ * boundary to the critic's own judgment ("this applies only when the changed files
+ * contain no executable code"). The review gate called that a blocker, correctly: in a
+ * project whose entire thesis is that the enforcement decision must not be an LLM's
+ * (Principles 1 and 3), the question "does this change get leniency" is exactly the
+ * kind that must be answered by code the model cannot argue with.
+ *
+ * So the harness decides, and the prompt is only *told* the answer. Two mechanical
+ * conditions, both required:
+ *
+ *  1. **Every changed path has a prose extension.** An empty path set is NOT prose-only
+ *    — "I do not know what changed" must never buy leniency.
+ *  2. **No added line opens a fenced block.** This closes the review gate's concrete
+ *    counter-example: a Markdown file whose fenced shell block a CI step executes is a
+ *    code change wearing a `.md` extension. Refusing every fenced addition is blunter
+ *    than the real question ("does anything run this?") — which is not decidable here —
+ *    and blunt in the safe direction.
+ *
+ * Named residual, not closed: a `.md` that some pipeline reads as data (a checklist a
+ * script parses, a table a generator consumes) is still treated as prose. The operator's
+ * lever for that is `adr/006` — declare it in `constitutionPaths` and the oracle fence
+ * protects it outright, which is a stronger guarantee than anything the critic could give.
+ */
+export function isProseOnlyChange(paths: string[], diff: string): boolean {
+  const real = paths.filter((p) => typeof p === "string" && p.trim() !== "");
+  if (real.length === 0) return false;
+  for (const p of real) {
+    if (!PROSE_EXTENSIONS.has(extname(p).toLowerCase())) return false;
+  }
+  // `+++ b/<path>` is a file header, not content; `+` alone is an added line. A fence
+  // may be indented inside a list, so the check is on the trimmed body.
+  for (const line of diff.split("\n")) {
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    const body = line.slice(1).trim();
+    if (body.startsWith("```") || body.startsWith("~~~")) return false;
+  }
+  return true;
+}
 
 /** Why a touched file is not attached. Each value is a genuinely different fact about
  *  the file, and the prompt renders it verbatim so the critic can weigh it. */

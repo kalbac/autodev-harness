@@ -151,33 +151,64 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
 });
 
 describe("buildCriticPrompt — adr/007: an unverifiable claim about untouched code", () => {
-  const diff = "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md\n+the plugin registers test_pickup\n";
+  const docsDiff = "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md\n+++ b/docs/OVERVIEW.md\n+the plugin registers test_pickup\n";
+  // The carve-out is gated on a MECHANICAL prose-only determination, which needs the
+  // evidence set to know which files changed. That is the whole point of the gate:
+  // whether a change gets leniency is decided by code, never by the model.
+  const proseEvidence = {
+    attached: [{ path: "docs/OVERVIEW.md", bytes: 10, content: "x" }],
+    omitted: [],
+  };
 
   it("tells the critic not to lower the verdict for an assertion it cannot verify", () => {
     // MEASURED before this ADR: the corpus's docs-only case came back `uncertain` @ 0.84
     // on "no implementation or tests are provided to independently verify that
     // test_pickup and test_courier are registered". The code it describes is outside the
-    // change by design, so that verdict can never be earned -- it is a permanent block,
+    // change by design, so that verdict can never be earned — it is a permanent block,
     // not a finding (docs/adr/007).
-    const prompt = buildCriticPrompt(diff);
+    const prompt = buildCriticPrompt(docsDiff, proseEvidence);
     expect(prompt).toMatch(/do NOT\s+lower the verdict for them/i);
     expect(prompt).toMatch(/permanent `uncertain`/);
     expect(prompt).toMatch(/say so in `notes`/i);
   });
 
-  it("scopes the carve-out to CODE-FREE changes only", () => {
-    // The narrowing must never reach a diff that touches executable code -- that is the
-    // critic's actual job and adr/005's remit is untouched.
-    const prompt = buildCriticPrompt(diff);
-    expect(prompt).toMatch(/ONLY when the changed files contain no executable code/i);
-    expect(prompt).toMatch(/for anything touching code, ignore this\s+section entirely/i);
+  it("states that the code-free determination is MECHANICAL, not the critic's to make", () => {
+    // codex called the first version a blocker: it left "does this change contain
+    // executable code" to the model, in a project whose thesis is that the enforcement
+    // decision must not be an LLM's (Principles 1 and 3).
+    const prompt = buildCriticPrompt(docsDiff, proseEvidence);
+    expect(prompt).toMatch(/harness has already determined, MECHANICALLY/);
+    expect(prompt).toMatch(/not yours to\s+make or to revisit/i);
+  });
+
+  it("is ABSENT for a diff that touches code — not merely qualified", () => {
+    // The strongest form of the gate: a code diff never sees the section at all, so
+    // there is no wording for the model to misapply.
+    const codeEvidence = {
+      attached: [{ path: "includes/thing.php", bytes: 10, content: "x" }],
+      omitted: [],
+    };
+    const prompt = buildCriticPrompt("diff --git a/includes/thing.php b/includes/thing.php\n+$x = 1;\n", codeEvidence);
+    expect(prompt).not.toMatch(/A claim you cannot verify is not a defect you found/);
+  });
+
+  it("is ABSENT for a docs diff that adds a fenced code block", () => {
+    // codex's concrete counter-example: a Markdown file whose fenced shell block a CI
+    // step executes is a code change wearing a `.md` extension.
+    const fenced = 'diff --git a/docs/ci.md b/docs/ci.md\n+++ b/docs/ci.md\n+run this:\n+```sh\n+./scripts/deploy.sh\n+```\n';
+    const ev = { attached: [{ path: "docs/ci.md", bytes: 10, content: "x" }], omitted: [] };
+    expect(buildCriticPrompt(fenced, ev)).not.toMatch(/A claim you cannot verify is not a defect you found/);
+  });
+
+  it("is ABSENT when there is no evidence set at all — no file list, no leniency", () => {
+    expect(buildCriticPrompt(docsDiff)).not.toMatch(/A claim you cannot verify is not a defect you found/);
   });
 
   it("keeps MODIFIED documented behaviour fully reviewable — the docs-first attack", () => {
     // The carve-out is for ADDED prose. Rewriting a documented contract so a later
     // change can claim to match it is a real attack shape, and this repo's own corpus
     // has a case built on documented contracts (`adv-break-documented-contract`).
-    const prompt = buildCriticPrompt(diff);
+    const prompt = buildCriticPrompt(docsDiff, proseEvidence);
     expect(prompt).toMatch(/carve-out is for ADDED prose only/i);
     expect(prompt).toMatch(/MODIFIES or DELETES text/);
     expect(prompt).toMatch(/review it in full, with no leniency/i);
@@ -185,7 +216,7 @@ describe("buildCriticPrompt — adr/007: an unverifiable claim about untouched c
   });
 
   it("does not weaken anything adr/005 left standing", () => {
-    const prompt = buildCriticPrompt(diff);
+    const prompt = buildCriticPrompt(docsDiff, proseEvidence);
     expect(prompt).toMatch(/Assume, by default, that this diff BREAKS a contract/);
     expect(prompt).toMatch(/fabricated proof/i);
     // Still judges what it CAN judge in a docs change.

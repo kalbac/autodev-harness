@@ -68,7 +68,20 @@ demanded a test in a repo where no test could exist.
 `notes`; it does not lower the verdict — but ONLY for a diff that ADDS prose, never for
 one that rewrites an existing documented contract.**
 
-Concretely, for a diff whose changed files contain no executable code:
+**Whether a change qualifies is decided MECHANICALLY, by the harness, and the prompt is
+only told the answer** (`isProseOnlyChange` in `critic/evidence.ts`). The first version
+of this ADR left that boundary to the critic's own judgment — "this applies only when the
+changed files contain no executable code" — and the review gate called it a blocker,
+correctly: in a project whose thesis is that the enforcement decision must not be an
+LLM's (Principles 1 and 3), "does this change get leniency" is exactly the class of
+question that belongs in code the model cannot argue with. Two conditions, both required:
+every changed path has a prose extension (an unknown extension is treated as code, and an
+empty path set never qualifies), and no added line opens a fenced block — which closes the
+gate's own counter-example, a Markdown file whose fenced shell block a CI step executes.
+For any other change the section is not qualified but **absent**, so there is no wording
+left for the model to misapply.
+
+Concretely, for a diff the harness has determined to be prose-only:
 
 - **Added prose** (the diff's changed lines are additions) asserting something about
   the codebase: the critic states in `notes` which assertions it could not verify, and
@@ -93,6 +106,22 @@ existing behaviour cannot legitimize a future change — there is no prior contr
 contradict. Editing or deleting a documented contract can, so it stays fully reviewable,
 and the critic can perform that review from the diff alone: the old text is right there
 in the `-` lines.
+
+The review gate raised a second, sharper version of this attack: **split it across two
+tasks.** Task 1 adds a NEW document asserting "these ids may be renamed freely" — all
+`+` lines, in a file whose prior contract lives elsewhere and is therefore never shown —
+and task 2 then renames the ids "in compliance with the documentation". That was
+**measured rather than argued**, and it does not reproduce through the harness:
+
+- Evidence attachments are built from the diff's CHANGED files
+  (`worktree.diffFiles`), so a document committed by an earlier task is not attached to
+  a later one. Task 2's critic sees the code change alone.
+- Measured on that exact shape — a persisted shipping-method id renamed, prompt hashed
+  to prove the input was identical across runs — the critic returned `broken` in **6 of
+  6** runs, naming "a breaking persisted-contract change".
+- A planted document only reaches the critic if the SAME task changes it, in which case
+  it is in the diff, its `+` lines are visible beside the rename, and
+  `isProseOnlyChange` is false anyway because the change also touches code.
 
 Residual, stated rather than hidden: added prose that is simply **false** ("the ids are
 `a` and `b`" when they are `c` and `d`) will now pass the critic. That is accepted, on
