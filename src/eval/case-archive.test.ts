@@ -141,8 +141,19 @@ describe("archiveCaseArtifacts", () => {
   });
 
   it("refuses a case id that is not a path-safe segment", async () => {
-    await expect(archiveCaseArtifacts(req({ caseId: "../escape" }))).rejects.toThrow(/not a path-safe segment/);
-    await expect(archiveCaseArtifacts(req({ caseId: `a${sep}b` }))).rejects.toThrow(/not a path-safe segment/);
+    await expect(archiveCaseArtifacts(req({ caseId: "../escape" }))).rejects.toThrow(/not a usable directory name/);
+    await expect(archiveCaseArtifacts(req({ caseId: `a${sep}b` }))).rejects.toThrow(/not a usable directory name/);
+  });
+
+  // codex R4: this barrier used to enforce only path-safety while the corpus-case schema
+  // also refused a trailing dot -- so a DIRECT caller could hand it `case.` after `case`,
+  // which Windows resolves to the same directory, and clear the wrong archive. Both sites
+  // now share one predicate.
+  it("enforces the same id rule as the corpus-case schema, not a weaker one", async () => {
+    await expect(archiveCaseArtifacts(req({ caseId: "case." }))).rejects.toThrow(/not a usable directory name/);
+    await expect(archiveCaseArtifacts(req({ caseId: "a".repeat(65) }))).rejects.toThrow(
+      /not a usable directory name/,
+    );
   });
 
   // codex R1: `isPathSafeId(".")` is TRUE, and `join(root, ".")` collapses to `root`
@@ -153,7 +164,7 @@ describe("archiveCaseArtifacts", () => {
     mkdirSync(join(artifacts, "earlier-case"), { recursive: true });
     writeFileSync(join(artifacts, "earlier-case", "evidence.json"), "{}");
 
-    await expect(archiveCaseArtifacts(req({ caseId: "." }))).rejects.toThrow(/does not name a directory inside/);
+    await expect(archiveCaseArtifacts(req({ caseId: "." }))).rejects.toThrow(/not a usable directory name/);
 
     // The load-bearing assertion: nothing was deleted.
     expect(existsSync(join(artifacts, "earlier-case", "evidence.json"))).toBe(true);

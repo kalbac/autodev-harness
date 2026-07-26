@@ -3,6 +3,7 @@ import type { CaseExecutor } from "./corpus-runner.js";
 import type { EvidenceRecord } from "../report/evidence-types.js";
 import type { EvidenceSlot } from "../report/evidence-store.js";
 import { safeErrorText, safeLog } from "../util/safe-log.js";
+import type { CaseArchiveStatus } from "./case-archive.js";
 
 /**
  * The environment seam the real `CaseExecutor` drives. Everything heavy and
@@ -42,6 +43,10 @@ export interface CaseEnvironment {
    *  purges them. Best-effort by contract: the executor calls it from a `finally` and
    *  SWALLOWS any throw, because diagnostics must never decide a measurement. */
   archiveArtifacts(c: CorpusCase): Promise<void>;
+  /** A snapshot of what happened to each case's archive so far, keyed by case id. A case
+   *  with no entry never got as far as archiving. Read-only by construction (a copy), so a
+   *  consumer cannot corrupt the record it is reporting on. */
+  archiveStatuses(): Map<string, CaseArchiveStatus>;
   /** Release whatever the environment took hold of for the run (the exclusive corpus
    *  lock). Idempotent; the caller invokes it from a `finally`, including after a
    *  failure. */

@@ -1,5 +1,5 @@
 import { mkdir, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { parse, resolve } from "node:path";
 
 import { canonicalPathContains } from "../util/path-contain.js";
 
@@ -82,7 +82,17 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   }
 
   // Outside the repo entirely: nothing written here can appear in `git status`.
-  if (!canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
+  //
+  // `canonicalPathContains` cannot be trusted for this decision on its own, because its
+  // failure DIRECTION was chosen for a different caller's polarity: it answers `false` for
+  // an all-separator root ("never contains anything") as a deliberate fail-CLOSED for the
+  // oracle-containment call sites, where refusing is the safe answer. Here the polarity is
+  // inverted — `false` means "outside the repo, go ahead and write" — so for a repo whose
+  // root IS the filesystem root (`/`, `C:\`), that same `false` becomes a fail-OPEN and
+  // skips every git check (codex R4). A filesystem root contains everything by definition,
+  // so it is settled here rather than by the shared predicate.
+  const repoIsFilesystemRoot = parse(canonicalRepo).root === canonicalRepo;
+  if (!repoIsFilesystemRoot && !canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
 
   const ignored = await check.git(["check-ignore", "--quiet", "--", artifactsRoot]);
   if (ignored.exitCode !== 0) {
@@ -95,16 +105,33 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
 
   // Ignored, but a TRACKED file here would still be reported by `git status` when we write
   // over it -- being inside an ignored directory does not untrack anything.
+  //
+  // Exit codes are DISCRIMINATED, not split into "0 vs everything else". MEASURED against
+  // real git: 0 = matched (paths on stdout), 1 = `--error-unmatch` found nothing tracked
+  // (the normal, safe answer), 128 = fatal (not a repository, corrupt index, ...). Folding
+  // 128 into "nothing tracked" would let a broken repository authorize writing inside the
+  // work tree — the same fold-cannot-determine-into-no fail-open as above, and the THIRD
+  // instance of that shape in this review cycle (codex R4).
   const tracked = await check.git(["ls-files", "--error-unmatch", "--", artifactsRoot]);
-  if (tracked.exitCode === 0 && tracked.stdout.trim() !== "") {
-    const names = tracked.stdout.trim().split(/\r?\n/);
-    throw refuse(
-      artifactsRoot,
-      repoRoot,
-      `it already contains ${names.length} TRACKED file(s) (${names.slice(0, 5).join(", ")}` +
-        `${names.length > 5 ? ", ..." : ""}), which git reports as modified even inside an ignored directory`,
-    );
+  if (tracked.exitCode === 0) {
+    const names = tracked.stdout.trim() === "" ? [] : tracked.stdout.trim().split(/\r?\n/);
+    if (names.length > 0) {
+      throw refuse(
+        artifactsRoot,
+        repoRoot,
+        `it already contains ${names.length} TRACKED file(s) (${names.slice(0, 5).join(", ")}` +
+          `${names.length > 5 ? ", ..." : ""}), which git reports as modified even inside an ignored directory`,
+      );
+    }
+    return;
   }
+  if (tracked.exitCode === 1) return; // nothing tracked here -- the answer we wanted
+  throw refuse(
+    artifactsRoot,
+    repoRoot,
+    `git ls-files could not answer whether anything here is already tracked (exit ${tracked.exitCode}: ` +
+      `${tracked.stderr.trim() || "no detail"}). An unanswerable safety question is a refusal, not a pass`,
+  );
 }
 
 function refuse(artifactsRoot: string, repoRoot: string, why: string): Error {

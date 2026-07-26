@@ -2,7 +2,7 @@ import { copyFile, lstat, mkdir, open, readdir, rm, unlink, writeFile } from "no
 import { isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import { PURGED_SUBDIRS } from "./harness-state-reset.js";
-import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { isCorpusCaseId } from "./corpus-case.js";
 import { safeErrorText, safeLog } from "../util/safe-log.js";
 
 /**
@@ -205,8 +205,15 @@ export async function conductorLogOffset(stateDirAbs: string): Promise<number> {
  */
 export async function archiveCaseArtifacts(req: ArchiveCaseRequest): Promise<ArchiveCaseResult> {
   const { caseId } = req;
-  if (!isPathSafeId(caseId)) {
-    throw new Error(`corpus archive: case id ${JSON.stringify(caseId)} is not a path-safe segment`);
+  // The SAME predicate the corpus-case schema enforces, not a weaker approximation of it:
+  // this barrier used to check only path-safety while the schema also refused a trailing dot,
+  // so a direct caller could hand it `case.` after `case` and clear the wrong archive
+  // (codex R4).
+  if (!isCorpusCaseId(caseId)) {
+    throw new Error(
+      `corpus archive: case id ${JSON.stringify(caseId)} is not a usable directory name ` +
+        `(path-safe, 1-64 chars, not ending in a dot)`,
+    );
   }
   if (req.artifactsRoot.trim() === "" || !isAbsolute(req.artifactsRoot)) {
     throw new Error(`corpus archive: artifacts root ${JSON.stringify(req.artifactsRoot)} is not an absolute path`);

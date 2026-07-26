@@ -33,7 +33,7 @@ import { countOptedIn } from "./settings/opt-in-count.js";
 import { parseEvalArgs, runEval, type EvalArgs } from "./eval/eval-cli.js";
 import { loadCorpus } from "./eval/corpus-loader.js";
 import { createCaseExecutor } from "./eval/case-executor.js";
-import { createHarnessCaseEnvironment, type CaseArchiveStatus } from "./eval/harness-case-environment.js";
+import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
 import { assertArtifactsRootSafe } from "./eval/artifacts-root.js";
 import type { CorpusCaseResult } from "./eval/corpus-metrics.js";
 import {
@@ -559,16 +559,12 @@ async function main(): Promise<void> {
     process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n`);
     process.stdout.write(`Artifacts ${artifactsDir}\n\n`);
 
-    // What actually happened to each case's artifact archive, so the manifest can STATE it
-    // rather than implying success by naming a path.
-    const archives = new Map<string, CaseArchiveStatus>();
     const env = createHarnessCaseEnvironment({
       root,
       corpusRoot: corpusDir,
       baseline,
       maxIterations: command.args.maxIterations,
       artifactsRoot: artifactsDir,
-      archiveStatuses: archives,
     });
 
     // Rewritten after EVERY case, not once at the end: a 12-minute run that dies on the
@@ -592,7 +588,10 @@ async function main(): Promise<void> {
             total_cases: cases.length,
           },
           results,
-          archives,
+          // Read from the environment, which owns the record: what actually happened to each
+          // case's archive, so the manifest STATES it instead of implying success by naming a
+          // path (codex R3/R4).
+          env.archiveStatuses(),
         );
         await mkdir(artifactsDir, { recursive: true });
         await writeFile(manifestTmp, renderCorpusRunManifest(manifest), "utf8");

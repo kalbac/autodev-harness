@@ -47,17 +47,7 @@ export interface HarnessCaseEnvironmentOptions {
   /** Absolute directory each case's blackboard artifacts are copied into before the next
    *  case purges them. Diagnostics only — nothing here feeds a metric. */
   artifactsRoot: string;
-  /**
-   * The caller's map, written once per case with what actually happened to its archive, so
-   * the run manifest can STATE the outcome instead of implying success by naming a path.
-   * A case whose baseline reset failed gets no entry at all -- it has no artifacts of its own.
-   *
-   * A plain `Map` the caller owns, deliberately NOT a callback: a throwing sink could leave a
-   * SUCCESSFUL archive unrecorded, which the manifest then reports as `archive: null` --
-   * "this case never archived" -- for a case that did (codex R3). `Map.prototype.set` on a
-   * real Map cannot throw, so the recording step has no failure mode to contain.
-   */
-  archiveStatuses?: Map<string, CaseArchiveStatus>;
+
 }
 
 /** Baked identity so a seed commit never fails on a machine with no global git user
@@ -71,7 +61,15 @@ const SEED_COMMIT_IDENTITY = [
 ];
 
 export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions): CaseEnvironment {
-  const { root, baseline, maxIterations, archiveStatuses } = opts;
+  const { root, baseline, maxIterations } = opts;
+
+  // Archive outcomes are recorded into a map this module OWNS and only exposes for reading.
+  // Neither a callback nor a caller-supplied Map: both put foreign code in the recording
+  // path, where a throwing sink (or a Map subclass with an overridden `set`) leaves a
+  // SUCCESSFUL archive unrecorded -- which the manifest then reports as `archive: null`,
+  // i.e. "this case never archived", for a case that did (codex R3, narrowed again in R4).
+  // An internal `Map` has no such path; the caller reads it when it builds the manifest.
+  const archiveStatuses = new Map<string, CaseArchiveStatus>();
   const repoRoot = root.repoRoot;
   const corpusRoot = resolve(opts.corpusRoot);
   const artifactsRoot = resolve(opts.artifactsRoot);
@@ -240,10 +238,12 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
         {
           archive: archiveCaseArtifacts,
           log,
-          ...(archiveStatuses !== undefined ? { report: (status) => archiveStatuses.set(c.id, status) } : {}),
+          report: (status) => archiveStatuses.set(c.id, status),
         },
       );
     },
+
+    archiveStatuses: () => new Map(archiveStatuses),
 
     async readEvidence(taskIds: string[]): Promise<EvidenceSlot[]> {
       return loadEvidence(taskIds, (taskId) => root.repo.readRuntimeFile(taskId, EVIDENCE_FILE));

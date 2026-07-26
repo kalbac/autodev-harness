@@ -17,6 +17,32 @@ import { isPathSafeId } from "../orchestrator/task-spec.js";
  */
 export const CORPUS_CASE_SCHEMA_VERSION = 1;
 
+/** Longest id the corpus accepts. The id becomes a path segment under an already-deep
+ *  artifacts root, and an unbounded one can push a per-case archive past Windows' MAX_PATH
+ *  where long-path support is off (codex R3). Generous for a descriptive kebab-case name --
+ *  the shipped corpus's longest is 26. */
+export const MAX_CORPUS_CASE_ID_LENGTH = 64;
+
+/**
+ * Is this a usable corpus case id? THE single definition, used by the schema below AND by
+ * `case-archive.ts`'s own barrier — the point being that the check and the use share one
+ * function rather than two hand-kept-in-sync approximations, which is the recurring defect
+ * shape of docs/gotchas/validated-one-string-used-another.md. The archive re-checked only
+ * `isPathSafeId` while the schema enforced more, so a direct caller could hand the archive an
+ * id the corpus itself would have refused (codex R4).
+ *
+ * Beyond path-safety, a usable id must not END IN A DOT, and both reasons are about the gap
+ * between a path-safe STRING and a directory NAME:
+ *  - `"."` (and `"...."`) is path-safe, but `join(root, ".")` collapses to `root` ITSELF,
+ *    pointing a case's archive directory at the artifacts root (codex R1);
+ *  - Windows strips trailing dots from a path segment, so `"case."` and `"case"` are two ids
+ *    by any string comparison and ONE directory on disk — the second case's archive would
+ *    clear the first's (codex R2).
+ */
+export function isCorpusCaseId(id: string): boolean {
+  return id.length > 0 && id.length <= MAX_CORPUS_CASE_ID_LENGTH && isPathSafeId(id) && !id.endsWith(".");
+}
+
 /** The task kinds the corpus spans (per the external architecture review, risk 7).
  *  `docs` was added in Phase 2 for the authored corpus: a documentation-only change is a
  *  distinct behaviour to measure, not a mislabelled feature — it is the case where the

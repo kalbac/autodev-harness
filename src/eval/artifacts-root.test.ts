@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { assertArtifactsRootSafe } from "./artifacts-root.js";
 
 let repo: string;
@@ -128,14 +128,62 @@ describe("assertArtifactsRootSafe", () => {
     );
   });
 
-  it("treats a tracked-file listing that git could not produce as no listing", async () => {
-    // `ls-files --error-unmatch` exits non-zero when nothing matches; that is the NORMAL
-    // "no tracked files here" answer, not an error to refuse on.
+  // MEASURED against real git: `--error-unmatch` exits 1 when nothing matches (the normal,
+  // safe answer) and 128 on a fatal error. Exit 1 must pass.
+  it("treats ls-files exit 1 as the normal 'nothing tracked here' answer", async () => {
     writeFileSync(join(repo, "unrelated.txt"), "x");
     const { git } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 1, stderr: "did not match" } });
 
     await expect(
       assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, "art"), git }),
     ).resolves.toBeUndefined();
+  });
+
+  // codex R4: folding 128 into "nothing tracked" let a BROKEN repository authorize writing
+  // inside its own work tree -- the third appearance of fold-cannot-determine-into-no in this
+  // review cycle. Only exit 1 is an answer; 128 is a refusal.
+  it("refuses when ls-files fails fatally rather than reading it as 'nothing tracked'", async () => {
+    const { git } = fakeGit({
+      "check-ignore": { exitCode: 0 },
+      "ls-files": { exitCode: 128, stderr: "fatal: not a git repository" },
+    });
+
+    await expect(
+      assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, "art"), git }),
+    ).rejects.toThrow(/ls-files could not answer.*exit 128/s);
+  });
+
+  it("refuses an ignored root whose only tracked entry is the manifest itself", async () => {
+    const { git } = fakeGit({
+      "check-ignore": { exitCode: 0 },
+      "ls-files": { exitCode: 0, stdout: "art/corpus-run.json\n" },
+    });
+
+    await expect(
+      assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, "art"), git }),
+    ).rejects.toThrow(/contains 1 TRACKED file/);
+  });
+
+  it("accepts an exit-0 listing that is empty", async () => {
+    const { git } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 0, stdout: "  \n" } });
+
+    await expect(
+      assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, "art"), git }),
+    ).resolves.toBeUndefined();
+  });
+
+  // codex R4: `canonicalPathContains` answers `false` for an all-separator root as a
+  // deliberate fail-CLOSED for its ORIGINAL callers, where refusing is safe. Here the
+  // polarity is inverted -- `false` means "outside the repo, go ahead" -- so a repo rooted at
+  // the filesystem root would have skipped every git check. A filesystem root contains
+  // everything, so the git checks must still run.
+  it("does not treat a filesystem-root repo as containing nothing", async () => {
+    const fsRoot = parse(repo).root;
+    const { git, asked } = fakeGit({ "check-ignore": { exitCode: 1 } });
+
+    await expect(
+      assertArtifactsRootSafe({ repoRoot: fsRoot, artifactsRoot: join(repo, "art"), git }),
+    ).rejects.toThrow(/is NOT ignored/);
+    expect(asked.map((a) => a[0])).toContain("check-ignore");
   });
 });

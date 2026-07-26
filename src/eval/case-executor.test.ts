@@ -82,6 +82,7 @@ function fakeEnv(over: Partial<CaseEnvironment> = {}): FakeEnv {
     async archiveArtifacts() {
       calls.push("archive");
     },
+    archiveStatuses: () => new Map(),
     async dispose() {
       calls.push("dispose");
     },
