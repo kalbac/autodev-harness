@@ -40,6 +40,7 @@ import { open, lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { READ_NO_FOLLOW_FLAGS } from "../util/bounded-read.js";
 import { realpathContains } from "../util/path-contain.js";
+import { globMatch } from "../util/glob.js";
 
 /**
  * Per-file and total attachment budgets, in bytes.
@@ -69,6 +70,54 @@ export const CRITIC_DIFF_CONTEXT_LINES = 25;
  *  reasons — never contents). Named here so the writer and any reader of the archived
  *  corpus artifacts agree on it by construction. */
 export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
+
+/**
+ * `adr/007`: does this change touch ONLY paths the operator declared as documentation?
+ *
+ * The critic's mandate is narrowed for such a change — an assertion it makes about code
+ * the diff does not touch becomes a `notes` entry instead of a lowered verdict, because
+ * the code in question is deliberately outside the change and the critic's only honest
+ * answer is "I cannot verify this". A question with one possible answer is not a gate;
+ * it is a permanent `uncertain` that blocks the whole class forever.
+ *
+ * **This is a DECLARATION check, not a detection.** The first implementation inferred
+ * prose from the file extension plus a blacklist of executable markers, and three review
+ * rounds found three different markers it missed — a fence arriving as a diff CONTEXT
+ * line, then `<script>`, then `<iframe>`/`onerror`/`javascript:`/`{% include %}`. The
+ * blacklist was not merely incomplete, it was unclosable: whether a `.md` executes is a
+ * property of the PROJECT's toolchain (a doc-test runner, a static-site generator, a
+ * templating include), which the harness has no way to see. So the operator declares
+ * (`contract.docPaths`) and the harness verifies the declaration covers the change. That
+ * is `adr/006`'s pattern applied to the mandate: the oracle is blessed, never guessed.
+ *
+ * Refusals, all of which yield `false` — the failure direction is always "no leniency",
+ * so every way this can go wrong leaves the gate exactly as strict as it is today:
+ *
+ *  1. **Nothing declared.** An empty `docPaths` is the default, and it means the project
+ *     has not opted in. No leniency anywhere.
+ *  2. **No changed paths.** Nothing to vouch for; the question is not meaningful.
+ *  3. **A non-string or blank path.** REFUSED, never filtered away. A blank entry names
+ *     nothing, so it cannot be matched against a declaration — and quietly skipping it
+ *     would let `["", "docs/x.md"]` qualify on the strength of a list only half read
+ *     (`docs/gotchas/empty-path-resolves-to-repo-root.md` is the same shape one layer
+ *     down).
+ *  4. **Any path outside the declaration.** Every path must match; one unmatched path
+ *     disqualifies the change. A mixed docs-plus-code diff is a code diff.
+ *
+ * `changedPaths` must be the file list of the SAME diff the critic reads — the
+ * authoritative set, before any budget or blank filtering (see `CriticEvidence`).
+ */
+export function isDeclaredDocsOnlyChange(changedPaths: string[], docPathGlobs: string[]): boolean {
+  const globs = docPathGlobs.filter((g) => typeof g === "string" && g.trim() !== "");
+  if (globs.length === 0) return false;
+  if (changedPaths.length === 0) return false;
+
+  for (const p of changedPaths) {
+    if (typeof p !== "string" || p.trim() === "") return false;
+    if (!globs.some((g) => globMatch(g, p))) return false;
+  }
+  return true;
+}
 
 /** Why a touched file is not attached. Each value is a genuinely different fact about
  *  the file, and the prompt renders it verbatim so the critic can weigh it. */
@@ -107,6 +156,19 @@ export interface OmittedFile {
 export interface CriticEvidence {
   attached: AttachedFile[];
   omitted: OmittedFile[];
+  /**
+   * `adr/007`: every path this change touches matched an operator-declared documentation
+   * path (`contract.docPaths`). The prompt renders its leniency section only when this
+   * is `true`, so the determination is the HARNESS's and the model never sees the
+   * question — only the answer.
+   *
+   * Computed by `isDeclaredDocsOnlyChange` from the diff's own file list, NOT from
+   * `attached`/`omitted` above. Those two are a budget-limited *view* of the change
+   * and `collectCriticEvidence` drops blank entries before building them, so deriving
+   * the flag from them would let a change qualify on the strength of a file list it
+   * had not actually read in full.
+   */
+  declaredDocsOnly: boolean;
 }
 
 /** One touched file as the PLANNER sees it: a size, or an already-settled omission.
@@ -401,9 +463,15 @@ async function readPlanned(
 export async function collectCriticEvidence(
   root: string,
   relPaths: string[],
+  docPathGlobs: string[] = [],
   limits: EvidenceLimits = DEFAULT_EVIDENCE_LIMITS,
   deps: EvidenceReaderDeps = DEFAULT_READER_DEPS,
 ): Promise<CriticEvidence> {
+  // `adr/007`, and it is deliberately computed from `relPaths` -- the diff's own file
+  // list -- BEFORE the blank filter below. Deriving it from the attached/omitted lists
+  // would ask the declaration to vouch for a set the blank filter had already pruned.
+  const declaredDocsOnly = isDeclaredDocsOnlyChange(relPaths, docPathGlobs);
+
   const paths = relPaths.filter((p) => typeof p === "string" && p.trim() !== "");
 
   const entries: EvidenceEntry[] = [];
@@ -423,7 +491,7 @@ export async function collectCriticEvidence(
   // prompt text for a given task is stable across runs.
   const byPath = (a: { path: string }, b: { path: string }): number =>
     a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-  return { attached: attached.sort(byPath), omitted: omitted.sort(byPath) };
+  return { attached: attached.sort(byPath), omitted: omitted.sort(byPath), declaredDocsOnly };
 }
 
 /** One-line summary for the conductor log and the runtime manifest. */

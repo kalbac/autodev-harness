@@ -52,6 +52,13 @@ export function buildProjectConfigView(cfg: HarnessConfig, plannerConfigured: bo
         skills: cfg.isolation.worker.skills,
       },
     },
+    // Read-only oracle projection (#138): a capability that lives only in YAML is
+    // invisible in practice. Copied, not aliased, so a UI consumer cannot mutate the
+    // loaded config through the view.
+    contract: {
+      constitutionPaths: [...cfg.contract.constitutionPaths],
+      docPaths: [...cfg.contract.docPaths],
+    },
     policy: { heterogeneity: cfg.policy.heterogeneity },
     heterogeneityWarnings: heterogeneityWarnings(cfg),
   };

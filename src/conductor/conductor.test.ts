@@ -2836,6 +2836,7 @@ describe("runIteration -- critic evidence window (#123)", () => {
     const evidence = {
       attached: [{ path: "a.php", bytes: 3, content: "abc" }],
       omitted: [{ path: "big.php", reason: "too-large" as const, bytes: 999999 }],
+      declaredDocsOnly: false,
     };
 
     await createConductor(
@@ -2916,7 +2917,7 @@ describe("runIteration -- critic evidence window (#123)", () => {
       buildDeps({
         repo,
         scheduler,
-        collectCriticEvidence: async () => ({ attached: [], omitted: [] }),
+        collectCriticEvidence: async () => ({ attached: [], omitted: [], declaredDocsOnly: false }),
       }),
     ).runIteration();
 

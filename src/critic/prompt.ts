@@ -23,6 +23,13 @@ import type { CriticEvidence, OmissionReason } from "./evidence.js";
  * 5. The diff embedded INLINE inside clear delimiters — the diff is passed
  *    in the prompt, never read from disk by codex (parity: "diff embedded
  *    inline — avoids a second fencing surface").
+ * 5b. `adr/007`, rendered ONLY when the harness has already established that every
+ *    path the diff touches is an operator-DECLARED documentation path
+ *    (`evidence.declaredDocsOnly` ← `contract.docPaths`): an ADDED assertion about
+ *    code the diff does not touch goes in `notes` and does not lower the verdict,
+ *    because the critic is structurally unable to verify it. Scoped to ADDED prose —
+ *    a diff that rewrites documented behaviour stays fully reviewable, since
+ *    "document the contract you want, then match it" is a real attack shape.
  * 6. When an evidence set is supplied (#123): the complete current text of the
  *    files the diff touches, also inline, plus a named list of any that could
  *    not be attached. See `evidenceGuidanceSection` for why both halves are
@@ -80,6 +87,44 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "",
   );
 
+  // `adr/007`. The determination is the HARNESS's, made in `isDeclaredDocsOnlyChange`
+  // against the operator's `contract.docPaths`, and the model is only ever told the
+  // ANSWER. It is never asked "is this prose?" — in a project whose thesis is that the
+  // enforcement decision must not be an LLM's (Principles 1 and 3), that question
+  // belongs in code the model cannot argue with. For every other change the section is
+  // ABSENT rather than negated, so there is no wording left to misapply.
+  if (evidence?.declaredDocsOnly) {
+    sections.push(
+      "## A claim you cannot verify is not a defect you found",
+      "",
+      "Every file this change touches is one the OPERATOR has declared to be",
+      "documentation for this project — text that nothing in its toolchain executes.",
+      "The harness verified that declaration covers this change before writing this",
+      "section; it is not yours to make or to revisit, and you will never see this",
+      "section on a diff that touches anything else.",
+      "",
+      "When such a change ADDS prose that asserts something about the rest of the",
+      "codebase — \"the plugin registers the ids `x` and `y`\", \"this method is called",
+      "during checkout\" — the code it describes is deliberately NOT part of the change,",
+      "so it is not in the diff and not attached. You cannot verify the assertion, and",
+      "you never will be able to: it is outside what you are being asked to review.",
+      "SAY SO in `notes`, naming which assertions you could not check — and do NOT",
+      "lower the verdict for them. A question whose only honest answer is \"I cannot",
+      "verify this\" is not a gate; it is a permanent `uncertain`, which would block",
+      "this entire class of change forever.",
+      "",
+      "You still judge everything you CAN judge here: internal contradictions, a claim",
+      "that contradicts something you WERE shown, and fabricated proof.",
+      "",
+      "**The carve-out is for ADDED prose only.** If the diff MODIFIES or DELETES text",
+      "that documented existing behaviour — the old wording is right there in the `-`",
+      "lines — review it in full, with no leniency. Rewriting a documented contract so",
+      "that a later change can claim to match it is exactly the kind of thing you are",
+      "here to catch.",
+      "",
+    );
+  }
+
   sections.push(
     "## Fencing — judge the change, not the worker's account of it",
     "",
@@ -105,6 +150,13 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "   contract, not as proof of correctness.",
     "4. Independent of contracts: is there any logic or regression risk in",
     "   this diff (off-by-one, unhandled edge case, silent failure, etc.)?",
+    ...(evidence?.declaredDocsOnly
+      ? [
+          "5. Which of this change's ADDED assertions about the rest of the codebase",
+          "   could you not verify? List them in `notes` — they are information for",
+          "   the operator, not a reason to lower the verdict (see above).",
+        ]
+      : []),
     "",
   );
 

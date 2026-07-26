@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   planEvidence,
   collectCriticEvidence,
+  isDeclaredDocsOnlyChange,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
   MAX_EVIDENCE_BYTES_PER_FILE,
@@ -137,7 +138,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
 
   it("omits a file it cannot prove lives inside the worktree", async () => {
     writeFileSync(join(root, "a.php"), "x\n");
-    const ev = await collectCriticEvidence(root, ["a.php"], DEFAULT_EVIDENCE_LIMITS, {
+    const ev = await collectCriticEvidence(root, ["a.php"], [], DEFAULT_EVIDENCE_LIMITS, {
       contains: async () => false,
     });
     expect(ev.attached).toEqual([]);
@@ -146,7 +147,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
 
   it("refuses an over-size file WITHOUT reading it, reporting its real size", async () => {
     writeFileSync(join(root, "big.php"), "x".repeat(50));
-    const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 10, totalBytes: 1000 });
+    const ev = await collectCriticEvidence(root, ["big.php"], [], { perFileBytes: 10, totalBytes: 1000 });
     expect(ev.omitted).toEqual([{ path: "big.php", reason: "too-large", bytes: 50 }]);
   });
 
@@ -169,7 +170,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // be accepted as the complete file and labelled "complete" in the prompt).
     const body = "x".repeat(300_000);
     writeFileSync(join(root, "big.php"), body);
-    const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 400_000, totalBytes: 400_000 });
+    const ev = await collectCriticEvidence(root, ["big.php"], [], { perFileBytes: 400_000, totalBytes: 400_000 });
     expect(ev.omitted).toEqual([]);
     expect(ev.attached[0]!.content).toBe(body);
     expect(ev.attached[0]!.bytes).toBe(Buffer.byteLength(ev.attached[0]!.content, "utf8"));
@@ -180,7 +181,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // four of them, not forty (codex R1 finding 1).
     for (let i = 0; i < 40; i++) writeFileSync(join(root, `f${String(i).padStart(2, "0")}.php`), "x".repeat(1000));
     const paths = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, "0")}.php`);
-    const ev = await collectCriticEvidence(root, paths, { perFileBytes: 64_000, totalBytes: 4000 });
+    const ev = await collectCriticEvidence(root, paths, [], { perFileBytes: 64_000, totalBytes: 4000 });
     expect(ev.attached).toHaveLength(4);
     expect(ev.attached.reduce((n, a) => n + a.bytes, 0)).toBeLessThanOrEqual(4000);
     expect(ev.omitted).toHaveLength(36);
@@ -192,7 +193,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // (docs/gotchas/empty-path-resolves-to-repo-root.md) -- a blank entry must never
     // reach the reader, and there is nothing to tell the critic about it either.
     const ev = await collectCriticEvidence(root, ["", "   "]);
-    expect(ev).toEqual({ attached: [], omitted: [] });
+    expect(ev).toEqual({ attached: [], omitted: [], declaredDocsOnly: false });
   });
 
   it("a REJECTING containment seam omits that file, it does not abort the collection", async () => {
@@ -201,7 +202,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // that rejects used to escape and kill the whole evidence set (codex R2 finding 2).
     writeFileSync(join(root, "a.php"), "x\n");
     writeFileSync(join(root, "b.php"), "y\n");
-    const ev = await collectCriticEvidence(root, ["a.php", "b.php"], DEFAULT_EVIDENCE_LIMITS, {
+    const ev = await collectCriticEvidence(root, ["a.php", "b.php"], [], DEFAULT_EVIDENCE_LIMITS, {
       contains: async (_root, candidate) => {
         if (candidate.endsWith("a.php")) throw new Error("seam blew up");
         return true;
@@ -219,11 +220,123 @@ describe("collectCriticEvidence (filesystem pass)", () => {
   });
 });
 
+describe("isDeclaredDocsOnlyChange (adr/007 — a declaration, not a detection)", () => {
+  const DOCS = ["docs/**", "README.md"];
+
+  it("qualifies a change whose every path the operator declared as documentation", () => {
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md", "README.md"], DOCS)).toBe(true);
+    expect(isDeclaredDocsOnlyChange(["docs/deep/nested/guide.md"], DOCS)).toBe(true);
+  });
+
+  it("refuses when the project declared nothing — the default is no leniency anywhere", () => {
+    // `contract.docPaths: []` is the shipped default, and it must reproduce the
+    // pre-adr/007 gate exactly. A project that never opts in loses nothing.
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md"], [])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md"], ["", "   "])).toBe(false);
+  });
+
+  it("refuses a change that touches ANY path outside the declaration", () => {
+    // The whole point: docs-plus-code is a code change. One unmatched path is enough.
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md", "includes/class-x.php"], DOCS)).toBe(false);
+    // A `.md` that was NOT declared gets nothing either -- the extension is not the
+    // test any more, which is precisely what replaced the unclosable marker blacklist.
+    expect(isDeclaredDocsOnlyChange(["notes/scratch.md"], DOCS)).toBe(false);
+  });
+
+  it("refuses a blank or non-string path instead of filtering it away", () => {
+    // A blank entry names nothing, so no declaration can vouch for it. Dropping it
+    // silently would let this list qualify on the strength of the ONE path it did
+    // read -- the same shape as `empty-path-resolves-to-repo-root`, one layer up.
+    expect(isDeclaredDocsOnlyChange(["", "docs/OVERVIEW.md"], DOCS)).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["   ", "docs/OVERVIEW.md"], DOCS)).toBe(false);
+    expect(isDeclaredDocsOnlyChange([null as unknown as string, "docs/OVERVIEW.md"], DOCS)).toBe(false);
+  });
+
+  it("refuses an empty change set — there is nothing to vouch for", () => {
+    expect(isDeclaredDocsOnlyChange([], DOCS)).toBe(false);
+  });
+
+  it("does not grant leniency on CONTENT, only on the declared path", () => {
+    // The predicate never looks at bytes. This is the whole difference from the parked
+    // first attempt, whose extension+marker blacklist lost three review rounds to three
+    // different markers it had not thought of. A declared doc path stays declared
+    // whatever is written inside it; if a project's toolchain DOES execute that file,
+    // the operator's remedy is to not declare it (or to fence it via
+    // `contract.constitutionPaths`), which is a decision only the project can make.
+    expect(isDeclaredDocsOnlyChange(["docs/RUNBOOK.md"], DOCS)).toBe(true);
+  });
+
+  it("matches with the harness's own glob semantics, not a substring test", () => {
+    // `*` is segment-local, `**` crosses segments -- parity with the dirty-file fence
+    // and `constitutionPaths`, so one mental model covers every declared-path field.
+    expect(isDeclaredDocsOnlyChange(["docs/a/b.md"], ["docs/*"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/a.md"], ["docs/*"])).toBe(true);
+    expect(isDeclaredDocsOnlyChange(["xdocs/a.md"], ["docs/**"])).toBe(false);
+  });
+});
+
+describe("collectCriticEvidence — the adr/007 flag", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "adr007-"));
+    mkdirSync(join(root, "docs"), { recursive: true });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("sets the flag from the DIFF's file list, not from what survived the budget", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md"], ["docs/**"]);
+    expect(ev.declaredDocsOnly).toBe(true);
+    expect(ev.attached.map((a) => a.path)).toEqual(["docs/OVERVIEW.md"]);
+  });
+
+  it("a declared doc file too large to attach still qualifies — the path is the declaration", async () => {
+    // Omission is an EVIDENCE fact (the critic will not see the bytes); the mandate
+    // narrowing is a PATH fact. Conflating them would silently withdraw the operator's
+    // declaration for a large file, for a reason that has nothing to do with it.
+    writeFileSync(join(root, "docs", "BIG.md"), "x".repeat(50));
+    const ev = await collectCriticEvidence(root, ["docs/BIG.md"], ["docs/**"], {
+      perFileBytes: 10,
+      totalBytes: 1000,
+    });
+    expect(ev.attached).toEqual([]);
+    expect(ev.omitted[0]!.reason).toBe("too-large");
+    expect(ev.declaredDocsOnly).toBe(true);
+  });
+
+  it("REGRESSION: a blank path in the diff list denies leniency, though it never reaches the evidence", async () => {
+    // `collectCriticEvidence` filters blanks before measuring, so `attached`/`omitted`
+    // would show a clean all-docs set. Deriving the flag from those lists (rather than
+    // from `relPaths`) is therefore a live way to grant leniency to a change the
+    // harness did not fully inspect -- this test is what pins the flag to the
+    // authoritative list.
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["", "docs/OVERVIEW.md"], ["docs/**"]);
+    expect(ev.attached.map((a) => a.path)).toEqual(["docs/OVERVIEW.md"]);
+    expect(ev.omitted).toEqual([]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+
+  it("defaults to no leniency when no declaration is passed at all", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md"]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+
+  it("a mixed docs+code change does not qualify", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    writeFileSync(join(root, "plugin.php"), "<?php\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md", "plugin.php"], ["docs/**"]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+});
+
 describe("summarizeEvidence", () => {
   it("names every omitted file and its reason, so a log line is actionable", () => {
     const line = summarizeEvidence({
       attached: [{ path: "a.php", bytes: 10, content: "x" }],
       omitted: [{ path: "b.png", reason: "not-text", bytes: null }],
+      declaredDocsOnly: false,
     });
     expect(line).toContain("attached 1 file(s), 10 byte(s)");
     expect(line).toContain("b.png (not-text)");

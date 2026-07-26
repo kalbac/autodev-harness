@@ -148,8 +148,34 @@ export const HarnessConfigSchema = z.object({
       constitutionPaths: z.array(z.string()).default([]),
       invariantsFile: z.string().default("INVARIANTS.md"),
       guardsFile: z.string().default("GUARDS.md"),
+      // `adr/007`: paths the OPERATOR declares to be documentation — text that no
+      // toolchain in THIS project executes. Glob syntax is `util/glob.ts`'s
+      // (`*` within a segment, `**` across, `?` one char; anchored, case-sensitive),
+      // the same matcher `constitutionPaths` and the dirty-file fence use.
+      //
+      // It is a declaration, not a detection, and that is the entire point. The first
+      // implementation tried to INFER "is this prose" from the extension plus a
+      // blacklist of executable markers; three review rounds found three different
+      // markers it missed (a fence arriving as a diff CONTEXT line, then `<script>`,
+      // then `<iframe>`/`onerror`/`javascript:`/`{% include %}`) because the premise
+      // was unsound: whether a `.md` executes depends on the project's own toolchain,
+      // which the harness cannot see. So the operator says, and nothing is guessed —
+      // `adr/006`'s pattern, where the oracle is blessed rather than inferred.
+      //
+      // This is an ORACLE definition: it changes what "pass" means, so like every
+      // other field on `contract` it is read from the TRUSTED ROOT, never from the
+      // worktree the worker just wrote (`composition/root.ts`).
+      //
+      // Default `[]` = no leniency anywhere, which is the pre-adr/007 behaviour
+      // exactly. A project that declares nothing loses nothing (Principle 10).
+      docPaths: z.array(z.string()).default([]),
     })
-    .default({ constitutionPaths: [], invariantsFile: "INVARIANTS.md", guardsFile: "GUARDS.md" }),
+    .default({
+      constitutionPaths: [],
+      invariantsFile: "INVARIANTS.md",
+      guardsFile: "GUARDS.md",
+      docPaths: [],
+    }),
 
   roles: z
     .object({

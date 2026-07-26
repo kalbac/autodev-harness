@@ -326,7 +326,7 @@ function ConfigSections({
    *  text fields. Non-null = a successfully loaded catalog to build selects from. */
   detectedAgents: DetectedAgent[] | null;
 }) {
-  const { gate, allowedBranchPattern, stateDir, worktree, roles, isolation, autonomy } = config;
+  const { gate, allowedBranchPattern, stateDir, worktree, roles, isolation, autonomy, contract } = config;
   const editable = editing && draft;
 
   const supportedOptions = detectedAgents ? supportedAgentOptions(detectedAgents) : [];
@@ -366,6 +366,35 @@ function ConfigSections({
           <SettingsRow label="Check command" value={gate.checkCommand} />
         )}
         <CiCapabilityRow projectId={projectId} />
+      </SettingsSection>
+
+      {/* Read-only oracle projection (#138). These two lists decide what "pass" MEANS
+          for this project, so they are shown but never editable here: `adr/006` puts an
+          oracle change behind a deliberate edit of `.autodev/config.yaml`, which is
+          exactly the boundary that keeps a worker from re-defining its own standard. */}
+      <SettingsSection title="Contract (oracle)">
+        <p className="pb-2 text-[11px] leading-relaxed text-muted-foreground">
+          Declared by you in <span className="font-mono">.autodev/config.yaml</span>, read from the trusted repo root —
+          never from the worktree the worker writes. Not editable here on purpose: these change what the gate accepts.
+        </p>
+        <SettingsRow
+          label="Protected paths"
+          value={<PathList paths={contract.constitutionPaths} empty="none — nothing fenced beyond the invariants file" />}
+        />
+        <SettingsRow
+          label="Documentation paths"
+          value={
+            <PathList
+              paths={contract.docPaths}
+              empty="none — the critic's mandate is never narrowed"
+            />
+          }
+        />
+        <p className="pt-2 text-[11px] leading-relaxed text-muted-foreground">
+          A change touching <em>only</em> documentation paths gets one narrowing: an assertion it adds about code it
+          does not touch is reported as a note instead of blocking the merge, because the critic cannot verify it
+          either way. A diff that rewrites documented behaviour is still reviewed in full.
+        </p>
       </SettingsSection>
 
       <SettingsSection title="Worktree provisioning">
@@ -598,6 +627,24 @@ function ConfigSections({
         )}
       </SettingsSection>
     </>
+  );
+}
+
+/** A read-only list of declared paths, rendered as mono chips — the same idiom the
+ *  worktree-provisioning section uses for its entries. `empty` is the explanation shown
+ *  when nothing is declared, and it is deliberately a SENTENCE rather than a dash: an
+ *  empty oracle list is a meaningful state ("no leniency", "nothing fenced"), and a bare
+ *  em-dash reads as "not loaded" instead (#138 is about exactly this kind of silence). */
+function PathList({ paths, empty }: { paths: string[]; empty: string }) {
+  if (paths.length === 0) return <span className="text-muted-foreground">{empty}</span>;
+  return (
+    <span className="inline-flex flex-wrap justify-end gap-1.5">
+      {paths.map((p) => (
+        <span key={p} className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground">
+          {p}
+        </span>
+      ))}
+    </span>
   );
 }
 
