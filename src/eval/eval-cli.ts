@@ -1,5 +1,5 @@
 import type { CorpusCase } from "./corpus-case.js";
-import type { CorpusMetrics } from "./corpus-metrics.js";
+import type { CorpusCaseResult, CorpusMetrics } from "./corpus-metrics.js";
 import type { CaseExecutor } from "./corpus-runner.js";
 import { evaluateCorpus } from "./corpus-runner.js";
 import { renderCorpusReport } from "./corpus-report.js";
@@ -17,10 +17,13 @@ export interface EvalArgs {
   maxIterations: number;
   /** Write the rendered report here in addition to stdout. */
   out?: string;
+  /** Directory the run's per-case artifacts and raw evidence are written to; the caller
+   *  supplies the default when omitted. */
+  artifacts?: string;
 }
 
 export const EVAL_USAGE =
-  "usage: eval [--corpus <dir>] [--baseline <commit-ish>] [--max-iterations <n>] [--out <file>]";
+  "usage: eval [--corpus <dir>] [--baseline <commit-ish>] [--max-iterations <n>] [--out <file>] [--artifacts <dir>]";
 
 /** Default per-case drain bound. Generous enough for a multi-round task, finite so a
  *  pathological case cannot spin the corpus forever. */
@@ -44,6 +47,7 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
   let corpus: string | undefined;
   let baseline: string | undefined;
   let out: string | undefined;
+  let artifacts: string | undefined;
   let maxIterations = DEFAULT_EVAL_MAX_ITERATIONS;
 
   const take = (flag: string, i: number): string => {
@@ -73,6 +77,11 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
       i++;
     } else if (arg.startsWith("--out=")) {
       out = arg.slice("--out=".length);
+    } else if (arg === "--artifacts") {
+      artifacts = take(arg, i);
+      i++;
+    } else if (arg.startsWith("--artifacts=")) {
+      artifacts = arg.slice("--artifacts=".length);
     } else if (arg === "--max-iterations") {
       maxIterations = parsePositiveInt(take(arg, i), arg);
       i++;
@@ -89,6 +98,7 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     ["--corpus", corpus],
     ["--baseline", baseline],
     ["--out", out],
+    ["--artifacts", artifacts],
   ] as const) {
     if (value !== undefined && value.trim() === "") {
       throw new Error(`${flag}: value must not be empty (${EVAL_USAGE})`);
@@ -99,6 +109,7 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     ...(corpus !== undefined ? { corpus } : {}),
     ...(baseline !== undefined ? { baseline } : {}),
     ...(out !== undefined ? { out } : {}),
+    ...(artifacts !== undefined ? { artifacts } : {}),
     maxIterations,
   };
 }
@@ -143,6 +154,20 @@ export interface EvalRunResult {
   metrics: CorpusMetrics;
   markdown: string;
   passBar: PassBar;
+  /** Every executed case with its raw evidence — what the run manifest is built from. */
+  results: CorpusCaseResult[];
+}
+
+export interface EvalHooks {
+  /**
+   * Called after every case with ALL results so far, so the caller can persist partial
+   * diagnostics. A corpus run is minutes per case; a run that dies on case 6 must not
+   * take the diagnostics of cases 1-5 with it.
+   *
+   * CALLER CONTRACT: must not throw (it is awaited inside the run — see
+   * `CorpusRunHooks`). A caller doing IO here swallows its own failures.
+   */
+  onProgress?: (results: CorpusCaseResult[]) => Promise<void>;
 }
 
 /**
@@ -156,14 +181,23 @@ export async function runEval(
   cases: CorpusCase[],
   executor: CaseExecutor,
   print: (line: string) => void,
+  hooks: EvalHooks = {},
 ): Promise<EvalRunResult> {
-  const { metrics } = await evaluateCorpus(cases, executor, {
+  const seen: CorpusCaseResult[] = [];
+  const { metrics, results } = await evaluateCorpus(cases, executor, {
     onCaseStart: (c, i, total) => print(`[${i + 1}/${total}] ${c.id} (${c.type}${c.adversarial ? ", adversarial" : ""})`),
-    onCaseDone: (r, i, total) => {
+    onCaseDone: async (r, i, total) => {
       const outcome = r.evidence === null ? "errored (no evidence)" : r.evidence.outcome;
       print(`[${i + 1}/${total}] ${r.case.id} -> ${outcome} (expected ${r.case.expected.outcome})`);
+      // An errored case's reason is printed HERE, at the case, rather than only landing in
+      // the manifest: the operator is watching a run that takes minutes per case, and
+      // "errored (no evidence)" with the cause withheld is the exact experience #126 exists
+      // to end.
+      if (r.error !== undefined) print(`      ${r.error}`);
+      seen.push(r);
+      await hooks.onProgress?.(seen);
     },
   });
 
-  return { metrics, markdown: renderCorpusReport(metrics), passBar: evaluatePassBar(metrics) };
+  return { metrics, results, markdown: renderCorpusReport(metrics), passBar: evaluatePassBar(metrics) };
 }

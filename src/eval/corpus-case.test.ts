@@ -59,6 +59,14 @@ describe("CorpusCaseSchema", () => {
     expect(() => CorpusCaseSchema.parse({ ...base(), type: "refactor" })).toThrow();
   });
 
+  // The id NAMES the case's artifacts directory on disk, so path-safety is settled once,
+  // here, rather than re-checked (or forgotten) at each use site.
+  it("rejects an id that is not a path-safe segment", () => {
+    for (const id of ["../escape", "a/b", "a\\b", ".."]) {
+      expect(() => CorpusCaseSchema.parse({ ...base(), id })).toThrow(/path-safe segment/);
+    }
+  });
+
   it("rejects an empty intent", () => {
     expect(() => CorpusCaseSchema.parse({ ...base(), intent: "" })).toThrow();
   });

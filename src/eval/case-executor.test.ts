@@ -79,6 +79,9 @@ function fakeEnv(over: Partial<CaseEnvironment> = {}): FakeEnv {
     // Fixed records are stamped 2026-07-25; a case "starting" before that keeps every
     // fixture record legitimately newer than its case.
     now: () => Date.parse("2026-07-24T00:00:00.000Z"),
+    async archiveArtifacts() {
+      calls.push("archive");
+    },
     async dispose() {
       calls.push("dispose");
     },
@@ -128,10 +131,81 @@ describe("selectDecisiveEvidence", () => {
 });
 
 describe("createCaseExecutor", () => {
-  it("drives reset -> seed -> compose -> drain -> read in that order", async () => {
+  it("drives reset -> seed -> compose -> drain -> read -> archive in that order", async () => {
     const env = fakeEnv();
     await createCaseExecutor(env).execute(makeCase());
-    expect(env.calls).toEqual(["reset", "seed", "compose", "drain", "read:t1"]);
+    expect(env.calls).toEqual(["reset", "seed", "compose", "drain", "read:t1", "archive"]);
+  });
+
+  // The whole point of archiving is to preserve the artifacts of a case that went WRONG,
+  // so the failure path is the one that must not skip it.
+  it("archives the case's artifacts even when the case fails", async () => {
+    const env = fakeEnv({
+      async compose() {
+        return [];
+      },
+    });
+
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/enqueued 0 tasks/);
+
+    expect(env.calls).toContain("archive");
+  });
+
+  // A reset that failed left the state directory belonging to whoever held it before, and
+  // this case produced nothing — copying someone else's state out under this case's name
+  // would manufacture a diagnostic that describes the wrong run.
+  it("does not archive when the baseline reset itself failed", async () => {
+    const env = fakeEnv({
+      async resetToBaseline() {
+        throw new Error("tree is dirty");
+      },
+    });
+
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/tree is dirty/);
+
+    expect(env.calls).not.toContain("archive");
+  });
+
+  // Diagnostics must never decide a measurement: a throwing archive inside the `finally`
+  // would otherwise REPLACE the case's real outcome (or its real failure) with its own.
+  it("swallows an archive failure without disturbing the case's result", async () => {
+    const env = fakeEnv({
+      async archiveArtifacts() {
+        throw new Error("disk full");
+      },
+    });
+
+    await expect(createCaseExecutor(env).execute(makeCase())).resolves.not.toBeNull();
+  });
+
+  it("does not let an archive failure mask the case's own failure", async () => {
+    const env = fakeEnv({
+      async compose() {
+        return [];
+      },
+      async archiveArtifacts() {
+        throw new Error("disk full");
+      },
+    });
+
+    await expect(createCaseExecutor(env).execute(makeCase())).rejects.toThrow(/enqueued 0 tasks/);
+  });
+
+  // A logger that throws while REPORTING the swallowed failure would resurrect exactly the
+  // failure the swallow exists to contain (gotcha [ts/fail-closed]). Scoped to the WARN the
+  // handler emits, because the executor's normal-path logging is deliberately unguarded —
+  // this module is not a never-throws module, only its catch handler has to be.
+  it("survives an archive failure reported through a throwing logger", async () => {
+    const env = fakeEnv({
+      async archiveArtifacts() {
+        throw new Error("disk full");
+      },
+      log(level: string) {
+        if (level === "WARN") throw new Error("logger exploded");
+      },
+    });
+
+    await expect(createCaseExecutor(env).execute(makeCase())).resolves.not.toBeNull();
   });
 
   it("returns the decisive record for the enqueued tasks", async () => {

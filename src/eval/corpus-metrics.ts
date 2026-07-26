@@ -6,6 +6,15 @@ import type { EvidenceRecord } from "../report/evidence-types.js";
 export interface CorpusCaseResult {
   case: CorpusCase;
   evidence: EvidenceRecord | null;
+  /**
+   * Why the case produced no evidence, when the executor threw. Absent on a case that ran.
+   *
+   * Diagnostics only — no metric reads it, and `evidence === null` remains the single fact
+   * that makes a case errored. It exists because the runner used to discard the executor's
+   * message entirely, so a corpus report could say "the case failed to run" while the only
+   * copy of the reason had already been swallowed by the catch.
+   */
+  error?: string;
 }
 
 /** Per-case verdict: did the harness's ACTUAL outcome match what the case EXPECTED. */

@@ -93,6 +93,52 @@ describe("runCorpus", () => {
     expect(results[2]!.evidence?.task_id).toBe("ok2"); // run continued past the failure
   });
 
+  // The reason used to be discarded by the catch, which is what made a failed case cost a
+  // 12-minute re-run to understand (#126).
+  it("keeps the executor's failure message on the errored result", async () => {
+    const cases = [makeCase("bad")];
+    const { executor } = scriptedExecutor({ bad: "throw" });
+
+    const results = await runCorpus(cases, executor);
+
+    expect(results[0]!.evidence).toBeNull();
+    expect(results[0]!.error).toMatch(/bad/);
+  });
+
+  it("leaves `error` absent on a case that ran", async () => {
+    const cases = [makeCase("ok")];
+    const { executor } = scriptedExecutor({ ok: committedEvidence("ok") });
+
+    const results = await runCorpus(cases, executor);
+
+    expect(results[0]!.error).toBeUndefined();
+  });
+
+  // Awaited, not fire-and-forget: a hook persisting a case's diagnostics must finish before
+  // the next case's reset starts purging the state it describes.
+  it("awaits an async onCaseDone hook before starting the next case", async () => {
+    const cases = [makeCase("a"), makeCase("b")];
+    const trace: string[] = [];
+    const executor: CaseExecutor = {
+      async execute(c) {
+        trace.push(`execute:${c.id}`);
+        return committedEvidence(c.id);
+      },
+    };
+
+    await runCorpus(cases, executor, {
+      onCaseDone: async (r) => {
+        trace.push(`hook-start:${r.case.id}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        trace.push(`hook-end:${r.case.id}`);
+      },
+    });
+
+    // The load-bearing assertion is `hook-end:a` BEFORE `execute:b` — with a
+    // fire-and-forget hook the next case starts while the previous one is still writing.
+    expect(trace).toEqual(["execute:a", "hook-start:a", "hook-end:a", "execute:b", "hook-start:b", "hook-end:b"]);
+  });
+
   it("fires the per-case hooks with index/total", async () => {
     const cases = [makeCase("a"), makeCase("b")];
     const { executor } = scriptedExecutor({ a: committedEvidence("a"), b: null });
@@ -100,8 +146,12 @@ describe("runCorpus", () => {
     const done: Array<[string, boolean, number]> = [];
 
     await runCorpus(cases, executor, {
-      onCaseStart: (c, i, total) => started.push([c.id, i, total]),
-      onCaseDone: (r, i) => done.push([r.case.id, r.evidence !== null, i]),
+      onCaseStart: (c, i, total) => {
+        started.push([c.id, i, total]);
+      },
+      onCaseDone: (r, i) => {
+        done.push([r.case.id, r.evidence !== null, i]);
+      },
     });
 
     expect(started).toEqual([

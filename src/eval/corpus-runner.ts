@@ -14,10 +14,19 @@ export interface CaseExecutor {
   execute(c: CorpusCase): Promise<EvidenceRecord | null>;
 }
 
-/** Progress hooks so a caller (CLI / dashboard) can narrate a corpus run case by case. */
+/**
+ * Progress hooks so a caller (CLI / dashboard) can narrate a corpus run case by case, and
+ * persist what it has so far — a run takes minutes per case, so a crash on case 6 must not
+ * cost the diagnostics of cases 1-5.
+ *
+ * CALLER CONTRACT: a hook MUST NOT throw. They are awaited so a hook's write completes
+ * before the next case starts purging the state it describes, and that same `await` means
+ * a rejection would abort the whole run — a reporting side-effect must never sink a
+ * measurement. Callers doing IO here swallow their own failures (loudly).
+ */
 export interface CorpusRunHooks {
-  onCaseStart?: (c: CorpusCase, index: number, total: number) => void;
-  onCaseDone?: (result: CorpusCaseResult, index: number, total: number) => void;
+  onCaseStart?: (c: CorpusCase, index: number, total: number) => void | Promise<void>;
+  onCaseDone?: (result: CorpusCaseResult, index: number, total: number) => void | Promise<void>;
 }
 
 /**
@@ -35,16 +44,20 @@ export async function runCorpus(
   const results: CorpusCaseResult[] = [];
   for (let index = 0; index < cases.length; index++) {
     const c = cases[index]!;
-    hooks.onCaseStart?.(c, index, cases.length);
-    let evidence: EvidenceRecord | null;
+    await hooks.onCaseStart?.(c, index, cases.length);
+    let evidence: EvidenceRecord | null = null;
+    let error: string | undefined;
     try {
       evidence = await executor.execute(c);
-    } catch {
-      evidence = null;
+    } catch (err) {
+      // KEEP the reason. `evidence === null` is still the only thing that makes the case
+      // errored — the message is carried alongside so the run's diagnostics can say WHY
+      // instead of leaving the operator to reproduce a 12-minute run to find out.
+      error = err instanceof Error ? err.message : String(err);
     }
-    const result: CorpusCaseResult = { case: c, evidence };
+    const result: CorpusCaseResult = { case: c, evidence, ...(error !== undefined ? { error } : {}) };
     results.push(result);
-    hooks.onCaseDone?.(result, index, cases.length);
+    await hooks.onCaseDone?.(result, index, cases.length);
   }
   return results;
 }

@@ -2,6 +2,7 @@ import type { CorpusCase } from "./corpus-case.js";
 import type { CaseExecutor } from "./corpus-runner.js";
 import type { EvidenceRecord } from "../report/evidence-types.js";
 import type { EvidenceSlot } from "../report/evidence-store.js";
+import { safeErrorText, safeLog } from "../util/safe-log.js";
 
 /**
  * The environment seam the real `CaseExecutor` drives. Everything heavy and
@@ -37,6 +38,10 @@ export interface CaseEnvironment {
   /** Wall-clock epoch ms. A seam rather than a direct `Date.now()` so the staleness
    *  check below is deterministic under test. */
   now(): number;
+  /** Preserve this case's blackboard artifacts before the NEXT case's `resetToBaseline`
+   *  purges them. Best-effort by contract: the executor calls it from a `finally` and
+   *  SWALLOWS any throw, because diagnostics must never decide a measurement. */
+  archiveArtifacts(c: CorpusCase): Promise<void>;
   /** Release whatever the environment took hold of for the run (the exclusive corpus
    *  lock). Idempotent; the caller invokes it from a `finally`, including after a
    *  failure. */
@@ -110,6 +115,32 @@ export function createCaseExecutor(env: CaseEnvironment): CaseExecutor {
       env.log("INFO", `corpus case '${c.id}': restoring the baseline`);
       await env.resetToBaseline();
 
+      // From here on the case OWNS the blackboard, so everything below runs inside a
+      // `finally` that archives what it produced before the next case's reset destroys it.
+      // The archive is deliberately NOT attempted when the reset itself failed: there is
+      // nothing of this case's to preserve, and the state on disk still belongs to whoever
+      // held it before.
+      try {
+        return await runCase(c, caseStartedMs);
+      } finally {
+        // A throw from the archive inside a `finally` would REPLACE the real failure with a
+        // diagnostics error — the measurement's reason lost to the machinery meant to
+        // explain it. Swallowed here, in the one place that hazard exists, rather than
+        // relying on every environment implementation to be individually careful.
+        await env.archiveArtifacts(c).catch((err: unknown) => {
+          safeLog(
+            (level, msg) => env.log(level as "INFO" | "WARN" | "ERROR", msg),
+            "WARN",
+            `corpus case '${c.id}': archiving the case artifacts failed (ignored): ${safeErrorText(err)}`,
+          );
+        });
+      }
+    },
+  };
+
+  /** Everything a case does once it OWNS the blackboard — extracted only so the archive
+   *  above can wrap it in a `finally` without a second level of nesting in `execute`. */
+  async function runCase(c: CorpusCase, caseStartedMs: number): Promise<EvidenceRecord | null> {
       env.log("INFO", `corpus case '${c.id}': applying seed '${c.seed}'`);
       await env.applySeed(c);
 
@@ -213,6 +244,5 @@ export function createCaseExecutor(env: CaseEnvironment): CaseExecutor {
         );
       }
       return decisive;
-    },
-  };
+  }
 }

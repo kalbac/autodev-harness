@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isPathSafeId } from "../orchestrator/task-spec.js";
+
 /**
  * One Evaluation Corpus case: a seed repo state + an operator intent + the class of
  * outcome the harness is ASSERTED to produce for it. The corpus runner executes each case
@@ -33,7 +35,15 @@ export const CorpusCaseType = z.enum([
 export const CorpusCaseSchema = z
   .object({
     schema: z.literal(CORPUS_CASE_SCHEMA_VERSION),
-    id: z.string().min(1),
+    /** A path-safe segment, because the id NAMES THINGS ON DISK — the run's per-case
+     *  artifacts directory, among others. Constraining it here, at the one place a case
+     *  enters the system, is what lets every consumer use it verbatim; validating it at
+     *  each use site instead is the recurring defect shape of
+     *  docs/gotchas/validated-one-string-used-another.md. */
+    id: z
+      .string()
+      .min(1)
+      .refine(isPathSafeId, { message: "id must be a path-safe segment (no '/', '\\', '..', or NUL)" }),
     type: CorpusCaseType,
     /** The operator intent handed to the run composer — what the harness should attempt. */
     intent: z.string().min(1),

@@ -30,19 +30,31 @@ describe("parseEvalArgs", () => {
   });
 
   it("parses the space form of every flag", () => {
-    expect(parseEvalArgs(["--corpus", "c", "--baseline", "abc123", "--out", "r.md", "--max-iterations", "5"])).toEqual({
+    expect(
+      parseEvalArgs([
+        "--corpus", "c",
+        "--baseline", "abc123",
+        "--out", "r.md",
+        "--artifacts", "a",
+        "--max-iterations", "5",
+      ]),
+    ).toEqual({
       corpus: "c",
       baseline: "abc123",
       out: "r.md",
+      artifacts: "a",
       maxIterations: 5,
     });
   });
 
   it("parses the = form of every flag", () => {
-    expect(parseEvalArgs(["--corpus=c", "--baseline=abc123", "--out=r.md", "--max-iterations=5"])).toEqual({
+    expect(
+      parseEvalArgs(["--corpus=c", "--baseline=abc123", "--out=r.md", "--artifacts=a", "--max-iterations=5"]),
+    ).toEqual({
       corpus: "c",
       baseline: "abc123",
       out: "r.md",
+      artifacts: "a",
       maxIterations: 5,
     });
   });
@@ -65,6 +77,11 @@ describe("parseEvalArgs", () => {
   it("rejects an empty value rather than resolving it to the current directory", () => {
     expect(() => parseEvalArgs(["--corpus="])).toThrow(/must not be empty/);
     expect(() => parseEvalArgs(["--out= "])).toThrow(/must not be empty/);
+    expect(() => parseEvalArgs(["--artifacts="])).toThrow(/must not be empty/);
+  });
+
+  it("rejects --artifacts with a missing value", () => {
+    expect(() => parseEvalArgs(["--artifacts"])).toThrow(/--artifacts: missing value/);
   });
 });
 
@@ -155,8 +172,35 @@ describe("runEval", () => {
     const { metrics: m, passBar } = await runEval([makeCase("x")], executor, (l) => printed.push(l));
 
     expect(printed[1]).toBe("[1/1] x -> errored (no evidence) (expected committed)");
+    // The CAUSE, at the case, while the operator is watching — not withheld until a
+    // post-mortem dig (#126).
+    expect(printed[2]).toBe("      boom");
     expect(m.errored).toBe(1);
     expect(passBar.met).toBe(false);
+  });
+
+  it("returns the raw results so diagnostics can be persisted from them", async () => {
+    const executor: CaseExecutor = { async execute(c) { return committed(c.id); } };
+
+    const { results } = await runEval([makeCase("good-1")], executor, () => {});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.evidence?.task_id).toBe("good-1");
+  });
+
+  // Written after EVERY case, cumulatively, so a run that dies on the last case still
+  // leaves the earlier cases' diagnostics behind.
+  it("hands onProgress every result so far, after each case", async () => {
+    const executor: CaseExecutor = { async execute(c) { return committed(c.id); } };
+    const snapshots: string[][] = [];
+
+    await runEval([makeCase("a"), makeCase("b")], executor, () => {}, {
+      onProgress: async (results) => {
+        snapshots.push(results.map((r) => r.case.id));
+      },
+    });
+
+    expect(snapshots).toEqual([["a"], ["a", "b"]]);
   });
 
   it("renders the report and judges the bar in one call", async () => {

@@ -5,10 +5,10 @@
 // deliberately NOT unit-tested; every module it wires already has its own
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { detectRepoRoot, loadConfig } from "./config/config.js";
 import { createApiServer } from "./api/server.js";
@@ -34,6 +34,12 @@ import { parseEvalArgs, runEval, type EvalArgs } from "./eval/eval-cli.js";
 import { loadCorpus } from "./eval/corpus-loader.js";
 import { createCaseExecutor } from "./eval/case-executor.js";
 import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
+import type { CorpusCaseResult } from "./eval/corpus-metrics.js";
+import {
+  buildCorpusRunManifest,
+  renderCorpusRunManifest,
+  CORPUS_RUN_MANIFEST_FILE,
+} from "./eval/corpus-run-manifest.js";
 import { runNative } from "./util/native.js";
 import { safeErrorText, safeLog } from "./util/safe-log.js";
 
@@ -499,20 +505,59 @@ async function main(): Promise<void> {
     // ENVIRONMENT on its own destructive path -- deliberately NOT called here, so no future
     // entry point can construct the environment and skip them. All this layer owes is the
     // matching `dispose()` in a `finally`.
+    // Diagnostics land under the target repo's git-excluded state directory by default:
+    // it is not purged between cases, it dirties neither repo, and it sits beside the
+    // `conductor.log` a reader will want next to it. Everything here is a copy — deleting
+    // the whole directory loses no measurement.
+    const artifactsDir = resolve(command.args.artifacts ?? join(root.stateDirAbs, "corpus-artifacts"));
+
     const cases = await loadCorpus(corpusDir);
     root.log("INFO", `eval: ${cases.length} case(s) from ${corpusDir}; baseline ${baseline}; target ${repoRoot}`);
     process.stdout.write(`Evaluation Corpus: ${cases.length} case(s) from ${corpusDir}\n`);
-    process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n\n`);
+    process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n`);
+    process.stdout.write(`Artifacts ${artifactsDir}\n\n`);
 
     const env = createHarnessCaseEnvironment({
       root,
       corpusRoot: corpusDir,
       baseline,
       maxIterations: command.args.maxIterations,
+      artifactsRoot: artifactsDir,
     });
+
+    // Rewritten after EVERY case, not once at the end: a 12-minute run that dies on the
+    // last case would otherwise leave nothing machine-readable behind. A failure to write
+    // it is swallowed with a WARN for the same reason the archive is — a diagnostics
+    // artifact must never be able to fail a measurement.
+    const manifestPath = join(artifactsDir, CORPUS_RUN_MANIFEST_FILE);
+    const writeManifest = async (results: CorpusCaseResult[]): Promise<void> => {
+      try {
+        const manifest = buildCorpusRunManifest(
+          {
+            generated_at: new Date().toISOString(),
+            target_repo: repoRoot,
+            baseline,
+            corpus_dir: corpusDir,
+            artifacts_dir: artifactsDir,
+            total_cases: cases.length,
+          },
+          results,
+        );
+        await mkdir(artifactsDir, { recursive: true });
+        await writeFile(manifestPath, renderCorpusRunManifest(manifest), "utf8");
+      } catch (err) {
+        safeLog(root.log, "WARN", `eval: writing ${manifestPath} failed (ignored): ${safeErrorText(err)}`);
+      }
+    };
+
     try {
       const executor = createCaseExecutor(env);
-      const { markdown, passBar } = await runEval(cases, executor, (line) => process.stdout.write(`${line}\n`));
+      const { markdown, passBar } = await runEval(
+        cases,
+        executor,
+        (line) => process.stdout.write(`${line}\n`),
+        { onProgress: writeManifest },
+      );
 
       process.stdout.write("\n");
       printMarkdown(markdown);
@@ -520,6 +565,7 @@ async function main(): Promise<void> {
         await writeFile(command.args.out, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
         process.stdout.write(`\nreport written to ${command.args.out}\n`);
       }
+      process.stdout.write(`diagnostics written to ${artifactsDir} (raw evidence: ${CORPUS_RUN_MANIFEST_FILE})\n`);
 
       if (!passBar.met) {
         // A non-zero exit makes the bar MECHANICAL rather than a number the reader has to

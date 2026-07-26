@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { CorpusCase } from "./corpus-case.js";
 import type { CaseEnvironment } from "./case-executor.js";
 import { applySeedOverlay } from "./seed-overlay.js";
+import { archiveCaseArtifacts, conductorLogOffset } from "./case-archive.js";
 import { resetHarnessState } from "./harness-state-reset.js";
 import { createOneShotQueueGuard } from "./eval-preflight.js";
 import { acquireCorpusLock, type CorpusLock } from "./corpus-lock.js";
@@ -38,6 +39,9 @@ export interface HarnessCaseEnvironmentOptions {
   baseline: string;
   /** Bound on the per-case drain, so a pathological case cannot spin forever. */
   maxIterations: number;
+  /** Absolute directory each case's blackboard artifacts are copied into before the next
+   *  case purges them. Diagnostics only — nothing here feeds a metric. */
+  artifactsRoot: string;
 }
 
 /** Baked identity so a seed commit never fails on a machine with no global git user
@@ -54,6 +58,7 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   const { root, baseline, maxIterations } = opts;
   const repoRoot = root.repoRoot;
   const corpusRoot = resolve(opts.corpusRoot);
+  const artifactsRoot = resolve(opts.artifactsRoot);
   const log = root.log;
 
   // Ownership of the target project, established once and in this order:
@@ -66,6 +71,11 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   // happened (codex R3 High).
   const queueGuard = createOneShotQueueGuard(root.repo);
   let lock: CorpusLock | null = null;
+
+  // Where `conductor.log` had reached when the current case started, so the archive keeps
+  // only that case's slice of a log that grows across the whole run. Captured inside
+  // `resetToBaseline` — the one call every case makes, before anything of its own runs.
+  let logOffset = 0;
 
   async function git(args: string[], label: string): Promise<string> {
     const r = await runNative("git", args, { cwd: repoRoot });
@@ -124,6 +134,10 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
         );
       }
 
+      // Read BEFORE the purge, and before the case writes anything: the purge leaves
+      // `conductor.log` in place, so this offset is exactly where this case's log begins.
+      logOffset = await conductorLogOffset(root.stateDirAbs);
+
       await git(["reset", "--hard", baseline], `reset --hard ${baseline}`);
       const purged = await resetHarnessState(root.stateDirAbs);
       // Only NOW is the queue the corpus's rather than the operator's — retiring the
@@ -170,6 +184,23 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
       // loop BEFORE `drain` is evaluated, so a case would get exactly one iteration
       // (docs/gotchas/conductor-once-precedes-drain-and-bounded-defaults.md).
       await root.conductor.run({ drain: true, maxIterations });
+    },
+
+    async archiveArtifacts(c: CorpusCase): Promise<void> {
+      // Throws propagate to the executor, which swallows them with a WARN: a corpus run
+      // must not fail because a diagnostics copy failed (see `case-archive.ts`). Skips are
+      // reported at WARN for the same reason they are collected at all — an archive that
+      // quietly omitted something reads exactly like a case that never produced it.
+      const archived = await archiveCaseArtifacts({
+        stateDirAbs: root.stateDirAbs,
+        artifactsRoot,
+        caseId: c.id,
+        logFromByte: logOffset,
+      });
+      log("INFO", `corpus case '${c.id}': archived ${archived.copied.length} artifact(s) to ${archived.dest}`);
+      if (archived.skipped.length > 0) {
+        log("WARN", `corpus case '${c.id}': archive skipped ${archived.skipped.length}: ${archived.skipped.join("; ")}`);
+      }
     },
 
     async readEvidence(taskIds: string[]): Promise<EvidenceSlot[]> {
