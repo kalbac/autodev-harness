@@ -27,6 +27,7 @@ import type { WorkerAdapter } from "../worker/adapter.js";
 import { RealWatchedProcessRunner } from "../watchdog/watchdog.js";
 import { CodexCriticAdapter } from "../critic/codex-adapter.js";
 import type { CriticAdapter } from "../critic/adapter.js";
+import { collectCriticEvidence } from "../critic/evidence.js";
 import { assertKnownAdapters, heterogeneityWarnings, resolveWorkerExe } from "../config/roles.js";
 import {
   createEnqueueCapability,
@@ -971,6 +972,12 @@ export async function buildProjectRoot(
     writeDecision,
     harvestWorkerReport,
     normalizeEol,
+    // #123: the critic's evidence attachments. The file list comes from
+    // `worktree.diffFiles`, which shares its comparison basis with `worktree.diff`
+    // (see `buildDiffArgs` in `util/git.ts`), so the attached set always describes the
+    // same change as the diff the critic is reading.
+    collectCriticEvidence: async (wt, scope) =>
+      collectCriticEvidence(wt.path, await worktree.diffFiles(wt, scope)),
     gitChangedPaths,
     snapshotFingerprints,
     resolveOracleSet: resolveProjectOracleSet,

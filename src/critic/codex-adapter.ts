@@ -66,7 +66,7 @@ export class CodexCriticAdapter implements CriticAdapter {
     }
 
     return withWorkerReportFenced(input.workerReportPath, async () => {
-      const prompt = buildCriticPrompt(input.diff);
+      const prompt = buildCriticPrompt(input.diff, input.evidence);
       const outfile = join(input.runtimeDir, "critic-last-message.json");
 
       // The outfile path is fixed per runtimeDir and reused across retry

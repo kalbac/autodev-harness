@@ -1,4 +1,5 @@
 import type { Verdict } from "./verdict.js";
+import type { CriticEvidence } from "./evidence.js";
 import type { CriticUsage } from "../usage/usage.js";
 
 /**
@@ -28,6 +29,12 @@ export interface CriticRunInput {
   diff: string;
   runtimeDir: string;
   workerReportPath: string | null;
+  /** The complete current text of the files this diff touches, plus a named list of
+   *  any that could not be attached (#123, `critic/evidence.ts`). Optional: when it is
+   *  absent the critic is given the diff alone, exactly as before, which is the
+   *  conservative direction — less evidence can only make a verdict more cautious,
+   *  never more permissive. */
+  evidence?: CriticEvidence;
 }
 
 export interface CriticAdapter {

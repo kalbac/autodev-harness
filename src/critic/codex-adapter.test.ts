@@ -148,6 +148,28 @@ describe("CodexCriticAdapter", () => {
     expect(call.options?.cwd).toBe("/repo");
   });
 
+  it("carries the evidence attachments into the prompt it sends on stdin (#123)", async () => {
+    // The adapter is the only place the evidence set turns into prompt text. Without
+    // this the collector could be perfectly wired and the critic would still be
+    // reviewing the diff alone -- a feature dead between DETECT and EMIT
+    // (docs/gotchas/launch-marker-needs-prompt-contract.md).
+    const dir = makeTempDir();
+    const cfg = HarnessConfigSchema.parse({});
+    const runner = new FakeRunner([{ result: okResult({ exitCode: 0, stdout: cleanVerdictJson }) }]);
+    const adapter = new CodexCriticAdapter({ cfg, repoRoot: "/repo", runner: runner.run, schemaPath: "/schema.json" });
+    const evidence = {
+      attached: [{ path: "foo.php", bytes: 9, content: "const X=1" }],
+      omitted: [{ path: "logo.png", reason: "not-text" as const, bytes: null }],
+    };
+
+    await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null, evidence });
+
+    const stdin = runner.calls[0]!.options?.stdin ?? "";
+    expect(stdin).toBe(buildCriticPrompt("diff content", evidence));
+    expect(stdin).toContain("const X=1");
+    expect(stdin).toContain("logo.png");
+  });
+
   it("falls back to stdout parsing when no outfile is written", async () => {
     const dir = makeTempDir();
     const cfg = HarnessConfigSchema.parse({});

@@ -26,6 +26,11 @@ import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
 import { globMatch, normalizePath } from "../util/glob.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
+import {
+  CRITIC_DIFF_CONTEXT_LINES,
+  summarizeEvidence,
+  type CriticEvidence,
+} from "../critic/evidence.js";
 import { writeEvidence, EVIDENCE_FILE, type EvidenceDraft } from "../report/evidence.js";
 
 export interface ConductorDeps {
@@ -75,6 +80,14 @@ export interface ConductorDeps {
    * worker's rate-limit/timeout early-returns and BEFORE the status read + dirty-file fence
    * (parity spec §6): the report belongs in runtimeDir, never in the worktree. */
   harvestWorkerReport: (wt: Worktree, taskId: string) => Promise<void>;
+  /** Collect the critic's evidence attachments for this task (#123): the complete
+   *  current text of every file the diff covers, plus a named list of any that could
+   *  not be attached. Wired at the composition root against the worktree; optional so
+   *  the fake-driven conductor tests are untouched, and so that a run with no
+   *  collector behaves exactly as it did before #123 (diff-only prompt). May throw --
+   *  the conductor swallows it and falls back to the diff-only prompt, which is the
+   *  conservative direction. */
+  collectCriticEvidence?: (wt: Worktree, scope: string[]) => Promise<CriticEvidence>;
   gitChangedPaths: (cwd: string) => Promise<string[]>;
   snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
   /** Resolve the current protected-oracle-artifact set (`adr/006` Phase 2): the guard
@@ -749,12 +762,68 @@ export function createConductor(deps: ConductorDeps): Conductor {
           }
 
           // DIFF + CRITIC
-          const diff = await worktree.diff(wt, task.file_set);
+          // The diff is captured with a WIDE context window (#123): three lines around
+          // a hunk is not enough for the critic to verify a reference to code a little
+          // further up, and it reasons fail-closed, so a narrow window made `clean`
+          // structurally unreachable for edits (measured at 0% first-pass commits).
+          // This is the critic's evidence only -- the machine gate resolves its OWN
+          // diff (`resolveScope`) and is untouched by the width used here.
+          const diff = await worktree.diff(wt, task.file_set, { contextLines: CRITIC_DIFF_CONTEXT_LINES });
           await repo.writeRuntimeFile(task.id, "diff.patch", diff);
           // Pin the loop branch this diff was captured on, so a later apply-on-accept
           // (operator override) can refuse to replay it onto a DIFFERENT branch.
           await repo.writeRuntimeFile(task.id, "loop-branch", loopBranch);
-          const cr = await critic.run({ diff, runtimeDir, workerReportPath });
+
+          // The other half of #123: hand the critic the COMPLETE current text of the
+          // files this diff touches, so a declaration outside the hunk is verifiable
+          // instead of merely unseen. Best-effort by construction -- a failure here
+          // leaves `evidence` undefined, which reproduces the pre-#123 diff-only
+          // prompt. That is the safe direction (Principle 10): less evidence can only
+          // make the critic more cautious, never more permissive, so a broken
+          // collector cannot let anything through that would not have passed before.
+          let criticEvidence: CriticEvidence | undefined;
+          if (deps.collectCriticEvidence) {
+            try {
+              criticEvidence = await deps.collectCriticEvidence(wt, task.file_set);
+              safeLog("INFO", `conductor: critic evidence -- ${summarizeEvidence(criticEvidence)}`);
+              await repo.writeRuntimeFile(
+                task.id,
+                "critic-evidence.json",
+                // The MANIFEST only (paths, sizes, omission reasons) -- never the file
+                // contents, which are already on disk in the worktree and would only
+                // duplicate the repo into the runtime dir. It exists so a corpus run's
+                // archived artifacts can answer "what did the critic actually see?"
+                // without re-running anything (the #126 diagnostics contract).
+                `${JSON.stringify(
+                  {
+                    attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
+                    omitted: criticEvidence.omitted,
+                  },
+                  null,
+                  2,
+                )}\n`,
+              );
+            } catch (err) {
+              criticEvidence = undefined;
+              safeLog(
+                "WARN",
+                `conductor: critic evidence collection failed -- reviewing from the diff alone: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+
+          const cr = await critic.run({
+            diff,
+            runtimeDir,
+            workerReportPath,
+            // Spread rather than `evidence: evidence` -- under
+            // `exactOptionalPropertyTypes` an explicit `undefined` is not the same as
+            // an absent optional property, and the adapter's contract is "absent means
+            // the diff alone".
+            ...(criticEvidence ? { evidence: criticEvidence } : {}),
+          });
 
           if (cr.usage) {
             criticRuns.push(cr.usage);

@@ -66,3 +66,86 @@ describe("buildCriticPrompt", () => {
     expect(prompt).toMatch(/broken/i);
   });
 });
+
+describe("buildCriticPrompt — the evidence window (#123)", () => {
+  const diff = "diff --git a/foo.php b/foo.php\n+return self::SUPPORTED;\n";
+  const evidence = {
+    attached: [{ path: "foo.php", bytes: 42, content: "<?php\nconst SUPPORTED = [1, 2];\nreturn self::SUPPORTED;\n" }],
+    omitted: [{ path: "logo.png", reason: "not-text" as const, bytes: null }],
+  };
+
+  it("omitting the argument reproduces the pre-#123 diff-only prompt (promises nothing)", () => {
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).not.toMatch(/## Your evidence window/);
+    expect(prompt).not.toMatch(/## Attached files/);
+    expect(prompt).not.toMatch(/BEGIN FILE/);
+    expect(prompt).not.toMatch(/Files NOT attached/);
+    // The preamble may only ever speak of attachments CONDITIONALLY ("when present"):
+    // a prompt with nothing attached must never assert that anything is.
+    expect(prompt).not.toMatch(/each attached file is shown/i);
+  });
+
+  it("embeds each attachment COMPLETE, and says so", () => {
+    const prompt = buildCriticPrompt(diff, evidence);
+    expect(prompt).toContain(evidence.attached[0]!.content);
+    expect(prompt).toContain("===== BEGIN FILE foo.php (42 bytes, complete) =====");
+    expect(prompt).toContain("===== END FILE foo.php =====");
+  });
+
+  it("tells the critic a declaration outside the hunk is verifiable — the actual fix", () => {
+    // This is the sentence that makes a `clean` verdict reachable for an edit whose
+    // correctness depends on a constant declared above the changed lines
+    // (docs/gotchas/critic-sees-only-the-diff-hunk.md). Without it the attachments
+    // are present but the critic has no instruction to trust them over the hunk.
+    const prompt = buildCriticPrompt(diff, evidence);
+    expect(prompt).toMatch(/declared outside the changed lines/i);
+    expect(prompt).toMatch(/do not withhold `clean`/i);
+  });
+
+  it("names every omission and forbids reading it as evidence of absence", () => {
+    // The other half: without this, the change would swap one false verdict for a
+    // NEW one — a critic inferring "not shown" means "not there".
+    const prompt = buildCriticPrompt(diff, evidence);
+    expect(prompt).toContain("## Files NOT attached");
+    expect(prompt).toContain("`logo.png`");
+    expect(prompt).toContain("not UTF-8 text (binary content)");
+    expect(prompt).toMatch(/is NOT evidence\s+that anything is missing/i);
+    expect(prompt).toMatch(/do not infer a defect from a file you were not shown/i);
+  });
+
+  it("renders every omission reason in plain language, never as a bare enum token", () => {
+    const reasons = ["too-large", "budget-exhausted", "absent", "not-a-regular-file", "not-text", "unreadable"] as const;
+    const prompt = buildCriticPrompt(diff, {
+      attached: [],
+      omitted: reasons.map((reason, i) => ({ path: `f${i}.php`, reason, bytes: null })),
+    });
+    expect(prompt).toMatch(/never sent truncated/);
+    expect(prompt).toMatch(/total attachment budget/);
+    expect(prompt).toMatch(/deleted by this diff/);
+    expect(prompt).toMatch(/directory, symlink/);
+    expect(prompt).toMatch(/binary content/);
+    expect(prompt).toMatch(/could not be read/);
+    // A raw token would leave the critic guessing at what it means.
+    expect(prompt).not.toMatch(/— not-a-regular-file,/);
+  });
+
+  it("does NOT soften the fail-closed mandate — more evidence, not a lower bar", () => {
+    // adr/005 and the adversarial framing are untouched by this change; a prompt that
+    // quietly relaxed them would trade a throughput number for a weaker gate.
+    const prompt = buildCriticPrompt(diff, evidence);
+    expect(prompt).toMatch(/Assume, by default, that this diff BREAKS a contract/);
+    expect(prompt).toMatch(/fabricated proof/i);
+    expect(prompt).toMatch(/answer `uncertain` rather than `broken`/i);
+  });
+
+  it("keeps the no-tools and fencing rules consistent with the attachments", () => {
+    // Two statements of one rule must not diverge: a preamble still saying "the diff
+    // alone" while whole files are attached is a contradiction the critic has to
+    // resolve on its own, and it resolves it fail-closed.
+    const prompt = buildCriticPrompt(diff, evidence);
+    expect(prompt).toMatch(/do not run any shell command/i);
+    expect(prompt).not.toMatch(/review it from that text alone/i);
+    expect(prompt).not.toMatch(/Judge ONLY the diff shown below/i);
+    expect(prompt).toMatch(/worker's own rationale is fenced/i);
+  });
+});

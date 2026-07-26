@@ -8,8 +8,9 @@ import type { Worktree, WorktreeManager } from "../worktree/worktree.js";
 import type { WorkerAdapter, WorkerResult, WorkerRunInput } from "../worker/adapter.js";
 import type { CriticAdapter, CriticResult, CriticRunInput } from "../critic/adapter.js";
 import type { Verdict } from "../critic/verdict.js";
+import { CRITIC_DIFF_CONTEXT_LINES } from "../critic/evidence.js";
 import type { Router } from "../router/router.js";
-import type { Git, MergeResult } from "../util/git.js";
+import type { DiffOptions, Git, MergeResult } from "../util/git.js";
 import type { GateInput, GateVerdict } from "../gate/gate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
 import type { AntiDriftInput } from "../anti-drift/anti-drift.js";
@@ -124,12 +125,13 @@ function makeScheduler(queue: Task[], repo: BlackboardRepository): { scheduler: 
 interface WorktreeSpy {
   create: { taskId: string; baseBranch: string }[];
   teardown: Worktree[];
-  diff: { wt: Worktree; scope?: string[] }[];
+  diff: { wt: Worktree; scope?: string[]; opts?: DiffOptions }[];
   merge: { wt: Worktree; into: string }[];
 }
 
 function makeWorktree(opts: {
   diffText?: string;
+  diffFiles?: string[];
   mergeResult?: MergeResult;
 } = {}): { worktree: WorktreeManager; spy: WorktreeSpy } {
   const spy: WorktreeSpy = { create: [], teardown: [], diff: [], merge: [] };
@@ -138,9 +140,12 @@ function makeWorktree(opts: {
       spy.create.push({ taskId, baseBranch });
       return { path: `/wt/${taskId}`, branch: `autodev/wt-${taskId}`, taskId };
     },
-    async diff(wt: Worktree, scope?: string[]): Promise<string> {
-      spy.diff.push(scope !== undefined ? { wt, scope } : { wt });
+    async diff(wt: Worktree, scope?: string[], diffOpts?: DiffOptions): Promise<string> {
+      spy.diff.push({ wt, ...(scope !== undefined ? { scope } : {}), ...(diffOpts !== undefined ? { opts: diffOpts } : {}) });
       return opts.diffText ?? "";
+    },
+    async diffFiles(): Promise<string[]> {
+      return opts.diffFiles ?? [];
     },
     async teardown(wt: Worktree): Promise<void> {
       spy.teardown.push(wt);
@@ -489,6 +494,9 @@ function buildDeps(partial: Partial<ConductorDeps>): ConductorDeps {
     zonesTouchedInDiff: partial.zonesTouchedInDiff ?? (async () => []),
     ...(partial.profileRef !== undefined ? { profileRef: partial.profileRef } : {}),
     ...(partial.normalizeEol !== undefined ? { normalizeEol: partial.normalizeEol } : {}),
+    ...(partial.collectCriticEvidence !== undefined
+      ? { collectCriticEvidence: partial.collectCriticEvidence }
+      : {}),
     ...(partial.readNorthStar !== undefined ? { readNorthStar: partial.readNorthStar } : {}),
     ...(partial.writeDecision !== undefined ? { writeDecision: partial.writeDecision } : {}),
     clock: partial.clock ?? { now: () => 0 },
@@ -1452,6 +1460,9 @@ describe("runIteration -- teardown is best-effort", () => {
       },
       async diff(): Promise<string> {
         return "";
+      },
+      async diffFiles(): Promise<string[]> {
+        return [];
       },
       async teardown(): Promise<void> {
         throw new Error("teardown blew up");
@@ -2773,6 +2784,9 @@ describe("runIteration -- evidence ledger", () => {
       async diff(): Promise<string> {
         return "";
       },
+      async diffFiles(): Promise<string[]> {
+        return [];
+      },
       async teardown(): Promise<void> {
         throw new Error("teardown blew up");
       },
@@ -2787,5 +2801,97 @@ describe("runIteration -- evidence ledger", () => {
     const res = await conductor.runIteration();
     expect(res.committed).toBe(true);
     expect(readEvidence(state, task.id).outcome).toBe("committed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The critic's evidence window (#123)
+// ---------------------------------------------------------------------------
+
+describe("runIteration -- critic evidence window (#123)", () => {
+  it("captures the critic's diff with a WIDE context window", async () => {
+    // The narrow half of the defect: with git's default -U3 a declaration a few lines
+    // above the change is simply not in the prompt, and the critic reasons fail-closed
+    // (docs/gotchas/critic-sees-only-the-diff-hunk.md).
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { worktree, spy } = makeWorktree({ diffText: "diff --git a/x b/x\n+1\n" });
+
+    await createConductor(buildDeps({ repo, scheduler, worktree })).runIteration();
+
+    expect(spy.diff).toHaveLength(1);
+    expect(spy.diff[0]!.opts).toEqual({ contextLines: CRITIC_DIFF_CONTEXT_LINES });
+    expect(CRITIC_DIFF_CONTEXT_LINES).toBeGreaterThan(3); // wider than git's default
+  });
+
+  it("hands the collected evidence to the critic, and records a manifest of it", async () => {
+    // A feature split across COLLECT and USE is dead unless both halves are wired
+    // (docs/gotchas/launch-marker-needs-prompt-contract.md is the same lesson): this
+    // pins that the collector's output actually reaches the critic's input.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic, calls } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+    const evidence = {
+      attached: [{ path: "a.php", bytes: 3, content: "abc" }],
+      omitted: [{ path: "big.php", reason: "too-large" as const, bytes: 999999 }],
+    };
+
+    await createConductor(
+      buildDeps({ repo, scheduler, critic, collectCriticEvidence: async () => evidence }),
+    ).runIteration();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.evidence).toEqual(evidence);
+    // The manifest carries paths/sizes/reasons but never the file CONTENT -- the bytes
+    // are already on disk in the worktree; duplicating them into the runtime dir would
+    // bloat every archived corpus case for nothing.
+    const manifest = state.runtimeFiles.get(task.id)?.get("critic-evidence.json");
+    expect(manifest).toBeDefined();
+    expect(JSON.parse(manifest!)).toEqual({
+      attached: [{ path: "a.php", bytes: 3 }],
+      omitted: [{ path: "big.php", reason: "too-large", bytes: 999999 }],
+    });
+    expect(manifest).not.toContain("abc");
+  });
+
+  it("falls back to the diff-only prompt when the collector THROWS, without failing the task", async () => {
+    // Failure direction (Principle 10): no evidence is exactly the pre-#123 prompt, so
+    // a broken collector can only make the critic more cautious -- never let something
+    // through that would not have passed before.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic, calls } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+
+    const res = await createConductor(
+      buildDeps({
+        repo,
+        scheduler,
+        critic,
+        collectCriticEvidence: async () => {
+          throw new Error("boom");
+        },
+      }),
+    ).runIteration();
+
+    expect(calls).toHaveLength(1);
+    expect("evidence" in calls[0]!).toBe(false);
+    expect(res.committed).toBe(true); // the task still ran to completion
+    expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBeFalsy();
+  });
+
+  it("omits the evidence field entirely when no collector is wired", async () => {
+    // `exactOptionalPropertyTypes`: an explicit `undefined` is not the same as an absent
+    // property, and the adapter's contract is "absent means the diff alone".
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { critic, calls } = makeCritic([{ result: { verdict: makeCleanVerdict(), rateLimited: false } }]);
+
+    await createConductor(buildDeps({ repo, scheduler, critic })).runIteration();
+
+    expect("evidence" in calls[0]!).toBe(false);
   });
 });

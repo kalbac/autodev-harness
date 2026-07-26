@@ -213,6 +213,9 @@ function makeParityHarness(opts: HarnessOptions = {}): Harness {
     async diff(): Promise<string> {
       return opts.diffText ?? "";
     },
+    async diffFiles(): Promise<string[]> {
+      return [];
+    },
     async teardown(): Promise<void> {
       // no-op, per the locked harness design.
     },
