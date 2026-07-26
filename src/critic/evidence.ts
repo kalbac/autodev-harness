@@ -188,16 +188,32 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
   let additions = 0;
   let sawHunk = false;
 
+  // R4: a POSITIONAL state machine, not a flat allow-list. R3 accepted any recognized
+  // header prefix anywhere outside a hunk, and `--- ` is such a prefix — so a removed
+  // line whose content is `-- ` renders as `--- `, lands after a consumed hunk, and was
+  // skipped as a header instead of examined as a removal. `--- ` and `+++ ` are only
+  // headers in ONE position: inside the block that a `diff --git` line opens. After a
+  // hunk they are not headers at all, so they are not accepted there.
+  //
+  // This is the fifth round of the same shape (each fix removing one way to skip a line
+  // rather than removing skip-by-default), and position is what finally makes the
+  // question decidable: a line means what its LOCATION says it means, not what its first
+  // characters resemble.
+  type Ctx = "start" | "fileHeader" | "afterHunk";
+  let ctx: Ctx = "start";
+
   for (let i = 0; i < lines.length; i++) {
     const header = lines[i]!;
     if (!header.startsWith("@@")) {
-      // R3: OUTSIDE a hunk, only a recognized file header may be skipped. The previous
-      // version skipped anything that was not `@@`, so a removal sitting between two
-      // hunks — reachable with an UNDER-declared count on the first one — was never
-      // examined. This is the fourth time in this repo a round-N+1 review has found a
-      // narrower version of the bug round N fixed, and the pattern is always the same:
-      // the fix removed one way to skip a line instead of removing skipping-by-default.
-      if (isDiffFileHeaderLine(header)) continue;
+      // The empty split element from a trailing newline can never be a removal.
+      if (header === "") continue;
+      if (header.startsWith("diff --git ")) {
+        ctx = "fileHeader";
+        continue;
+      }
+      // `\ No newline at end of file` can trail the last counted line of a hunk.
+      if (ctx === "afterHunk" && header.startsWith("\\ ")) continue;
+      if (ctx === "fileHeader" && FILE_HEADER_BLOCK_PREFIXES.some((p) => header.startsWith(p))) continue;
       return false;
     }
 
@@ -230,22 +246,23 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
       }
       return false; // anything else: we are not reading a hunk body we understand
     }
+    ctx = "afterHunk";
   }
 
   return sawHunk && additions > 0;
 }
 
 /**
- * Line prefixes git emits BETWEEN hunks, and nowhere else. Everything outside a hunk body
- * must match one of these or `isAdditionsOnlyDiff` declines — the allow-list is what makes
- * "skip what I do not recognize" impossible (R3 major).
+ * Lines git may emit INSIDE the header block a `diff --git` line opens, and nowhere else.
+ * `--- `/`+++ ` are here rather than in a global list because that is the only position in
+ * which they are headers: after a hunk, a line starting `--- ` is a removed line whose
+ * content is `-- ` (R4 high).
  *
- * Two deliberate omissions: `Binary files ... differ` and `GIT binary patch` are NOT here.
- * A binary change is content the parser cannot read at all, so it can neither confirm nor
- * deny a removal, and the honest answer is to decline the whole diff.
+ * Two deliberate omissions: `Binary files ... differ` and `GIT binary patch`. A binary
+ * change is content the parser cannot read at all, so it can neither confirm nor deny a
+ * removal, and the honest answer is to decline the whole diff.
  */
-const DIFF_FILE_HEADER_PREFIXES = [
-  "diff --git ",
+const FILE_HEADER_BLOCK_PREFIXES = [
   "index ",
   "--- ",
   "+++ ",
@@ -259,13 +276,7 @@ const DIFF_FILE_HEADER_PREFIXES = [
   "rename to ",
   "copy from ",
   "copy to ",
-  "\\ ", // `\ No newline at end of file` can trail a hunk
 ];
-
-function isDiffFileHeaderLine(line: string): boolean {
-  if (line === "") return true; // the trailing newline's empty split element
-  return DIFF_FILE_HEADER_PREFIXES.some((p) => line.startsWith(p));
-}
 
 /**
  * The paths a unified diff's FILE HEADERS name, taken from the `--- a/x` / `+++ b/x`

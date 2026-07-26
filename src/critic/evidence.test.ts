@@ -433,6 +433,43 @@ diff --git a/docs/contract.md b/docs/contract.md
     expect(isAdditionsOnlyDiff(evil)).toBe(false);
   });
 
+  it("R4 high: a removed line whose CONTENT is `-- ` is not mistaken for a `--- ` header", () => {
+    // R3's flat allow-list accepted any header prefix anywhere outside a hunk, and
+    // `--- ` is one. A removal rendering as `--- `, landing after a consumed hunk, was
+    // skipped as structure. Position is what decides now: `--- ` is a header only inside
+    // the block a `diff --git` line opens.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+---
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R4: the same collision via `+++ `, `index ` and a bare `\\\\ ` after a hunk", () => {
+    const mk = (trailer: string) => `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+${trailer}
+`;
+    // `+++ ` and `index ` are headers only in the opening block -- after a hunk they are
+    // content the parser has no business skipping.
+    expect(isAdditionsOnlyDiff(mk("+++ b/elsewhere"))).toBe(false);
+    expect(isAdditionsOnlyDiff(mk("index deadbeef..cafe 100644"))).toBe(false);
+    // `\\ No newline at end of file` genuinely does trail a hunk, and cannot be a removal.
+    expect(isAdditionsOnlyDiff(mk("\\ No newline at end of file"))).toBe(true);
+  });
+
+  it("R4: a `--- ` line before any `diff --git` block is refused, not read as a header", () => {
+    expect(isAdditionsOnlyDiff("--- a/docs/x.md\n+++ b/docs/x.md\n@@ -1,1 +1,2 @@\n c\n+a\n")).toBe(false);
+  });
+
   it("still accepts a well-formed MULTI-hunk, multi-file additions-only diff", () => {
     // The allow-list must not break the ordinary case it guards -- a strictness fix that
     // rejects every real diff would silently disable the narrowing rather than scope it.
