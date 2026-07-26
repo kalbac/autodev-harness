@@ -94,7 +94,15 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   const repoIsFilesystemRoot = parse(canonicalRepo).root === canonicalRepo;
   if (!repoIsFilesystemRoot && !canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
 
-  const ignored = await check.git(["check-ignore", "--quiet", "--", artifactsRoot]);
+  // Both git checks are asked about the CANONICAL path, never the path as written. Resolving
+  // for the containment decision and then handing git the unresolved one is the
+  // validated-one-string-used-another shape (codex R5), and it had a concrete exploit: with
+  // `artifactsRoot = <repo>/link` a junction onto `<repo>/real`, `check-ignore link` answers
+  // "ignored" while `ls-files -- link` answers "nothing tracked" — because the index holds
+  // `real/...`, not `link/...`. Both answers are true about `link` and both are irrelevant to
+  // where the writes actually land, so the run was authorized to clear tracked files through
+  // the junction.
+  const ignored = await check.git(["check-ignore", "--quiet", "--", canonicalArtifacts]);
   if (ignored.exitCode !== 0) {
     const why =
       ignored.exitCode === 1
@@ -106,26 +114,36 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   // Ignored, but a TRACKED file here would still be reported by `git status` when we write
   // over it -- being inside an ignored directory does not untrack anything.
   //
-  // Exit codes are DISCRIMINATED, not split into "0 vs everything else". MEASURED against
-  // real git: 0 = matched (paths on stdout), 1 = `--error-unmatch` found nothing tracked
-  // (the normal, safe answer), 128 = fatal (not a repository, corrupt index, ...). Folding
-  // 128 into "nothing tracked" would let a broken repository authorize writing inside the
-  // work tree — the same fold-cannot-determine-into-no fail-open as above, and the THIRD
-  // instance of that shape in this review cycle (codex R4).
-  const tracked = await check.git(["ls-files", "--error-unmatch", "--", artifactsRoot]);
+  // Exit codes are DISCRIMINATED, not split into "0 vs everything else", and the mapping was
+  // MEASURED against real git rather than assumed (codex R4 cost a round on an assumed one):
+  //   0 -> matched, and stdout ALWAYS carries the matching index paths
+  //   1 -> `--error-unmatch` matched nothing: nothing tracked here, the answer we want
+  //   128 -> fatal (not a repository, corrupt index, ...)
+  // Anything else, including the CONTRADICTORY `0` with an empty listing, is refused. Real
+  // git does not produce that combination (measured: an untracked or absent directory exits
+  // 1, never 0-with-nothing), so if it ever appears the tool is not behaving as understood —
+  // and "I do not understand this answer" is a refusal, not a pass. An earlier version
+  // ALLOWED it, which is the fourth appearance of fold-cannot-determine-into-no in this
+  // cycle (codex R5).
+  const tracked = await check.git(["ls-files", "--error-unmatch", "--", canonicalArtifacts]);
+  if (tracked.exitCode === 1) return; // nothing tracked here
   if (tracked.exitCode === 0) {
     const names = tracked.stdout.trim() === "" ? [] : tracked.stdout.trim().split(/\r?\n/);
-    if (names.length > 0) {
+    if (names.length === 0) {
       throw refuse(
         artifactsRoot,
         repoRoot,
-        `it already contains ${names.length} TRACKED file(s) (${names.slice(0, 5).join(", ")}` +
-          `${names.length > 5 ? ", ..." : ""}), which git reports as modified even inside an ignored directory`,
+        "git ls-files exited 0 (matched) but listed nothing -- a self-contradictory answer this code does not " +
+          "know how to read. Refusing rather than guessing which half to believe",
       );
     }
-    return;
+    throw refuse(
+      artifactsRoot,
+      repoRoot,
+      `it already contains ${names.length} TRACKED file(s) (${names.slice(0, 5).join(", ")}` +
+        `${names.length > 5 ? ", ..." : ""}), which git reports as modified even inside an ignored directory`,
+    );
   }
-  if (tracked.exitCode === 1) return; // nothing tracked here -- the answer we wanted
   throw refuse(
     artifactsRoot,
     repoRoot,

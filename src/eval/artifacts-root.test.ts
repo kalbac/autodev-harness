@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, parse } from "node:path";
+import { join, parse, sep } from "node:path";
 import { assertArtifactsRootSafe } from "./artifacts-root.js";
 
 let repo: string;
@@ -46,7 +46,8 @@ describe("assertArtifactsRootSafe", () => {
   });
 
   it("accepts a root inside the repo when git reports it ignored and untracked", async () => {
-    const { git, asked } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 0, stdout: "" } });
+    // `ls-files --error-unmatch` exit 1 IS "nothing tracked here" — measured against real git.
+    const { git, asked } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 1 } });
 
     await assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, ".autodev", "art"), git });
 
@@ -164,12 +165,41 @@ describe("assertArtifactsRootSafe", () => {
     ).rejects.toThrow(/contains 1 TRACKED file/);
   });
 
-  it("accepts an exit-0 listing that is empty", async () => {
+  // codex R5: the earlier version ALLOWED this, and the test that "proved" it fed fakeGit a
+  // state real git never emits (MEASURED: an untracked or absent directory exits 1, never
+  // 0-with-nothing). A self-contradictory answer is a refusal, not a pass — the fourth
+  // appearance of fold-cannot-determine-into-no in this review cycle.
+  it("refuses a self-contradictory ls-files answer (exit 0 but nothing listed)", async () => {
     const { git } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 0, stdout: "  \n" } });
 
     await expect(
       assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, "art"), git }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/exited 0 \(matched\) but listed nothing/);
+  });
+
+  // codex R5: resolving for the containment decision and then asking git about the
+  // UNRESOLVED path is validated-one-string-used-another, and it had a real exploit — with a
+  // junction, `check-ignore link` and `ls-files -- link` both answer about `link` while the
+  // writes land in the junction's TARGET, where tracked files may live.
+  it("asks git about the RESOLVED path, not the path as written", async () => {
+    const real = join(repo, "real-artifacts");
+    mkdirSync(real, { recursive: true });
+    const link = join(repo, "link");
+    try {
+      symlinkSync(real, link, "junction");
+    } catch {
+      return; // unprivileged Windows cannot create links; proven on POSIX/CI
+    }
+    const { git, asked } = fakeGit({ "check-ignore": { exitCode: 0 }, "ls-files": { exitCode: 1 } });
+
+    await assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: link, git });
+
+    expect(asked.length).toBe(2);
+    for (const args of asked) {
+      const pathArg = args[args.length - 1]!.toLowerCase();
+      expect(pathArg).toContain("real-artifacts");
+      expect(pathArg.endsWith(`${sep}link`)).toBe(false);
+    }
   });
 
   // codex R4: `canonicalPathContains` answers `false` for an all-separator root as a

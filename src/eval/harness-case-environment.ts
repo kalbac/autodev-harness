@@ -243,7 +243,14 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
       );
     },
 
-    archiveStatuses: () => new Map(archiveStatuses),
+    // A DEEP snapshot. `new Map(internal)` copies only the Map: the status objects and their
+    // `skipped` arrays stayed shared, so a consumer mutating what it was handed corrupted the
+    // record this module reports from (codex R5). A read-only contract that relies on the
+    // reader's restraint is not a read-only contract.
+    archiveStatuses: () =>
+      new Map(
+        [...archiveStatuses].map(([id, s]) => [id, { ...s, skipped: [...s.skipped] }] as const),
+      ),
 
     async readEvidence(taskIds: string[]): Promise<EvidenceSlot[]> {
       return loadEvidence(taskIds, (taskId) => root.repo.readRuntimeFile(taskId, EVIDENCE_FILE));
