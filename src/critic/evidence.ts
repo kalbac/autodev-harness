@@ -65,6 +65,11 @@ export const MAX_EVIDENCE_BYTES_TOTAL = 256 * 1024;
  */
 export const CRITIC_DIFF_CONTEXT_LINES = 25;
 
+/** Runtime-file name of the per-task evidence MANIFEST (paths, sizes, omission
+ *  reasons — never contents). Named here so the writer and any reader of the archived
+ *  corpus artifacts agree on it by construction. */
+export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
+
 /** Why a touched file is not attached. Each value is a genuinely different fact about
  *  the file, and the prompt renders it verbatim so the critic can weigh it. */
 export type OmissionReason =
@@ -104,11 +109,23 @@ export interface CriticEvidence {
   omitted: OmittedFile[];
 }
 
-/** One touched file, already read (or already known to be unreadable) — the input to
- *  the pure budget pass below. */
-export type EvidenceCandidate =
-  | { path: string; kind: "text"; content: string }
+/** One touched file as the PLANNER sees it: a size, or an already-settled omission.
+ *  Deliberately NOT the content — see `planEvidence` for why the plan is made from
+ *  sizes and the reading happens afterwards. */
+export type EvidenceEntry =
+  | { path: string; kind: "sized"; bytes: number }
   | { path: string; kind: "omit"; reason: OmissionReason; bytes: number | null };
+
+/** A file the plan says to read, and the EXACT size it was planned at. */
+export interface PlannedRead {
+  path: string;
+  bytes: number;
+}
+
+export interface EvidencePlan {
+  read: PlannedRead[];
+  omitted: OmittedFile[];
+}
 
 export interface EvidenceLimits {
   perFileBytes: number;
@@ -121,22 +138,24 @@ export const DEFAULT_EVIDENCE_LIMITS: EvidenceLimits = {
 };
 
 /**
- * PURE budget pass: decide which candidates are attached and which are omitted.
+ * PURE budget pass: from the SIZES of the touched files, decide which to read and
+ * which to omit.
  *
  * Split out from the filesystem glue below and exported so the whole decision — the
  * part that can actually be wrong — is testable on plain values, with no tmp dirs and
- * no platform behaviour in the way (`docs/gotchas/deterministic-real-clock-loop.md`
- * is the same lesson from the other direction).
+ * no platform behaviour in the way.
+ *
+ * **It plans from sizes, not from content, and that is the point** (codex R1 finding
+ * 1). An earlier version read every touched file first and applied the total budget
+ * afterwards: correct output, but it held every file in memory to then discard most
+ * of them, so a task touching thousands of files loaded gigabytes to send 256 KB. The
+ * budget has to be decided before the bytes are loaded, which means it has to be
+ * decided from `lstat`, which is what this function consumes.
  *
  * Deliberate choices:
  *
- *  - **Byte length is computed HERE, from the content**, never accepted from the
- *    caller. A size measured by `stat` and a size measured after decoding are two
- *    different numbers (BOM, CRLF, any lossy step), and budgeting against one while
- *    emitting the other is the exact validated-one-string/used-another shape this
- *    repo keeps paying for.
- *  - **Candidates are sorted by path** so the same task produces the same evidence
- *    set every run — an unstable set would make two corpus runs incomparable, and
+ *  - **Entries are sorted by path** so the same task produces the same evidence set
+ *    every run — an unstable set would make two corpus runs incomparable, and
  *    comparing runs is the entire point of the corpus.
  *  - **A file that does not fit the remaining total does not stop the scan.** Later,
  *    smaller files are still considered. Stopping at the first overflow would waste
@@ -148,47 +167,50 @@ export const DEFAULT_EVIDENCE_LIMITS: EvidenceLimits = {
  *    caller turns a throw into "no evidence at all", which is today's behaviour and
  *    therefore safe (`docs/gotchas/boolean-whose-no-means-two-things.md`: refuse a
  *    combination you cannot explain rather than pick one).
+ *  - **This is the ONLY place a budget is applied.** The reader below does not
+ *    re-budget; it either honours the plan exactly or omits the file. Two budgeting
+ *    sites would be the same defect shape this repo keeps paying for
+ *    (`docs/gotchas/validated-one-string-used-another.md`).
  */
-export function selectEvidence(
-  candidates: EvidenceCandidate[],
+export function planEvidence(
+  entries: EvidenceEntry[],
   limits: EvidenceLimits = DEFAULT_EVIDENCE_LIMITS,
-): CriticEvidence {
+): EvidencePlan {
   const seen = new Set<string>();
-  for (const c of candidates) {
-    if (seen.has(c.path)) {
+  for (const e of entries) {
+    if (seen.has(e.path)) {
       throw new Error(
-        `selectEvidence: duplicate path ${JSON.stringify(c.path)} in the candidate set -- refusing to guess ` +
+        `planEvidence: duplicate path ${JSON.stringify(e.path)} in the candidate set -- refusing to guess ` +
           `which version of the file the diff refers to`,
       );
     }
-    seen.add(c.path);
+    seen.add(e.path);
   }
 
-  const ordered = [...candidates].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const ordered = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
-  const attached: AttachedFile[] = [];
+  const read: PlannedRead[] = [];
   const omitted: OmittedFile[] = [];
   let spent = 0;
 
-  for (const c of ordered) {
-    if (c.kind === "omit") {
-      omitted.push({ path: c.path, reason: c.reason, bytes: c.bytes });
+  for (const e of ordered) {
+    if (e.kind === "omit") {
+      omitted.push({ path: e.path, reason: e.reason, bytes: e.bytes });
       continue;
     }
-    const bytes = Buffer.byteLength(c.content, "utf8");
-    if (bytes > limits.perFileBytes) {
-      omitted.push({ path: c.path, reason: "too-large", bytes });
+    if (e.bytes > limits.perFileBytes) {
+      omitted.push({ path: e.path, reason: "too-large", bytes: e.bytes });
       continue;
     }
-    if (spent + bytes > limits.totalBytes) {
-      omitted.push({ path: c.path, reason: "budget-exhausted", bytes });
+    if (spent + e.bytes > limits.totalBytes) {
+      omitted.push({ path: e.path, reason: "budget-exhausted", bytes: e.bytes });
       continue;
     }
-    attached.push({ path: c.path, bytes, content: c.content });
-    spent += bytes;
+    read.push({ path: e.path, bytes: e.bytes });
+    spent += e.bytes;
   }
 
-  return { attached, omitted };
+  return { read, omitted };
 }
 
 /** Injectable filesystem seam — the real implementations are the module defaults. */
@@ -200,16 +222,19 @@ export interface EvidenceReaderDeps {
 const DEFAULT_READER_DEPS: EvidenceReaderDeps = { contains: realpathContains };
 
 /**
- * Read one touched file into a candidate. NEVER throws: every failure becomes an
+ * Measure one touched file into a plan entry. NEVER throws: every failure becomes an
  * omission with its own reason, because a single unreadable file must not cost the
  * critic the evidence for all the others.
+ *
+ * Note it does NOT apply the size budget — that is `planEvidence`'s single job. This
+ * function only answers "does this path name a readable regular file inside the
+ * worktree, and how big is it".
  */
-async function readCandidate(
+async function measureCandidate(
   root: string,
   relPath: string,
-  perFileBytes: number,
   deps: EvidenceReaderDeps,
-): Promise<EvidenceCandidate> {
+): Promise<EvidenceEntry> {
   const full = resolve(root, relPath);
 
   // ORDER: existence first, containment second. `realpathContains` cannot resolve a
@@ -217,8 +242,6 @@ async function readCandidate(
   // report every file the diff DELETES (the ordinary case for a deletion hunk) as
   // "unreadable" rather than "absent", which is precisely the collapse of two
   // different facts into one answer that this module refuses to make elsewhere.
-  // Establishing "the file exists and is a regular file" first leaves containment
-  // answering only the question it can actually answer.
   let lst;
   try {
     lst = await lstat(full);
@@ -235,10 +258,6 @@ async function readCandidate(
   if (!lst.isFile()) {
     return { path: relPath, kind: "omit", reason: "not-a-regular-file", bytes: null };
   }
-  if (lst.size > perFileBytes) {
-    // Refused before reading: there is no point loading 10 MB to then discard it.
-    return { path: relPath, kind: "omit", reason: "too-large", bytes: lst.size };
-  }
 
   // A path arriving from `git diff --name-only` cannot escape the worktree by its own
   // text, but an intermediate SYMLINKED ANCESTOR can put the real bytes outside it --
@@ -249,53 +268,107 @@ async function readCandidate(
   // to the same conservative action -- do not attach. The reason stays the unspecific
   // `unreadable` for the same reason: naming which of the two happened would be a
   // fabrication.
+  //
+  // ACCEPTED RESIDUAL (codex R1 finding 3, declined with rationale): an ancestor
+  // directory swapped for a symlink BETWEEN this check and the `open` below would
+  // still be followed, because `O_NOFOLLOW` guards only the final component. Closing
+  // it needs `openat2(RESOLVE_BENEATH)`, which Node does not expose portably -- the
+  // identical residual is already accepted at the harness's other containment site
+  // (`docs/gotchas/static-file-serving-symlink-traversal.md`). It is also not
+  // reachable from the worker: evidence is collected inside the conductor's
+  // single-threaded iteration, AFTER the worker process has exited and after the
+  // dirty-file fence has already run, so no writer is racing this read.
   if (!(await deps.contains(root, full))) {
     return { path: relPath, kind: "omit", reason: "unreadable", bytes: null };
   }
+
+  return { path: relPath, kind: "sized", bytes: lst.size };
+}
+
+/**
+ * Read one PLANNED file, whole. NEVER throws, and never returns a partial file.
+ *
+ * Two refusals here are load-bearing, both from codex R1 finding 2:
+ *
+ *  - A single `fh.read` is not guaranteed to return the whole file, so the bytes are
+ *    read in a LOOP. The earlier version treated a short read as the complete file --
+ *    which would have handed the critic a silent prefix labelled "complete", the exact
+ *    false-`broken` this module's no-truncation rule exists to prevent.
+ *  - If the file's size no longer matches the size it was PLANNED at, it is omitted
+ *    rather than re-budgeted. Re-budgeting here would put a second budget decision
+ *    outside `planEvidence`, and the whole point of planning from sizes is that the
+ *    budget is decided in exactly one place.
+ */
+async function readPlanned(
+  root: string,
+  planned: PlannedRead,
+): Promise<{ path: string; content: string } | OmittedFile> {
+  const full = resolve(root, planned.path);
+  const omit = (reason: OmissionReason, bytes: number | null = null): OmittedFile => ({
+    path: planned.path,
+    reason,
+    bytes,
+  });
 
   let fh;
   try {
     fh = await open(full, READ_NO_FOLLOW_FLAGS);
   } catch {
     // ELOOP (a symlink swapped in after the lstat, POSIX) or a raced delete.
-    return { path: relPath, kind: "omit", reason: "unreadable", bytes: null };
+    return omit("unreadable");
   }
   try {
-    // Re-stat and read on the SAME descriptor, closing the lstat->read TOCTOU, and
-    // re-check the size: the file may have grown between the two stats.
+    // Re-stat on the SAME descriptor, closing the lstat->read TOCTOU.
     const st = await fh.stat();
-    if (!st.isFile()) return { path: relPath, kind: "omit", reason: "not-a-regular-file", bytes: null };
-    if (st.size > perFileBytes) return { path: relPath, kind: "omit", reason: "too-large", bytes: st.size };
-    const buf = Buffer.alloc(st.size);
-    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
-    const bytes = buf.subarray(0, bytesRead);
+    if (!st.isFile()) return omit("not-a-regular-file");
+    if (st.size !== planned.bytes) return omit("unreadable", st.size);
+
+    const buf = Buffer.alloc(planned.bytes);
+    let got = 0;
+    while (got < planned.bytes) {
+      const { bytesRead } = await fh.read(buf, got, planned.bytes - got, got);
+      if (bytesRead === 0) break; // EOF earlier than the size promised
+      got += bytesRead;
+    }
+    if (got !== planned.bytes) return omit("unreadable", got);
 
     // A NUL byte is the conventional binary marker and is perfectly valid UTF-8, so
     // the strict decoder below would happily accept it and embed a control byte in
     // the prompt. Check it separately.
-    if (bytes.includes(0)) {
-      return { path: relPath, kind: "omit", reason: "not-text", bytes: bytes.byteLength };
-    }
+    if (buf.includes(0)) return omit("not-text", planned.bytes);
+
     let content: string;
     try {
       // `fatal: true` -- a lossy decode would silently replace undecodable bytes with
       // U+FFFD and hand the critic a file that differs from the one on disk. Refusing
       // to attach is honest; attaching an altered file is not.
-      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      // `ignoreBOM: true` -- the DEFAULT decoder STRIPS a leading UTF-8 BOM (measured:
+      // 4 bytes on disk decode to 1 character), which would both alter the attached
+      // file and make its byte count disagree with the size the plan budgeted. The
+      // BOM is part of the file; keep it.
+      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buf);
     } catch {
-      return { path: relPath, kind: "omit", reason: "not-text", bytes: bytes.byteLength };
+      return omit("not-text", planned.bytes);
     }
-    return { path: relPath, kind: "text", content };
+    // Defensive: the plan budgeted `planned.bytes`, and the prompt reports the same
+    // number, so a decode that does not round-trip to it would mean the attachment
+    // and the accounting describe different things. Valid UTF-8 always round-trips,
+    // so this cannot fire today -- and if it ever does, refusing is the only honest
+    // answer (`docs/gotchas/boolean-whose-no-means-two-things.md`: refuse a
+    // combination you cannot explain).
+    if (Buffer.byteLength(content, "utf8") !== planned.bytes) return omit("unreadable", planned.bytes);
+
+    return { path: planned.path, content };
   } catch {
-    return { path: relPath, kind: "omit", reason: "unreadable", bytes: null };
+    return omit("unreadable");
   } finally {
     await fh.close();
   }
 }
 
 /**
- * Collect the critic's evidence set for one task: read every path the diff covers,
- * then apply the budgets.
+ * Collect the critic's evidence set for one task: measure every path the diff covers,
+ * plan against the budgets, then read only the files the plan selected.
  *
  * `relPaths` must be the file list of the SAME diff the critic will read (see
  * `diffFileNames` / `WorktreeManager.diffFiles`), or the attachments describe a
@@ -313,11 +386,25 @@ export async function collectCriticEvidence(
   deps: EvidenceReaderDeps = DEFAULT_READER_DEPS,
 ): Promise<CriticEvidence> {
   const paths = relPaths.filter((p) => typeof p === "string" && p.trim() !== "");
-  const candidates: EvidenceCandidate[] = [];
-  for (const p of paths) {
-    candidates.push(await readCandidate(root, p, limits.perFileBytes, deps));
+
+  const entries: EvidenceEntry[] = [];
+  for (const p of paths) entries.push(await measureCandidate(root, p, deps));
+
+  const plan = planEvidence(entries, limits);
+
+  const attached: AttachedFile[] = [];
+  const omitted: OmittedFile[] = [...plan.omitted];
+  for (const planned of plan.read) {
+    const r = await readPlanned(root, planned);
+    if ("content" in r) attached.push({ path: r.path, bytes: planned.bytes, content: r.content });
+    else omitted.push(r);
   }
-  return selectEvidence(candidates, limits);
+
+  // Both lists stay path-ordered even though read-time omissions arrive late, so the
+  // prompt text for a given task is stable across runs.
+  const byPath = (a: { path: string }, b: { path: string }): number =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  return { attached: attached.sort(byPath), omitted: omitted.sort(byPath) };
 }
 
 /** One-line summary for the conductor log and the runtime manifest. */

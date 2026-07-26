@@ -3,66 +3,68 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  selectEvidence,
+  planEvidence,
   collectCriticEvidence,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
   MAX_EVIDENCE_BYTES_PER_FILE,
   MAX_EVIDENCE_BYTES_TOTAL,
-  type EvidenceCandidate,
+  type EvidenceEntry,
 } from "./evidence.js";
 
-const text = (path: string, content: string): EvidenceCandidate => ({ path, kind: "text", content });
+const sized = (path: string, bytes: number): EvidenceEntry => ({ path, kind: "sized", bytes });
 
-describe("selectEvidence (pure budget pass)", () => {
-  it("attaches everything that fits, in a stable path order", () => {
-    const ev = selectEvidence([text("b.php", "bb"), text("a.php", "a"), text("c.php", "ccc")]);
-    expect(ev.attached.map((a) => a.path)).toEqual(["a.php", "b.php", "c.php"]);
-    expect(ev.omitted).toEqual([]);
-    // Byte counts are measured from the CONTENT, which is what the prompt renders.
-    expect(ev.attached.map((a) => a.bytes)).toEqual([1, 2, 3]);
+describe("planEvidence (the single budget decision)", () => {
+  it("plans every file that fits, in a stable path order", () => {
+    const plan = planEvidence([sized("b.php", 2), sized("a.php", 1), sized("c.php", 3)]);
+    expect(plan.read).toEqual([
+      { path: "a.php", bytes: 1 },
+      { path: "b.php", bytes: 2 },
+      { path: "c.php", bytes: 3 },
+    ]);
+    expect(plan.omitted).toEqual([]);
   });
 
-  it("measures bytes as UTF-8, not as string length", () => {
-    // "é" is one JS char but two UTF-8 bytes -- budgeting on `.length` would let a
-    // file through that is nearly twice the size the critic actually receives.
-    const ev = selectEvidence([text("a.php", "ééé")], { perFileBytes: 5, totalBytes: 100 });
-    expect(ev.attached).toEqual([]);
-    expect(ev.omitted).toEqual([{ path: "a.php", reason: "too-large", bytes: 6 }]);
-  });
-
-  it("OMITS an over-budget file whole -- it is never truncated", () => {
-    const ev = selectEvidence([text("big.php", "x".repeat(100))], { perFileBytes: 10, totalBytes: 1000 });
-    expect(ev.attached).toEqual([]);
-    expect(ev.omitted).toEqual([{ path: "big.php", reason: "too-large", bytes: 100 }]);
-    // The point of the rule: no partial content anywhere in the result.
-    expect(JSON.stringify(ev)).not.toContain("xxx");
+  it("OMITS an over-budget file whole -- it is never planned for a partial read", () => {
+    const plan = planEvidence([sized("big.php", 100)], { perFileBytes: 10, totalBytes: 1000 });
+    expect(plan.read).toEqual([]);
+    expect(plan.omitted).toEqual([{ path: "big.php", reason: "too-large", bytes: 100 }]);
   });
 
   it("keeps scanning after a total-budget overflow, so a later small file still fits", () => {
-    const ev = selectEvidence(
-      [text("a.php", "x".repeat(8)), text("b.php", "x".repeat(8)), text("c.php", "xx")],
-      { perFileBytes: 100, totalBytes: 10 },
-    );
-    expect(ev.attached.map((a) => a.path)).toEqual(["a.php", "c.php"]);
-    expect(ev.omitted).toEqual([{ path: "b.php", reason: "budget-exhausted", bytes: 8 }]);
+    const plan = planEvidence([sized("a.php", 8), sized("b.php", 8), sized("c.php", 2)], {
+      perFileBytes: 100,
+      totalBytes: 10,
+    });
+    expect(plan.read.map((r) => r.path)).toEqual(["a.php", "c.php"]);
+    expect(plan.omitted).toEqual([{ path: "b.php", reason: "budget-exhausted", bytes: 8 }]);
+  });
+
+  it("never plans more than the total budget, however many files are touched", () => {
+    // The property that keeps the prompt bounded AND, since the plan is what gets
+    // read, keeps memory bounded too (codex R1 finding 1: an earlier version read
+    // everything first and budgeted afterwards).
+    const many = Array.from({ length: 1000 }, (_, i) => sized(`f${String(i).padStart(4, "0")}.php`, 1000));
+    const plan = planEvidence(many, { perFileBytes: 64000, totalBytes: 10000 });
+    expect(plan.read).toHaveLength(10);
+    expect(plan.read.reduce((n, r) => n + r.bytes, 0)).toBeLessThanOrEqual(10000);
+    expect(plan.omitted).toHaveLength(990);
   });
 
   it("passes an already-decided omission through with its reason intact", () => {
-    const ev = selectEvidence([{ path: "gone.php", kind: "omit", reason: "absent", bytes: null }]);
-    expect(ev.attached).toEqual([]);
-    expect(ev.omitted).toEqual([{ path: "gone.php", reason: "absent", bytes: null }]);
+    const plan = planEvidence([{ path: "gone.php", kind: "omit", reason: "absent", bytes: null }]);
+    expect(plan.read).toEqual([]);
+    expect(plan.omitted).toEqual([{ path: "gone.php", reason: "absent", bytes: null }]);
   });
 
-  it("attaches an EMPTY file rather than treating it as nothing", () => {
+  it("plans an EMPTY file rather than treating it as nothing", () => {
     // An empty file is real evidence ("this file is empty"), and `bytes: 0` must not
     // be confused with `bytes: null` ("size unknown").
-    const ev = selectEvidence([text("empty.php", "")]);
-    expect(ev.attached).toEqual([{ path: "empty.php", bytes: 0, content: "" }]);
+    expect(planEvidence([sized("empty.php", 0)]).read).toEqual([{ path: "empty.php", bytes: 0 }]);
   });
 
   it("THROWS on a duplicate path instead of silently picking one version", () => {
-    expect(() => selectEvidence([text("a.php", "one"), text("a.php", "two")])).toThrow(/duplicate path/);
+    expect(() => planEvidence([sized("a.php", 1), sized("a.php", 2)])).toThrow(/duplicate path/);
   });
 
   it("ships budgets big enough for real source files and small enough to bound a run", () => {
@@ -146,6 +148,43 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     writeFileSync(join(root, "big.php"), "x".repeat(50));
     const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 10, totalBytes: 1000 });
     expect(ev.omitted).toEqual([{ path: "big.php", reason: "too-large", bytes: 50 }]);
+  });
+
+  it("keeps a UTF-8 BOM instead of silently stripping it (byte-exact attachment)", async () => {
+    // MEASURED: the DEFAULT TextDecoder strips a leading BOM, so a 4-byte file
+    // decoded to 1 character -- the attachment would have differed from the file on
+    // disk, and its reported size would have disagreed with the budgeted one. Both
+    // halves of "the attachment IS the file" depend on `ignoreBOM: true`.
+    const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0x61]);
+    writeFileSync(join(root, "bom.php"), bytes);
+    const ev = await collectCriticEvidence(root, ["bom.php"]);
+    expect(ev.attached).toHaveLength(1);
+    expect(ev.attached[0]!.bytes).toBe(4);
+    expect(Buffer.from(ev.attached[0]!.content, "utf8")).toEqual(bytes);
+  });
+
+  it("reads a multi-chunk file WHOLE -- the reported size always equals the content", async () => {
+    // The no-truncation rule has to hold for a file big enough that one `read` call
+    // is not guaranteed to return all of it (codex R1 finding 2: a short read used to
+    // be accepted as the complete file and labelled "complete" in the prompt).
+    const body = "x".repeat(300_000);
+    writeFileSync(join(root, "big.php"), body);
+    const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 400_000, totalBytes: 400_000 });
+    expect(ev.omitted).toEqual([]);
+    expect(ev.attached[0]!.content).toBe(body);
+    expect(ev.attached[0]!.bytes).toBe(Buffer.byteLength(ev.attached[0]!.content, "utf8"));
+  });
+
+  it("never reads more than the total budget, however many files the diff touches", async () => {
+    // The memory property, end to end: 40 files of 1 KB with a 4 KB budget must read
+    // four of them, not forty (codex R1 finding 1).
+    for (let i = 0; i < 40; i++) writeFileSync(join(root, `f${String(i).padStart(2, "0")}.php`), "x".repeat(1000));
+    const paths = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, "0")}.php`);
+    const ev = await collectCriticEvidence(root, paths, { perFileBytes: 64_000, totalBytes: 4000 });
+    expect(ev.attached).toHaveLength(4);
+    expect(ev.attached.reduce((n, a) => n + a.bytes, 0)).toBeLessThanOrEqual(4000);
+    expect(ev.omitted).toHaveLength(36);
+    expect(ev.omitted.every((o) => o.reason === "budget-exhausted")).toBe(true);
   });
 
   it("skips a blank path instead of resolving it to the worktree ROOT", async () => {

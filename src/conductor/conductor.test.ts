@@ -2882,6 +2882,30 @@ describe("runIteration -- critic evidence window (#123)", () => {
     expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBeFalsy();
   });
 
+  it("DELETES a previous round's manifest when this round collects nothing", async () => {
+    // The stale-artifact shape this repo already paid for
+    // (docs/gotchas/per-round-overwrite-artifact-stale.md): round 1 records what the
+    // critic saw, round 2's collection throws, and the surviving round-1 manifest then
+    // claims attachments the critic was never given -- diagnostics lying about the very
+    // run they exist to explain.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    await repo.writeRuntimeFile(task.id, "critic-evidence.json", '{"attached":[{"path":"stale.php"}]}');
+
+    await createConductor(
+      buildDeps({
+        repo,
+        scheduler,
+        collectCriticEvidence: async () => {
+          throw new Error("boom");
+        },
+      }),
+    ).runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBe(false);
+  });
+
   it("omits the evidence field entirely when no collector is wired", async () => {
     // `exactOptionalPropertyTypes`: an explicit `undefined` is not the same as an absent
     // property, and the adapter's contract is "absent means the diff alone".

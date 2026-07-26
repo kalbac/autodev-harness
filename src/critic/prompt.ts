@@ -26,8 +26,12 @@ import type { CriticEvidence, OmissionReason } from "./evidence.js";
  * 6. When an evidence set is supplied (#123): the complete current text of the
  *    files the diff touches, also inline, plus a named list of any that could
  *    not be attached. See `evidenceGuidanceSection` for why both halves are
- *    mandatory. Omitting the argument reproduces the pre-#123 diff-only prompt
- *    exactly, so a caller with no evidence to give promises the critic nothing.
+ *    mandatory. Omitting the argument renders NO attachment sections at all and
+ *    asserts nothing about files — a caller with no evidence to give promises
+ *    the critic nothing. (It is not byte-identical to the pre-#123 prompt: the
+ *    no-tools and fencing sections were reworded once, for both shapes, so that
+ *    two statements of one rule cannot diverge. Codex R1 finding 4 caught that
+ *    overclaim where it was first written.)
  */
 export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): string {
   const sections: string[] = [];

@@ -28,6 +28,7 @@ import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
 import {
   CRITIC_DIFF_CONTEXT_LINES,
+  CRITIC_EVIDENCE_FILE,
   summarizeEvidence,
   type CriticEvidence,
 } from "../critic/evidence.js";
@@ -777,37 +778,60 @@ export function createConductor(deps: ConductorDeps): Conductor {
           // The other half of #123: hand the critic the COMPLETE current text of the
           // files this diff touches, so a declaration outside the hunk is verifiable
           // instead of merely unseen. Best-effort by construction -- a failure here
-          // leaves `evidence` undefined, which reproduces the pre-#123 diff-only
-          // prompt. That is the safe direction (Principle 10): less evidence can only
-          // make the critic more cautious, never more permissive, so a broken
-          // collector cannot let anything through that would not have passed before.
+          // leaves the critic with the diff and NO attachments, which is strictly less
+          // evidence than the happy path and therefore the safe direction (Principle
+          // 10): less evidence can only make the critic more cautious, never more
+          // permissive, so a broken collector cannot let anything through that would
+          // not have passed before. (It is NOT a fallback to the pre-#123 prompt --
+          // the widened diff above is part of this change and still applies. Codex R1
+          // finding 4 caught that overclaim in this comment.)
           let criticEvidence: CriticEvidence | undefined;
           if (deps.collectCriticEvidence) {
             try {
               criticEvidence = await deps.collectCriticEvidence(wt, task.file_set);
               safeLog("INFO", `conductor: critic evidence -- ${summarizeEvidence(criticEvidence)}`);
-              await repo.writeRuntimeFile(
-                task.id,
-                "critic-evidence.json",
-                // The MANIFEST only (paths, sizes, omission reasons) -- never the file
-                // contents, which are already on disk in the worktree and would only
-                // duplicate the repo into the runtime dir. It exists so a corpus run's
-                // archived artifacts can answer "what did the critic actually see?"
-                // without re-running anything (the #126 diagnostics contract).
-                `${JSON.stringify(
-                  {
-                    attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
-                    omitted: criticEvidence.omitted,
-                  },
-                  null,
-                  2,
-                )}\n`,
-              );
             } catch (err) {
               criticEvidence = undefined;
               safeLog(
                 "WARN",
                 `conductor: critic evidence collection failed -- reviewing from the diff alone: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+            // The manifest is written EXACTLY ONCE per collection attempt, and a failed
+            // attempt DELETES it rather than leaving the previous round's file behind
+            // (codex R1 finding 5 -- the same stale-artifact shape as
+            // `docs/gotchas/per-round-overwrite-artifact-stale.md`). A retry round whose
+            // collection throws would otherwise archive a manifest claiming the critic
+            // saw attachments it was never given, which is worse than no manifest: it is
+            // diagnostics that lie about the very run they are meant to explain.
+            try {
+              if (criticEvidence) {
+                await repo.writeRuntimeFile(
+                  task.id,
+                  CRITIC_EVIDENCE_FILE,
+                  // The MANIFEST only (paths, sizes, omission reasons) -- never the file
+                  // contents, which are already on disk in the worktree and would only
+                  // duplicate the repo into the runtime dir. It exists so a corpus run's
+                  // archived artifacts can answer "what did the critic actually see?"
+                  // without re-running anything (the #126 diagnostics contract).
+                  `${JSON.stringify(
+                    {
+                      attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
+                      omitted: criticEvidence.omitted,
+                    },
+                    null,
+                    2,
+                  )}\n`,
+                );
+              } else {
+                await repo.removeRuntimeFile(task.id, CRITIC_EVIDENCE_FILE);
+              }
+            } catch (err) {
+              safeLog(
+                "WARN",
+                `conductor: could not record the critic-evidence manifest: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
