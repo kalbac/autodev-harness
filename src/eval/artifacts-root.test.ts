@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse, sep } from "node:path";
 import { assertArtifactsRootSafe } from "./artifacts-root.js";
@@ -200,12 +200,15 @@ describe("assertArtifactsRootSafe", () => {
 
     await assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: link, git });
 
+    // The EXACT path, not merely "contains the target and is not the link" (codex R7: that
+    // looser assertion would also pass for `join(canonicalArtifacts, "wrong")`, so it did not
+    // pin what it claimed to). `realpathSync.native` because plain `realpathSync` does NOT
+    // expand an 8.3 short path while the code's async `realpath` does, which is green locally
+    // and red on a Windows CI runner
+    // (docs/gotchas/win-83-shortpath-realpath-divergence.md).
+    const expected = realpathSync.native(real);
     expect(asked.length).toBe(2);
-    for (const args of asked) {
-      const pathArg = args[args.length - 1]!.toLowerCase();
-      expect(pathArg).toContain("real-artifacts");
-      expect(pathArg.endsWith(`${sep}link`)).toBe(false);
-    }
+    for (const args of asked) expect(args[args.length - 1]).toBe(expected);
   });
 
   // codex R4: `canonicalPathContains` answers `false` for an all-separator root as a
