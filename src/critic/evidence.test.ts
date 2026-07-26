@@ -11,6 +11,7 @@ import {
   MAX_EVIDENCE_BYTES_PER_FILE,
   MAX_EVIDENCE_BYTES_TOTAL,
   type EvidenceEntry,
+  type OmittedFile,
 } from "./evidence.js";
 
 const sized = (path: string, bytes: number): EvidenceEntry => ({ path, kind: "sized", bytes });
@@ -232,50 +233,66 @@ describe("summarizeEvidence", () => {
 });
 
 describe("isProseOnlyChange (the mechanical gate on adr/007's leniency)", () => {
-  const add = (path: string, ...body: string[]): string =>
-    [`diff --git a/${path} b/${path}`, `+++ b/${path}`, ...body.map((l) => `+${l}`)].join("\n");
+  const ev = (files: Array<{ path: string; content: string }>, omitted: OmittedFile[] = []) => ({
+    attached: files.map((f) => ({ path: f.path, bytes: Buffer.byteLength(f.content, "utf8"), content: f.content })),
+    omitted,
+  });
 
-  it("accepts a change that touches only prose files", () => {
-    expect(isProseOnlyChange(["docs/OVERVIEW.md"], add("docs/OVERVIEW.md", "some prose"))).toBe(true);
-    expect(isProseOnlyChange(["NOTES.txt", "docs/a.rst"], add("NOTES.txt", "x"))).toBe(true);
+  it("accepts a change that touches only prose files with no executable markers", () => {
+    expect(isProseOnlyChange(ev([{ path: "docs/OVERVIEW.md", content: "Some prose.\n" }]))).toBe(true);
+    expect(
+      isProseOnlyChange(ev([{ path: "NOTES.txt", content: "a" }, { path: "docs/a.rst", content: "b" }])),
+    ).toBe(true);
   });
 
   it("REFUSES as soon as one changed file is not prose", () => {
-    // The determination is about the whole change, not the file the critic happens to
-    // be looking at: one code file means the normal mandate applies to all of it.
-    expect(isProseOnlyChange(["docs/a.md", "includes/x.php"], add("docs/a.md", "x"))).toBe(false);
+    // The determination is about the whole change: one code file means the normal
+    // mandate applies to all of it.
+    expect(
+      isProseOnlyChange(ev([{ path: "docs/a.md", content: "x" }, { path: "includes/x.php", content: "<?php" }])),
+    ).toBe(false);
   });
 
   it("REFUSES an unknown extension rather than assuming it is safe", () => {
-    // Fail-closed: `.yml` (a workflow), `.sql` (a migration), `.env.example`, or no
-    // extension at all are all "unknown risk", never "no risk".
-    for (const p of [".github/workflows/ci.yml", "db/001.sql", "Makefile", "scripts/run"]) {
-      expect(isProseOnlyChange([p], add(p, "x"))).toBe(false);
+    // Fail-closed: a workflow, a migration, or no extension at all are "unknown risk",
+    // never "no risk".
+    for (const path of [".github/workflows/ci.yml", "db/001.sql", "Makefile", "scripts/run"]) {
+      expect(isProseOnlyChange(ev([{ path, content: "x" }]))).toBe(false);
     }
   });
 
-  it("REFUSES a prose file that adds a FENCED code block", () => {
-    // codex's concrete counter-example against the first version of adr/007: a `.md`
-    // whose fenced shell block a CI step executes is a code change wearing a prose
-    // extension. Blunter than "does anything run this" -- and blunt in the safe direction.
-    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "run:", "```sh", "./deploy.sh", "```"))).toBe(false);
-    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "~~~python", "os.system('x')", "~~~"))).toBe(false);
-    // Indented inside a list item -- still a fence.
-    expect(isProseOnlyChange(["docs/ci.md"], add("docs/ci.md", "  - step:", "    ```sh", "    x", "    ```"))).toBe(false);
+  it("REFUSES a prose file CONTAINING a fenced block, however the fence got there", () => {
+    // Round 2's blocker, and the reason this reads CONTENT rather than the diff: when a
+    // fence already exists in the file it arrives as a CONTEXT line, so an added
+    // `./deploy.sh` inside it opens no fence and a diff-based check waves it through.
+    const withFence = "Run this:\n\n```sh\n./deploy.sh\n```\n";
+    expect(isProseOnlyChange(ev([{ path: "docs/ci.md", content: withFence }]))).toBe(false);
+    expect(isProseOnlyChange(ev([{ path: "docs/ci.md", content: "~~~python\nos.system('x')\n~~~\n" }]))).toBe(false);
   });
 
-  it("does not mistake a FILE HEADER for an added line", () => {
-    // `+++ b/<path>` starts with `+` but is a header; treating it as content would be
-    // the same class of bug `diff-lines.ts` documents at length.
-    expect(isProseOnlyChange(["docs/a.md"], add("docs/a.md", "plain prose"))).toBe(true);
+  it("REFUSES a prose file containing an embedded script tag", () => {
+    // Markdown renders raw HTML, so a `<script>` in a doc is executable in context.
+    expect(isProseOnlyChange(ev([{ path: "docs/a.md", content: "<script>alert(1)</script>" }]))).toBe(false);
+    expect(isProseOnlyChange(ev([{ path: "docs/a.md", content: "<SCRIPT SRC=x>" }]))).toBe(false);
   });
 
-  it("REFUSES an empty or blank path set — 'I do not know what changed' is not leniency", () => {
-    expect(isProseOnlyChange([], "")).toBe(false);
-    expect(isProseOnlyChange(["", "   "], "")).toBe(false);
+  it("REFUSES when ANY file was omitted — an uninspectable file cannot buy leniency", () => {
+    // "Could not determine" is not "no" (docs/gotchas/boolean-whose-no-means-two-things.md).
+    expect(
+      isProseOnlyChange(ev([{ path: "docs/a.md", content: "x" }], [{ path: "docs/b.md", reason: "too-large", bytes: 9 }])),
+    ).toBe(false);
+  });
+
+  it("REFUSES an empty attachment set — 'I do not know what changed' is not leniency", () => {
+    expect(isProseOnlyChange({ attached: [], omitted: [] })).toBe(false);
+  });
+
+  it("REFUSES a blank path rather than filtering it away", () => {
+    // Dropping it would let a list qualify on the strength of entries it did not read.
+    expect(isProseOnlyChange(ev([{ path: "   ", content: "x" }, { path: "docs/a.md", content: "y" }]))).toBe(false);
   });
 
   it("matches the extension case-insensitively", () => {
-    expect(isProseOnlyChange(["docs/README.MD"], add("docs/README.MD", "x"))).toBe(true);
+    expect(isProseOnlyChange(ev([{ path: "docs/README.MD", content: "x" }]))).toBe(true);
   });
 });

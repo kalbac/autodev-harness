@@ -74,10 +74,18 @@ of this ADR left that boundary to the critic's own judgment — "this applies on
 changed files contain no executable code" — and the review gate called it a blocker,
 correctly: in a project whose thesis is that the enforcement decision must not be an
 LLM's (Principles 1 and 3), "does this change get leniency" is exactly the class of
-question that belongs in code the model cannot argue with. Two conditions, both required:
-every changed path has a prose extension (an unknown extension is treated as code, and an
-empty path set never qualifies), and no added line opens a fenced block — which closes the
-gate's own counter-example, a Markdown file whose fenced shell block a CI step executes.
+question that belongs in code the model cannot argue with. Three conditions, all required:
+nothing was omitted (a file whose content could not be inspected can never buy leniency),
+every attached path is blank-free and carries a prose extension (an unknown extension is
+treated as code), and no attached file **contains** a fenced block or an embedded script.
+
+That last condition reads the post-change **file content**, not the diff, and round 2 of
+the review is why. The first mechanical version scanned the diff for added lines that
+*open* a fence — which the gate defeated in one line: when the fence already exists in the
+file it arrives as a CONTEXT line, so an added `./deploy.sh` sitting inside it opens
+nothing and the change still qualified as prose. Reading the content removes the class
+instead of the instance.
+
 For any other change the section is not qualified but **absent**, so there is no wording
 left for the model to misapply.
 

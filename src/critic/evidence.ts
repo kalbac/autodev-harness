@@ -79,44 +79,62 @@ export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
 const PROSE_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"]);
 
 /**
+ * Markers whose presence anywhere in a "prose" file means the file can carry something a
+ * machine executes: a fenced block (which a CI step or a doc-test runner can extract and
+ * run) or raw HTML script. Deliberately crude — the real question is "does anything run
+ * this?", which is not decidable here, so this errs toward refusing leniency.
+ */
+const EXECUTABLE_MARKERS = ["```", "~~~", "<script"];
+
+/**
  * Does this change touch ONLY prose?
  *
  * This exists because `adr/007` narrows what the critic may reject for a change that
- * contains no executable code — and the FIRST version of that narrowing left the
- * boundary to the critic's own judgment ("this applies only when the changed files
- * contain no executable code"). The review gate called that a blocker, correctly: in a
- * project whose entire thesis is that the enforcement decision must not be an LLM's
- * (Principles 1 and 3), the question "does this change get leniency" is exactly the
- * kind that must be answered by code the model cannot argue with.
+ * contains no executable code — and the FIRST version left that boundary to the critic's
+ * own judgment ("this applies only when the changed files contain no executable code").
+ * The review gate called that a blocker, correctly: in a project whose entire thesis is
+ * that the enforcement decision must not be an LLM's (Principles 1 and 3), "does this
+ * change get leniency" is exactly the class of question that belongs in code the model
+ * cannot argue with. So the harness decides, and the prompt is only *told* the answer.
  *
- * So the harness decides, and the prompt is only *told* the answer. Two mechanical
- * conditions, both required:
+ * **It inspects the attached FILE CONTENT, not the diff** — and that is round 2's
+ * correction, not a stylistic choice. The first mechanical version scanned the diff for
+ * ADDED lines that OPEN a fence, which the gate defeated in one line: when the fence
+ * already exists in the file it arrives as CONTEXT, so an added `./deploy.sh` sitting
+ * inside it opened no fence and the change still qualified as prose. Reading the
+ * post-change content instead removes the whole class — a fence anywhere in an attached
+ * file disqualifies it, however it got there and whichever lines the diff touched.
  *
- *  1. **Every changed path has a prose extension.** An empty path set is NOT prose-only
- *    — "I do not know what changed" must never buy leniency.
- *  2. **No added line opens a fenced block.** This closes the review gate's concrete
- *    counter-example: a Markdown file whose fenced shell block a CI step executes is a
- *    code change wearing a `.md` extension. Refusing every fenced addition is blunter
- *    than the real question ("does anything run this?") — which is not decidable here —
- *    and blunt in the safe direction.
+ * Conditions, all required:
  *
- * Named residual, not closed: a `.md` that some pipeline reads as data (a checklist a
- * script parses, a table a generator consumes) is still treated as prose. The operator's
- * lever for that is `adr/006` — declare it in `constitutionPaths` and the oracle fence
- * protects it outright, which is a stronger guarantee than anything the critic could give.
+ *  1. **Something was attached, and NOTHING was omitted.** An omitted file is one whose
+ *     content could not be inspected, and an uninspectable file must never buy leniency
+ *     — the same "could not determine is not a no" rule as everywhere else in this module
+ *     (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+ *  2. **Every attached path is blank-free and carries a prose extension.** Anything else
+ *     — including no extension at all — is code. A blank entry is a refusal rather than
+ *     something to filter away: a path that names nothing is not a path this predicate
+ *     can vouch for, and quietly dropping it would let `["", "x.md"]` qualify on the
+ *     strength of a list it did not actually read.
+ *  3. **No attached file contains an executable marker** (see `EXECUTABLE_MARKERS`).
+ *
+ * Named residual, not closed: a `.md` some pipeline reads as DATA (a checklist a script
+ * parses, a table a generator consumes) is still prose by this test. The operator's lever
+ * for that is `adr/006` — declare it in `constitutionPaths` and the oracle fence protects
+ * it outright, which is a stronger guarantee than the critic could ever give.
  */
-export function isProseOnlyChange(paths: string[], diff: string): boolean {
-  const real = paths.filter((p) => typeof p === "string" && p.trim() !== "");
-  if (real.length === 0) return false;
-  for (const p of real) {
-    if (!PROSE_EXTENSIONS.has(extname(p).toLowerCase())) return false;
-  }
-  // `+++ b/<path>` is a file header, not content; `+` alone is an added line. A fence
-  // may be indented inside a list, so the check is on the trimmed body.
-  for (const line of diff.split("\n")) {
-    if (!line.startsWith("+") || line.startsWith("+++")) continue;
-    const body = line.slice(1).trim();
-    if (body.startsWith("```") || body.startsWith("~~~")) return false;
+export function isProseOnlyChange(evidence: CriticEvidence): boolean {
+  // Anything we could not read is a file we cannot vouch for.
+  if (evidence.omitted.length > 0) return false;
+  if (evidence.attached.length === 0) return false;
+
+  for (const f of evidence.attached) {
+    if (typeof f.path !== "string" || f.path.trim() === "") return false;
+    if (!PROSE_EXTENSIONS.has(extname(f.path).toLowerCase())) return false;
+    const lowered = f.content.toLowerCase();
+    for (const marker of EXECUTABLE_MARKERS) {
+      if (lowered.includes(marker)) return false;
+    }
   }
   return true;
 }

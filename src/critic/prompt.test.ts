@@ -196,7 +196,10 @@ describe("buildCriticPrompt — adr/007: an unverifiable claim about untouched c
     // codex's concrete counter-example: a Markdown file whose fenced shell block a CI
     // step executes is a code change wearing a `.md` extension.
     const fenced = 'diff --git a/docs/ci.md b/docs/ci.md\n+++ b/docs/ci.md\n+run this:\n+```sh\n+./scripts/deploy.sh\n+```\n';
-    const ev = { attached: [{ path: "docs/ci.md", bytes: 10, content: "x" }], omitted: [] };
+    // The gate reads the attached CONTENT, so the fence has to be in the file, not
+    // merely in the diff -- that is exactly what round 2 of the review corrected.
+    const fencedContent = ["run this:", "", "```sh", "./scripts/deploy.sh", "```", ""].join("\n");
+    const ev = { attached: [{ path: "docs/ci.md", bytes: fencedContent.length, content: fencedContent }], omitted: [] };
     expect(buildCriticPrompt(fenced, ev)).not.toMatch(/A claim you cannot verify is not a defect you found/);
   });
 
