@@ -383,12 +383,91 @@ describe("isAdditionsOnlyDiff — R2 regressions (hunk counts, not prefix guessi
     // The prefix parser ended a hunk on the next `diff --git `, so this input reset the
     // state and the `-rewritten contract` line was never examined. Counting body lines
     // from the hunk header means the parser is never guessing where a hunk ends.
+    //
+    // R3 minor: this input is rejected at the unclassifiable `diff --git` body line,
+    // BEFORE the removal is reached, so on its own it cannot distinguish "detects the
+    // removal" from "rejected early". The two tests below carry that weight.
     const evil = `@@ -1,1 +1,2 @@
 +new assertion
 diff --git a/docs/contract.md b/docs/contract.md
 -rewritten contract
 `;
     expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R3 major: a removal BETWEEN hunks, reached via an under-declared count, is caught", () => {
+    // The counting parser exited the first hunk correctly (its declared 1/1 was consumed
+    // by ` context`), and the outer loop then skipped every non-`@@` line -- including
+    // `-removed` -- until the next header. The fix is an ALLOW-LIST outside hunks: only a
+    // recognized git file header may be skipped, everything else declines.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,1 @@
+ context
+-removed
+@@ -2,0 +2,1 @@
++added
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+    expect(
+      qualifiesForDocsNarrowing(evil, {
+        attached: [{ path: "docs/x.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("REACHES a removal that follows a fully-consumed hunk in the SAME file", () => {
+    // The positive control for the test above: nothing rejects this input early -- every
+    // line up to the removal is either a valid header or a correctly-counted body line.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+-sneaked in after the count was spent
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("still accepts a well-formed MULTI-hunk, multi-file additions-only diff", () => {
+    // The allow-list must not break the ordinary case it guards -- a strictness fix that
+    // rejects every real diff would silently disable the narrowing rather than scope it.
+    const ok = `diff --git a/docs/a.md b/docs/a.md
+index 111..222 100644
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -1,1 +1,2 @@
+ first
++added to a
+@@ -10,1 +11,2 @@
+ tenth
++also added to a
+diff --git a/docs/b.md b/docs/b.md
+new file mode 100644
+--- /dev/null
++++ b/docs/b.md
+@@ -0,0 +1,1 @@
++brand new
+`;
+    expect(isAdditionsOnlyDiff(ok)).toBe(true);
+  });
+
+  it("declines a binary change rather than guessing whether it removed anything", () => {
+    const bin = `diff --git a/docs/logo.png b/docs/logo.png
+index 111..222 100644
+Binary files a/docs/logo.png and b/docs/logo.png differ
+diff --git a/docs/a.md b/docs/a.md
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -1,1 +1,2 @@
+ first
++added
+`;
+    expect(isAdditionsOnlyDiff(bin)).toBe(false);
   });
 
   it("refuses a hunk whose body is shorter than its declared counts", () => {

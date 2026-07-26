@@ -190,7 +190,16 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
 
   for (let i = 0; i < lines.length; i++) {
     const header = lines[i]!;
-    if (!header.startsWith("@@")) continue;
+    if (!header.startsWith("@@")) {
+      // R3: OUTSIDE a hunk, only a recognized file header may be skipped. The previous
+      // version skipped anything that was not `@@`, so a removal sitting between two
+      // hunks — reachable with an UNDER-declared count on the first one — was never
+      // examined. This is the fourth time in this repo a round-N+1 review has found a
+      // narrower version of the bug round N fixed, and the pattern is always the same:
+      // the fix removed one way to skip a line instead of removing skipping-by-default.
+      if (isDiffFileHeaderLine(header)) continue;
+      return false;
+    }
 
     // `@@ -l[,s] +l[,s] @@ optional section heading`. A missing size means 1.
     const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(header);
@@ -224,6 +233,38 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
   }
 
   return sawHunk && additions > 0;
+}
+
+/**
+ * Line prefixes git emits BETWEEN hunks, and nowhere else. Everything outside a hunk body
+ * must match one of these or `isAdditionsOnlyDiff` declines — the allow-list is what makes
+ * "skip what I do not recognize" impossible (R3 major).
+ *
+ * Two deliberate omissions: `Binary files ... differ` and `GIT binary patch` are NOT here.
+ * A binary change is content the parser cannot read at all, so it can neither confirm nor
+ * deny a removal, and the honest answer is to decline the whole diff.
+ */
+const DIFF_FILE_HEADER_PREFIXES = [
+  "diff --git ",
+  "index ",
+  "--- ",
+  "+++ ",
+  "old mode ",
+  "new mode ",
+  "new file mode ",
+  "deleted file mode ",
+  "similarity index ",
+  "dissimilarity index ",
+  "rename from ",
+  "rename to ",
+  "copy from ",
+  "copy to ",
+  "\\ ", // `\ No newline at end of file` can trail a hunk
+];
+
+function isDiffFileHeaderLine(line: string): boolean {
+  if (line === "") return true; // the trailing newline's empty split element
+  return DIFF_FILE_HEADER_PREFIXES.some((p) => line.startsWith(p));
 }
 
 /**
