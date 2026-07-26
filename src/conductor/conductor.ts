@@ -785,6 +785,35 @@ export function createConductor(deps: ConductorDeps): Conductor {
           // not have passed before. (It is NOT a fallback to the pre-#123 prompt --
           // the widened diff above is part of this change and still applies. Codex R1
           // finding 4 caught that overclaim in this comment.)
+          // CLEAR FIRST, unconditionally, then write on success. The manifest describes
+          // ONE round's evidence, so the only thing worse than not having it is having
+          // the PREVIOUS round's copy claim to describe this one -- diagnostics lying
+          // about the very run they exist to explain
+          // (`docs/gotchas/per-round-overwrite-artifact-stale.md`).
+          //
+          // Clearing sits OUTSIDE the `collectCriticEvidence` guard and BEFORE the write
+          // because codex R2 found two narrower survivals inside the R1 fix, which only
+          // cleared inside the guard and only on the collection-failed branch: a run with
+          // no collector wired left a stale manifest untouched, and a successful
+          // collection whose WRITE then failed left the old one in place too. Deleting up
+          // front makes the failure mode ABSENT rather than STALE on every path.
+          //
+          // Residual, stated rather than papered over: if the delete AND the write both
+          // fail in the same round, a stale manifest survives. No file-only scheme closes
+          // that (same conclusion as the evidence-ledger gotcha), and this file is pure
+          // diagnostics -- no metric reads it -- so a read-time SSOT reconciliation would
+          // be machinery for nothing.
+          try {
+            await repo.removeRuntimeFile(task.id, CRITIC_EVIDENCE_FILE);
+          } catch (err) {
+            safeLog(
+              "WARN",
+              `conductor: could not clear the previous critic-evidence manifest: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+
           let criticEvidence: CriticEvidence | undefined;
           if (deps.collectCriticEvidence) {
             try {
@@ -799,35 +828,27 @@ export function createConductor(deps: ConductorDeps): Conductor {
                 }`,
               );
             }
-            // The manifest is written EXACTLY ONCE per collection attempt, and a failed
-            // attempt DELETES it rather than leaving the previous round's file behind
-            // (codex R1 finding 5 -- the same stale-artifact shape as
-            // `docs/gotchas/per-round-overwrite-artifact-stale.md`). A retry round whose
-            // collection throws would otherwise archive a manifest claiming the critic
-            // saw attachments it was never given, which is worse than no manifest: it is
-            // diagnostics that lie about the very run they are meant to explain.
+          }
+
+          if (criticEvidence) {
             try {
-              if (criticEvidence) {
-                await repo.writeRuntimeFile(
-                  task.id,
-                  CRITIC_EVIDENCE_FILE,
-                  // The MANIFEST only (paths, sizes, omission reasons) -- never the file
-                  // contents, which are already on disk in the worktree and would only
-                  // duplicate the repo into the runtime dir. It exists so a corpus run's
-                  // archived artifacts can answer "what did the critic actually see?"
-                  // without re-running anything (the #126 diagnostics contract).
-                  `${JSON.stringify(
-                    {
-                      attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
-                      omitted: criticEvidence.omitted,
-                    },
-                    null,
-                    2,
-                  )}\n`,
-                );
-              } else {
-                await repo.removeRuntimeFile(task.id, CRITIC_EVIDENCE_FILE);
-              }
+              await repo.writeRuntimeFile(
+                task.id,
+                CRITIC_EVIDENCE_FILE,
+                // The MANIFEST only (paths, sizes, omission reasons) -- never the file
+                // contents, which are already on disk in the worktree and would only
+                // duplicate the repo into the runtime dir. It exists so a corpus run's
+                // archived artifacts can answer "what did the critic actually see?"
+                // without re-running anything (the #126 diagnostics contract).
+                `${JSON.stringify(
+                  {
+                    attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
+                    omitted: criticEvidence.omitted,
+                  },
+                  null,
+                  2,
+                )}\n`,
+              );
             } catch (err) {
               safeLog(
                 "WARN",

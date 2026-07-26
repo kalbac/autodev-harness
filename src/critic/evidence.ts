@@ -278,7 +278,20 @@ async function measureCandidate(
   // reachable from the worker: evidence is collected inside the conductor's
   // single-threaded iteration, AFTER the worker process has exited and after the
   // dirty-file fence has already run, so no writer is racing this read.
-  if (!(await deps.contains(root, full))) {
+  //
+  // The call is WRAPPED because `contains` is an injected seam, and a seam that
+  // rejects would otherwise abort the whole collection from inside a function
+  // documented as never-throwing -- the `[ts/fail-closed]` shape, where the guard
+  // exists but the path around it does not have one (codex R2 finding 2). A rejection
+  // is a "could not determine", which lands on the same conservative answer as
+  // "outside the root".
+  let contained: boolean;
+  try {
+    contained = await deps.contains(root, full);
+  } catch {
+    contained = false;
+  }
+  if (!contained) {
     return { path: relPath, kind: "omit", reason: "unreadable", bytes: null };
   }
 
@@ -362,7 +375,13 @@ async function readPlanned(
   } catch {
     return omit("unreadable");
   } finally {
-    await fh.close();
+    // A rejecting `close()` in a `finally` REPLACES the value the try/catch already
+    // decided on and propagates out of a function documented as never-throwing --
+    // the same `[ts/fail-closed]` shape as the `contains` seam above, and the reason
+    // that gotcha says to guard the catch/finally too, not only the happy path
+    // (codex R2 finding 2). The file has already been read; a failed close is a
+    // descriptor-hygiene problem, not an evidence problem.
+    await fh.close().catch(() => {});
   }
 }
 

@@ -2882,6 +2882,47 @@ describe("runIteration -- critic evidence window (#123)", () => {
     expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBeFalsy();
   });
 
+  it("clears a stale manifest even when NO collector is wired at all", async () => {
+    // Narrower survival inside the R1 fix (codex R2 finding 1): the clear used to live
+    // inside the `collectCriticEvidence` guard, so a run configured without a collector
+    // left an earlier manifest in place, still claiming to describe this round.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    await repo.writeRuntimeFile(task.id, "critic-evidence.json", '{"attached":[{"path":"stale.php"}]}');
+
+    await createConductor(buildDeps({ repo, scheduler })).runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBe(false);
+  });
+
+  it("leaves NO manifest rather than a stale one when the write itself fails", async () => {
+    // The other narrower survival: collection succeeded, so the R1 fix took the write
+    // branch, and a failing write left the previous round's manifest untouched. Clearing
+    // BEFORE the write makes the failure mode absent-not-stale.
+    const task = makeTask();
+    const { repo: base, state } = makeRepo();
+    const repo = {
+      ...base,
+      async writeRuntimeFile(id: string, name: string, content: string): Promise<void> {
+        if (name === "critic-evidence.json") throw new Error("disk full");
+        return base.writeRuntimeFile(id, name, content);
+      },
+    };
+    const { scheduler } = makeScheduler([task], repo);
+    await base.writeRuntimeFile(task.id, "critic-evidence.json", '{"attached":[{"path":"stale.php"}]}');
+
+    await createConductor(
+      buildDeps({
+        repo,
+        scheduler,
+        collectCriticEvidence: async () => ({ attached: [], omitted: [] }),
+      }),
+    ).runIteration();
+
+    expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBe(false);
+  });
+
   it("DELETES a previous round's manifest when this round collects nothing", async () => {
     // The stale-artifact shape this repo already paid for
     // (docs/gotchas/per-round-overwrite-artifact-stale.md): round 1 records what the

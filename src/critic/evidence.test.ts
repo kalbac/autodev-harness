@@ -195,6 +195,22 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     expect(ev).toEqual({ attached: [], omitted: [] });
   });
 
+  it("a REJECTING containment seam omits that file, it does not abort the collection", async () => {
+    // `NEVER throws` has to be true of the paths AROUND the try/catch too, not just
+    // inside it (docs/gotchas/never-throws-catch-block-logging.md). An injected seam
+    // that rejects used to escape and kill the whole evidence set (codex R2 finding 2).
+    writeFileSync(join(root, "a.php"), "x\n");
+    writeFileSync(join(root, "b.php"), "y\n");
+    const ev = await collectCriticEvidence(root, ["a.php", "b.php"], DEFAULT_EVIDENCE_LIMITS, {
+      contains: async (_root, candidate) => {
+        if (candidate.endsWith("a.php")) throw new Error("seam blew up");
+        return true;
+      },
+    });
+    expect(ev.attached.map((a) => a.path)).toEqual(["b.php"]);
+    expect(ev.omitted).toEqual([{ path: "a.php", reason: "unreadable", bytes: null }]);
+  });
+
   it("one unreadable file does not cost the critic the evidence for the others", async () => {
     writeFileSync(join(root, "good.php"), "ok\n");
     const ev = await collectCriticEvidence(root, ["good.php", "missing.php"]);
