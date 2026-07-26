@@ -18,12 +18,75 @@ export interface Git {
   commitEmpty(message: string): Promise<string>;
   countUntracked(): Promise<number>;
   changedFiles(scope?: string[]): Promise<string[]>;
-  diffText(scope?: string[]): Promise<string>;
+  diffText(scope?: string[], opts?: DiffOptions): Promise<string>;
   add(paths: string[]): Promise<void>;
   commit(message: string): Promise<string>;
   worktreeAdd(path: string, branch: string, base: string): Promise<void>;
   worktreeRemove(path: string): Promise<void>;
   merge(branch: string): Promise<MergeResult>;
+}
+
+/** Knobs shared by every "compare the worktree against the index" read below. */
+export interface DiffOptions {
+  /** Lines of unchanged context git prints around each hunk (`git diff -U<n>`).
+   *  Omitted = git's default of 3. Widening it is the cheap half of the critic's
+   *  evidence window (#123, `docs/gotchas/critic-sees-only-the-diff-hunk.md`): a
+   *  three-line window makes a `clean` verdict structurally unreachable for any
+   *  change whose correctness depends on a declaration a few lines further up. */
+  contextLines?: number;
+}
+
+/**
+ * The ONE argument builder behind both `diffText` (the critic's evidence) and
+ * `diffFileNames` (which files that evidence covers). They MUST describe the same
+ * comparison, or the attachment set silently stops matching the diff the critic is
+ * reading — the exact check-one-string/use-another shape this repo keeps re-learning
+ * (`docs/gotchas/validated-one-string-used-another.md`). Sharing the builder makes
+ * that agreement structural rather than a convention two call sites are trusted to
+ * keep.
+ *
+ * Note this is `git diff` (worktree vs INDEX), deliberately NOT `git diff HEAD`,
+ * which is what `Git.changedFiles` runs for the machine gate. Both are correct for
+ * their caller; they are kept as separate functions rather than merged, because a
+ * single "changed files" helper that silently answers a different question depending
+ * on who asks is worse than two named ones.
+ */
+function buildDiffArgs(sub: string[], scope?: string[], opts?: DiffOptions): string[] {
+  const args = ["diff", ...sub];
+  const ctx = opts?.contextLines;
+  if (ctx !== undefined) {
+    // Reject anything git would either misparse or silently reinterpret: a
+    // negative value becomes a flag (`-U-5`), and NaN/Infinity stringify into
+    // `-UNaN`/`-UInfinity`, which git rejects with a fatal — a hard failure of
+    // the whole run for what is only an evidence-width preference. Fail loudly
+    // HERE, at the boundary, where the offending value is still nameable.
+    if (!Number.isSafeInteger(ctx) || ctx < 0) {
+      throw new Error(`git diff: contextLines must be a non-negative safe integer, got ${String(ctx)}`);
+    }
+    args.push(`-U${ctx}`);
+  }
+  if (scope && scope.length > 0) args.push("--", ...scope);
+  return args;
+}
+
+/**
+ * The paths covered by the SAME comparison `Git.diffText` renders (see
+ * `buildDiffArgs`). A standalone function rather than a `Git` method for the reason
+ * `mainTreeStatus` above is one: it can be wired without touching every `Git` fake.
+ *
+ * `core.quotepath=false` so a non-ASCII path comes back as literal UTF-8 instead of
+ * git's octal-escaped `"\303\251"` wire form — a quoted path would not open, and the
+ * file would be reported to the critic as omitted-because-unreadable when it is
+ * perfectly readable under its real name.
+ */
+export async function diffFileNames(repoRoot: string, scope?: string[]): Promise<string[]> {
+  const args = ["-c", "core.quotepath=false", ...buildDiffArgs(["--name-only"], scope)];
+  const r = await runNative("git", args, { cwd: repoRoot });
+  if (r.exitCode !== 0) fail("diff --name-only", args, r);
+  return r.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 }
 
 function fail(cmd: string, args: string[], result: { exitCode: number; stderr: string }): never {
@@ -139,9 +202,8 @@ export function createGit(repoRoot: string): Git {
         .filter((l) => l.length > 0);
     },
 
-    async diffText(scope?: string[]): Promise<string> {
-      const args = ["diff"];
-      if (scope && scope.length > 0) args.push("--", ...scope);
+    async diffText(scope?: string[], opts?: DiffOptions): Promise<string> {
+      const args = buildDiffArgs([], scope, opts);
       const r = await run(args);
       if (r.exitCode !== 0) fail("diff", args, r);
       return r.stdout;

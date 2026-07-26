@@ -26,6 +26,13 @@ import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
 import { globMatch, normalizePath } from "../util/glob.js";
 import { buildTokenUsageDoc, type WorkerUsage, type CriticUsage } from "../usage/usage.js";
 import { buildCriticVerdictDoc, type Verdict } from "../critic/verdict.js";
+import {
+  CRITIC_DIFF_CONTEXT_LINES,
+  CRITIC_EVIDENCE_FILE,
+  summarizeEvidence,
+  type CriticEvidence,
+} from "../critic/evidence.js";
+import { safeErrorText } from "../util/safe-log.js";
 import { writeEvidence, EVIDENCE_FILE, type EvidenceDraft } from "../report/evidence.js";
 
 export interface ConductorDeps {
@@ -75,6 +82,14 @@ export interface ConductorDeps {
    * worker's rate-limit/timeout early-returns and BEFORE the status read + dirty-file fence
    * (parity spec §6): the report belongs in runtimeDir, never in the worktree. */
   harvestWorkerReport: (wt: Worktree, taskId: string) => Promise<void>;
+  /** Collect the critic's evidence attachments for this task (#123): the complete
+   *  current text of every file the diff covers, plus a named list of any that could
+   *  not be attached. Wired at the composition root against the worktree; optional so
+   *  the fake-driven conductor tests are untouched, and so that a run with no
+   *  collector behaves exactly as it did before #123 (diff-only prompt). May throw --
+   *  the conductor swallows it and falls back to the diff-only prompt, which is the
+   *  conservative direction. */
+  collectCriticEvidence?: (wt: Worktree, scope: string[]) => Promise<CriticEvidence>;
   gitChangedPaths: (cwd: string) => Promise<string[]>;
   snapshotFingerprints: (cwd: string, rawPaths: string[]) => Map<string, string>;
   /** Resolve the current protected-oracle-artifact set (`adr/006` Phase 2): the guard
@@ -319,7 +334,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       await deps.writeDecision?.(entry);
     } catch (err) {
-      safeLog("WARN", `conductor: decision-journal write failed (ignored): ${String(err)}`);
+      safeLog("WARN", `conductor: decision-journal write failed (ignored): ${safeErrorText(err)}`);
     }
   };
 
@@ -341,7 +356,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       entries = await mainTreeStatus();
     } catch (err) {
-      safeLog("WARN", `conductor: dirty-tree preflight skipped (git status failed): ${String(err)}`);
+      safeLog("WARN", `conductor: dirty-tree preflight skipped (git status failed): ${safeErrorText(err)}`);
       return;
     }
     if (entries.length === 0) return;
@@ -410,7 +425,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       await repo.removeRuntimeFile(task.id, EVIDENCE_FILE);
     } catch (err) {
-      safeLog("WARN", `conductor: clearing stale evidence for ${task.id} failed (ignored): ${String(err)}`);
+      safeLog("WARN", `conductor: clearing stale evidence for ${task.id} failed (ignored): ${safeErrorText(err)}`);
     }
 
     const startedAt = new Date(clock.now()).toISOString();
@@ -501,7 +516,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const doc = buildTokenUsageDoc(workerRuns, criticRuns, clock.now());
           await repo.writeRuntimeFile(task.id, "token-usage.json", JSON.stringify(doc, null, 2));
         } catch (err) {
-          safeLog("WARN", `conductor: persisting token-usage for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: persisting token-usage for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       };
 
@@ -519,7 +534,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const doc = buildCriticVerdictDoc(verdict, clock.now());
           await repo.writeRuntimeFile(task.id, "critic-verdict.json", JSON.stringify(doc, null, 2));
         } catch (err) {
-          safeLog("WARN", `conductor: persisting critic-verdict for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: persisting critic-verdict for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       };
 
@@ -548,12 +563,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
             await escalateAndRecord({
               reason: "oracle-path set could not be resolved -- broken operator config",
               type: "constitution",
-              what: `Task ${task.id}: resolveOracleSet threw before the worker ran: ${String(err)}.`,
+              what: `Task ${task.id}: resolveOracleSet threw before the worker ran: ${safeErrorText(err)}.`,
               decision: "Fix the broken contract/guards/agent-ci declaration at the trusted root.",
               optionA: "Fix the config and re-queue.",
               optionB: "Abandon the task.",
               costOfWrong: "A gate that cannot resolve its own oracle set cannot protect anything this round.",
-              evidence: String(err),
+              evidence: safeErrorText(err),
             });
             return { claimedTaskId: task.id, committed: false, rateLimited: false };
           }
@@ -749,12 +764,107 @@ export function createConductor(deps: ConductorDeps): Conductor {
           }
 
           // DIFF + CRITIC
-          const diff = await worktree.diff(wt, task.file_set);
+          // The diff is captured with a WIDE context window (#123): three lines around
+          // a hunk is not enough for the critic to verify a reference to code a little
+          // further up, and it reasons fail-closed, so a narrow window made `clean`
+          // structurally unreachable for edits (measured at 0% first-pass commits).
+          // This is the critic's evidence only -- the machine gate resolves its OWN
+          // diff (`resolveScope`) and is untouched by the width used here.
+          const diff = await worktree.diff(wt, task.file_set, { contextLines: CRITIC_DIFF_CONTEXT_LINES });
           await repo.writeRuntimeFile(task.id, "diff.patch", diff);
           // Pin the loop branch this diff was captured on, so a later apply-on-accept
           // (operator override) can refuse to replay it onto a DIFFERENT branch.
           await repo.writeRuntimeFile(task.id, "loop-branch", loopBranch);
-          const cr = await critic.run({ diff, runtimeDir, workerReportPath });
+
+          // The other half of #123: hand the critic the COMPLETE current text of the
+          // files this diff touches, so a declaration outside the hunk is verifiable
+          // instead of merely unseen. Best-effort by construction -- a failure here
+          // leaves the critic with the diff and NO attachments, which is strictly less
+          // evidence than the happy path and therefore the safe direction (Principle
+          // 10): less evidence can only make the critic more cautious, never more
+          // permissive, so a broken collector cannot let anything through that would
+          // not have passed before. (It is NOT a fallback to the pre-#123 prompt --
+          // the widened diff above is part of this change and still applies. Codex R1
+          // finding 4 caught that overclaim in this comment.)
+          // CLEAR FIRST, unconditionally, then write on success. The manifest describes
+          // ONE round's evidence, so the only thing worse than not having it is having
+          // the PREVIOUS round's copy claim to describe this one -- diagnostics lying
+          // about the very run they exist to explain
+          // (`docs/gotchas/per-round-overwrite-artifact-stale.md`).
+          //
+          // Clearing sits OUTSIDE the `collectCriticEvidence` guard and BEFORE the write
+          // because codex R2 found two narrower survivals inside the R1 fix, which only
+          // cleared inside the guard and only on the collection-failed branch: a run with
+          // no collector wired left a stale manifest untouched, and a successful
+          // collection whose WRITE then failed left the old one in place too. Deleting up
+          // front makes the failure mode ABSENT rather than STALE on every path.
+          //
+          // Residual, stated rather than papered over, and stated at its REAL width
+          // (codex R3 noted the first wording was narrower than the actual path set): a
+          // stale manifest survives whenever the clear fails AND no write replaces it --
+          // which is the write also failing, the collection failing, or no collector
+          // being wired at all. No file-only scheme closes that (same conclusion as the
+          // evidence-ledger gotcha), and this file is pure diagnostics -- no metric reads
+          // it -- so a read-time SSOT reconciliation would be machinery for nothing.
+          try {
+            await repo.removeRuntimeFile(task.id, CRITIC_EVIDENCE_FILE);
+          } catch (err) {
+            // `safeErrorText`, not an inline `String(err)`: coercing a hostile thrown
+            // value THROWS (measured: `String(Object.create(null))` raises a TypeError,
+            // and a throwing `toString` propagates), which would take down the very
+            // best-effort path this catch exists to protect -- `[ts/fail-closed]`, the
+            // gotcha this helper was written for. Codex R3 found the omission.
+            safeLog("WARN", `conductor: could not clear the previous critic-evidence manifest: ${safeErrorText(err)}`);
+          }
+
+          let criticEvidence: CriticEvidence | undefined;
+          if (deps.collectCriticEvidence) {
+            try {
+              criticEvidence = await deps.collectCriticEvidence(wt, task.file_set);
+              safeLog("INFO", `conductor: critic evidence -- ${summarizeEvidence(criticEvidence)}`);
+            } catch (err) {
+              criticEvidence = undefined;
+              safeLog(
+                "WARN",
+                `conductor: critic evidence collection failed -- reviewing from the diff alone: ${safeErrorText(err)}`,
+              );
+            }
+          }
+
+          if (criticEvidence) {
+            try {
+              await repo.writeRuntimeFile(
+                task.id,
+                CRITIC_EVIDENCE_FILE,
+                // The MANIFEST only (paths, sizes, omission reasons) -- never the file
+                // contents, which are already on disk in the worktree and would only
+                // duplicate the repo into the runtime dir. It exists so a corpus run's
+                // archived artifacts can answer "what did the critic actually see?"
+                // without re-running anything (the #126 diagnostics contract).
+                `${JSON.stringify(
+                  {
+                    attached: criticEvidence.attached.map((a) => ({ path: a.path, bytes: a.bytes })),
+                    omitted: criticEvidence.omitted,
+                  },
+                  null,
+                  2,
+                )}\n`,
+              );
+            } catch (err) {
+              safeLog("WARN", `conductor: could not record the critic-evidence manifest: ${safeErrorText(err)}`);
+            }
+          }
+
+          const cr = await critic.run({
+            diff,
+            runtimeDir,
+            workerReportPath,
+            // Spread rather than `evidence: evidence` -- under
+            // `exactOptionalPropertyTypes` an explicit `undefined` is not the same as
+            // an absent optional property, and the adapter's contract is "absent means
+            // the diff alone".
+            ...(criticEvidence ? { evidence: criticEvidence } : {}),
+          });
 
           if (cr.usage) {
             criticRuns.push(cr.usage);
@@ -990,7 +1100,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
             await repo.markDone(task.id, hash);
             await repo.appendDigest(`[conductor] committed ${task.id} -> ${hash} (${msg})`);
           } catch (err) {
-            safeLog("WARN", `conductor: post-commit bookkeeping for ${task.id} failed (ignored): ${String(err)}`);
+            safeLog("WARN", `conductor: post-commit bookkeeping for ${task.id} failed (ignored): ${safeErrorText(err)}`);
           }
           return { claimedTaskId: task.id, committed: true, rateLimited: false };
         }
@@ -1021,7 +1131,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // closed: surface the task to the operator (escalated/ + an escalation)
         // and resolve the iteration so the bounded run ends cleanly. Both steps
         // are wrapped so nothing here can re-throw out of the loop.
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = safeErrorText(err);
         try {
           await repo.moveTask(task.id, "active", "escalated");
         } catch (moveErr) {
@@ -1069,7 +1179,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         try {
           await worktree.teardown(createdWorktree);
         } catch (err) {
-          safeLog("WARN", `conductor: worktree teardown for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: worktree teardown for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       }
     }
@@ -1102,7 +1212,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // Defensive: readNorthStar is contracted to map its own failures to null, but
         // if it throws anyway, treat that as silent (fail-closed) rather than crash.
         northStar = null;
-        safeLog("WARN", `conductor: north-star read threw (${String(err)}); treating as silent.`);
+        safeLog("WARN", `conductor: north-star read threw (${safeErrorText(err)}); treating as silent.`);
       }
       if (isNorthStarSilent(northStar)) {
         const nowMs = clock.now();

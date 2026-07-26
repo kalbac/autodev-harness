@@ -1,9 +1,20 @@
 import { rm, symlink, unlink, rmdir, mkdir, lstat, readdir, readlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, posix, win32, resolve } from "node:path";
-import { createGit, type MergeResult } from "../util/git.js";
+import { createGit, diffFileNames, type DiffOptions, type MergeResult } from "../util/git.js";
 import { runNative } from "../util/native.js";
 import type { Logger } from "../util/log.js";
+
+/**
+ * Intent-to-add any untracked files so brand-new files show up in `git diff`
+ * (mirrors the PS loop's diff-includes-new-files behavior). Shared by `diff()` and
+ * `diffFiles()` so the diff text and the list of files it covers are always produced
+ * over the same staged state.
+ */
+async function intentToAdd(wt: Worktree, scope?: string[]): Promise<void> {
+  const addArgs = ["add", "-N", "--"].concat(scope && scope.length > 0 ? scope : ["."]);
+  await runNative("git", addArgs, { cwd: wt.path });
+}
 
 /**
  * A task id must be a single, safe path segment: it becomes both a directory
@@ -61,7 +72,12 @@ export interface Worktree {
 
 export interface WorktreeManager {
   create(taskId: string, baseBranch: string): Promise<Worktree>;
-  diff(wt: Worktree, scope?: string[]): Promise<string>;
+  diff(wt: Worktree, scope?: string[], opts?: DiffOptions): Promise<string>;
+  /** The worktree-relative paths covered by the diff `diff()` returns, for the same
+   *  `scope`. Used to decide which files to attach to the critic as evidence (#123);
+   *  kept here, beside `diff()`, so both go through the same intent-to-add step and
+   *  the same `git diff` comparison basis. */
+  diffFiles(wt: Worktree, scope?: string[]): Promise<string[]>;
   teardown(wt: Worktree): Promise<void>;
   mergeAfterGate(wt: Worktree, intoBranch: string): Promise<MergeResult>;
 }
@@ -334,13 +350,20 @@ export function createWorktreeManager(
       return { path, branch, taskId };
     },
 
-    async diff(wt: Worktree, scope?: string[]): Promise<string> {
-      // Intent-to-add any untracked files first so brand-new files show up
-      // in `git diff` (mirrors the PS loop's diff-includes-new-files behavior).
-      const addArgs = ["add", "-N", "--"].concat(scope && scope.length > 0 ? scope : ["."]);
-      await runNative("git", addArgs, { cwd: wt.path });
+    async diff(wt: Worktree, scope?: string[], opts?: DiffOptions): Promise<string> {
+      await intentToAdd(wt, scope);
       const wtGit = createGit(wt.path);
-      return wtGit.diffText(scope);
+      return wtGit.diffText(scope, opts);
+    },
+
+    async diffFiles(wt: Worktree, scope?: string[]): Promise<string[]> {
+      // Runs its own intent-to-add rather than relying on `diff()` having been
+      // called first: an ordering dependency between two public methods is
+      // invisible at the call site and silently degrades (a brand-new file would
+      // simply be missing from the list, i.e. never attached as evidence, with no
+      // error). `git add -N` is idempotent, so paying it twice is cheap.
+      await intentToAdd(wt, scope);
+      return diffFileNames(wt.path, scope);
     },
 
     async teardown(wt: Worktree): Promise<void> {

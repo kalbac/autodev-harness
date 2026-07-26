@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNative } from "./native.js";
-import { createGit, mainTreeStatus, type Git } from "./git.js";
+import { createGit, diffFileNames, mainTreeStatus, type Git } from "./git.js";
 
 let repoRoot: string;
 let git: Git;
@@ -204,5 +204,63 @@ describe("mainTreeStatus", () => {
     const a = entries.find((e) => e.path === "a.txt");
     expect(a).toBeDefined();
     expect(a!.code).not.toBe("??");
+  });
+});
+
+describe("diff context width (#123) + diffFileNames", () => {
+  it("widens the unified-diff context so a declaration outside the hunk is still visible", async () => {
+    // 30 lines, edit line 30 only. With git's default -U3 the top of the file is
+    // outside the window; this is the shape that made the critic's clean verdict
+    // unreachable (docs/gotchas/critic-sees-only-the-diff-hunk.md).
+    const lines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`);
+    writeFileSync(join(repoRoot, "wide.txt"), `${lines.join("\n")}\n`);
+    await runNative("git", ["add", "wide.txt"], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "wide"], { cwd: repoRoot });
+    lines[29] = "line30-edited";
+    writeFileSync(join(repoRoot, "wide.txt"), `${lines.join("\n")}\n`);
+
+    const narrow = await git.diffText(["wide.txt"]);
+    expect(narrow).not.toContain("line1\n"); // the declaration end of the file is invisible
+
+    const wide = await git.diffText(["wide.txt"], { contextLines: 25 });
+    expect(wide).toContain("line5"); // 25 lines of context reach back far enough
+    expect(wide).toContain("+line30-edited");
+  });
+
+  it("REFUSES a contextLines value git would misparse, instead of shipping it", async () => {
+    // -U-5 becomes a flag and -UNaN is a fatal: a bad value must fail here, where it
+    // is still nameable, not deep inside a git invocation mid-run.
+    await expect(git.diffText(["a.txt"], { contextLines: -5 })).rejects.toThrow(/non-negative safe integer/);
+    await expect(git.diffText(["a.txt"], { contextLines: Number.NaN })).rejects.toThrow(
+      /non-negative safe integer/,
+    );
+    await expect(git.diffText(["a.txt"], { contextLines: 1.5 })).rejects.toThrow(/non-negative safe integer/);
+    // 0 IS a bound (a context-free diff), so it must be accepted, not rejected.
+    writeFileSync(join(repoRoot, "a.txt"), "a1\nmore\n");
+    await expect(git.diffText(["a.txt"], { contextLines: 0 })).resolves.toContain("+more");
+  });
+
+  it("diffFileNames lists exactly the files diffText renders, for the same scope", async () => {
+    writeFileSync(join(repoRoot, "a.txt"), "a1\nedited\n");
+    writeFileSync(join(repoRoot, "b.txt"), "b1\nedited\n");
+    expect(await diffFileNames(repoRoot)).toEqual(["a.txt", "b.txt"]);
+    // Scoped: the attachment set must never be wider than the diff the critic reads.
+    expect(await diffFileNames(repoRoot, ["a.txt"])).toEqual(["a.txt"]);
+    const scopedDiff = await git.diffText(["a.txt"]);
+    expect(scopedDiff).toContain("a.txt");
+    expect(scopedDiff).not.toContain("b.txt");
+  });
+
+  it("returns a non-ASCII path in literal UTF-8, not git's octal-escaped wire form", async () => {
+    // An octal-escaped path (`"\321\204.txt"`) would not open, so the file would be
+    // reported to the critic as unreadable when it is perfectly readable.
+    const name = "файл.txt";
+    writeFileSync(join(repoRoot, name), "x\n");
+    await runNative("git", ["add", "--", name], { cwd: repoRoot });
+    await runNative("git", ["commit", "-m", "cyrillic"], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, name), "x\ny\n");
+    const names = await diffFileNames(repoRoot);
+    expect(names).toContain(name);
+    expect(names.some((n) => n.startsWith('"'))).toBe(false);
   });
 });
