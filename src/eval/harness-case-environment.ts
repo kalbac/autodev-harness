@@ -3,8 +3,14 @@ import { resolve } from "node:path";
 import type { CorpusCase } from "./corpus-case.js";
 import type { CaseEnvironment } from "./case-executor.js";
 import { applySeedOverlay } from "./seed-overlay.js";
+import { archiveAndReport, archiveCaseArtifacts, conductorLogOffset, type CaseArchiveStatus } from "./case-archive.js";
+
+// The status type belongs with the archive, not with this glue module; re-exported here so
+// the pre-existing import path keeps working.
+export type { CaseArchiveStatus } from "./case-archive.js";
 import { resetHarnessState } from "./harness-state-reset.js";
 import { createOneShotQueueGuard } from "./eval-preflight.js";
+import { assertArtifactsRootSafe } from "./artifacts-root.js";
 import { acquireCorpusLock, type CorpusLock } from "./corpus-lock.js";
 import type { ProjectRoot } from "../composition/root.js";
 import { loadEvidence, EVIDENCE_FILE, type EvidenceSlot } from "../report/evidence-store.js";
@@ -38,6 +44,10 @@ export interface HarnessCaseEnvironmentOptions {
   baseline: string;
   /** Bound on the per-case drain, so a pathological case cannot spin forever. */
   maxIterations: number;
+  /** Absolute directory each case's blackboard artifacts are copied into before the next
+   *  case purges them. Diagnostics only — nothing here feeds a metric. */
+  artifactsRoot: string;
+
 }
 
 /** Baked identity so a seed commit never fails on a machine with no global git user
@@ -52,8 +62,17 @@ const SEED_COMMIT_IDENTITY = [
 
 export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions): CaseEnvironment {
   const { root, baseline, maxIterations } = opts;
+
+  // Archive outcomes are recorded into a map this module OWNS and only exposes for reading.
+  // Neither a callback nor a caller-supplied Map: both put foreign code in the recording
+  // path, where a throwing sink (or a Map subclass with an overridden `set`) leaves a
+  // SUCCESSFUL archive unrecorded -- which the manifest then reports as `archive: null`,
+  // i.e. "this case never archived", for a case that did (codex R3, narrowed again in R4).
+  // An internal `Map` has no such path; the caller reads it when it builds the manifest.
+  const archiveStatuses = new Map<string, CaseArchiveStatus>();
   const repoRoot = root.repoRoot;
   const corpusRoot = resolve(opts.corpusRoot);
+  const artifactsRoot = resolve(opts.artifactsRoot);
   const log = root.log;
 
   // Ownership of the target project, established once and in this order:
@@ -66,6 +85,23 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   // happened (codex R3 High).
   const queueGuard = createOneShotQueueGuard(root.repo);
   let lock: CorpusLock | null = null;
+  // Where `conductor.log` had reached when the current case started, so the archive keeps
+  // only that case's slice of a log that grows across the whole run. Captured inside
+  // `resetToBaseline` — the one call every case makes, before anything of its own runs.
+  let logOffset = 0;
+
+  // The artifacts-root safety question lives in its own module so the CLI can ask it
+  // BEFORE it touches any file and this path can ask it again per case -- one answer, two
+  // callers, no memoization (a root safe for case 1 can be a junction by case 5).
+  const assertArtifactsRootIsSafe = (): Promise<void> =>
+    assertArtifactsRootSafe({
+      repoRoot,
+      artifactsRoot,
+      git: async (args) => {
+        const r = await runNative("git", args, { cwd: repoRoot });
+        return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+      },
+    });
 
   async function git(args: string[], label: string): Promise<string> {
     const r = await runNative("git", args, { cwd: repoRoot });
@@ -89,6 +125,8 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
     async resetToBaseline(): Promise<void> {
       if (lock === null) lock = await acquireCorpusLock(root.stateDirAbs);
       await queueGuard.check();
+      // Before the FIRST mutation, not after case 1 has already written into the tree.
+      await assertArtifactsRootIsSafe();
 
       // The conductor refuses to run off the loop branch, so a corpus started on the
       // wrong branch would reset the tree and then fail every case for a reason that
@@ -123,6 +161,10 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
             `would DISCARD them. Commit or stash first.`,
         );
       }
+
+      // Read BEFORE the purge, and before the case writes anything: the purge leaves
+      // `conductor.log` in place, so this offset is exactly where this case's log begins.
+      logOffset = await conductorLogOffset(root.stateDirAbs);
 
       await git(["reset", "--hard", baseline], `reset --hard ${baseline}`);
       const purged = await resetHarnessState(root.stateDirAbs);
@@ -171,6 +213,44 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
       // (docs/gotchas/conductor-once-precedes-drain-and-bounded-defaults.md).
       await root.conductor.run({ drain: true, maxIterations });
     },
+
+    async archiveArtifacts(c: CorpusCase): Promise<void> {
+      // Catches its OWN failure and REPORTS it, rather than throwing and letting the
+      // executor's swallow decide. That matters for honesty, not tidiness: if the archive
+      // fails after a previous run's directory could not be cleared, the stale directory
+      // is still on disk, and a manifest that unconditionally names `artifacts: <caseId>`
+      // would have the operator read the PREVIOUS run's diagnostics as this run's — the
+      // stale-projection failure of docs/gotchas/stale-projection-needs-ssot-reconciliation.md
+      // (codex R1). Reporting the status is what lets the manifest say `failed` instead.
+      // The executor's `.catch()` remains as a backstop for a throwing implementation.
+      // The decide-then-report ordering, and the guard around the sink, live in
+      // `archiveAndReport` — extracted there because they are the fix for a defect the
+      // critic found twice, and a fix that lives only in this untested glue module is a fix
+      // nobody can prove (codex R1, then a narrower R2). This layer only supplies the
+      // request and the sink.
+      await archiveAndReport(
+        {
+          stateDirAbs: root.stateDirAbs,
+          artifactsRoot,
+          caseId: c.id,
+          logFromByte: logOffset,
+        },
+        {
+          archive: archiveCaseArtifacts,
+          log,
+          report: (status) => archiveStatuses.set(c.id, status),
+        },
+      );
+    },
+
+    // A DEEP snapshot. `new Map(internal)` copies only the Map: the status objects and their
+    // `skipped` arrays stayed shared, so a consumer mutating what it was handed corrupted the
+    // record this module reports from (codex R5). A read-only contract that relies on the
+    // reader's restraint is not a read-only contract.
+    archiveStatuses: () =>
+      new Map(
+        [...archiveStatuses].map(([id, s]) => [id, { ...s, skipped: [...s.skipped] }] as const),
+      ),
 
     async readEvidence(taskIds: string[]): Promise<EvidenceSlot[]> {
       return loadEvidence(taskIds, (taskId) => root.repo.readRuntimeFile(taskId, EVIDENCE_FILE));

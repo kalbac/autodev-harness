@@ -169,8 +169,10 @@ DB.
 go. Each diff passes; the sum drifts. Only comparing against the stated intent catches
 that.
 
-**Enforced by.** The anti-drift critic (`src/anti-drift`); becomes mandatory once
-unattended autonomy ships (`adr/004`).
+**Enforced by.** The anti-drift critic (`src/anti-drift`), run every
+`antiDrift.everyCommits` against the accumulated diff. **Mandatory unattended since s54**
+(`adr/004`): the per-project north-star (`.autodev/GOAL.md`) is the intent anchor, a
+DRIFT halts the overnight drain, and a silent north-star fails closed.
 
 ## 13. Verify before "done" — evidence, not assertion
 
@@ -205,7 +207,10 @@ read its zone/guard/CI *definitions* from the worktree.
 
 **Enforced by.** `adr/006` (capability-based Authority Model): oracle definitions
 read from a trusted root, oracle execution against the worktree, oracle
-modifications require an operator capability. Enforcement is phased — see the ADR.
+modifications require an operator capability. **All three phases shipped** — Phase 1
+(trusted-root definitions, s49), Phase 2 (protected-path fence, s50), Phase 3 (folded
+into Profiles, s51). Named residual: a profile's gates still invoke a toolchain the
+project installs (`vendor/bin/phpcs`), so the analyzer itself is not covered.
 
 ## 15. The gate proves only formalized properties
 

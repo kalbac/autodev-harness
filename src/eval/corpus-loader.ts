@@ -19,7 +19,16 @@ export async function loadCorpus(dir: string): Promise<CorpusCase[]> {
     .sort();
 
   const cases: CorpusCase[] = [];
-  const seenIds = new Map<string, string>(); // id -> file that first declared it
+  // Keyed by the CASE-FOLDED id, because the id names a directory and Windows/macOS
+  // filesystems are case-insensitive: `Fix-A` and `fix-a` are two distinct cases by this
+  // check but ONE directory on disk, so the second case's archive would clear the first's
+  // and both manifest entries would point at the same diagnostics (codex R1). Comparing
+  // ids in one normalization while USING them in another is the recurring defect shape of
+  // docs/gotchas/validated-one-string-used-another.md — so the comparison is folded here,
+  // once, rather than at each use site. Folding is deliberately stricter than any single
+  // platform: a corpus must load identically everywhere, so a collision is refused even on
+  // a case-SENSITIVE filesystem where it would technically work.
+  const seenIds = new Map<string, { id: string; file: string }>();
 
   for (const name of files) {
     const raw = await readFile(join(dir, name), "utf8");
@@ -39,11 +48,13 @@ export async function loadCorpus(dir: string): Promise<CorpusCase[]> {
       throw new Error(`corpus case ${name}: schema validation failed -- ${detail}`);
     }
 
-    const prior = seenIds.get(c.id);
+    const folded = c.id.toLowerCase();
+    const prior = seenIds.get(folded);
     if (prior !== undefined) {
-      throw new Error(`corpus case ${name}: duplicate id '${c.id}' (already declared in ${prior})`);
+      const how = prior.id === c.id ? "duplicate" : `case-insensitive collision with '${prior.id}'`;
+      throw new Error(`corpus case ${name}: ${how} id '${c.id}' (already declared in ${prior.file})`);
     }
-    seenIds.set(c.id, name);
+    seenIds.set(folded, { id: c.id, file: name });
     cases.push(c);
   }
 

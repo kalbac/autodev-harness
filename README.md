@@ -30,9 +30,11 @@ See [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) for the invariants and *why* each
 
 ## Status
 
-**Active development.** A working Node daemon + web dashboard: the attended
-live-orchestrator presence (chat as the project's main screen) is shipped, and the
-unattended-autonomy half is partly built. See
+**Active development.** A working Node daemon + web dashboard. Both halves of the
+orchestrator doctrine are shipped — attended live presence (chat as the project's main
+screen) and unattended overnight autonomy — and the harness now **measures itself**
+against an evaluation corpus. That measurement does not currently flatter it: it catches
+every planted defect and lets almost no correct work through. See
 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for live status and next steps.
 
 ## Running it
@@ -40,11 +42,13 @@ unattended-autonomy half is partly built. See
 ```bash
 npm install
 npm run build        # backend → dist/
-npm run build:ui     # dashboard → ui/dist
+npm run build:ui     # dashboard → dist/ui
 
 node dist/index.js serve   # daemon + dashboard on :4319
 # or
 node dist/index.js run     # headless run from a project directory
+# or
+node dist/index.js eval    # run the evaluation corpus against this repo
 ```
 
 Requires Node ≥ 20. For development without a build: `npm run dev` (backend, via tsx)

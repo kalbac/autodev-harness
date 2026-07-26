@@ -75,7 +75,20 @@ describe("loadCorpus", () => {
     write(dir, "one.json", validCase("dup"));
     write(dir, "two.json", validCase("dup"));
 
-    await expect(loadCorpus(dir)).rejects.toThrow(/dup/);
+    await expect(loadCorpus(dir)).rejects.toThrow(/duplicate id 'dup'/);
+  });
+
+  // codex R1: the ids are DIFFERENT strings but ONE directory on a case-insensitive
+  // filesystem (Windows/macOS), which the per-case artifact archive names by id — the
+  // second case's archive would clear the first's and both manifest entries would point at
+  // the same diagnostics. Refused on every platform so a corpus loads identically
+  // everywhere, not just where it happens to break.
+  it("rejects two ids that collide case-insensitively", async () => {
+    const dir = tempCorpus();
+    write(dir, "one.json", validCase("Fix-A"));
+    write(dir, "two.json", validCase("fix-a"));
+
+    await expect(loadCorpus(dir)).rejects.toThrow(/case-insensitive collision with 'Fix-A'/);
   });
 
   it("returns an empty array for a corpus dir with no case files", async () => {

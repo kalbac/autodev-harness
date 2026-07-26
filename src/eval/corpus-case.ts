@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isPathSafeId } from "../orchestrator/task-spec.js";
+
 /**
  * One Evaluation Corpus case: a seed repo state + an operator intent + the class of
  * outcome the harness is ASSERTED to produce for it. The corpus runner executes each case
@@ -14,6 +16,32 @@ import { z } from "zod";
  * with a silently-defaulted expectation.
  */
 export const CORPUS_CASE_SCHEMA_VERSION = 1;
+
+/** Longest id the corpus accepts. The id becomes a path segment under an already-deep
+ *  artifacts root, and an unbounded one can push a per-case archive past Windows' MAX_PATH
+ *  where long-path support is off (codex R3). Generous for a descriptive kebab-case name --
+ *  the shipped corpus's longest is 26. */
+export const MAX_CORPUS_CASE_ID_LENGTH = 64;
+
+/**
+ * Is this a usable corpus case id? THE single definition, used by the schema below AND by
+ * `case-archive.ts`'s own barrier — the point being that the check and the use share one
+ * function rather than two hand-kept-in-sync approximations, which is the recurring defect
+ * shape of docs/gotchas/validated-one-string-used-another.md. The archive re-checked only
+ * `isPathSafeId` while the schema enforced more, so a direct caller could hand the archive an
+ * id the corpus itself would have refused (codex R4).
+ *
+ * Beyond path-safety, a usable id must not END IN A DOT, and both reasons are about the gap
+ * between a path-safe STRING and a directory NAME:
+ *  - `"."` (and `"...."`) is path-safe, but `join(root, ".")` collapses to `root` ITSELF,
+ *    pointing a case's archive directory at the artifacts root (codex R1);
+ *  - Windows strips trailing dots from a path segment, so `"case."` and `"case"` are two ids
+ *    by any string comparison and ONE directory on disk — the second case's archive would
+ *    clear the first's (codex R2).
+ */
+export function isCorpusCaseId(id: string): boolean {
+  return id.length > 0 && id.length <= MAX_CORPUS_CASE_ID_LENGTH && isPathSafeId(id) && !id.endsWith(".");
+}
 
 /** The task kinds the corpus spans (per the external architecture review, risk 7).
  *  `docs` was added in Phase 2 for the authored corpus: a documentation-only change is a
@@ -33,7 +61,38 @@ export const CorpusCaseType = z.enum([
 export const CorpusCaseSchema = z
   .object({
     schema: z.literal(CORPUS_CASE_SCHEMA_VERSION),
-    id: z.string().min(1),
+    /** A path-safe segment, because the id NAMES THINGS ON DISK — the run's per-case
+     *  artifacts directory, among others. Constraining it here, at the one place a case
+     *  enters the system, is what lets every consumer use it verbatim; validating it at
+     *  each use site instead is the recurring defect shape of
+     *  docs/gotchas/validated-one-string-used-another.md.
+     *
+     *  `isPathSafeId` alone is NOT enough, and both gaps are about the difference between
+     *  a path-safe STRING and a usable directory NAME. A single rule closes both:
+     *  **the id must not end in a dot.**
+     *   - `"."` (and `"...."`) is path-safe, but `join(root, ".")` collapses to `root`
+     *     ITSELF, pointing a case's archive directory at the artifacts root (codex R1).
+     *   - Windows strips trailing dots from a path segment, so `"case."` and `"case"` are
+     *     two ids by any string comparison and ONE directory on disk — the second case's
+     *     archive would clear the first's (codex R2).
+     *  Deliberately narrow: an earlier version demanded an alphanumeric character, which
+     *  also rejected perfectly usable ids like `"-"` and `"._-"` (codex R2, minor). Only
+     *  the trailing dot is actually a problem. */
+    id: z
+      .string()
+      .min(1)
+      // The id becomes a path segment under the artifacts root, which is itself already a
+      // deep path; an unbounded id can push the per-case archive past Windows' MAX_PATH
+      // where long-path support is not enabled (codex R3). 64 is generous for a descriptive
+      // kebab-case name -- the shipped corpus's longest is 26. Declared BEFORE the refines:
+      // `.refine()` returns a ZodEffects, which has no `.max()`.
+      .max(64, "id must be at most 64 characters (it becomes a directory name under the artifacts root)")
+      .refine(isPathSafeId, { message: "id must be a path-safe segment (no '/', '\\', '..', or NUL)" })
+      .refine((id) => !id.endsWith("."), {
+        message:
+          "id must not end in a dot ('.' collapses to the parent directory, and Windows strips trailing dots, " +
+          "so two such ids can name one directory)",
+      }),
     type: CorpusCaseType,
     /** The operator intent handed to the run composer — what the harness should attempt. */
     intent: z.string().min(1),

@@ -49,19 +49,21 @@ did not build, in rough priority order:
 
 - ✅ *(done s51)* **Per-LINE gate scoping** — shipped as `wordpress-woocommerce@2` via
   `report: checkstyle`; live-proven on a legacy file with 10 pre-existing violations.
-- **Timing-sensitive tests flake under CPU load.** `src/watchdog/watchdog.test.ts` and
-  `src/api/server.test.ts` both failed during s51 while subagents saturated the machine,
-  and both passed cleanly when re-run alone (verified against clean `main` too, so not a
-  regression). Harmless locally, but a loaded CI runner could hit it. Worth making those
-  tests clock-driven rather than wall-clock-driven.
+- ✅ *(done s55, issue #85, PR #119)* **Timing-sensitive tests flake under CPU load.**
+  `src/watchdog/watchdog.test.ts` and `src/api/server.test.ts` both failed during s51 while
+  subagents saturated the machine. Fixed by extracting a pure `classifyWatchTick` plus an
+  injected clock/spawn seam (mutation-verified) and swapping the server tests' fixed delays
+  for `vi.waitFor` — clock-driven, as this item asked. Gotcha
+  `[test/deterministic-real-clock-loop]`.
 - ✅ *(done s51)* **Gate feedback on RETRY** -- shipped for all three output-producing
   steps and live-proven (one retry to convergence instead of an exhausted budget).
-- **Line-ending normalization for WPCS on Windows.** WPCS demands `
-`; a worker on Windows
-  writes `
-
-`, so every new PHP file draws an automatic error. Needs a normalization step
-  or an explicit, documented exclusion.
+- ✅ *(done s53, PR #114)* **Line-ending normalization for WPCS on Windows.** WPCS
+  demands LF; a worker on Windows can write CRLF, so a new PHP file drew an automatic
+  error. Shipped as `src/normalize/eol.ts` -- the conductor normalizes the worker's
+  changed files toward LF per the repo's `.gitattributes` BEFORE the diff, so the critic,
+  the gate and the commit all see the same bytes. Live-proven `fb21553`. Gotcha
+  `[normalize/worker-eol-nondeterministic]`: whether the worker emits CRLF is NOT
+  deterministic, so the proof had to instruct CRLF explicitly to observe it firing.
 - **PHPStan as a profile gate.** Blocked on a portable way for a profile-shipped config to
   reference an extension living in the *project's* `vendor` (a neon `includes:` resolves
   relative to the neon file, which sits in the harness repo). Needs a profile-injected
