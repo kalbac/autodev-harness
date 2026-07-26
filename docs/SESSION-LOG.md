@@ -1855,3 +1855,11 @@ critic-reviewer setting, and a chat-scroll bug in the desktop UI.
 **Not done / next:** AO source not cloned yet. Next session: clone AO, set up
 fork hygiene (upstream remote), scope Tier-1 with real effort numbers. See
 `CURRENT-STATE.md` → NEXT ACTIONS.
+
+---
+
+## Related
+
+- `CURRENT-STATE.md` — the live snapshot this log is the history behind.
+- `DOCS-SCHEMA.md` — why detail lives here and not in CURRENT-STATE.
+- `GOTCHAS.md` — the compiled lessons extracted from these entries.

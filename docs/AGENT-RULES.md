@@ -6,10 +6,15 @@
 
 ## Session Start Checklist
 
-1. Read `VISION.md` — the mission and the single-source-of-truth rule
-2. Read `CURRENT-STATE.md` — phase status, NEXT ACTIONS, open questions
-3. Scan `GOTCHAS.md`
-4. If touching ported logic, read the relevant `reference/` doc
+The same order as `CLAUDE.md`'s Session Start Protocol — one list, two entry points; if
+you change one, change the other (they drifted before).
+
+1. `VISION.md` — the mission and the single-source-of-truth rule
+2. `PRINCIPLES.md` — the 15 invariants and *why* they exist
+3. `AGENTS.md` — the repo contract (language, git ownership, batch merges, backlog)
+4. `CURRENT-STATE.md` — phase status, NEXT ACTIONS, open questions
+5. `GOTCHAS.md` — scan the index for tags near what you are about to touch
+6. If touching ported logic, the relevant `reference/` doc
 
 ## Session End Checklist
 

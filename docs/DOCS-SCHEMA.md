@@ -9,7 +9,9 @@
   only; history in `SESSION-LOG.md` only. Do not duplicate a fact across files —
   link instead.
 - **Absolute dates** (`DD.MM.YYYY` or ISO), never relative ("yesterday", "next week").
-- Every doc ends with a `## Related` section linking neighbours.
+- Every doc under `docs/` ends with a `## Related` section linking neighbours. (Repo-root
+  files — `README.md`, `CLAUDE.md` — are exempt: they are entry points with their own
+  navigation sections.)
 - English for all docs.
 
 ## File roles
@@ -45,13 +47,29 @@ CURRENT-STATE keeps only the live status + a one-line pointer per recent session
 ## Gotcha file template
 
 ```markdown
-# {Title}
-**Tag:** [namespace/topic]  **Recorded:** DD.MM.YYYY
-## The mistake
-## The correct pattern
-## Why
+# {A title that states the FINDING, not the topic}
+
+**Tag:** `[namespace/topic]` · Found sNN (DD.MM.YYYY)
+
+## What happens
+{The observable failure, with the evidence that established it —
+ measured numbers, verbatim output, the commit it bit.}
+
+## Why {it hid / it is not what it looks like}
+{Optional but usual: the non-obvious part. If it were obvious it
+ would not be a gotcha.}
+
+## What to do
+{The rule, stated so a future reader can apply it without re-deriving it.}
+
 ## Related
+{Sibling gotchas, the principle it enforces, the ADR that decided it.}
 ```
+
+The headings are a guide, not a schema — several gotchas are better told in a different
+shape, and that is fine. What is **mandatory**: the `# title`, the `**Tag:**` line with a
+session and date, and a closing `## Related`. A gotcha states a *finding*
+("the critic's evidence window is the diff hunk"), never a topic ("about the critic").
 
 ## Related
 

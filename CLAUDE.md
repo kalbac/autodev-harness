@@ -32,10 +32,11 @@ stopped forking AO) and `docs/adr/003` (roles are a configurable model matrix).
 
 ## Status
 
-**Active development.** Working Node daemon + web UI; attended live-orchestrator
-presence shipped; the unattended-autonomy half is partly built. For the live phase
-status and next actions see `docs/CURRENT-STATE.md` — it is the single source of
-truth for "where we are". Do not track status here (it rots).
+**Active development.** Working Node daemon + web UI; both halves of `adr/004`
+(attended presence + unattended autonomy) shipped; the harness now measures itself
+against an evaluation corpus. For the live phase status and next actions see
+`docs/CURRENT-STATE.md` — it is the single source of truth for "where we are". Do
+not track status here (it rots).
 
 ## Documentation Structure (`docs/`)
 
@@ -54,7 +55,6 @@ truth for "where we are". Do not track status here (it rots).
 | `wiki/` | Deep-dive topic references |
 | `reference/` | The ported reference docs (autodev-loop runbook, critic protocol) |
 | `superpowers/` | Working artifacts of the brainstorm→spec→plan cycle (`plans/`, `specs/`, `donor-extraction/`) — heavily linked from ADRs and SESSION-LOG |
-| `archive/` | Resolved historical docs |
 
 ## Coding Conventions
 

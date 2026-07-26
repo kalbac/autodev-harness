@@ -100,3 +100,10 @@
 *(Dropped: `[fork/*]` and `[electron/*]` — both were anticipated under `adr/001`'s
 plan to fork AO and ship an Electron desktop. `adr/002` superseded the fork the same
 day, and the dashboard is a Vite web app; neither namespace can accrue entries.)*
+
+## Related
+
+- `DOCS-SCHEMA.md` — the gotcha file template and the compilation protocol that fills
+  this index.
+- `PRINCIPLES.md` — most entries here are a principle learned the expensive way.
+- `CURRENT-STATE.md` — what is live now, including which gotchas are still open defects.
