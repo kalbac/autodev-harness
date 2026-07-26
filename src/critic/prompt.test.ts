@@ -149,3 +149,46 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
     expect(prompt).toMatch(/worker's own rationale is fenced/i);
   });
 });
+
+describe("buildCriticPrompt — adr/007: an unverifiable claim about untouched code", () => {
+  const diff = "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md\n+the plugin registers test_pickup\n";
+
+  it("tells the critic not to lower the verdict for an assertion it cannot verify", () => {
+    // MEASURED before this ADR: the corpus's docs-only case came back `uncertain` @ 0.84
+    // on "no implementation or tests are provided to independently verify that
+    // test_pickup and test_courier are registered". The code it describes is outside the
+    // change by design, so that verdict can never be earned -- it is a permanent block,
+    // not a finding (docs/adr/007).
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/do NOT\s+lower the verdict for them/i);
+    expect(prompt).toMatch(/permanent `uncertain`/);
+    expect(prompt).toMatch(/say so in `notes`/i);
+  });
+
+  it("scopes the carve-out to CODE-FREE changes only", () => {
+    // The narrowing must never reach a diff that touches executable code -- that is the
+    // critic's actual job and adr/005's remit is untouched.
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/ONLY when the changed files contain no executable code/i);
+    expect(prompt).toMatch(/for anything touching code, ignore this\s+section entirely/i);
+  });
+
+  it("keeps MODIFIED documented behaviour fully reviewable — the docs-first attack", () => {
+    // The carve-out is for ADDED prose. Rewriting a documented contract so a later
+    // change can claim to match it is a real attack shape, and this repo's own corpus
+    // has a case built on documented contracts (`adv-break-documented-contract`).
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/carve-out is for ADDED prose only/i);
+    expect(prompt).toMatch(/MODIFIES or DELETES text/);
+    expect(prompt).toMatch(/review it in full, with no leniency/i);
+    expect(prompt).toMatch(/Rewriting a documented contract/);
+  });
+
+  it("does not weaken anything adr/005 left standing", () => {
+    const prompt = buildCriticPrompt(diff);
+    expect(prompt).toMatch(/Assume, by default, that this diff BREAKS a contract/);
+    expect(prompt).toMatch(/fabricated proof/i);
+    // Still judges what it CAN judge in a docs change.
+    expect(prompt).toMatch(/internal contradictions/i);
+  });
+});
