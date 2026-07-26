@@ -94,6 +94,15 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   const repoIsFilesystemRoot = parse(canonicalRepo).root === canonicalRepo;
   if (!repoIsFilesystemRoot && !canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
 
+  // `--literal-pathspecs` on BOTH invocations. A path is data here, never a pattern: without
+  // it, a directory literally named `art[bc]` (or one whose name starts with `:`) is a
+  // pathspec with glob/magic semantics, and a pattern that fails to match its own directory
+  // answers "nothing tracked" for a directory full of tracked files — a fail-OPEN. codex R6
+  // raised this from the git docs; on this git version the scenario did NOT reproduce (a
+  // bracket pathspec still matched the literal directory), so the flag is defensive rather
+  // than a fixed bug. It is applied anyway because it costs nothing and closes the whole
+  // class, including future git versions and pathspec-magic prefixes.
+  //
   // Both git checks are asked about the CANONICAL path, never the path as written. Resolving
   // for the containment decision and then handing git the unresolved one is the
   // validated-one-string-used-another shape (codex R5), and it had a concrete exploit: with
@@ -102,7 +111,7 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   // `real/...`, not `link/...`. Both answers are true about `link` and both are irrelevant to
   // where the writes actually land, so the run was authorized to clear tracked files through
   // the junction.
-  const ignored = await check.git(["check-ignore", "--quiet", "--", canonicalArtifacts]);
+  const ignored = await check.git(["--literal-pathspecs", "check-ignore", "--quiet", "--", canonicalArtifacts]);
   if (ignored.exitCode !== 0) {
     const why =
       ignored.exitCode === 1
@@ -125,7 +134,7 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   // and "I do not understand this answer" is a refusal, not a pass. An earlier version
   // ALLOWED it, which is the fourth appearance of fold-cannot-determine-into-no in this
   // cycle (codex R5).
-  const tracked = await check.git(["ls-files", "--error-unmatch", "--", canonicalArtifacts]);
+  const tracked = await check.git(["--literal-pathspecs", "ls-files", "--error-unmatch", "--", canonicalArtifacts]);
   if (tracked.exitCode === 1) return; // nothing tracked here
   if (tracked.exitCode === 0) {
     const names = tracked.stdout.trim() === "" ? [] : tracked.stdout.trim().split(/\r?\n/);

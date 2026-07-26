@@ -21,7 +21,11 @@ function fakeGit(script: Partial<Record<string, { exitCode: number; stdout?: str
   const asked: string[][] = [];
   const git = async (args: string[]) => {
     asked.push(args);
-    const r = script[args[0]!] ?? { exitCode: 1 };
+    // The subcommand is not args[0] any more: every invocation is prefixed with
+    // `--literal-pathspecs`, so the fake finds the first arg that is not a global flag. This
+    // mirrors how the real git CLI reads it, rather than assuming a position.
+    const sub = args.find((a) => !a.startsWith("-"))!;
+    const r = script[sub] ?? { exitCode: 1 };
     return { exitCode: r.exitCode, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
   return { git, asked };
@@ -51,7 +55,9 @@ describe("assertArtifactsRootSafe", () => {
 
     await assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, ".autodev", "art"), git });
 
-    expect(asked.map((a) => a[0])).toEqual(["check-ignore", "ls-files"]);
+    expect(asked.map((a) => a.find((x) => !x.startsWith("-")))).toEqual(["check-ignore", "ls-files"]);
+    // A path is data, never a pattern (codex R6).
+    for (const args of asked) expect(args[0]).toBe("--literal-pathspecs");
   });
 
   it("refuses a root inside the repo that git does not ignore", async () => {
@@ -214,6 +220,6 @@ describe("assertArtifactsRootSafe", () => {
     await expect(
       assertArtifactsRootSafe({ repoRoot: fsRoot, artifactsRoot: join(repo, "art"), git }),
     ).rejects.toThrow(/is NOT ignored/);
-    expect(asked.map((a) => a[0])).toContain("check-ignore");
+    expect(asked.map((a) => a.find((x) => !x.startsWith("-")))).toContain("check-ignore");
   });
 });
