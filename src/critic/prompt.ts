@@ -1,3 +1,4 @@
+import { isAdditionsOnlyDiff } from "./evidence.js";
 import type { CriticEvidence, OmissionReason } from "./evidence.js";
 
 /**
@@ -23,13 +24,15 @@ import type { CriticEvidence, OmissionReason } from "./evidence.js";
  * 5. The diff embedded INLINE inside clear delimiters — the diff is passed
  *    in the prompt, never read from disk by codex (parity: "diff embedded
  *    inline — avoids a second fencing surface").
- * 5b. `adr/007`, rendered ONLY when the harness has already established that every
- *    path the diff touches is an operator-DECLARED documentation path
- *    (`evidence.declaredDocsOnly` ← `contract.docPaths`): an ADDED assertion about
- *    code the diff does not touch goes in `notes` and does not lower the verdict,
- *    because the critic is structurally unable to verify it. Scoped to ADDED prose —
- *    a diff that rewrites documented behaviour stays fully reviewable, since
- *    "document the contract you want, then match it" is a real attack shape.
+ * 5b. `adr/007`, rendered ONLY when the harness has already established TWO things
+ *    mechanically: every path the diff touches is an operator-DECLARED documentation
+ *    path (`evidence.declaredDocsOnly` ← `contract.docPaths`), AND the diff removes
+ *    nothing (`isAdditionsOnlyDiff`). Then an ADDED assertion about code the diff does
+ *    not touch goes in `notes` and does not lower the verdict, because the critic is
+ *    structurally unable to verify it. Both conditions are code, not instructions: a
+ *    diff that rewrites documented behaviour never reaches the section at all, since
+ *    "document the contract you want, then match it" is a real attack shape and must
+ *    not depend on the reviewer applying a rule correctly.
  * 6. When an evidence set is supplied (#123): the complete current text of the
  *    files the diff touches, also inline, plus a named list of any that could
  *    not be attached. See `evidenceGuidanceSection` for why both halves are
@@ -87,13 +90,23 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "",
   );
 
-  // `adr/007`. The determination is the HARNESS's, made in `isDeclaredDocsOnlyChange`
-  // against the operator's `contract.docPaths`, and the model is only ever told the
-  // ANSWER. It is never asked "is this prose?" — in a project whose thesis is that the
-  // enforcement decision must not be an LLM's (Principles 1 and 3), that question
-  // belongs in code the model cannot argue with. For every other change the section is
-  // ABSENT rather than negated, so there is no wording left to misapply.
-  if (evidence?.declaredDocsOnly) {
+  // `adr/007`. BOTH halves of the determination are the HARNESS's, and the model is only
+  // ever told the ANSWER — never asked the question. In a project whose thesis is that
+  // the enforcement decision must not be an LLM's (Principles 1 and 3), "does this change
+  // get leniency" belongs in code the model cannot argue with.
+  //
+  //   `declaredDocsOnly` — every changed path matched the operator's `contract.docPaths`
+  //   `isAdditionsOnlyDiff` — the diff removes nothing, so no documented contract is
+  //   being rewritten. R1 called out that this second half was stated in the prompt and
+  //   left to the model to apply; it is mechanically decidable from the diff, so it is
+  //   decided here. This is the ATTACK half of the ADR ("document the contract you want,
+  //   then match it"), and it is the one that must not depend on the reviewer's mood.
+  //
+  // For every other change the section is ABSENT rather than negated, so there is no
+  // wording left to misapply.
+  const docsNarrowing = evidence?.declaredDocsOnly === true && isAdditionsOnlyDiff(diff);
+
+  if (docsNarrowing) {
     sections.push(
       "## A claim you cannot verify is not a defect you found",
       "",
@@ -116,11 +129,11 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
       "You still judge everything you CAN judge here: internal contradictions, a claim",
       "that contradicts something you WERE shown, and fabricated proof.",
       "",
-      "**The carve-out is for ADDED prose only.** If the diff MODIFIES or DELETES text",
-      "that documented existing behaviour — the old wording is right there in the `-`",
-      "lines — review it in full, with no leniency. Rewriting a documented contract so",
-      "that a later change can claim to match it is exactly the kind of thing you are",
-      "here to catch.",
+      "**This applies to ADDED prose only, and the harness has already confirmed the",
+      "diff removes nothing.** A change that MODIFIES or DELETES text documenting",
+      "existing behaviour never reaches this section at all — it is reviewed in full,",
+      "with no leniency, because rewriting a documented contract so that a later change",
+      "can claim to match it is exactly the kind of thing you are here to catch.",
       "",
     );
   }
@@ -150,7 +163,7 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
     "   contract, not as proof of correctness.",
     "4. Independent of contracts: is there any logic or regression risk in",
     "   this diff (off-by-one, unhandled edge case, silent failure, etc.)?",
-    ...(evidence?.declaredDocsOnly
+    ...(docsNarrowing
       ? [
           "5. Which of this change's ADDED assertions about the rest of the codebase",
           "   could you not verify? List them in `notes` — they are information for",

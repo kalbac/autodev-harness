@@ -153,7 +153,26 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
 });
 
 describe("buildCriticPrompt — the adr/007 mandate narrowing", () => {
-  const diff = "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md\n+The plugin registers `test_pickup`.\n";
+  // A REAL unified diff, not a fragment: the narrowing is now gated on a mechanical
+  // read of this text (`isAdditionsOnlyDiff`), so a fixture that skips the hunk header
+  // would exercise nothing (R1 minor: the first version of these tests asserted static
+  // prompt phrases against a diff that could not distinguish add from rewrite).
+  const diff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,1 +1,2 @@
+ The plugin adds a shipping method.
++The plugin registers \`test_pickup\`.
+`;
+  /** The same declared file, but the diff REWRITES the documented contract. */
+  const rewriteDiff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,2 +1,2 @@
+ The plugin adds a shipping method.
+-The ids are persisted and must not be renamed.
++The ids are internal and may be renamed freely.
+`;
   const docsEvidence = {
     attached: [{ path: "docs/OVERVIEW.md", bytes: 12, content: "# Overview\n" }],
     omitted: [],
@@ -187,14 +206,26 @@ describe("buildCriticPrompt — the adr/007 mandate narrowing", () => {
     expect(prompt).toContain("SAY SO in `notes`");
   });
 
-  it("keeps the ADDED-prose carve-out — a rewritten documented contract stays fully reviewable", () => {
-    // The attack this deliberately leaves closed: rewrite the documented contract
-    // first, then ship code that "matches the documentation". Losing this sentence is
-    // the single most expensive way this change could go wrong, so it is pinned.
+  it("BEHAVIOUR: a diff that rewrites a declared doc file gets NO narrowing at all", () => {
+    // The attack this exists to keep closed: rewrite the documented contract first,
+    // then ship code that "matches the documentation". Both files are declared docs and
+    // `declaredDocsOnly` is true for both — the ONLY difference is that this diff has a
+    // `-` line. If the narrowing were still prompt-advice rather than a gate, this
+    // prompt would carry the section and the model would be left to apply the rule.
+    const prompt = buildCriticPrompt(rewriteDiff, docsEvidence);
+    expect(prompt).not.toContain("A claim you cannot verify");
+    expect(prompt).not.toMatch(/ADDED assertions/);
+    // ...while the pure append, same evidence, same declaration, does get it.
+    expect(buildCriticPrompt(diff, docsEvidence)).toContain("A claim you cannot verify");
+  });
+
+  it("states the ADDED-prose scope as an already-settled fact, not as a rule to apply", () => {
+    // Wording matters here: the section may not read as "apply this rule yourself",
+    // because by the time it is rendered the harness has already excluded every diff
+    // the rule would have excluded.
     const prompt = buildCriticPrompt(diff, docsEvidence);
-    expect(prompt).toMatch(/carve-out is for ADDED prose only/);
-    expect(prompt).toMatch(/MODIFIES or DELETES text/);
-    expect(prompt).toMatch(/review it in full, with no leniency/);
+    expect(prompt).toMatch(/harness has already confirmed the\s+diff removes nothing/);
+    expect(prompt).toMatch(/never reaches this section at all/);
   });
 
   it("does not soften anything else — the other clean-blockers survive the narrowing", () => {

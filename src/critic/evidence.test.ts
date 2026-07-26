@@ -6,6 +6,7 @@ import {
   planEvidence,
   collectCriticEvidence,
   isDeclaredDocsOnlyChange,
+  isAdditionsOnlyDiff,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
   MAX_EVIDENCE_BYTES_PER_FILE,
@@ -266,12 +267,113 @@ describe("isDeclaredDocsOnlyChange (adr/007 — a declaration, not a detection)"
     expect(isDeclaredDocsOnlyChange(["docs/RUNBOOK.md"], DOCS)).toBe(true);
   });
 
+  it("R1 blocker 2 regression: a traversal segment is REFUSED, not textually matched", () => {
+    // `globMatch("docs/**", x)` compiles to `^docs/.*$`, which the string
+    // `docs/../src/index.php` satisfies while naming a file outside `docs/` entirely.
+    // Git never emits such a path, so this is not reachable through the conductor --
+    // but an exported predicate guarding an oracle decision does not get to rely on
+    // its callers being well-behaved.
+    expect(isDeclaredDocsOnlyChange(["docs/../src/index.php"], ["docs/**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs\..\src\index.php"], ["docs/**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/a/../b.md"], ["docs/**"])).toBe(false);
+    // A path merely CONTAINING dots is fine -- only a `..` SEGMENT is refused.
+    expect(isDeclaredDocsOnlyChange(["docs/v1..2/notes.md"], ["docs/**"])).toBe(true);
+  });
+
+  it("refuses an absolute or drive-anchored path", () => {
+    expect(isDeclaredDocsOnlyChange(["/docs/a.md"], ["**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["D:/docs/a.md"], ["**"])).toBe(false);
+  });
+
+  it("R1 major hardening: a non-array argument declines instead of throwing", () => {
+    // The 3rd positional parameter makes a mis-ordered call plausible, and a throw out
+    // of this predicate would turn "no leniency" into "evidence collection died".
+    expect(() =>
+      isDeclaredDocsOnlyChange(["docs/a.md"], { perFileBytes: 10 } as unknown as string[]),
+    ).not.toThrow();
+    expect(isDeclaredDocsOnlyChange(["docs/a.md"], { perFileBytes: 10 } as unknown as string[])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(null as unknown as string[], ["docs/**"])).toBe(false);
+  });
+
   it("matches with the harness's own glob semantics, not a substring test", () => {
     // `*` is segment-local, `**` crosses segments -- parity with the dirty-file fence
     // and `constitutionPaths`, so one mental model covers every declared-path field.
     expect(isDeclaredDocsOnlyChange(["docs/a/b.md"], ["docs/*"])).toBe(false);
     expect(isDeclaredDocsOnlyChange(["docs/a.md"], ["docs/*"])).toBe(true);
     expect(isDeclaredDocsOnlyChange(["xdocs/a.md"], ["docs/**"])).toBe(false);
+  });
+});
+
+describe("isAdditionsOnlyDiff (adr/007 — the added-vs-modified half, decided in code)", () => {
+  const ADD_ONLY = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+index 111..222 100644
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,2 +1,4 @@
+ existing line
+ another existing line
++## Shipping method ids
++The plugin registers \`test_pickup\`.
+`;
+
+  it("accepts a pure append", () => {
+    expect(isAdditionsOnlyDiff(ADD_ONLY)).toBe(true);
+  });
+
+  it("REFUSES a diff that removes a line — the attack the carve-out exists to stop", () => {
+    // This is the finding R1 raised as a blocker: before this predicate the scope was
+    // stated in the prompt and applied by the model. Now a rewrite never reaches it.
+    expect(isAdditionsOnlyDiff(ADD_ONLY.replace(" another existing line", "-another existing line"))).toBe(false);
+  });
+
+  it("is not fooled by a removed line whose CONTENT is a dash run", () => {
+    // A removed line containing `--` renders as `---`, which a naive prefix match reads
+    // as a `--- a/file` header and skips. Hunk-state tracking is what makes this safe.
+    const rewrite = `diff --git a/docs/A.md b/docs/A.md
+--- a/docs/A.md
++++ b/docs/A.md
+@@ -1,2 +1,2 @@
+---
++new line
+`;
+    expect(isAdditionsOnlyDiff(rewrite)).toBe(false);
+  });
+
+  it("refuses a diff with no hunks at all — a rename has nothing to be lenient about", () => {
+    const rename = `diff --git a/docs/A.md b/docs/B.md
+similarity index 100%
+rename from docs/A.md
+rename to docs/B.md
+`;
+    expect(isAdditionsOnlyDiff(rename)).toBe(false);
+  });
+
+  it("refuses an empty, blank or non-string diff", () => {
+    expect(isAdditionsOnlyDiff("")).toBe(false);
+    expect(isAdditionsOnlyDiff("   \n  ")).toBe(false);
+    expect(isAdditionsOnlyDiff(null as unknown as string)).toBe(false);
+  });
+
+  it("refuses a hunk body line it cannot classify, instead of assuming it is context", () => {
+    expect(isAdditionsOnlyDiff("@@ -1,1 +1,2 @@\n+ok\n?? what is this\n")).toBe(false);
+  });
+
+  it("handles a multi-file diff: additions in one file, a removal in another", () => {
+    const twoFiles =
+      ADD_ONLY +
+      `diff --git a/docs/B.md b/docs/B.md
+--- a/docs/B.md
++++ b/docs/B.md
+@@ -1,2 +1,1 @@
+-the documented contract
+ kept line
+`;
+    expect(isAdditionsOnlyDiff(twoFiles)).toBe(false);
+  });
+
+  it("tolerates CRLF and the no-newline marker", () => {
+    const crlf = ADD_ONLY.split("\n").join("\r\n") + "\\ No newline at end of file\r\n";
+    expect(isAdditionsOnlyDiff(crlf)).toBe(true);
   });
 });
 

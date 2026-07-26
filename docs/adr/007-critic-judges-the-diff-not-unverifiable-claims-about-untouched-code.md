@@ -69,12 +69,22 @@ demanded a test in a repo where no test could exist.
 `notes`; it does not lower the verdict — but ONLY for a diff that ADDS prose, never for
 one that rewrites an existing documented contract.**
 
-**Which changes qualify is settled by an OPERATOR DECLARATION, checked mechanically.**
-The project lists its documentation paths in `contract.docPaths` (`.autodev/config.yaml`);
-`isDeclaredDocsOnlyChange` (`critic/evidence.ts`) grants the narrowing only when *every*
-path the diff touches matches that declaration. The prompt is told the answer and never
-the question — for every other change the section is not qualified but **absent**, so
-there is no wording left for the model to misapply.
+**Both halves of "does this change qualify" are settled MECHANICALLY, and the prompt is
+told only the answer.** The section is rendered when, and only when:
+
+1. **Every path the diff touches matches an OPERATOR DECLARATION.** The project lists its
+   documentation paths in `contract.docPaths` (`.autodev/config.yaml`);
+   `isDeclaredDocsOnlyChange` (`critic/evidence.ts`) checks the diff's whole file list
+   against it.
+2. **The diff removes nothing.** `isAdditionsOnlyDiff` parses the unified diff and
+   refuses any change containing a removal line. This is the *added*-prose scope, and it
+   is code rather than instruction: the first version of this ADR stated the scope in the
+   prompt and left the added-vs-modified call to the critic, which the review gate called
+   a blocker — for exactly the reason R1 of the parked attempt was a blocker. A rule the
+   model must apply correctly is not a gate.
+
+For every other change the section is not qualified but **absent**, so there is no
+wording left for the model to misapply.
 
 Two properties make the declaration safe to trust:
 
@@ -143,11 +153,17 @@ contract first, then ship code that "matches the documentation."** The harness a
 has a corpus case built on documented contracts (`adv-break-documented-contract`), so
 this is not hypothetical for this project.
 
-That is why the narrowing is scoped to **added** prose. Adding a section that describes
+That is why the narrowing is scoped to **added** prose, and why that scope is enforced by
+`isAdditionsOnlyDiff` rather than described in the prompt. Adding a section that describes
 existing behaviour cannot legitimize a future change — there is no prior contract to
-contradict. Editing or deleting a documented contract can, so it stays fully reviewable,
-and the critic can perform that review from the diff alone: the old text is right there
-in the `-` lines.
+contradict. Editing or deleting a documented contract can, so such a diff never reaches
+the narrowing at all and is reviewed in full; the critic can perform that review from the
+diff alone, since the old text is right there in the `-` lines.
+
+The predicate tracks hunk state rather than matching line prefixes, which is not
+fussiness: a removed line whose content is `--` renders as `---` and is indistinguishable
+from a `--- a/file` header by prefix alone. It also refuses a diff with no hunks (a pure
+rename has nothing to be lenient about) and any hunk-body line it cannot classify.
 
 The review gate raised a second, sharper version of this attack: **split it across two
 tasks.** Task 1 adds a NEW document asserting "these ids may be renamed freely" — all
@@ -205,9 +221,14 @@ the guarantee.
   that `collectCriticEvidence` applies when building attachments. Deriving it from
   `attached`/`omitted` would let a change qualify on the strength of a list the harness
   had pruned; a regression test pins this.
-- `src/critic/prompt.ts` renders the narrowing only when the flag is set;
-  `prompt.test.ts` pins the contract, including that the modified-prose carve-out
-  survives.
+- `src/critic/prompt.ts` renders the narrowing only when the flag is set AND
+  `isAdditionsOnlyDiff(diff)` holds; `prompt.test.ts` pins the contract behaviourally —
+  the same declared file and the same evidence, differing only by a `-` line in the diff,
+  must render the section in one case and not the other.
+- `isDeclaredDocsOnlyChange` refuses a path containing a `..` segment or a drive/root
+  anchor rather than normalizing it. `globMatch` is textual, so `docs/**` would otherwise
+  match `docs/../src/index.php`. Git never emits such a path, but an exported predicate
+  guarding an oracle decision does not rely on its callers being well-behaved.
 - The declared paths are surfaced **read-only in the dashboard** ("Contract (oracle)")
   — a capability that lives only in YAML is invisible in practice (#138, operator, s59).
   Read-only on purpose: an oracle change belongs in a deliberate config edit, not a

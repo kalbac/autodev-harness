@@ -108,15 +108,102 @@ export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
  * authoritative set, before any budget or blank filtering (see `CriticEvidence`).
  */
 export function isDeclaredDocsOnlyChange(changedPaths: string[], docPathGlobs: string[]): boolean {
+  // Both arguments cross a module boundary and one of them arrives from a config file.
+  // A non-array here would throw out of a predicate whose every other failure mode is a
+  // quiet `false`, turning "no leniency" into "the evidence collection died" (R1 major:
+  // the middle-inserted positional parameter makes a mis-ordered call plausible, and TS
+  // catches it only for callers it can see).
+  if (!Array.isArray(changedPaths) || !Array.isArray(docPathGlobs)) return false;
+
   const globs = docPathGlobs.filter((g) => typeof g === "string" && g.trim() !== "");
   if (globs.length === 0) return false;
   if (changedPaths.length === 0) return false;
 
   for (const p of changedPaths) {
     if (typeof p !== "string" || p.trim() === "") return false;
+    if (!isPlainRelativePath(p)) return false;
     if (!globs.some((g) => globMatch(g, p))) return false;
   }
   return true;
+}
+
+/**
+ * Is this a worktree-relative path with no traversal and no drive/root anchor?
+ *
+ * `globMatch` is a pure textual matcher: `docs/**` compiles to `^docs/.*$`, which the
+ * string `docs/../src/index.php` satisfies while naming a file that is not under `docs/`
+ * at all (R1 blocker 2). Git's `--name-only` output never contains a `..` segment, so
+ * this is not reachable through the conductor today — but `isDeclaredDocsOnlyChange` is
+ * an exported predicate guarding an oracle decision, and "unreachable today" is not the
+ * standard a leniency gate is held to.
+ *
+ * It REFUSES rather than normalizes, deliberately. Normalizing would silently accept a
+ * path list that should never have contained a traversal segment in the first place; a
+ * `..` arriving here means the caller is not passing what this function documents, and
+ * the honest response to an input you cannot explain is to decline
+ * (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+ */
+function isPlainRelativePath(p: string): boolean {
+  const s = p.replace(/\\/g, "/");
+  if (s.startsWith("/")) return false; // POSIX absolute
+  if (/^[a-zA-Z]:/.test(s)) return false; // Windows drive-anchored
+  return !s.split("/").includes("..");
+}
+
+/**
+ * Does this unified diff consist of ADDITIONS ONLY — at least one added line, and not a
+ * single removed one?
+ *
+ * `adr/007`'s narrowing is scoped to added prose, because the attack it must keep closed
+ * is "rewrite the documented contract, then ship code that matches the documentation".
+ * The first version of this change stated that scope in the PROMPT and left the
+ * added-vs-modified call to the model, which R1 called a blocker — correctly, and for the
+ * same reason R1 of the parked attempt was a blocker: in this project the enforcement
+ * decision is never the model's (Principles 1 and 3). The distinction is mechanically
+ * decidable from the diff, so it is decided here.
+ *
+ * It tracks HUNK STATE rather than matching line prefixes globally, and that is not
+ * fussiness: a removed line whose content is `--` renders as `---`, which is
+ * indistinguishable from a `--- a/file` header by prefix alone. Inside a hunk body the
+ * first character is unambiguous.
+ *
+ * Refuses (returns `false`) on: any removal, a diff with no hunks at all (a pure
+ * rename/mode change has nothing to be lenient about), and anything it cannot parse.
+ */
+export function isAdditionsOnlyDiff(diff: string): boolean {
+  if (typeof diff !== "string" || diff.trim() === "") return false;
+
+  let inHunk = false;
+  let additions = 0;
+
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    // Any file-level header ends the previous hunk. `diff --git` is the reliable one;
+    // `index`/`---`/`+++`/mode lines only ever appear before a hunk starts.
+    if (line.startsWith("diff --git ")) {
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk) continue;
+
+    if (line.startsWith("-")) return false;
+    if (line.startsWith("+")) {
+      additions++;
+      continue;
+    }
+    // ` ` context, `\ No newline at end of file`, and the blank line git emits for an
+    // empty context line are all fine. Anything else means we are no longer reading a
+    // hunk body the way we think we are -- decline rather than guess.
+    if (line === "" || line.startsWith(" ") || line.startsWith("\\")) continue;
+    return false;
+  }
+
+  return additions > 0;
 }
 
 /** Why a touched file is not attached. Each value is a genuinely different fact about
