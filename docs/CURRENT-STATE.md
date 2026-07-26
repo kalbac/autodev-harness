@@ -5,20 +5,19 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## ⛔ BLOCKED (s57, 2026-07-26) — the critic is out of quota
+## Live (s57, 2026-07-26) — #126 GATED, awaiting the merge word
 
-`codex exec` refuses every call: **usage limit, retry after 2026-08-24**. The operator will
-renew the subscription; until then **nothing merges and no corpus runs**, because the same
-provider is both the review gate and the harness's own critic — see
-`gotchas/codex-quota-exit-zero-blocks-gate-and-corpus.md` (note: a quota refusal **exits 0**
-with no verdict, so a "completed" gate run can be empty).
+The critic went out of quota mid-session and the operator renewed the subscription the same
+day; the gate ran afterwards. Gotcha `[ops/codex-quota-exit-zero]` records what that cost.
 
-- **Issue #126 is BUILT but NOT GATED** — branch `feat/corpus-diagnostics`, commit `ff5aec7`.
-  Per-case artifact archive + raw-evidence run manifest; 33 new tests (1829 green), typecheck
-  clean. That is mechanical verification, **not** the gate. First action next session: run the
-  codex gate on it, fix, re-gate, then PR.
-- **Issue #123 NOT STARTED** — deliberately. Its whole deliverable is a before/after
-  `first_pass_commit_rate`, which cannot be measured while the corpus's critic is down.
+- **Issue #126 is GATED** — branch `feat/corpus-diagnostics`, HEAD `a5256b0`, **seven codex
+  `gpt-5.6-luna` rounds**: R1 (6 findings) → R2 (2 closed, 4 narrower) → R3 (10) → R4 (4) →
+  R5 (3) → R6 (2, neither reproduced) → R7 (1, a test-precision fix, mutation-verified). 25
+  findings total: 21 real, 2 disproved on the facts, 2 unreachable by measurement, 2 declined
+  with rationale. 1857 tests green, typecheck clean. Awaiting PR + green CI + the merge word.
+- **Issue #123 NOT STARTED** — deliberately. Its deliverable is a before/after
+  `first_pass_commit_rate`, so it needs a corpus run, which needs the critic; the gate cycle
+  consumed the session instead. Next in line, and #126 is what makes its re-run diagnosable.
 
 ## Where we are
 
@@ -61,9 +60,9 @@ and it closed that gap on its first run. Detail → `SESSION-LOG.md` s56.
 | Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 — per-task evidence ledger + all three report types |
 | Evaluation Corpus | ✅ shipped s55–s56 — machinery + real executor + `eval` CLI + 7 authored cases; **run live, pass bar NOT met** |
-| Corpus run diagnostics (#126) | 🟡 BUILT, NOT GATED — `feat/corpus-diagnostics` `ff5aec7`; see the BLOCKED block above |
+| Corpus run diagnostics (#126) | 🟡 GATED (7 codex rounds), awaiting PR + CI + the merge word — `feat/corpus-diagnostics` `a5256b0` |
 | Critic evidence window (#123) | ❌ **BROKEN — the top open defect.** Prompt carries `diff.patch` only ⇒ a clean verdict is unreachable for any change referencing context outside the hunk. Blocks correct work; measured, not inferred. |
-| Critic availability | ❌ **OUT OF QUOTA until 2026-08-24** — blocks the gate AND the corpus (#129) |
+| Critic availability | ✅ restored 2026-07-26 (subscription renewed). Residual: ONE provider is both the review gate and the harness's own critic, so a single outage blocks merging AND measuring — needs a second *calibrated* critic (#129) |
 
 > Per-feature shipping history (which PR, which commit, how many critic rounds) belongs in
 > `SESSION-LOG.md`, not here — this table is the live status only (`DOCS-SCHEMA.md`).
