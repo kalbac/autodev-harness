@@ -5,6 +5,21 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
+## ⛔ BLOCKED (s57, 2026-07-26) — the critic is out of quota
+
+`codex exec` refuses every call: **usage limit, retry after 2026-08-24**. The operator will
+renew the subscription; until then **nothing merges and no corpus runs**, because the same
+provider is both the review gate and the harness's own critic — see
+`gotchas/codex-quota-exit-zero-blocks-gate-and-corpus.md` (note: a quota refusal **exits 0**
+with no verdict, so a "completed" gate run can be empty).
+
+- **Issue #126 is BUILT but NOT GATED** — branch `feat/corpus-diagnostics`, commit `ff5aec7`.
+  Per-case artifact archive + raw-evidence run manifest; 33 new tests (1829 green), typecheck
+  clean. That is mechanical verification, **not** the gate. First action next session: run the
+  codex gate on it, fix, re-gate, then PR.
+- **Issue #123 NOT STARTED** — deliberately. Its whole deliverable is a before/after
+  `first_pass_commit_rate`, which cannot be measured while the corpus's critic is down.
+
 ## Where we are (leaving s56)
 
 A working **Node daemon + web dashboard**, and — for the first time — a **measured** one. s56
