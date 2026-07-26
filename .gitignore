@@ -39,5 +39,8 @@ references/
 # --- Session handoff scratch (local only) ---
 next-session-promt.md
 
+# --- Operator's local opencode config (contains live API keys — never commit) ---
+opencode.json
+
 # --- UI/UX reference screenshots (local working material, not an artifact) ---
 screenshots/
