@@ -82,9 +82,17 @@ told only the answer.** The section is rendered when, and only when:
    prompt and left the added-vs-modified call to the critic, which the review gate called
    a blocker — for exactly the reason R1 of the parked attempt was a blocker. A rule the
    model must apply correctly is not a gate.
+3. **The two readings describe the same change.** Condition 1 is computed from
+   `worktree.diffFiles`; condition 2 reads the diff TEXT. Nothing structurally required
+   them to agree, so `qualifiesForDocsNarrowing` also checks that every path the diff's
+   own headers name is present in the evidence set. In production the two agree by
+   construction (`buildDiffArgs` is shared) — but "agrees by construction elsewhere" is
+   the kind of invariant this repo has watched drift, and here drifting means granting
+   leniency to a diff that touches code.
 
-For every other change the section is not qualified but **absent**, so there is no
-wording left for the model to misapply.
+All three live behind a single predicate rather than as separate conditions at the call
+site, so the narrowing cannot be applied half-way. For every other change the section is
+not qualified but **absent**, so there is no wording left for the model to misapply.
 
 Two properties make the declaration safe to trust:
 
@@ -160,10 +168,15 @@ contradict. Editing or deleting a documented contract can, so such a diff never 
 the narrowing at all and is reviewed in full; the critic can perform that review from the
 diff alone, since the old text is right there in the `-` lines.
 
-The predicate tracks hunk state rather than matching line prefixes, which is not
-fussiness: a removed line whose content is `--` renders as `---` and is indistinguishable
-from a `--- a/file` header by prefix alone. It also refuses a diff with no hunks (a pure
-rename has nothing to be lenient about) and any hunk-body line it cannot classify.
+The predicate parses hunks by their DECLARED LINE COUNTS (`@@ -old,n +new,m @@`) and
+consumes exactly that many body lines, rather than inferring hunk boundaries from line
+prefixes. Round 2 of the review is why: the prefix version ended a hunk at the next
+`diff --git `, so a bare `diff --git` line appearing *inside* a hunk body reset the parser
+and hid every removal after it. Counting from the header removes the guess — inside a hunk
+the first character is unambiguous, and outside one nothing is read as content. It also
+refuses a diff with no hunks (a pure rename has nothing to be lenient about), a hunk whose
+body does not match its declared counts, an unparseable header, and any body line it
+cannot classify.
 
 The review gate raised a second, sharper version of this attack: **split it across two
 tasks.** Task 1 adds a NEW document asserting "these ids may be renamed freely" — all

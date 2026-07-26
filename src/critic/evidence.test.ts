@@ -7,6 +7,7 @@ import {
   collectCriticEvidence,
   isDeclaredDocsOnlyChange,
   isAdditionsOnlyDiff,
+  qualifiesForDocsNarrowing,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
   MAX_EVIDENCE_BYTES_PER_FILE,
@@ -374,6 +375,112 @@ rename to docs/B.md
   it("tolerates CRLF and the no-newline marker", () => {
     const crlf = ADD_ONLY.split("\n").join("\r\n") + "\\ No newline at end of file\r\n";
     expect(isAdditionsOnlyDiff(crlf)).toBe(true);
+  });
+});
+
+describe("isAdditionsOnlyDiff — R2 regressions (hunk counts, not prefix guessing)", () => {
+  it("R2 major 1: a bare `diff --git` INSIDE a hunk body no longer hides a later removal", () => {
+    // The prefix parser ended a hunk on the next `diff --git `, so this input reset the
+    // state and the `-rewritten contract` line was never examined. Counting body lines
+    // from the hunk header means the parser is never guessing where a hunk ends.
+    const evil = `@@ -1,1 +1,2 @@
++new assertion
+diff --git a/docs/contract.md b/docs/contract.md
+-rewritten contract
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("refuses a hunk whose body is shorter than its declared counts", () => {
+    expect(isAdditionsOnlyDiff("@@ -1,5 +1,6 @@\n+one\n")).toBe(false);
+  });
+
+  it("refuses an unparseable hunk header instead of skipping it", () => {
+    expect(isAdditionsOnlyDiff("@@ garbage @@\n+one\n")).toBe(false);
+    expect(isAdditionsOnlyDiff("@@@ -1,1 -1,1 +1,2 @@@\n++combined\n")).toBe(false);
+  });
+
+  it("accepts the single-line hunk form where the size is omitted", () => {
+    expect(isAdditionsOnlyDiff("@@ -1 +1,2 @@\n context\n+added\n")).toBe(true);
+  });
+
+  it("accepts a hunk header carrying a section heading after the second @@", () => {
+    expect(isAdditionsOnlyDiff("@@ -1,1 +1,2 @@ class Foo\n context\n+added\n")).toBe(true);
+  });
+
+  it("counts an ADDED line that merely looks like a header as content, not as structure", () => {
+    // This repo commits `.diff` fixtures, so a doc really can gain a line reading
+    // `diff --git ...` or `@@ ... @@`. Inside a hunk body it arrives prefixed.
+    expect(isAdditionsOnlyDiff("@@ -1,1 +1,3 @@\n context\n+diff --git a/x b/x\n+@@ -1 +1 @@\n")).toBe(true);
+  });
+
+  it("still refuses a diff whose only hunk adds nothing", () => {
+    expect(isAdditionsOnlyDiff("@@ -1,1 +1,1 @@\n unchanged\n")).toBe(false);
+  });
+});
+
+describe("qualifiesForDocsNarrowing — the two readings must describe ONE change", () => {
+  const docsDiff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,1 +1,2 @@
+ existing
++added assertion
+`;
+  const ev = (paths: string[], declaredDocsOnly: boolean) => ({
+    attached: paths.map((p) => ({ path: p, bytes: 1, content: "x" })),
+    omitted: [],
+    declaredDocsOnly,
+  });
+
+  it("qualifies when the flag, the diff and the evidence all agree", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, ev(["docs/OVERVIEW.md"], true))).toBe(true);
+  });
+
+  it("R2 major 2: refuses when the diff names a file the evidence never saw", () => {
+    // The flag comes from `worktree.diffFiles`, the additions check from the diff TEXT.
+    // In production they agree by construction -- but nothing REQUIRED them to, and a
+    // stale or mismatched flag would have granted leniency to a diff touching code.
+    const codeDiff = `diff --git a/src/index.php b/src/index.php
+--- a/src/index.php
++++ b/src/index.php
+@@ -1,1 +1,2 @@
+ <?php
++unreviewed behavior
+`;
+    expect(qualifiesForDocsNarrowing(codeDiff, ev(["docs/OVERVIEW.md"], true))).toBe(false);
+  });
+
+  it("refuses when the flag is false, whatever the diff looks like", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, ev(["docs/OVERVIEW.md"], false))).toBe(false);
+  });
+
+  it("refuses when there is no evidence at all", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, undefined)).toBe(false);
+  });
+
+  it("refuses a diff whose headers name nothing it can parse", () => {
+    expect(qualifiesForDocsNarrowing("@@ -1,1 +1,2 @@\n x\n+y\n", ev(["docs/OVERVIEW.md"], true))).toBe(false);
+  });
+
+  it("counts an OMITTED file as known — omission is an evidence fact, not an unknown file", () => {
+    const omittedOnly = {
+      attached: [],
+      omitted: [{ path: "docs/OVERVIEW.md", reason: "too-large" as const, bytes: 99999 }],
+      declaredDocsOnly: true,
+    };
+    expect(qualifiesForDocsNarrowing(docsDiff, omittedOnly)).toBe(true);
+  });
+
+  it("treats /dev/null in a new-file diff as no path, and matches on the real side", () => {
+    const newFile = `diff --git a/docs/NEW.md b/docs/NEW.md
+new file mode 100644
+--- /dev/null
++++ b/docs/NEW.md
+@@ -0,0 +1,1 @@
++brand new prose
+`;
+    expect(qualifiesForDocsNarrowing(newFile, ev(["docs/NEW.md"], true))).toBe(true);
   });
 });
 

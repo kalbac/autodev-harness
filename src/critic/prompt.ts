@@ -1,4 +1,4 @@
-import { isAdditionsOnlyDiff } from "./evidence.js";
+import { qualifiesForDocsNarrowing } from "./evidence.js";
 import type { CriticEvidence, OmissionReason } from "./evidence.js";
 
 /**
@@ -24,15 +24,15 @@ import type { CriticEvidence, OmissionReason } from "./evidence.js";
  * 5. The diff embedded INLINE inside clear delimiters — the diff is passed
  *    in the prompt, never read from disk by codex (parity: "diff embedded
  *    inline — avoids a second fencing surface").
- * 5b. `adr/007`, rendered ONLY when the harness has already established TWO things
- *    mechanically: every path the diff touches is an operator-DECLARED documentation
- *    path (`evidence.declaredDocsOnly` ← `contract.docPaths`), AND the diff removes
- *    nothing (`isAdditionsOnlyDiff`). Then an ADDED assertion about code the diff does
- *    not touch goes in `notes` and does not lower the verdict, because the critic is
- *    structurally unable to verify it. Both conditions are code, not instructions: a
- *    diff that rewrites documented behaviour never reaches the section at all, since
- *    "document the contract you want, then match it" is a real attack shape and must
- *    not depend on the reviewer applying a rule correctly.
+ * 5b. `adr/007`, rendered ONLY when `qualifiesForDocsNarrowing` holds — every path the
+ *    diff touches is an operator-DECLARED documentation path (`contract.docPaths`), the
+ *    diff removes nothing, and the diff's own headers name no file the evidence set does
+ *    not know. Then an ADDED assertion about code the diff does not touch goes in `notes`
+ *    and does not lower the verdict, because the critic is structurally unable to verify
+ *    it. All three conditions are code, not instructions: a diff that rewrites documented
+ *    behaviour never reaches the section at all, since "document the contract you want,
+ *    then match it" is a real attack shape and must not depend on the reviewer applying
+ *    a rule correctly.
  * 6. When an evidence set is supplied (#123): the complete current text of the
  *    files the diff touches, also inline, plus a named list of any that could
  *    not be attached. See `evidenceGuidanceSection` for why both halves are
@@ -95,16 +95,16 @@ export function buildCriticPrompt(diff: string, evidence?: CriticEvidence): stri
   // the enforcement decision must not be an LLM's (Principles 1 and 3), "does this change
   // get leniency" belongs in code the model cannot argue with.
   //
-  //   `declaredDocsOnly` — every changed path matched the operator's `contract.docPaths`
-  //   `isAdditionsOnlyDiff` — the diff removes nothing, so no documented contract is
-  //   being rewritten. R1 called out that this second half was stated in the prompt and
-  //   left to the model to apply; it is mechanically decidable from the diff, so it is
-  //   decided here. This is the ATTACK half of the ADR ("document the contract you want,
-  //   then match it"), and it is the one that must not depend on the reviewer's mood.
+  // `qualifiesForDocsNarrowing` is ONE predicate on purpose: it ANDs the declared-path
+  // flag, the additions-only read of the diff, and a cross-check that both describe the
+  // same change. R1 called out that the added-vs-modified scope was left to the model to
+  // apply; R2 called out that the two mechanical halves read different inputs with
+  // nothing tying them together. Both now live behind a single call that cannot be used
+  // half-way.
   //
   // For every other change the section is ABSENT rather than negated, so there is no
   // wording left to misapply.
-  const docsNarrowing = evidence?.declaredDocsOnly === true && isAdditionsOnlyDiff(diff);
+  const docsNarrowing = qualifiesForDocsNarrowing(diff, evidence);
 
   if (docsNarrowing) {
     sections.push(

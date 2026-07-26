@@ -144,9 +144,15 @@ export function isDeclaredDocsOnlyChange(changedPaths: string[], docPathGlobs: s
  * (`docs/gotchas/boolean-whose-no-means-two-things.md`).
  */
 function isPlainRelativePath(p: string): boolean {
+  // A control character (NUL above all) cannot occur in a path git reports, and a NUL
+  // in particular truncates the string for any C-level consumer downstream — so
+  // `docs/README.md\0src/index.php` would match `docs/**` here and name a different
+  // file to something else (R2 minor 3).
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(p)) return false;
   const s = p.replace(/\\/g, "/");
-  if (s.startsWith("/")) return false; // POSIX absolute
-  if (/^[a-zA-Z]:/.test(s)) return false; // Windows drive-anchored
+  if (s.startsWith("/")) return false; // POSIX absolute, and UNC `//server/share`
+  if (/^[a-zA-Z]:/.test(s)) return false; // Windows drive-anchored, incl. a bare `D:`
   return !s.split("/").includes("..");
 }
 
@@ -162,48 +168,117 @@ function isPlainRelativePath(p: string): boolean {
  * decision is never the model's (Principles 1 and 3). The distinction is mechanically
  * decidable from the diff, so it is decided here.
  *
- * It tracks HUNK STATE rather than matching line prefixes globally, and that is not
- * fussiness: a removed line whose content is `--` renders as `---`, which is
- * indistinguishable from a `--- a/file` header by prefix alone. Inside a hunk body the
- * first character is unambiguous.
+ * It parses hunks by their DECLARED LINE COUNTS (`@@ -old,n +new,m @@`) and consumes
+ * exactly that many body lines, rather than guessing where a hunk ends from line
+ * prefixes. R2 is why. The prefix version ended a hunk on the next `diff --git `, which
+ * meant a bare `diff --git` line appearing *inside* a hunk body silently reset the parser
+ * and hid every removal after it. Counting from the header removes the guess: inside a
+ * hunk the first character is unambiguous, and outside one nothing is interpreted as
+ * content at all.
  *
- * Refuses (returns `false`) on: any removal, a diff with no hunks at all (a pure
- * rename/mode change has nothing to be lenient about), and anything it cannot parse.
+ * Refuses (returns `false`) on: any removal, a diff with no hunks (a pure rename or mode
+ * change has nothing to be lenient about), a hunk whose body does not match its declared
+ * counts, an unparseable hunk header, and any hunk-body line it cannot classify. Every
+ * refusal costs only leniency (Principle 10).
  */
 export function isAdditionsOnlyDiff(diff: string): boolean {
   if (typeof diff !== "string" || diff.trim() === "") return false;
 
-  let inHunk = false;
+  const lines = diff.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
   let additions = 0;
+  let sawHunk = false;
 
-  for (const raw of diff.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i]!;
+    if (!header.startsWith("@@")) continue;
 
-    if (line.startsWith("@@")) {
-      inHunk = true;
-      continue;
-    }
-    // Any file-level header ends the previous hunk. `diff --git` is the reliable one;
-    // `index`/`---`/`+++`/mode lines only ever appear before a hunk starts.
-    if (line.startsWith("diff --git ")) {
-      inHunk = false;
-      continue;
-    }
-    if (!inHunk) continue;
+    // `@@ -l[,s] +l[,s] @@ optional section heading`. A missing size means 1.
+    const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(header);
+    if (!m) return false;
+    let oldLeft = m[1] === undefined ? 1 : Number(m[1]);
+    let newLeft = m[2] === undefined ? 1 : Number(m[2]);
+    sawHunk = true;
 
-    if (line.startsWith("-")) return false;
-    if (line.startsWith("+")) {
-      additions++;
-      continue;
+    while (oldLeft > 0 || newLeft > 0) {
+      i++;
+      if (i >= lines.length) return false; // truncated hunk -- do not guess the rest
+      const line = lines[i]!;
+
+      if (line.startsWith("-")) return false; // the whole point
+      if (line.startsWith("+")) {
+        additions++;
+        newLeft--;
+        continue;
+      }
+      // A `\ No newline at end of file` marker belongs to the preceding line and
+      // consumes no count of its own.
+      if (line.startsWith("\\")) continue;
+      // ` ` context, and the bare empty line git emits for an empty context line.
+      if (line === "" || line.startsWith(" ")) {
+        oldLeft--;
+        newLeft--;
+        continue;
+      }
+      return false; // anything else: we are not reading a hunk body we understand
     }
-    // ` ` context, `\ No newline at end of file`, and the blank line git emits for an
-    // empty context line are all fine. Anything else means we are no longer reading a
-    // hunk body the way we think we are -- decline rather than guess.
-    if (line === "" || line.startsWith(" ") || line.startsWith("\\")) continue;
-    return false;
   }
 
-  return additions > 0;
+  return sawHunk && additions > 0;
+}
+
+/**
+ * The paths a unified diff's FILE HEADERS name, taken from the `--- a/x` / `+++ b/x`
+ * pair. `/dev/null` (an add or a delete) is skipped; a `a/`/`b/` prefix is stripped.
+ *
+ * Deliberately a separate reading of the diff TEXT, used only to cross-check the
+ * evidence set against it (`qualifiesForDocsNarrowing`). It is not a general-purpose
+ * path extractor and must not become one: quoted paths (git's octal wire form when
+ * `core.quotepath` is on) come back verbatim and will simply fail the cross-check,
+ * which is the safe direction.
+ */
+function diffHeaderPaths(diff: string): string[] {
+  const out = new Set<string>();
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (!line.startsWith("--- ") && !line.startsWith("+++ ")) continue;
+    // Strip the marker, then git's trailing tab-timestamp field if present.
+    let p = line.slice(4).split("\t")[0] ?? "";
+    if (p === "/dev/null" || p === "") continue;
+    if (p.startsWith("a/") || p.startsWith("b/")) p = p.slice(2);
+    if (p !== "") out.add(p);
+  }
+  return [...out];
+}
+
+/**
+ * `adr/007`: may this diff be reviewed under the narrowed mandate?
+ *
+ * ONE predicate rather than two conditions at the call site, because R2's second finding
+ * was precisely that the two mechanical checks read two different inputs and nothing
+ * required them to describe the same change: `declaredDocsOnly` is computed from
+ * `worktree.diffFiles`, while the additions check reads the diff TEXT. In production they
+ * agree by construction (`buildDiffArgs` is shared, see `util/git.ts`) — but "agree by
+ * construction elsewhere" is exactly the kind of invariant this repo has watched drift
+ * (`docs/gotchas/validated-one-string-used-another.md`), and here drifting means granting
+ * leniency to a diff that touches code.
+ *
+ * Three conditions, all required:
+ *
+ *  1. `evidence.declaredDocsOnly` — every changed path matched `contract.docPaths`.
+ *  2. `isAdditionsOnlyDiff(diff)` — nothing is removed, so no documented contract is
+ *     being rewritten.
+ *  3. **Every path the diff's own headers name is present in the evidence set.** If the
+ *     diff mentions a file the flag never saw, the two describe different changes and
+ *     the flag vouches for nothing.
+ */
+export function qualifiesForDocsNarrowing(diff: string, evidence: CriticEvidence | undefined): boolean {
+  if (evidence?.declaredDocsOnly !== true) return false;
+  if (!isAdditionsOnlyDiff(diff)) return false;
+
+  const known = new Set<string>([...evidence.attached.map((a) => a.path), ...evidence.omitted.map((o) => o.path)]);
+  const named = diffHeaderPaths(diff);
+  if (named.length === 0) return false; // a diff whose files we cannot name is not vouched for
+  return named.every((p) => known.has(p));
 }
 
 /** Why a touched file is not attached. Each value is a genuinely different fact about
