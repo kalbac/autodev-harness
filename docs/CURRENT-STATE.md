@@ -5,25 +5,17 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Live (s57, 2026-07-26) — #126 GATED, awaiting the merge word
-
-The critic went out of quota mid-session and the operator renewed the subscription the same
-day; the gate ran afterwards. Gotcha `[ops/codex-quota-exit-zero]` records what that cost.
-
-- **Issue #126 is GATED** — branch `feat/corpus-diagnostics`, HEAD `a5256b0`, **seven codex
-  `gpt-5.6-luna` rounds**: R1 (6 findings) → R2 (2 closed, 4 narrower) → R3 (10) → R4 (4) →
-  R5 (3) → R6 (2, neither reproduced) → R7 (1, a test-precision fix, mutation-verified). 25
-  findings total: 21 real, 2 disproved on the facts, 2 unreachable by measurement, 2 declined
-  with rationale. 1857 tests green, typecheck clean. Awaiting PR + green CI + the merge word.
-- **Issue #123 NOT STARTED** — deliberately. Its deliverable is a before/after
-  `first_pass_commit_rate`, so it needs a corpus run, which needs the critic; the gate cycle
-  consumed the session instead. Next in line, and #126 is what makes its re-run diagnosable.
-
-## Where we are
+## Where we are (leaving s57)
 
 A working **Node daemon + web dashboard**, and — since s56 — a **measured** one. `main` is at
-**`3191a76`**. The whole architecture-review chain has shipped, and its last link (the
-Evaluation Corpus) immediately measured the two halves of the harness saying opposite things:
+**`21c2c41`**. s57 shipped the corpus's diagnostics layer (#126, PR #130, CI 4/4) through
+**seven codex `gpt-5.6-luna` rounds**, and did NOT get to the number it set out to move.
+
+**The measurement still stands unchanged** — `first_pass_commit_rate: 0%`, the whole point of
+#123, was not re-run. #126 makes the next run *readable*; it does not move the metric, and it
+must not be reported as if it did.
+
+The two halves of the harness still measure opposite things:
 
 | | Measured (2026-07-26, 7 cases) | Meaning |
 |---|---|---|
@@ -45,6 +37,13 @@ so five sessions of green proofs said nothing about edits. Green proofs characte
 harness only over the shapes of work they contain — which is what an evaluation corpus is for,
 and it closed that gap on its first run. Detail → `SESSION-LOG.md` s56.
 
+**What s57 added to that:** the gate cost seven rounds on ~200 lines, and rounds 2–5 each found
+a narrower defect *inside the previous round's own fix*. One shape appeared four times — a
+boolean whose `false` means both "no" and "I could not determine" (`[logic/ambiguous-false]`).
+Two findings were real enough to have made the feature harmful: the diagnostics could dirty the
+target repo and break the measurement they exist to explain, and a broken git index authorized
+writing into the work tree. Detail → `SESSION-LOG.md` s57.
+
 ## Phase status
 
 | Area | Status |
@@ -60,7 +59,7 @@ and it closed that gap on its first run. Detail → `SESSION-LOG.md` s56.
 | Line-scoped profile gates | ✅ shipped (s51, `c1ff87e`) -- `wordpress-woocommerce@2`; the worker owns the lines it wrote |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 — per-task evidence ledger + all three report types |
 | Evaluation Corpus | ✅ shipped s55–s56 — machinery + real executor + `eval` CLI + 7 authored cases; **run live, pass bar NOT met** |
-| Corpus run diagnostics (#126) | 🟡 GATED (7 codex rounds), awaiting PR + CI + the merge word — `feat/corpus-diagnostics` `a5256b0` |
+| Corpus run diagnostics (#126) | ✅ shipped + MERGED s57 (PR #130, `21c2c41`, CI 4/4) — per-case artifact archive + raw-evidence run manifest; 7 codex rounds. Makes a failed case readable; does NOT move the metric |
 | Critic evidence window (#123) | ❌ **BROKEN — the top open defect.** Prompt carries `diff.patch` only ⇒ a clean verdict is unreachable for any change referencing context outside the hunk. Blocks correct work; measured, not inferred. |
 | Critic availability | ✅ restored 2026-07-26 (subscription renewed). Residual: ONE provider is both the review gate and the harness's own critic, so a single outage blocks merging AND measuring — needs a second *calibrated* critic (#129) |
 
@@ -85,20 +84,30 @@ five profile facets (#88) and PHPStan as a gate (#87).
 
 ## NEXT ACTIONS
 
-**Everything below is gated on the critic being back (see the BLOCKED block at the top).**
-
-1. **Gate the s57 work — #126, commit `ff5aec7`** on `feat/corpus-diagnostics`. Built, tests
-   green, NOT reviewed. Run the codex gate → fix → re-gate → PR → green CI → merge.
-2. **Then #123 — widen the critic's evidence window, and MEASURE it.** The single defect
-   behind `first_pass_commit_rate: 0%`. Cheapest first: widen the diff context (`-U`), attach
-   the full text of each changed file within a stated byte budget; do NOT give codex file
-   access (its Windows sandbox blocks it). Never attach a TRUNCATED file — that invites a new
-   false-broken. **The deliverable is the before/after number**, not the code: re-run `eval`
-   and put it beside `corpus/RESULTS-2026-07-26.md`. If the number does not move, say so.
-3. **#124** (a `broken` verdict whose escalation names no defect) · **#125** (`critic_total`
+1. **(TOP) #123 — widen the critic's evidence window, and MEASURE it.** The single defect behind
+   `first_pass_commit_rate: 0%`, and the deliverable s57 did not reach. Plumbing already
+   scouted: `conductor.ts:752` captures the diff via `worktree.diff` → `git.ts:142`, which runs
+   a bare `git diff` with **no `-U`**; `CriticRunInput` (`critic/adapter.ts`) is where an
+   attachment field goes. Cheapest first: widen the diff context, then attach the full text of
+   each changed file within a stated byte budget. Budget is **measured**, not guessed: the files
+   corpus cases touch are 281–1412 bytes, the polygon's largest is 136 KB, and codex digested an
+   88 KB prompt in the s57 gate — so ~64 KB per file / ~256 KB total attaches everything
+   realistic. **Never attach a TRUNCATED file** — that manufactures a NEW false `broken` ("the
+   constant isn't declared") which does not exist today. Do NOT give codex file access (its
+   Windows sandbox blocks it, `[critic/codex]`).
+   **The deliverable is the before/after number, not the code:** re-run `eval`, write the run to
+   `corpus/RESULTS-<date>.md`, put both numbers side by side. If it does not move, say so plainly.
+   Watch for: the docs-only case may STILL fail on "cannot independently verify these factual
+   claims", which is a MANDATE question, not an evidence one — that would be an ORACLE-level
+   finding for the operator with one concrete proposal (an `adr/007` narrowing the critic's
+   mandate the way `adr/005` narrowed it off coverage), never a pre-emptive loosening.
+2. **#124** (a `broken` verdict whose escalation names no defect) · **#125** (`critic_total`
    tokens always 0, so every report understates cost by the critic's whole share).
-4. **#129** — the critic is a single point of failure: one quota outage blocked both the gate
-   and the measurement. Needs a second *calibrated* critic in the roles matrix.
+3. **#129** — the critic is a single point of failure: one quota outage blocked both the gate
+   and the measurement, and s57's gate then took 7 rounds on one module. A second *calibrated*
+   critic in the roles matrix is not a luxury.
+4. **Operator's triage:** #131 (corpus `escalations/` not purged between cases — three options,
+   one of which changes the reset contract) · #132 (two manual pre-run steps on Windows).
 5. **#122** — autodev-harness cards auto-add onto the Woodev boards #5/#6; fixable only in the
    board UI, so it is the operator's. Remind once; do not keep sweeping cards by hand.
 
@@ -129,6 +138,7 @@ five profile facets (#88) and PHPStan as a gate (#87).
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s57** — **Corpus diagnostics MERGED** (#126, PR #130, `21c2c41`, CI 4/4) after **7 codex rounds** — 25 findings: 21 real, 2 disproved on facts, 2 unreachable by measurement, 2 declined. Rounds 2–5 each found a narrower defect inside the previous fix; one shape 4× → new gotcha `[logic/ambiguous-false]` (86). Mid-session the critic hit its quota, blocking gate AND corpus → `[ops/codex-quota-exit-zero]` + #129; operator renewed the subscription. Also: full docs audit (CURRENT-STATE 287→~165), #104 closed as already-shipped, #131/#132 filed. **#123 NOT started — the metric was not re-measured.**
 - **s56** — **Evaluation Corpus Phase 2 MERGED** (PR #128, `3191a76`, CI 4/4; codex R1–R4 NOT SAFE → R5 SAFE; closes #121). Live run: **2/7, pass bar NOT met** — escaped-defect **0%** (catching works), first-pass commit **0%** (throughput doesn't). Root cause: the critic sees only the diff hunk (GOTCHAS 84, #123). Findings #123–#126 open, #127 fixed in-PR on the operator's word, #122 (board auto-add) filed. Five sessions of green live proofs missed this because all of them were additive.
 - **s55** — Tail-clearing + capstone-start, **4 PRs merged**: #118 (s54 docs tail), #119 (tech-debt #85 flaky-clock de-flake + #106 critic-unavailable, both issues closed), #120 (Evaluation Corpus **Phase 1** machinery — 5 pure `src/eval/` modules). All codex R→R SAFE. Fixed a mis-filed board card (#116 off board #5). Corpus Phase 2 → issue #121. Operator feedback (hard): stop over-asking/checkpointing — execute the whole chain to merge.
 - **s54** — Mandatory Anti-Drift + North-Star **MERGED** (PR #117, `955e05b`, last `adr/004` slice; codex R1→fix→R2 SAFE; live-proven 3 ways) + backlog reconciliation (6 stale-done closed). Incident: a `git reset --hard` to sync main discarded the operator's uncommitted `package.json`/lock/`.claude/settings.json` (GOTCHAS 82).
