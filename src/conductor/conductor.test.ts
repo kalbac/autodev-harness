@@ -2923,6 +2923,26 @@ describe("runIteration -- critic evidence window (#123)", () => {
     expect(state.runtimeFiles.get(task.id)?.has("critic-evidence.json")).toBe(false);
   });
 
+  it("survives a dependency that rejects with a value String() cannot coerce", async () => {
+    // MEASURED: `String(Object.create(null))` raises a TypeError. An inline
+    // `String(err)` inside a best-effort catch therefore takes down the path the catch
+    // exists to protect -- `[ts/fail-closed]`, and codex R3's finding. The repo already
+    // ships `safeErrorText` for exactly this; the fix is to USE it.
+    const task = makeTask();
+    const { repo: base } = makeRepo();
+    const repo = {
+      ...base,
+      async removeRuntimeFile(): Promise<void> {
+        throw Object.create(null) as Error;
+      },
+    };
+    const { scheduler } = makeScheduler([task], repo);
+
+    const res = await createConductor(buildDeps({ repo, scheduler })).runIteration();
+
+    expect(res.committed).toBe(true); // the iteration completed instead of unwinding
+  });
+
   it("DELETES a previous round's manifest when this round collects nothing", async () => {
     // The stale-artifact shape this repo already paid for
     // (docs/gotchas/per-round-overwrite-artifact-stale.md): round 1 records what the

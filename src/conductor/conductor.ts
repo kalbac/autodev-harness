@@ -32,6 +32,7 @@ import {
   summarizeEvidence,
   type CriticEvidence,
 } from "../critic/evidence.js";
+import { safeErrorText } from "../util/safe-log.js";
 import { writeEvidence, EVIDENCE_FILE, type EvidenceDraft } from "../report/evidence.js";
 
 export interface ConductorDeps {
@@ -333,7 +334,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       await deps.writeDecision?.(entry);
     } catch (err) {
-      safeLog("WARN", `conductor: decision-journal write failed (ignored): ${String(err)}`);
+      safeLog("WARN", `conductor: decision-journal write failed (ignored): ${safeErrorText(err)}`);
     }
   };
 
@@ -355,7 +356,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       entries = await mainTreeStatus();
     } catch (err) {
-      safeLog("WARN", `conductor: dirty-tree preflight skipped (git status failed): ${String(err)}`);
+      safeLog("WARN", `conductor: dirty-tree preflight skipped (git status failed): ${safeErrorText(err)}`);
       return;
     }
     if (entries.length === 0) return;
@@ -424,7 +425,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     try {
       await repo.removeRuntimeFile(task.id, EVIDENCE_FILE);
     } catch (err) {
-      safeLog("WARN", `conductor: clearing stale evidence for ${task.id} failed (ignored): ${String(err)}`);
+      safeLog("WARN", `conductor: clearing stale evidence for ${task.id} failed (ignored): ${safeErrorText(err)}`);
     }
 
     const startedAt = new Date(clock.now()).toISOString();
@@ -515,7 +516,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const doc = buildTokenUsageDoc(workerRuns, criticRuns, clock.now());
           await repo.writeRuntimeFile(task.id, "token-usage.json", JSON.stringify(doc, null, 2));
         } catch (err) {
-          safeLog("WARN", `conductor: persisting token-usage for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: persisting token-usage for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       };
 
@@ -533,7 +534,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           const doc = buildCriticVerdictDoc(verdict, clock.now());
           await repo.writeRuntimeFile(task.id, "critic-verdict.json", JSON.stringify(doc, null, 2));
         } catch (err) {
-          safeLog("WARN", `conductor: persisting critic-verdict for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: persisting critic-verdict for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       };
 
@@ -562,12 +563,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
             await escalateAndRecord({
               reason: "oracle-path set could not be resolved -- broken operator config",
               type: "constitution",
-              what: `Task ${task.id}: resolveOracleSet threw before the worker ran: ${String(err)}.`,
+              what: `Task ${task.id}: resolveOracleSet threw before the worker ran: ${safeErrorText(err)}.`,
               decision: "Fix the broken contract/guards/agent-ci declaration at the trusted root.",
               optionA: "Fix the config and re-queue.",
               optionB: "Abandon the task.",
               costOfWrong: "A gate that cannot resolve its own oracle set cannot protect anything this round.",
-              evidence: String(err),
+              evidence: safeErrorText(err),
             });
             return { claimedTaskId: task.id, committed: false, rateLimited: false };
           }
@@ -798,20 +799,22 @@ export function createConductor(deps: ConductorDeps): Conductor {
           // collection whose WRITE then failed left the old one in place too. Deleting up
           // front makes the failure mode ABSENT rather than STALE on every path.
           //
-          // Residual, stated rather than papered over: if the delete AND the write both
-          // fail in the same round, a stale manifest survives. No file-only scheme closes
-          // that (same conclusion as the evidence-ledger gotcha), and this file is pure
-          // diagnostics -- no metric reads it -- so a read-time SSOT reconciliation would
-          // be machinery for nothing.
+          // Residual, stated rather than papered over, and stated at its REAL width
+          // (codex R3 noted the first wording was narrower than the actual path set): a
+          // stale manifest survives whenever the clear fails AND no write replaces it --
+          // which is the write also failing, the collection failing, or no collector
+          // being wired at all. No file-only scheme closes that (same conclusion as the
+          // evidence-ledger gotcha), and this file is pure diagnostics -- no metric reads
+          // it -- so a read-time SSOT reconciliation would be machinery for nothing.
           try {
             await repo.removeRuntimeFile(task.id, CRITIC_EVIDENCE_FILE);
           } catch (err) {
-            safeLog(
-              "WARN",
-              `conductor: could not clear the previous critic-evidence manifest: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
+            // `safeErrorText`, not an inline `String(err)`: coercing a hostile thrown
+            // value THROWS (measured: `String(Object.create(null))` raises a TypeError,
+            // and a throwing `toString` propagates), which would take down the very
+            // best-effort path this catch exists to protect -- `[ts/fail-closed]`, the
+            // gotcha this helper was written for. Codex R3 found the omission.
+            safeLog("WARN", `conductor: could not clear the previous critic-evidence manifest: ${safeErrorText(err)}`);
           }
 
           let criticEvidence: CriticEvidence | undefined;
@@ -823,9 +826,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
               criticEvidence = undefined;
               safeLog(
                 "WARN",
-                `conductor: critic evidence collection failed -- reviewing from the diff alone: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
+                `conductor: critic evidence collection failed -- reviewing from the diff alone: ${safeErrorText(err)}`,
               );
             }
           }
@@ -850,12 +851,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
                 )}\n`,
               );
             } catch (err) {
-              safeLog(
-                "WARN",
-                `conductor: could not record the critic-evidence manifest: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
+              safeLog("WARN", `conductor: could not record the critic-evidence manifest: ${safeErrorText(err)}`);
             }
           }
 
@@ -1104,7 +1100,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
             await repo.markDone(task.id, hash);
             await repo.appendDigest(`[conductor] committed ${task.id} -> ${hash} (${msg})`);
           } catch (err) {
-            safeLog("WARN", `conductor: post-commit bookkeeping for ${task.id} failed (ignored): ${String(err)}`);
+            safeLog("WARN", `conductor: post-commit bookkeeping for ${task.id} failed (ignored): ${safeErrorText(err)}`);
           }
           return { claimedTaskId: task.id, committed: true, rateLimited: false };
         }
@@ -1135,7 +1131,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // closed: surface the task to the operator (escalated/ + an escalation)
         // and resolve the iteration so the bounded run ends cleanly. Both steps
         // are wrapped so nothing here can re-throw out of the loop.
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = safeErrorText(err);
         try {
           await repo.moveTask(task.id, "active", "escalated");
         } catch (moveErr) {
@@ -1183,7 +1179,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         try {
           await worktree.teardown(createdWorktree);
         } catch (err) {
-          safeLog("WARN", `conductor: worktree teardown for ${task.id} failed (ignored): ${String(err)}`);
+          safeLog("WARN", `conductor: worktree teardown for ${task.id} failed (ignored): ${safeErrorText(err)}`);
         }
       }
     }
@@ -1216,7 +1212,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         // Defensive: readNorthStar is contracted to map its own failures to null, but
         // if it throws anyway, treat that as silent (fail-closed) rather than crash.
         northStar = null;
-        safeLog("WARN", `conductor: north-star read threw (${String(err)}); treating as silent.`);
+        safeLog("WARN", `conductor: north-star read threw (${safeErrorText(err)}); treating as silent.`);
       }
       if (isNorthStarSilent(northStar)) {
         const nowMs = clock.now();
