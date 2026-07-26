@@ -70,9 +70,21 @@
   `gh project item-add 2 --owner kalbac --url <issue-url>`.
   Never a stray `.txt` note; a code TODO must reference an issue (`// TODO(#123): ...`),
   never stand alone.
-- **Triage is the operator's:** items in `Инбокс` wait for his decision; agents do not
-  self-promote them to `Бэклог`. When an agent picks an issue up on the operator's word,
-  move it to `В работе`; move to `Готово` only when the work is merged and verified.
+- **Triage depends on who authored the card** (operator decision, s59 2026-07-27 —
+  this supersedes the earlier blanket "triage is the operator's"):
+  - **Agent-authored cards go straight to `Бэклог`, not `Инбокс`.** The reasoning is his:
+    if an agent captured it, the agent already judged it worth doing — parking it in
+    `Инбокс` only makes him re-triage a decision that was already made. Set `Бэклог` at
+    capture time; do not leave agent-created cards sitting in `Инбокс`.
+  - **Operator-authored cards are his to move.** Never promote a card he created out of
+    `Инбокс` — he moves those himself, or names the card and tells an agent to move it.
+  - `В работе` when an agent picks the issue up on his word; `Готово` only when the work
+    is merged and verified.
+- **Every operator-facing feature needs a UI surface** (operator decision, s59): a
+  capability that exists only as a YAML key or a CLI flag is, in practice, invisible —
+  he said plainly that he can no longer tell what the harness does or why. When a change
+  adds project config, a policy knob, or a new gate behaviour, either surface it in the
+  dashboard in the same batch or file the UI card with it. Umbrella: **#138**.
 - **`docs/FUTURE-BACKLOG.md` is FROZEN** (s52): do not append new items. Its open items
   were migrated to issues #85–#108, #110; the file remains as history plus the
   parked-by-design residuals it documents in place.
