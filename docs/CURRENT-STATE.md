@@ -57,7 +57,7 @@ evidence window differing — `uncertain` @ 0.88 → `clean` @ 0.99.
 | Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; **run twice; pass bar NOT met** |
 | Corpus run diagnostics (#126) | ✅ shipped s57 — and it earned its keep in s58, explaining a case failure without a re-run. **Unreachable by default on Windows** (#135) |
 | **Critic evidence window (#123)** | ✅ **FIXED + MEASURED** (PR #134, `ebb85ea`) — 0% → 50% first-pass commit |
-| Critic mandate (`adr/007`) | 🔄 decided + implemented + live-verified both shapes; **gate + PR in flight** |
+| Critic mandate (`adr/007`) | ⏸ **PARKED, not merged** (branch `feat/adr-007-mandate`). Decided + implemented + live-verified both shapes — but the gate returned NOT SAFE three times, each round naming a marker the mechanical prose check missed. The premise is the problem, not the instances |
 | Critic availability | ✅ working. Residual: ONE provider is both the review gate and the harness's own critic (#129) |
 
 > Per-feature shipping history belongs in `SESSION-LOG.md`, not here.
@@ -75,10 +75,23 @@ turn — which is the only reason "50%" means anything.
 
 ## NEXT ACTIONS
 
-1. **Finish `adr/007`** — gate + PR + merge. Already live-verified on the real critic in both
-   directions (added prose → `clean`; a rewritten documented contract → `broken` with a named
-   contract), so what remains is the gate, not the design. Then **re-run the corpus**: it should
-   move `good-docs-overview-note` and take 4/7 → 5/7. If it does not, say so plainly.
+1. **`adr/007` — decide the APPROACH first; do NOT resume patching.** Three gate rounds found
+   three different markers the mechanical prose check missed (a fence arriving as a CONTEXT
+   line, then `<script>`, then `<iframe>` / `onerror` / `javascript:` / `{% include %}`). That
+   is the signature of a blacklist, and it exposes a premise in the ADR that is too strong:
+   whether a `.md` *executes* depends on the PROJECT's toolchain, which the harness cannot
+   know. Parked by the operator (2026-07-27) with three options on the table:
+   **(a) an operator-declared doc-path list in project config** — recommended, the only
+   complete one, and `adr/006`'s own pattern (the operator blesses the oracle, nothing is
+   guessed); **(b) invert to an allowlist** — leniency only for text containing no raw HTML,
+   no templating and no include directive (closes the class, but still guesses about a foreign
+   toolchain, and an ordinary README with one `<br>` gets nothing); **(c) drop the ADR** and
+   accept that the docs class never merges unattended.
+   What is NOT in doubt: both prompt shapes are live-verified on the real critic (added prose
+   → `clean` @0.99, a rewritten documented contract → `broken` @0.99). The design works; the
+   BOUNDARY is what remains unsolved. Branch `feat/adr-007-mandate` (`5bdcf58`), pushed, no PR.
+   Once settled, **re-run the corpus** — it should move `good-docs-overview-note` to 5/7. If it
+   does not, say so plainly.
 2. **#136** (the corpus scored a case off the wrong task — a false negative in the measuring
    instrument; four options, one recommended, and the decisive-record rule is oracle) ·
    **#135** (the corpus cannot start on Windows with its default artifacts path).
