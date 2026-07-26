@@ -3,9 +3,14 @@ import { resolve } from "node:path";
 import type { CorpusCase } from "./corpus-case.js";
 import type { CaseEnvironment } from "./case-executor.js";
 import { applySeedOverlay } from "./seed-overlay.js";
-import { archiveCaseArtifacts, conductorLogOffset } from "./case-archive.js";
+import { archiveAndReport, archiveCaseArtifacts, conductorLogOffset, type CaseArchiveStatus } from "./case-archive.js";
+
+// The status type belongs with the archive, not with this glue module; re-exported here so
+// the pre-existing import path keeps working.
+export type { CaseArchiveStatus } from "./case-archive.js";
 import { resetHarnessState } from "./harness-state-reset.js";
 import { createOneShotQueueGuard } from "./eval-preflight.js";
+import { assertArtifactsRootSafe } from "./artifacts-root.js";
 import { acquireCorpusLock, type CorpusLock } from "./corpus-lock.js";
 import type { ProjectRoot } from "../composition/root.js";
 import { loadEvidence, EVIDENCE_FILE, type EvidenceSlot } from "../report/evidence-store.js";
@@ -42,6 +47,17 @@ export interface HarnessCaseEnvironmentOptions {
   /** Absolute directory each case's blackboard artifacts are copied into before the next
    *  case purges them. Diagnostics only — nothing here feeds a metric. */
   artifactsRoot: string;
+  /**
+   * The caller's map, written once per case with what actually happened to its archive, so
+   * the run manifest can STATE the outcome instead of implying success by naming a path.
+   * A case whose baseline reset failed gets no entry at all -- it has no artifacts of its own.
+   *
+   * A plain `Map` the caller owns, deliberately NOT a callback: a throwing sink could leave a
+   * SUCCESSFUL archive unrecorded, which the manifest then reports as `archive: null` --
+   * "this case never archived" -- for a case that did (codex R3). `Map.prototype.set` on a
+   * real Map cannot throw, so the recording step has no failure mode to contain.
+   */
+  archiveStatuses?: Map<string, CaseArchiveStatus>;
 }
 
 /** Baked identity so a seed commit never fails on a machine with no global git user
@@ -55,7 +71,7 @@ const SEED_COMMIT_IDENTITY = [
 ];
 
 export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions): CaseEnvironment {
-  const { root, baseline, maxIterations } = opts;
+  const { root, baseline, maxIterations, archiveStatuses } = opts;
   const repoRoot = root.repoRoot;
   const corpusRoot = resolve(opts.corpusRoot);
   const artifactsRoot = resolve(opts.artifactsRoot);
@@ -71,11 +87,23 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
   // happened (codex R3 High).
   const queueGuard = createOneShotQueueGuard(root.repo);
   let lock: CorpusLock | null = null;
-
   // Where `conductor.log` had reached when the current case started, so the archive keeps
   // only that case's slice of a log that grows across the whole run. Captured inside
   // `resetToBaseline` — the one call every case makes, before anything of its own runs.
   let logOffset = 0;
+
+  // The artifacts-root safety question lives in its own module so the CLI can ask it
+  // BEFORE it touches any file and this path can ask it again per case -- one answer, two
+  // callers, no memoization (a root safe for case 1 can be a junction by case 5).
+  const assertArtifactsRootIsSafe = (): Promise<void> =>
+    assertArtifactsRootSafe({
+      repoRoot,
+      artifactsRoot,
+      git: async (args) => {
+        const r = await runNative("git", args, { cwd: repoRoot });
+        return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+      },
+    });
 
   async function git(args: string[], label: string): Promise<string> {
     const r = await runNative("git", args, { cwd: repoRoot });
@@ -99,6 +127,8 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
     async resetToBaseline(): Promise<void> {
       if (lock === null) lock = await acquireCorpusLock(root.stateDirAbs);
       await queueGuard.check();
+      // Before the FIRST mutation, not after case 1 has already written into the tree.
+      await assertArtifactsRootIsSafe();
 
       // The conductor refuses to run off the loop branch, so a corpus started on the
       // wrong branch would reset the tree and then fail every case for a reason that
@@ -187,20 +217,32 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
     },
 
     async archiveArtifacts(c: CorpusCase): Promise<void> {
-      // Throws propagate to the executor, which swallows them with a WARN: a corpus run
-      // must not fail because a diagnostics copy failed (see `case-archive.ts`). Skips are
-      // reported at WARN for the same reason they are collected at all — an archive that
-      // quietly omitted something reads exactly like a case that never produced it.
-      const archived = await archiveCaseArtifacts({
-        stateDirAbs: root.stateDirAbs,
-        artifactsRoot,
-        caseId: c.id,
-        logFromByte: logOffset,
-      });
-      log("INFO", `corpus case '${c.id}': archived ${archived.copied.length} artifact(s) to ${archived.dest}`);
-      if (archived.skipped.length > 0) {
-        log("WARN", `corpus case '${c.id}': archive skipped ${archived.skipped.length}: ${archived.skipped.join("; ")}`);
-      }
+      // Catches its OWN failure and REPORTS it, rather than throwing and letting the
+      // executor's swallow decide. That matters for honesty, not tidiness: if the archive
+      // fails after a previous run's directory could not be cleared, the stale directory
+      // is still on disk, and a manifest that unconditionally names `artifacts: <caseId>`
+      // would have the operator read the PREVIOUS run's diagnostics as this run's — the
+      // stale-projection failure of docs/gotchas/stale-projection-needs-ssot-reconciliation.md
+      // (codex R1). Reporting the status is what lets the manifest say `failed` instead.
+      // The executor's `.catch()` remains as a backstop for a throwing implementation.
+      // The decide-then-report ordering, and the guard around the sink, live in
+      // `archiveAndReport` — extracted there because they are the fix for a defect the
+      // critic found twice, and a fix that lives only in this untested glue module is a fix
+      // nobody can prove (codex R1, then a narrower R2). This layer only supplies the
+      // request and the sink.
+      await archiveAndReport(
+        {
+          stateDirAbs: root.stateDirAbs,
+          artifactsRoot,
+          caseId: c.id,
+          logFromByte: logOffset,
+        },
+        {
+          archive: archiveCaseArtifacts,
+          log,
+          ...(archiveStatuses !== undefined ? { report: (status) => archiveStatuses.set(c.id, status) } : {}),
+        },
+      );
     },
 
     async readEvidence(taskIds: string[]): Promise<EvidenceSlot[]> {

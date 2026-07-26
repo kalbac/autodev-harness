@@ -67,6 +67,23 @@ describe("CorpusCaseSchema", () => {
     }
   });
 
+  // codex R1 + R2: path-safe as a STRING is not the same as a usable directory NAME.
+  // `join(root, ".")` collapses to `root` itself, and Windows strips trailing dots so
+  // `case.` and `case` are one directory. One rule closes both.
+  it("rejects an id ending in a dot", () => {
+    for (const id of [".", "....", "case.", "._."]) {
+      expect(() => CorpusCaseSchema.parse({ ...base(), id })).toThrow(/must not end in a dot|path-safe/);
+    }
+  });
+
+  // codex R2 (minor regression): the first version of that guard demanded an alphanumeric
+  // character, which also rejected these perfectly usable directory names.
+  it("still accepts punctuation-only ids that name a real directory", () => {
+    for (const id of ["-", "_", "._-", ".hidden"]) {
+      expect(CorpusCaseSchema.parse({ ...base(), id }).id).toBe(id);
+    }
+  });
+
   it("rejects an empty intent", () => {
     expect(() => CorpusCaseSchema.parse({ ...base(), intent: "" })).toThrow();
   });

@@ -3,6 +3,7 @@ import { isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import { PURGED_SUBDIRS } from "./harness-state-reset.js";
 import { isPathSafeId } from "../orchestrator/task-spec.js";
+import { safeErrorText, safeLog } from "../util/safe-log.js";
 
 /**
  * Preserve ONE corpus case's blackboard artifacts before the next case purges them.
@@ -63,6 +64,24 @@ export interface ArchiveCaseResult {
    *  here so the caller decides how loud to be; an empty archive with an empty `skipped`
    *  means there was genuinely nothing to preserve. */
   skipped: string[];
+}
+
+/**
+ * What happened to one case's artifact archive. `failed` is load-bearing: it tells the reader
+ * that whatever sits in this case's archive directory is NOT this run's diagnostics.
+ *
+ * Deliberately carries NO path. An earlier version did, and it was both redundant and unsafe:
+ * the manifest already names `artifacts_dir` plus the per-case segment (a third copy is a
+ * third thing that can disagree), and the failure branch had to build that path from a
+ * `caseId` the archive may have just REJECTED as unsafe -- reporting a path outside the
+ * artifacts root in the very status that says the write did not happen (codex R3). Dropping
+ * the field deletes the problem instead of patching it.
+ */
+export interface CaseArchiveStatus {
+  status: "ok" | "failed";
+  copied: number;
+  skipped: string[];
+  error: string | null;
 }
 
 /** `lstat`, mapping only a positive "no such path" to `null`. An EACCES/ELOOP is not
@@ -202,13 +221,18 @@ export async function archiveCaseArtifacts(req: ArchiveCaseRequest): Promise<Arc
   const stateDirAbs = resolve(req.stateDirAbs);
 
   const dest = join(artifactsRoot, caseId);
-  // A path-safe id cannot escape, so this re-states the invariant at the point of use
-  // rather than trusting where the value came from — the recurring defect shape of
-  // docs/gotchas/validated-one-string-used-another.md.
+  // The SECOND barrier, and it is genuinely reachable — do not mark it unreachable.
+  // `isPathSafeId` admits `"."`, for which `join(root, ".")` collapses to `root` ITSELF;
+  // without this check `clearPreviousArchive` would then recursively delete every case's
+  // archive and the manifest with them (codex R1). The corpus-case schema now refuses a
+  // dot-only id at the entry point, which is the real fix — this stays as the barrier for
+  // any future caller that does not come through that schema, and is tested directly.
   const rootPrefix = artifactsRoot.endsWith(sep) ? artifactsRoot : artifactsRoot + sep;
-  /* c8 ignore next 3 */
   if (!dest.startsWith(rootPrefix)) {
-    throw new Error(`corpus archive: '${caseId}' resolves outside the artifacts root ${artifactsRoot}`);
+    throw new Error(
+      `corpus archive: case id ${JSON.stringify(caseId)} does not name a directory inside the artifacts ` +
+        `root ${artifactsRoot} (it resolves to ${dest})`,
+    );
   }
 
   await clearPreviousArchive(dest);
@@ -235,4 +259,60 @@ export async function archiveCaseArtifacts(req: ArchiveCaseRequest): Promise<Arc
   out.copied.sort();
   out.skipped.sort();
   return out;
+}
+
+/**
+ * Archive one case and report WHAT HAPPENED, in that order, with neither step able to
+ * corrupt the other. Extracted from the harness environment specifically because the
+ * ordering is the fix for a defect the critic found twice (R1, then a narrower version in
+ * R2), and a fix that lives only in untested integration glue is a fix nobody can prove:
+ *
+ *  - the outcome is DECIDED first and REPORTED second, so a throwing sink cannot make a
+ *    successful archive read as `failed`;
+ *  - the sink is invoked inside its own guard, so a throw from it neither propagates nor
+ *    leaves the status unreported (which would read as "this case never archived");
+ *  - it NEVER throws, because nothing here measures anything — the caller's own swallow
+ *    remains as a backstop, not as the only line of defence.
+ *
+ * Returns the status it reported, so a caller (and a test) can assert on it directly.
+ */
+export async function archiveAndReport(
+  req: ArchiveCaseRequest,
+  deps: {
+    archive: (req: ArchiveCaseRequest) => Promise<ArchiveCaseResult>;
+    report?: (status: CaseArchiveStatus) => void;
+    log: (level: "INFO" | "WARN" | "ERROR", msg: string) => void;
+  },
+): Promise<CaseArchiveStatus> {
+  const { caseId } = req;
+  let status: CaseArchiveStatus;
+  try {
+    const archived = await deps.archive(req);
+    safeLog(deps.log, "INFO", `corpus case '${caseId}': archived ${archived.copied.length} artifact(s) to ${archived.dest}`);
+    // A skip is logged as loudly as a failure: an archive that quietly omitted something
+    // reads exactly like a case that never produced it.
+    if (archived.skipped.length > 0) {
+      safeLog(
+        deps.log,
+        "WARN",
+        `corpus case '${caseId}': archive skipped ${archived.skipped.length}: ${archived.skipped.join("; ")}`,
+      );
+    }
+    status = { status: "ok", copied: archived.copied.length, skipped: archived.skipped, error: null };
+  } catch (err) {
+    const detail = safeErrorText(err);
+    safeLog(deps.log, "WARN", `corpus case '${caseId}': archiving failed (ignored): ${detail}`);
+    status = { status: "failed", copied: 0, skipped: [], error: detail };
+  }
+
+  try {
+    deps.report?.(status);
+  } catch (err) {
+    safeLog(
+      deps.log,
+      "WARN",
+      `corpus case '${caseId}': reporting the archive status failed (ignored): ${safeErrorText(err)}`,
+    );
+  }
+  return status;
 }

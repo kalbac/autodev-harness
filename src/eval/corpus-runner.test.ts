@@ -105,6 +105,33 @@ describe("runCorpus", () => {
     expect(results[0]!.error).toMatch(/bad/);
   });
 
+  // codex R1: a hostile thrown value with a throwing `message`/`toString` would make the
+  // catch ITSELF throw, escaping runCorpus and aborting the whole corpus instead of turning
+  // one case into a null-evidence result — the catch's entire purpose (gotcha
+  // [ts/fail-closed]). Mutation-check: swapping `safeErrorText(err)` back to `String(err)`
+  // makes this test fail.
+  it("survives a thrown value whose message cannot be stringified", async () => {
+    const hostile = {
+      get message(): string {
+        throw new Error("message getter exploded");
+      },
+      toString(): string {
+        throw new Error("toString exploded");
+      },
+    };
+    const executor: CaseExecutor = {
+      async execute() {
+        throw hostile;
+      },
+    };
+
+    const results = await runCorpus([makeCase("hostile"), makeCase("after")], executor);
+
+    expect(results).toHaveLength(2); // the run continued past it
+    expect(results[0]!.evidence).toBeNull();
+    expect(typeof results[0]!.error).toBe("string");
+  });
+
   it("leaves `error` absent on a case that ran", async () => {
     const cases = [makeCase("ok")];
     const { executor } = scriptedExecutor({ ok: committedEvidence("ok") });

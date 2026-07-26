@@ -124,6 +124,43 @@ describe("buildCorpusRunManifest", () => {
     expect(m.partial).toBe(true);
   });
 
+  // codex R1: naming the archive path unconditionally let a FAILED archive read as a
+  // successful one — when clearing a previous run's directory fails, the stale directory is
+  // still sitting at exactly that path, so "it exists" meant "these are this run's
+  // diagnostics" while being the opposite.
+  it("states the archive outcome instead of implying success by naming a path", () => {
+    const results: CorpusCaseResult[] = [
+      { case: makeCase("ok-case"), evidence: record("t1") },
+      { case: makeCase("bad-case"), evidence: record("t2") },
+      { case: makeCase("never-archived"), evidence: record("t3") },
+    ];
+    const archives = new Map([
+      ["ok-case", { status: "ok" as const, path: "X", copied: 4, skipped: [], error: null }],
+      [
+        "bad-case",
+        { status: "failed" as const, path: "X", copied: 0, skipped: [], error: "EACCES: cannot clear" },
+      ],
+    ]);
+
+    const m = buildCorpusRunManifest(ctx, results, archives);
+
+    expect(m.cases[0]!.archive).toEqual({ status: "ok", copied: 4, skipped: [], error: null });
+    expect(m.cases[1]!.archive).toEqual({
+      status: "failed",
+      copied: 0,
+      skipped: [],
+      error: "EACCES: cannot clear",
+    });
+    // No status reported at all = the case never got as far as archiving. Distinct from
+    // `failed`, and NOT reported as ok.
+    expect(m.cases[2]!.archive).toBeNull();
+  });
+
+  it("reports a null archive when no statuses were collected at all", () => {
+    const m = buildCorpusRunManifest(ctx, [{ case: makeCase("a"), evidence: record("t1") }]);
+    expect(m.cases[0]!.archive).toBeNull();
+  });
+
   it("points each case at its archive directory and carries the run context", () => {
     const m = buildCorpusRunManifest(ctx, [{ case: makeCase("good-a"), evidence: record("t1") }]);
 

@@ -2,6 +2,7 @@ import type { CorpusCase } from "./corpus-case.js";
 import type { EvidenceRecord } from "../report/evidence-types.js";
 import type { CorpusCaseResult, CorpusMetrics } from "./corpus-metrics.js";
 import { aggregateCorpus } from "./corpus-metrics.js";
+import { safeErrorText } from "../util/safe-log.js";
 
 /**
  * Executes ONE case's intent through the harness and returns the `EvidenceRecord` it
@@ -53,7 +54,13 @@ export async function runCorpus(
       // KEEP the reason. `evidence === null` is still the only thing that makes the case
       // errored — the message is carried alongside so the run's diagnostics can say WHY
       // instead of leaving the operator to reproduce a 12-minute run to find out.
-      error = err instanceof Error ? err.message : String(err);
+      //
+      // `safeErrorText`, never `err.message`/`String(err)`: a hostile or exotic thrown
+      // value can have a THROWING `message`/`toString`, and a throw from inside this catch
+      // would escape `runCorpus` and abort the whole corpus instead of turning one case
+      // into a null-evidence result — the catch's entire purpose, defeated by the line
+      // meant to describe the failure (gotcha [ts/fail-closed]; codex R1).
+      error = safeErrorText(err);
     }
     const result: CorpusCaseResult = { case: c, evidence, ...(error !== undefined ? { error } : {}) };
     results.push(result);

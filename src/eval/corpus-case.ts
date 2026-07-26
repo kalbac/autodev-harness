@@ -39,11 +39,34 @@ export const CorpusCaseSchema = z
      *  artifacts directory, among others. Constraining it here, at the one place a case
      *  enters the system, is what lets every consumer use it verbatim; validating it at
      *  each use site instead is the recurring defect shape of
-     *  docs/gotchas/validated-one-string-used-another.md. */
+     *  docs/gotchas/validated-one-string-used-another.md.
+     *
+     *  `isPathSafeId` alone is NOT enough, and both gaps are about the difference between
+     *  a path-safe STRING and a usable directory NAME. A single rule closes both:
+     *  **the id must not end in a dot.**
+     *   - `"."` (and `"...."`) is path-safe, but `join(root, ".")` collapses to `root`
+     *     ITSELF, pointing a case's archive directory at the artifacts root (codex R1).
+     *   - Windows strips trailing dots from a path segment, so `"case."` and `"case"` are
+     *     two ids by any string comparison and ONE directory on disk — the second case's
+     *     archive would clear the first's (codex R2).
+     *  Deliberately narrow: an earlier version demanded an alphanumeric character, which
+     *  also rejected perfectly usable ids like `"-"` and `"._-"` (codex R2, minor). Only
+     *  the trailing dot is actually a problem. */
     id: z
       .string()
       .min(1)
-      .refine(isPathSafeId, { message: "id must be a path-safe segment (no '/', '\\', '..', or NUL)" }),
+      // The id becomes a path segment under the artifacts root, which is itself already a
+      // deep path; an unbounded id can push the per-case archive past Windows' MAX_PATH
+      // where long-path support is not enabled (codex R3). 64 is generous for a descriptive
+      // kebab-case name -- the shipped corpus's longest is 26. Declared BEFORE the refines:
+      // `.refine()` returns a ZodEffects, which has no `.max()`.
+      .max(64, "id must be at most 64 characters (it becomes a directory name under the artifacts root)")
+      .refine(isPathSafeId, { message: "id must be a path-safe segment (no '/', '\\', '..', or NUL)" })
+      .refine((id) => !id.endsWith("."), {
+        message:
+          "id must not end in a dot ('.' collapses to the parent directory, and Windows strips trailing dots, " +
+          "so two such ids can name one directory)",
+      }),
     type: CorpusCaseType,
     /** The operator intent handed to the run composer — what the harness should attempt. */
     intent: z.string().min(1),

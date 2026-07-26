@@ -27,10 +27,34 @@ be **critique theater with a receipt** — precisely the failure `PRINCIPLES.md`
 to prevent, arrived at by accident rather than by argument.
 
 **Rule: a codex gate run is only a gate run if its output contains an actual verdict.**
-Grep the output for the verdict line (`VERDICT:` / the findings' severity labels) before
-believing it. Absence of findings is never evidence of a clean review — the same
-"could-not-determine is not a no" rule the code paths already follow
+Absence of findings is never evidence of a clean review — the same "could-not-determine is
+not a no" rule the code paths already follow
 (`[gate/oracle-protected-paths-must-be-worktree-relative]`), applied to our own process.
+
+**Grep for `^VERDICT:` anchored at line start — never the bare substring.** The naive check
+lies, and it lied twice in one session. `codex exec` echoes the ENTIRE prompt to stdout
+before it answers, and the prompt itself contains the instruction *"End with a single
+verdict line: `VERDICT: SAFE` or `VERDICT: NOT SAFE`"* — so `grep -c VERDICT` returns `1`
+for a run that produced nothing at all. A killed mid-review run therefore looks like a
+finished one: an 84 KB output file, a match for `VERDICT`, and no review anywhere in it.
+Check WHERE the match is, or anchor the pattern.
+
+**A killed run is not a failed run — it is an ABSENT run.** The tool reports "killed"
+rather than an error, and the same-shaped output file remains on disk from the prompt echo.
+Re-run it; do not reason about the fixes from a review that never happened.
+
+**Long reviews outlive a foreground tool call.** A 100 KB prompt at effort `high` can exceed
+ten minutes (the Bash tool's ceiling), and a backgrounded call is killed at the same
+deadline. Launch it genuinely detached and watch the file instead:
+`Start-Process cmd.exe -ArgumentList '/c type prompt.txt | codex exec ... > out.txt 2>&1'`,
+then poll for `^VERDICT:`. Codex buffers its answer to the very END, so a static file size
+means "still thinking", not "stalled" — confirm liveness by the PID, not the file.
+
+**A killed codex leaves its process running.** Same class as
+`[ops/codex-cancel-broken-under-git-bash]`: after two killed watchers this box had three
+`codex.exe` processes alive, one a full day old. Check
+`Get-CimInstance Win32_Process -Filter "Name='codex.exe'"` and kill the orphans — and use
+the CreationDate to tell your live run from the debris before killing anything.
 
 ## 2. One provider outage takes out BOTH the review gate and the measurement
 

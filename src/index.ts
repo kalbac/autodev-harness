@@ -5,7 +5,7 @@
 // deliberately NOT unit-tested; every module it wires already has its own
 // unit tests against injected fakes.
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -33,7 +33,8 @@ import { countOptedIn } from "./settings/opt-in-count.js";
 import { parseEvalArgs, runEval, type EvalArgs } from "./eval/eval-cli.js";
 import { loadCorpus } from "./eval/corpus-loader.js";
 import { createCaseExecutor } from "./eval/case-executor.js";
-import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
+import { createHarnessCaseEnvironment, type CaseArchiveStatus } from "./eval/harness-case-environment.js";
+import { assertArtifactsRootSafe } from "./eval/artifacts-root.js";
 import type { CorpusCaseResult } from "./eval/corpus-metrics.js";
 import {
   buildCorpusRunManifest,
@@ -482,6 +483,53 @@ async function main(): Promise<void> {
     const moduleDir2 = dirname(fileURLToPath(import.meta.url));
     const corpusDir = command.args.corpus ?? join(moduleDir2, "..", "corpus");
 
+    // Diagnostics land under the target repo's git-excluded state directory by default:
+    // it is not purged between cases, it dirties neither repo, and it sits beside the
+    // `conductor.log` a reader will want next to it. Everything here is a copy — deleting
+    // the whole directory loses no measurement.
+    const artifactsDir = resolve(command.args.artifacts ?? join(root.stateDirAbs, "corpus-artifacts"));
+    const manifestPath = join(artifactsDir, CORPUS_RUN_MANIFEST_FILE);
+    // Unique per process: a fixed `.tmp` name is shared by two concurrent `eval` runs, and
+    // the corpus lock does not serialize them until `resetToBaseline` (codex R2).
+    // RESIDUALS, named: a crash between write and rename leaves this file behind (it is
+    // pid-suffixed so it reads as debris, and the same pid's leftover is removed below); and
+    // two concurrent runs still share the published `manifestPath`. The lock is deliberately
+    // NOT moved earlier to fix that — it exists to protect the target repo's STATE, and the
+    // worst case here is a diagnostics file replaced by a run that then immediately refuses
+    // on the lock, leaving an honest `partial: true` manifest (codex R3, declined with this
+    // rationale).
+    const manifestTmp = `${manifestPath}.${process.pid}.tmp`;
+
+    // The artifacts root is validated BEFORE anything is written or deleted, including
+    // before the baseline is resolved. Ordering is the finding, not the check: doing it
+    // later meant an unsafe root (say `--artifacts <repo>/some-data`) had its
+    // `corpus-run.json` deleted and only THEN was refused, and an unresolvable baseline
+    // threw while a previous run's complete manifest still sat there claiming to describe
+    // this one (codex R3). `resetToBaseline` asks the same question again per case.
+    await assertArtifactsRootSafe({
+      repoRoot,
+      artifactsRoot: artifactsDir,
+      git: async (args) => {
+        const r = await runNative("git", args, { cwd: repoRoot });
+        return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+      },
+    });
+
+    // Now that the directory is ours to write in, drop a previous run's manifest. FAIL
+    // CLOSED on anything but "already absent": swallowing an EACCES here and carrying on
+    // leaves the stale manifest in place, which is the exact stale-projection this deletion
+    // exists to prevent (codex R3).
+    for (const stale of [manifestPath, manifestTmp]) {
+      try {
+        await rm(stale, { force: true });
+      } catch (err) {
+        throw new Error(
+          `eval: cannot clear the previous run's ${stale} (${safeErrorText(err)}). Refusing to start: a stale ` +
+            `manifest that survives would describe a run that never happened.`,
+        );
+      }
+    }
+
     // Resolve the baseline to an IMMUTABLE commit sha ONCE, before the first case --
     // including an explicitly-passed one. Every case commits (the seed, and the work
     // itself when it lands), so a mutable commit-ish like `HEAD` or a branch name would
@@ -505,31 +553,33 @@ async function main(): Promise<void> {
     // ENVIRONMENT on its own destructive path -- deliberately NOT called here, so no future
     // entry point can construct the environment and skip them. All this layer owes is the
     // matching `dispose()` in a `finally`.
-    // Diagnostics land under the target repo's git-excluded state directory by default:
-    // it is not purged between cases, it dirties neither repo, and it sits beside the
-    // `conductor.log` a reader will want next to it. Everything here is a copy — deleting
-    // the whole directory loses no measurement.
-    const artifactsDir = resolve(command.args.artifacts ?? join(root.stateDirAbs, "corpus-artifacts"));
-
     const cases = await loadCorpus(corpusDir);
     root.log("INFO", `eval: ${cases.length} case(s) from ${corpusDir}; baseline ${baseline}; target ${repoRoot}`);
     process.stdout.write(`Evaluation Corpus: ${cases.length} case(s) from ${corpusDir}\n`);
     process.stdout.write(`Target repo ${repoRoot} @ baseline ${baseline}\n`);
     process.stdout.write(`Artifacts ${artifactsDir}\n\n`);
 
+    // What actually happened to each case's artifact archive, so the manifest can STATE it
+    // rather than implying success by naming a path.
+    const archives = new Map<string, CaseArchiveStatus>();
     const env = createHarnessCaseEnvironment({
       root,
       corpusRoot: corpusDir,
       baseline,
       maxIterations: command.args.maxIterations,
       artifactsRoot: artifactsDir,
+      archiveStatuses: archives,
     });
 
     // Rewritten after EVERY case, not once at the end: a 12-minute run that dies on the
     // last case would otherwise leave nothing machine-readable behind. A failure to write
     // it is swallowed with a WARN for the same reason the archive is — a diagnostics
     // artifact must never be able to fail a measurement.
-    const manifestPath = join(artifactsDir, CORPUS_RUN_MANIFEST_FILE);
+    //
+    // Written via a temp file + `rename`, never straight to the destination: `writeFile`
+    // TRUNCATES first, so a crash or ENOSPC mid-write would destroy the last good manifest
+    // and leave a half-parsed one in its place. `rename` is atomic within a directory, so
+    // a reader sees either the previous manifest or the new one (codex R1).
     const writeManifest = async (results: CorpusCaseResult[]): Promise<void> => {
       try {
         const manifest = buildCorpusRunManifest(
@@ -542,13 +592,22 @@ async function main(): Promise<void> {
             total_cases: cases.length,
           },
           results,
+          archives,
         );
         await mkdir(artifactsDir, { recursive: true });
-        await writeFile(manifestPath, renderCorpusRunManifest(manifest), "utf8");
+        await writeFile(manifestTmp, renderCorpusRunManifest(manifest), "utf8");
+        await rename(manifestTmp, manifestPath);
       } catch (err) {
         safeLog(root.log, "WARN", `eval: writing ${manifestPath} failed (ignored): ${safeErrorText(err)}`);
       }
     };
+
+    // Write it ONCE up front, before the first case. Without this, a run that dies before
+    // any case completes (an unresolvable baseline, a dirty tree, a held lock) leaves the
+    // PREVIOUS run's complete manifest sitting there, and a reader has no way to tell it
+    // is describing a run that never happened (codex R1). An empty, `partial: true`
+    // manifest is the honest artifact for "started, got nowhere".
+    await writeManifest([]);
 
     try {
       const executor = createCaseExecutor(env);

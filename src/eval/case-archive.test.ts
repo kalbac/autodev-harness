@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join, parse, sep } from "node:path";
 import {
   archiveCaseArtifacts,
+  archiveAndReport,
   conductorLogOffset,
   ARCHIVED_SUBDIRS,
   ARCHIVED_LOG_SLICE,
+  type CaseArchiveStatus,
 } from "./case-archive.js";
 import { PURGED_SUBDIRS } from "./harness-state-reset.js";
 
@@ -143,6 +145,20 @@ describe("archiveCaseArtifacts", () => {
     await expect(archiveCaseArtifacts(req({ caseId: `a${sep}b` }))).rejects.toThrow(/not a path-safe segment/);
   });
 
+  // codex R1: `isPathSafeId(".")` is TRUE, and `join(root, ".")` collapses to `root`
+  // itself — so without this barrier the "clear the previous archive" step would delete
+  // every case's archive and the manifest. The dot-only id is refused at the corpus-case
+  // schema too; this proves the archive does not depend on that.
+  it("refuses a dot-only case id, which would resolve to the artifacts root itself", async () => {
+    mkdirSync(join(artifacts, "earlier-case"), { recursive: true });
+    writeFileSync(join(artifacts, "earlier-case", "evidence.json"), "{}");
+
+    await expect(archiveCaseArtifacts(req({ caseId: "." }))).rejects.toThrow(/does not name a directory inside/);
+
+    // The load-bearing assertion: nothing was deleted.
+    expect(existsSync(join(artifacts, "earlier-case", "evidence.json"))).toBe(true);
+  });
+
   it("refuses a relative or empty artifacts root", async () => {
     await expect(archiveCaseArtifacts(req({ artifactsRoot: "relative/out" }))).rejects.toThrow(
       /not an absolute path/,
@@ -158,5 +174,82 @@ describe("archiveCaseArtifacts", () => {
 
   it("refuses a relative state directory", async () => {
     await expect(archiveCaseArtifacts(req({ stateDirAbs: ".autodev" }))).rejects.toThrow(/not an absolute path/);
+  });
+});
+
+describe("archiveAndReport", () => {
+  // Both are functions, not consts: `artifacts` is assigned in `beforeEach`, so anything
+  // evaluated in the describe body would read it as undefined.
+  const request = () => ({ stateDirAbs: stateDir, artifactsRoot: artifacts, caseId: "case-x", logFromByte: 0 });
+  const okResult = () => ({ dest: join(artifacts, "case-x"), copied: ["runtime/a.json"], skipped: [] as string[] });
+
+  it("reports ok with the copied count and skips on success", async () => {
+    const seen: unknown[] = [];
+
+    const status = await archiveAndReport(request(), {
+      archive: async () => ({ ...okResult(), skipped: ["runtime/link (symlink -- not followed)"] }),
+      report: (s) => seen.push(s),
+      log: () => {},
+    });
+
+    expect(status.status).toBe("ok");
+    expect(status.copied).toBe(1);
+    expect(status.skipped).toEqual(["runtime/link (symlink -- not followed)"]);
+    expect(seen).toEqual([status]);
+  });
+
+  it("reports failed with the reason when the archive throws", async () => {
+    const seen: CaseArchiveStatus[] = [];
+
+    const status = await archiveAndReport(request(), {
+      archive: async () => {
+        throw new Error("EACCES: cannot clear");
+      },
+      report: (s) => seen.push(s),
+      log: () => {},
+    });
+
+    expect(status).toEqual({ status: "failed", copied: 0, skipped: [], error: "EACCES: cannot clear" });
+    expect(seen).toEqual([status]);
+  });
+
+  // codex R2: reporting used to happen INSIDE the try, so a throwing sink dropped into the
+  // catch and recorded a SUCCESSFUL archive as failed. The status is evidence about the
+  // archive; a defect in the reporting seam must not rewrite it.
+  it("does not let a throwing sink turn a successful archive into a failed one", async () => {
+    const status = await archiveAndReport(request(), {
+      archive: async () => okResult(),
+      report: () => {
+        throw new Error("sink exploded");
+      },
+      log: () => {},
+    });
+
+    expect(status.status).toBe("ok");
+    expect(status.error).toBeNull();
+  });
+
+  // ...and it must not propagate either: the second unguarded callback used to escape to
+  // the executor's backstop, leaving NO status at all — which the manifest reads as "this
+  // case never archived".
+  it("never throws, whatever the archive and the sink do", async () => {
+    await expect(
+      archiveAndReport(request(), {
+        archive: async () => {
+          throw new Error("archive exploded");
+        },
+        report: () => {
+          throw new Error("sink exploded");
+        },
+        log: () => {
+          throw new Error("logger exploded");
+        },
+      }),
+    ).resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("works with no sink at all", async () => {
+    const status = await archiveAndReport(request(), { archive: async () => okResult(), log: () => {} });
+    expect(status.status).toBe("ok");
   });
 });

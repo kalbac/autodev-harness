@@ -1,5 +1,6 @@
 import type { CorpusCaseResult } from "./corpus-metrics.js";
 import { aggregateCorpus } from "./corpus-metrics.js";
+import type { CaseArchiveStatus } from "./harness-case-environment.js";
 import type { EvidenceRecord } from "../report/evidence-types.js";
 
 /**
@@ -45,11 +46,19 @@ export interface CorpusRunManifestCase {
   reason: string;
   /** The executor's failure message when the case produced no evidence; null otherwise. */
   error: string | null;
-  /** This case's archive directory, relative to `artifacts_dir`. Named unconditionally:
-   *  archiving is best-effort, so the directory may be absent or partial — the run's
-   *  `conductor.log` carries a WARN when it is, and inventing an "archived: true" field
-   *  the writer cannot honestly answer would be worse than a path the reader can stat. */
+  /** This case's archive directory, relative to `artifacts_dir`. */
   artifacts: string;
+  /**
+   * What actually happened to that archive — `null` when the case never got as far as
+   * archiving (its baseline reset failed, so it produced nothing of its own).
+   *
+   * This field is why the reader can trust `artifacts`. Naming the path unconditionally
+   * and letting the reader stat it was the earlier design, and it was wrong: when clearing
+   * a PREVIOUS run's archive fails, the stale directory is still sitting at exactly that
+   * path, so "the directory exists" reads as "these are this run's diagnostics" while
+   * being the opposite (codex R1). A `failed` status says so outright.
+   */
+  archive: { status: "ok" | "failed"; copied: number; skipped: string[]; error: string | null } | null;
   /** The record verbatim, or null for an errored case. */
   evidence: EvidenceRecord | null;
 }
@@ -69,12 +78,24 @@ export interface CorpusRunManifest {
   cases: CorpusRunManifestCase[];
 }
 
+/** Drop the archive status's absolute `path` — the manifest already carries
+ *  `artifacts_dir` plus the per-case `artifacts` segment, and a third copy of the same
+ *  path is one more thing that can disagree with the other two. */
+function toArchiveEntry(s: CaseArchiveStatus | undefined): CorpusRunManifestCase["archive"] {
+  if (s === undefined) return null;
+  return { status: s.status, copied: s.copied, skipped: s.skipped, error: s.error };
+}
+
 /**
  * Fold the results executed SO FAR into a manifest. Pure and total: safe to call after
  * every case, and safe to call with an empty result set (a run that died before its first
  * case still writes a manifest saying exactly that).
  */
-export function buildCorpusRunManifest(ctx: CorpusRunContext, results: CorpusCaseResult[]): CorpusRunManifest {
+export function buildCorpusRunManifest(
+  ctx: CorpusRunContext,
+  results: CorpusCaseResult[],
+  archives: ReadonlyMap<string, CaseArchiveStatus> = new Map(),
+): CorpusRunManifest {
   // Re-derive the verdicts from the SAME aggregator the report renders from, rather than
   // re-implementing the comparison here: two independent copies of "did this case pass"
   // is exactly how a projection starts disagreeing with the thing it projects.
@@ -94,6 +115,7 @@ export function buildCorpusRunManifest(ctx: CorpusRunContext, results: CorpusCas
       reason: v.reason,
       error: r.error ?? null,
       artifacts: r.case.id,
+      archive: toArchiveEntry(archives.get(r.case.id)),
       evidence: r.evidence,
     };
   });
