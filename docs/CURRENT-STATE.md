@@ -5,42 +5,35 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s58)
+## Where we are (leaving s59)
 
-A working **Node daemon + web dashboard**, measured — and, for the first time, **measurably
-better than the last measurement**. `main` is at **`ebb85ea`**. s58 did what s57 set out to do
-and did not: it moved the number.
+A working **Node daemon + web dashboard**, measured twice now. `main` is at **`1b99e29`**.
+s59 landed the decision s58 parked — and the honest headline is that **the metric did not
+move.**
 
-| | s56 baseline | s58 (`corpus/RESULTS-2026-07-26b.md`) | Meaning |
+| | s58 | s59 (`corpus/RESULTS-2026-07-27.md`) | Meaning |
 |---|---|---|---|
-| **Throughput** — `first_pass_commit_rate` | 0% | **50%** | Correct work now gets through — sometimes. |
-| **Catching power** — `escaped_defect_rate` | 0% | **0%** | "Never merge bullshit" still holds. |
-| Cases passed | 2/7 | **4/7** | |
+| **Throughput** — `first_pass_commit_rate` | 50% | **50%** | unchanged |
+| **Catching power** — `escaped_defect_rate` | 0% | **0%** | "never merge bullshit" still holds |
+| Cases passed | 4/7 | 5/7 | **not progress — see below** |
 
-**The pass bar is still NOT met.** Three cases fail, and the honest part is that none of them
-fails for the reason #123 addressed:
+**`adr/007` worked, and the case it targeted still fails.** On `good-docs-overview-note`
+the critic returned **`clean` @0.99**, naming the unverifiable assertions in `notes`,
+against `uncertain` @0.84 in s58. The mandate half of #123 is closed. The case then
+escalated `needs-guard` from the **mechanical gate**: the only changed file is
+`docs/OVERVIEW.md`, which MENTIONS `test_pickup`/`test_courier` because documenting them
+was the task. `zoneTouched` treats `path_globs` as an OR-arm rather than a scope, so
+**documenting a contract value counts as touching the contract** → **#140** (oracle
+semantics, four options, (a) recommended, deliberately not fixed in place).
 
-1. **`good-docs-overview-note` — a MANDATE question, not an evidence one.** Predicted by a dry
-   run *before* the corpus ran. The facts a docs change asserts live in files deliberately
-   outside the change, so no evidence widening can ever reach them. Resolved by **`adr/007`**
-   (operator's decision) — which was NOT part of this run.
-2. **`good-wc-compat-hpos-flag`** — `disagreement`. A dry run on the same shape returned
-   `broken` @ 0.99 whose notes named no defect (the shape of **#124**). Not confirmed: that run
-   did not capture `broken_contracts`.
-3. **`adv-relax-phpcs-ruleset` — NOT a regression.** The archived artifacts show the oracle
-   fence fired correctly (`constitution`); the corpus scored the case off its *companion* task.
-   A false negative in the measuring instrument → **#136**.
+**The +1 case is instrument noise, not catching power.** `adv-relax-phpcs-ruleset` flipped
+to PASS — the case s58 diagnosed as **#136**, a false negative in the corpus itself. It
+scored correctly this run by luck of task ordering.
 
-**What the fix was.** The critic's prompt carried `diff.patch` alone, and it reasons fail-closed
-— so `clean` was structurally unreachable for any change referencing code outside the hunk. Now
-the diff is captured at `-U25` and the complete current text of every changed file is attached
-(64 KB/file, 256 KB/run, both measured). Evidence only: the mandate (`adr/005`) is untouched,
-pinned by a test. A file that does not fit is omitted WHOLE and named, and the prompt states
-that a file not shown is not evidence of absence — without that second half the change would
-have traded one false verdict for another.
-
-**Proven, not asserted:** a paired dry run on the real critic, same day and model, only the
-evidence window differing — `uncertain` @ 0.88 → `clean` @ 0.99.
+**A new failure, worse in kind.** `good-wc-compat-hpos-flag` errored before a task existed
+(decomposition returned a string where a task spec belongs). It reached `disagreement` in
+s58, so the fault is **intermittent** — and a corpus whose runs are not comparable has lost
+its purpose → **#141**.
 
 ## Phase status
 
@@ -54,10 +47,10 @@ evidence window differing — `uncertain` @ 0.88 → `clean` @ 0.99.
 | Authority Model (`adr/006`) | ✅ Phase 1 + 2 + 3 shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) — 2 facets, WP/WC first |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
-| Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; **run twice; pass bar NOT met** |
+| Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; **run three times; pass bar NOT met**. Two of its own defects are now load-bearing (#136, #141) |
 | Corpus run diagnostics (#126) | ✅ shipped s57 — and it earned its keep in s58, explaining a case failure without a re-run. **Unreachable by default on Windows** (#135) |
 | **Critic evidence window (#123)** | ✅ **FIXED + MEASURED** (PR #134, `ebb85ea`) — 0% → 50% first-pass commit |
-| Critic mandate (`adr/007`) | ⏸ **PARKED, not merged** (branch `feat/adr-007-mandate`). Decided + implemented + live-verified both shapes — but the gate returned NOT SAFE three times, each round naming a marker the mechanical prose check missed. The premise is the problem, not the instances |
+| Critic mandate (`adr/007`) | ✅ **MERGED** (PR #139, `1b99e29`, CI 4/4, 7 critic rounds, R7 SAFE). Leniency is scoped by an operator-declared `contract.docPaths`, not by inferring what is prose. Live-verified on hashed prompts: 4/4 `clean` declared, 4/5 `uncertain` undeclared, 3/3 non-clean on a contract rewrite |
 | Critic availability | ✅ working. Residual: ONE provider is both the review gate and the harness's own critic (#129) |
 
 > Per-feature shipping history belongs in `SESSION-LOG.md`, not here.
@@ -75,34 +68,29 @@ turn — which is the only reason "50%" means anything.
 
 ## NEXT ACTIONS
 
-1. **`adr/007` — decide the APPROACH first; do NOT resume patching.** Three gate rounds found
-   three different markers the mechanical prose check missed (a fence arriving as a CONTEXT
-   line, then `<script>`, then `<iframe>` / `onerror` / `javascript:` / `{% include %}`). That
-   is the signature of a blacklist, and it exposes a premise in the ADR that is too strong:
-   whether a `.md` *executes* depends on the PROJECT's toolchain, which the harness cannot
-   know. Parked by the operator (2026-07-27) with three options on the table:
-   **(a) an operator-declared doc-path list in project config** — recommended, the only
-   complete one, and `adr/006`'s own pattern (the operator blesses the oracle, nothing is
-   guessed); **(b) invert to an allowlist** — leniency only for text containing no raw HTML,
-   no templating and no include directive (closes the class, but still guesses about a foreign
-   toolchain, and an ordinary README with one `<br>` gets nothing); **(c) drop the ADR** and
-   accept that the docs class never merges unattended.
-   What is NOT in doubt: both prompt shapes are live-verified on the real critic (added prose
-   → `clean` @0.99, a rewritten documented contract → `broken` @0.99). The design works; the
-   BOUNDARY is what remains unsolved. Branch `feat/adr-007-mandate` (`5bdcf58`), pushed, no PR.
-   Once settled, **re-run the corpus** — it should move `good-docs-overview-note` to 5/7. If it
-   does not, say so plainly.
-2. **#136** (the corpus scored a case off the wrong task — a false negative in the measuring
-   instrument; four options, one recommended, and the decisive-record rule is oracle) ·
-   **#135** (the corpus cannot start on Windows with its default artifacts path).
-3. **#124** (a `broken` verdict naming no defect — reproduced in shape but NOT confirmed this
-   session) · **#125** (`critic_total` tokens always 0, so every report understates cost by the
-   critic's whole share — visible again in this run's `29228 / 0`).
-4. **#129** — the critic is a single point of failure; a second *calibrated* critic.
-5. **#133** (`readBoundedFileText` accepts a short read as a whole file) · **#131** (corpus
-   `escalations/` not purged between cases) · **#132** (manual pre-run steps; #135 is a third).
-6. **#122** — autodev-harness cards auto-add onto the Woodev boards; board-UI only, so it is
-   the operator's.
+1. **#140 — the docs-vs-contract-zone question. Oracle semantics, so it is yours.** A
+   change that only DOCUMENTS a contract value is treated as changing it, because
+   `zoneTouched` uses `path_globs` as an OR-arm rather than a scope. This is the single
+   thing standing between `good-docs-overview-note` and a commit, and therefore between
+   the metric and 5/7-that-means-something. Four options in the issue; **(a)** — make
+   `path_globs` the scope for the string scan — is recommended and restores what the
+   field already claims to mean. Once decided, implement and **re-run the corpus**.
+2. **Fix the measuring instrument before trusting another number.** **#141** (an
+   intermittent decomposition-shape failure makes runs non-comparable) and **#136** (the
+   corpus scores a multi-task case off the wrong record) are both defects in the ruler,
+   and s59 was distorted by both. Do them as ONE pass, not one per session — that pattern
+   is what made the last four sessions feel like standing still. **#131** (escalations
+   not purged between cases) and **#132**/**#135** (manual pre-run steps) ride along.
+3. **#138 — make the harness legible.** The operator's words: he can no longer tell what
+   the harness does or why. `contract.docPaths` shipped with its UI row; everything from
+   `adr/006` onward did not. Start with the "what does this project actually guarantee"
+   screen.
+4. **#124** (a `broken` verdict naming no defect — still unconfirmed; capture
+   `broken_contracts` next time) · **#125** (`critic_total` tokens always 0, so this run's
+   `41963 / 0` understates cost by the critic's whole share).
+5. **#129** — one provider is both the review gate and the harness's own critic.
+6. **#133** (`readBoundedFileText` accepts a short read as a whole file) · **#122** (board
+   auto-add, board-UI only, so it is the operator's).
 
 `FUTURE-BACKLOG` is FROZEN; open items are GitHub issues on board #2.
 
@@ -120,11 +108,20 @@ turn — which is the only reason "50%" means anything.
   and `vendor` comes from the project's own `composer.json`. Named residual, not closed.
 - **Oracle protection for `success_command`/`checkCommand`** — they are commands, not declared
   paths, so Phase 2 protects them only via `constitutionPaths`.
+- **Does documenting a contract value count as touching it?** (#140) `zoneTouched` says yes
+  today, because `path_globs` is an OR-arm rather than a scope. Answering "no" is the obvious
+  reading of what the field means — and it hands a declared doc path leniency in a SECOND
+  mechanism on the strength of one declaration, which is a real widening. Operator's call.
+- **Should one declaration buy two exemptions?** `contract.docPaths` was introduced for the
+  critic's mandate (`adr/007`). Option (b) of #140 would reuse it to scope the machine gate
+  too. Convenient and consistent — but a field's blast radius growing after the operator
+  blessed it is exactly the drift `adr/006` exists to prevent.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s59** — **`adr/007` MERGED** (PR #139, `1b99e29`, CI 4/4, **7** critic rounds, R7 SAFE): the critic's mandate narrows on an operator-declared `contract.docPaths`, never on inferring what is prose. Live-verified on hashed prompts (4/4 `clean` declared vs 4/5 `uncertain` undeclared; 3/3 non-clean on a rewrite). **Corpus re-run: `first_pass_commit_rate` 50% → 50% — the metric did NOT move.** The critic now returns `clean` @0.99 on the docs case, but the MECHANICAL gate escalates it `needs-guard`: documenting a contract value counts as touching it (#140). The 4/7 → 5/7 is #136 noise, not catching power; `good-wc-compat-hpos-flag` errored on a decomposition-shape fault (#141). New: gotcha 89, issues #138/#140/#141, two operator rules in `AGENTS.md`.
 - **s58** — **#123 FIXED AND MEASURED**: the critic sees whole changed files, not just the hunk (PR #134, `ebb85ea`, CI 4/4, 4 codex rounds, R4 SAFE). Corpus re-run: `first_pass_commit_rate` **0% → 50%**, escaped-defect still 0%, 2/7 → 4/7 — **pass bar still not met**. Mechanism proven by a paired live-critic control (`uncertain` 0.88 → `clean` 0.99). `adr/007` decided + live-verified (mandate narrowing for code-free diffs). R3's regression test exposed 11 pre-existing instances of the same defect class in `conductor.ts`. New: gotchas 87/88, issues #133/#135/#136.
 - **s57** — **Corpus diagnostics MERGED** (#126, PR #130, `21c2c41`, CI 4/4) after **7 codex rounds** — 25 findings: 21 real, 2 disproved on facts, 2 unreachable by measurement, 2 declined. Rounds 2–5 each found a narrower defect inside the previous fix; one shape 4× → new gotcha `[logic/ambiguous-false]` (86). Mid-session the critic hit its quota, blocking gate AND corpus → `[ops/codex-quota-exit-zero]` + #129; operator renewed the subscription. Also: full docs audit (CURRENT-STATE 287→~165), #104 closed as already-shipped, #131/#132 filed. **#123 NOT started — the metric was not re-measured.**
 - **s56** — **Evaluation Corpus Phase 2 MERGED** (PR #128, `3191a76`, CI 4/4; codex R1–R4 NOT SAFE → R5 SAFE; closes #121). Live run: **2/7, pass bar NOT met** — escaped-defect **0%** (catching works), first-pass commit **0%** (throughput doesn't). Root cause: the critic sees only the diff hunk (GOTCHAS 84, #123). Findings #123–#126 open, #127 fixed in-PR on the operator's word, #122 (board auto-add) filed. Five sessions of green live proofs missed this because all of them were additive.
@@ -151,7 +148,8 @@ turn — which is the only reason "50%" means anything.
 - **Presence store:** `~/.autodev/settings.json` (`{overnight:{enabled}}`); `GET`/`PATCH /settings`. Per-project opt-in: `autonomy.overnight.enabled` in the project `.autodev/config.yaml`. Overnight runs on the AND, presence read fresh per trigger.
 - **Test repo:** `woodev-shipping-plugin-test` (registry `~/.autodev/projects.json`, path `D:\Projects\wordpress\woodev-shipping-plugin-test`, on `autodev/main`). `.autodev` is git-excluded, so seeding never dirties the tree.
 - **Critic:** codex, **pin `--model gpt-5.6-luna`**. Run it DIRECTLY — `cat prompt.txt | codex exec --model gpt-5.6-luna --skip-git-repo-check -` (synchronous, prompt on STDIN because a large prompt exceeds the Windows argument limit). Not via the background companion: `/codex:cancel` is broken under git-bash and can leave a job wedged (`[ops/codex-cancel-broken-under-git-bash]`), and a quota refusal exits 0 with no verdict (`[ops/codex-quota-exit-zero]`).
-- **Tests:** 1899 green + 3 skipped; `npm run typecheck` clean (`tsconfig.typecheck.json` — the emit tsconfig does NOT cover `test/**`).
+- **Tests:** 1961 green + 3 skipped; `npm run typecheck` clean (`tsconfig.typecheck.json` — the emit tsconfig does NOT cover `test/**`).
+- **Corpus pre-flight, BY EXACT NAME** (gotcha 89): `.autodev/corpus.lock` must not exist (a KILLED run leaves it, and the next run then produces a report shaped like a catastrophic regression — the tells are wall-clock `0.0s` and tokens `0/0`); the three `queue/` dirs empty; `git status` clean; HEAD at the intended `--baseline`. Launch DETACHED (`Start-Process`), never as a bash background job.
 
 ## Related
 
