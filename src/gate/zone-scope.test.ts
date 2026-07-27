@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines, isDeclaredDoc } from "./zone-scope.js";
+import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines, isDeclaredDoc, diffPaths } from "./zone-scope.js";
 import type { ContractZone } from "./invariants.js";
 import { diffAddedRemovedLines } from "./invariants.js";
 
@@ -30,6 +30,21 @@ const TWO_FILE_DIFF = [
   "+The plugin registers test_pickup and test_courier.",
 ].join("\n");
 
+/** A rename OUT of the zone into a declared documentation path, removing a contract
+ *  value on the way -- the shape the R1 review gate used to break post-image-only
+ *  attribution. `git diff` reports it as one section whose two sides differ. */
+const RENAME_DIFF = [
+  "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+  "similarity index 60%",
+  "rename from includes/class-test-shipping-method-pickup.php",
+  "rename to docs/OVERVIEW.md",
+  "--- a/includes/class-test-shipping-method-pickup.php",
+  "+++ b/docs/OVERVIEW.md",
+  "@@ -10,1 +10,1 @@",
+  "-        $this->id = 'test_pickup';",
+  "+The plugin used to register test_pickup.",
+].join("\n");
+
 /** The #140 shape exactly: the ONLY changed file is a doc that MENTIONS the values. */
 const DOCS_ONLY_DIFF = [
   "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
@@ -43,8 +58,8 @@ describe("attributeDiffLines", () => {
   it("attributes each +/- content line to the file it came from", () => {
     const byFile = attributeDiffLines(TWO_FILE_DIFF, diffAddedRemovedLines(TWO_FILE_DIFF));
     expect(byFile).toEqual([
-      { file: "includes/class-test-shipping-method-pickup.php", lines: ["+$this->title = 'Pickup';"] },
-      { file: "docs/OVERVIEW.md", lines: ["+The plugin registers test_pickup and test_courier."] },
+      { files: ["includes/class-test-shipping-method-pickup.php"], lines: ["+$this->title = 'Pickup';"] },
+      { files: ["docs/OVERVIEW.md"], lines: ["+The plugin registers test_pickup and test_courier."] },
     ]);
   });
 
@@ -65,22 +80,45 @@ describe("attributeDiffLines", () => {
     // rather than propagating a new crash path into the gate (Principle 10).
     const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
     const flat = diffAddedRemovedLines(truncated);
-    expect(attributeDiffLines(truncated, flat)).toEqual([{ file: null, lines: flat }]);
+    expect(attributeDiffLines(truncated, flat)).toEqual([{ files: [], lines: flat }]);
   });
 
-  it("leaves a deleted file's lines unattributed, so they stay in scope for every zone", () => {
-    // A deletion's new side is `+++ /dev/null`, so there is no post-image path to
-    // attribute to. Removing a documented contract value is exactly the shape
-    // adr/007 refuses leniency for, so `null` (always in scope) is the right answer.
+  it("attributes a DELETED file's lines to its pre-image path, not to nothing", () => {
+    // R1 review finding: a deletion's new side is `+++ /dev/null`, so a
+    // post-image-only reading loses the very path whose contract changed.
     const deletion = [
-      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
-      "--- a/docs/OVERVIEW.md",
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-test-shipping-method-pickup.php",
+      "--- a/includes/class-test-shipping-method-pickup.php",
       "+++ /dev/null",
       "@@ -1,1 +0,0 @@",
-      "-The plugin registers test_pickup.",
+      "-        $this->id = 'test_pickup';",
     ].join("\n");
     const byFile = attributeDiffLines(deletion, diffAddedRemovedLines(deletion));
-    expect(byFile).toEqual([{ file: null, lines: ["-The plugin registers test_pickup."] }]);
+    expect(byFile).toEqual([
+      {
+        files: ["includes/class-test-shipping-method-pickup.php"],
+        lines: ["-        $this->id = 'test_pickup';"],
+      },
+    ]);
+    expect(diffPaths(byFile)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
+  });
+
+  it("attributes a RENAME to BOTH paths, pre-image first", () => {
+    // R1 review finding: the removed lines belong to the OLD file. Attributing
+    // them to the new path alone lets `git mv` carry a contract value out of the
+    // zone that governs it.
+    const byFile = attributeDiffLines(RENAME_DIFF, diffAddedRemovedLines(RENAME_DIFF));
+    expect(byFile).toEqual([
+      {
+        files: ["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"],
+        lines: ["-        $this->id = 'test_pickup';", "+The plugin used to register test_pickup."],
+      },
+    ]);
+  });
+
+  it("a section with neither header known is attributed to no path at all", () => {
+    const byFile = [{ files: [], lines: ["+orphan line"] }];
+    expect(diffPaths(byFile)).toEqual([]);
   });
 });
 
@@ -107,10 +145,20 @@ describe("zoneScopedLines -- #140 (a): path_globs is the SCOPE, not an OR-arm", 
 
   it("keeps unattributed lines in scope for a globbed zone (fail closed)", () => {
     const byFile = [
-      { file: "docs/OVERVIEW.md", lines: ["+mentions test_pickup"] },
-      { file: null, lines: ["-removed test_courier"] },
+      { files: ["docs/OVERVIEW.md"], lines: ["+mentions test_pickup"] },
+      { files: [], lines: ["-removed test_courier"] },
     ];
     expect(zoneScopedLines(zone(), byFile)).toEqual(["-removed test_courier"]);
+  });
+
+  it("a rename OUT of the zone stays in the zone's scope (ANY path matches, not the post-image one)", () => {
+    // R1 review finding: the zone globs the OLD path only, and the removal of its
+    // contract value lives on the OLD side. Scoping by post-image alone hides it.
+    const byFile = attributeDiffLines(RENAME_DIFF, diffAddedRemovedLines(RENAME_DIFF));
+    expect(zoneScopedLines(zone(), byFile)).toEqual([
+      "-        $this->id = 'test_pickup';",
+      "+The plugin used to register test_pickup.",
+    ]);
   });
 });
 
@@ -118,7 +166,7 @@ describe("excludeDeclaredDocs -- #140 (b): a declared doc path is outside zone c
   it("drops the lines of a file matched by contract.docPaths", () => {
     const byFile = attributeDiffLines(TWO_FILE_DIFF, diffAddedRemovedLines(TWO_FILE_DIFF));
     expect(excludeDeclaredDocs(byFile, ["docs/**", "README.md"])).toEqual([
-      { file: "includes/class-test-shipping-method-pickup.php", lines: ["+$this->title = 'Pickup';"] },
+      { files: ["includes/class-test-shipping-method-pickup.php"], lines: ["+$this->title = 'Pickup';"] },
     ]);
   });
 
@@ -127,9 +175,17 @@ describe("excludeDeclaredDocs -- #140 (b): a declared doc path is outside zone c
     expect(excludeDeclaredDocs(byFile, [])).toEqual(byFile);
   });
 
-  it("keeps unattributed lines -- a declared doc's DELETION is not exempt (adr/007 parity)", () => {
-    const byFile = [{ file: null, lines: ["-The plugin registers test_pickup."] }];
+  it("does NOT exempt a rename out of the zone into a declared doc path (EVERY path must be declared)", () => {
+    // R1 review finding, the sharper half: taking the union here would make
+    // `git mv includes/class-x.php docs/x.md` a way to carry contract values out
+    // of their zone -- one declared path would buy the whole section an exemption.
+    const byFile = attributeDiffLines(RENAME_DIFF, diffAddedRemovedLines(RENAME_DIFF));
     expect(excludeDeclaredDocs(byFile, ["docs/**"])).toEqual(byFile);
+  });
+
+  it("never exempts a section with no known path -- an exemption must be earned by a declaration", () => {
+    const byFile = [{ files: [], lines: ["-removed test_pickup"] }];
+    expect(excludeDeclaredDocs(byFile, ["docs/**", "**"])).toEqual(byFile);
   });
 });
 

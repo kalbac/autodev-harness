@@ -75,11 +75,19 @@ this; (b) is a new exemption that rests on an existing declaration.
 - **A zone whose files really are touched still catches its values**, including in a mixed
   docs-plus-code diff — the code file's lines are in scope, so the value is enumerated and
   the missing guard still escalates.
-- **Removal is not lenient.** A deleted file has no post-image path (`+++ /dev/null`), so its
-  lines are *unattributed* and stay in scope for every zone. Deleting a declared doc that
-  names a contract value therefore still trips the zone — the same answer `adr/007` gives
-  one layer up, where the narrowing is scoped to *added* prose precisely because rewriting a
-  documented contract is the attack to keep closed.
+- **Both sides of a diff decide scope, because a hunk has two files.** A section's `-` lines
+  belong to the pre-image file and its `+` lines to the post-image one, and for a rename those
+  are different files. So a section is IN SCOPE for a zone when **any** of its paths matches
+  (union), and EXEMPT from the declaration only when **every** one of them is declared
+  (intersection). Both readings are the one that grants less.
+
+  This is not hypothetical, and it is not something the tests caught — the review gate broke
+  the first implementation twice with a single input shape. Attributing lines to the
+  post-image path alone would have made `git mv includes/class-x.php docs/x.md` a way to
+  carry a zone's contract values out of the zone that governs them, and (b) would then have
+  dropped the removals entirely. A deletion (`+++ /dev/null`) has the mirror problem: its
+  only real path is the pre-image one, and a post-image-only reading loses exactly the file
+  whose contract just changed.
 
 ### Every uncertainty resolves toward the old, stricter behaviour
 
@@ -88,7 +96,8 @@ Both narrowings are leniency, so Principle 10 governs each failure path:
 | Situation | Answer |
 |---|---|
 | The diff cannot be walked (truncated, malformed) | Fall back to ONE unattributed bucket = the pre-adr/008 whole-diff scan. A diff the harness cannot read never buys leniency — and never crashes the gate either, which is what letting the parser's throw escape would have done. |
-| A line has no post-image path | In scope for every zone. |
+| A section names no path at all (neither header seen) | In scope for every zone, and exempt from nothing. |
+| A section names two different paths (rename, copy) | In scope if EITHER matches the zone; exempt only if BOTH are declared docs. |
 | A path with `..`, a drive letter or a root anchor | NOT a declared doc. `globMatch` is textual, so `docs/**` matches the string `docs/../includes/class-foo.php`; the shape test refuses rather than normalizes. |
 | `contract.docPaths` is empty (the shipped default) | (b) is inert; behaviour is byte-identical to s59. |
 
@@ -156,7 +165,9 @@ itself is unchanged — the *callers* now decide which lines it may see — so t
   reason the gate had already cleared. Two side effects, both deliberate: its changed-file
   list is now derived from the diff instead of being passed empty, so a zone's `path_globs`
   arm actually fires there for the first time (strictly MORE zones reported — the safe
-  direction), and declared doc paths are excluded there too.
+  direction), and declared doc paths are excluded there too. That list is built from BOTH
+  sides of every section (`diffPaths`); a post-image-only version disagreed with the gate
+  for every deletion, which is the first of the two findings the review gate raised.
 - The dashboard's "Contract (oracle)" section states both effects of a `docPaths`
   declaration on the same row it is read from (#138, operator rule s59: a capability that
   lives only in YAML is invisible).

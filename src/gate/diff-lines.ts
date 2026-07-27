@@ -268,18 +268,28 @@ export interface AddedLines {
 }
 
 /**
- * The `+`/`-` CONTENT lines of one file's hunks, in source order, with their
- * diff prefix intact (`+$id = 'x';`) — the exact strings `diffAddedRemovedLines`
- * produces, but attributed to the file they came from.
+ * The `+`/`-` CONTENT lines of one file section's hunks, in source order, with
+ * their diff prefix intact (`+$id = 'x';`) — the exact strings
+ * `diffAddedRemovedLines` produces, but attributed to the file they came from.
  *
- * `file` is `null` for lines the walk cannot attribute to a post-image path: a
- * DELETED file's hunks, whose new side is `+++ /dev/null`. Callers treat an
- * unattributed line as in-scope everywhere (adr/008) — removing a documented
- * contract value is exactly the shape `adr/007` refuses leniency for, so
- * "unknown file" must fail toward being checked, never toward being skipped.
+ * `files` carries BOTH SIDES of the section, pre-image first: `["src/a.php"]` for
+ * an ordinary edit or a deletion, `["docs/x.md"]` for a creation, and BOTH paths
+ * for a rename or copy. `/dev/null` is not a path and never appears.
+ *
+ * Two sides rather than one, because a diff hunk's `-` lines belong to the OLD
+ * file and its `+` lines to the NEW one, and for a rename those are different
+ * files. The first version of this attributed everything to the post-image path
+ * alone, which the review gate broke twice with one input shape: renaming
+ * `includes/class-x.php` to a declared documentation path would have carried its
+ * removed contract values out of the zone that governs them. A section is
+ * therefore in scope for a zone when ANY of its paths matches, and exempt from a
+ * declaration only when EVERY one of them is declared.
+ *
+ * `files` is EMPTY only when the walk saw neither header — no path is known, so
+ * callers treat those lines as in scope everywhere and exempt from nothing.
  */
 export interface DiffFileContent {
-  file: string | null;
+  files: string[];
   lines: string[];
 }
 
@@ -323,16 +333,24 @@ export function diffContentLinesByFile(diffText: string): DiffFileContent[] {
 function walkDiff(diffText: string): DiffWalk {
   const added = new Map<string, Set<number>>();
   const newFiles = new Set<string>();
-  // Keyed by post-image path, with `null` as a real key for a deleted file's
-  // lines. Insertion-ordered, which is what gives `content` its source order.
-  const content = new Map<string | null, string[]>();
-  const record = (path: string | null, line: string): void => {
-    let bucket = content.get(path);
+  // One bucket per file SECTION, keyed by both sides so a rename's two paths
+  // stay together and an ordinary edit's single path does not collide with
+  // anything. NUL cannot occur in either path (`unquotePath` refuses control
+  // characters) and a SPACE can, so NUL is the joiner and a space would be a
+  // collision. Written as the ESCAPE `\u0000`, never as a raw byte: one raw NUL
+  // makes the whole file binary to git, which silently turns off end-of-line
+  // normalization and rewrites the file's every line in the next diff.
+  // Insertion-ordered, which is what gives `content` its source order.
+  const content = new Map<string, { files: string[]; lines: string[] }>();
+  const record = (line: string): void => {
+    const files = [currentOldPath, currentPath].filter((p): p is string => p !== null);
+    const key = files.join("\u0000");
+    let bucket = content.get(key);
     if (!bucket) {
-      bucket = [];
-      content.set(path, bucket);
+      bucket = { files: [...new Set(files)], lines: [] };
+      content.set(key, bucket);
     }
-    bucket.push(line);
+    bucket.lines.push(line);
   };
 
   // Strip a trailing `\r` from every line UP FRONT, before any header/hunk/body
@@ -353,6 +371,10 @@ function walkDiff(diffText: string): DiffWalk {
   const lines = diffText.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
 
   let currentPath: string | null = null;
+  // The PRE-image path of the current section (`--- a/<path>`), `null` for a
+  // creation's `--- /dev/null`. Tracked only for `content`'s attribution -- the
+  // added-line map is a new-file question and never consults it.
+  let currentOldPath: string | null = null;
   let cursor = 0; // next NEW-file line number; only meaningful once a hunk header set it
   let remainingOld = 0; // old-file body lines still owed by the current hunk
   let remainingNew = 0; // new-file body lines still owed by the current hunk
@@ -404,7 +426,7 @@ function walkDiff(diffText: string): DiffWalk {
         }
         // Recorded for EVERY added line, including one in a file with no
         // post-image path -- see `DiffFileContent.file`.
-        record(currentPath, line);
+        record(line);
         cursor++;
         remainingNew--;
         continue;
@@ -424,7 +446,7 @@ function walkDiff(diffText: string): DiffWalk {
         // A removed line has no NEW-file line number (that is trap #3, and why
         // the cursor does not advance) -- but it is still diff content the zone
         // scan must see: removing a contract value is touching it.
-        record(currentPath, line);
+        record(line);
         remainingOld--;
         continue;
       }
@@ -507,6 +529,7 @@ function walkDiff(diffText: string): DiffWalk {
       // the real path, not the still-escaped wire form.
       const raw = unquotePath(line.slice(4).trim());
       oldWasDevNull = raw === "/dev/null";
+      currentOldPath = oldWasDevNull ? null : stripPrefix(raw);
       continue;
     }
 
@@ -592,6 +615,12 @@ function walkDiff(diffText: string): DiffWalk {
     if (line.startsWith("diff --git ")) {
       oldWasDevNull = false;
       sawNewFileSignal = false;
+      // Both sides are cleared for the SAME reason the new-file signals are: a
+      // section with no `---`/`+++` pair at all (a binary change, a pure mode
+      // change) would otherwise inherit the previous section's paths and
+      // attribute its lines to the wrong file.
+      currentOldPath = null;
+      currentPath = null;
       // R3-FIX2: (re)compute the pending new-file path for THIS file's
       // section. `null` when the line does not prove old==new (a rename or
       // copy, or a shape this parser cannot resolve) -- those never carry a
@@ -624,7 +653,7 @@ function walkDiff(diffText: string): DiffWalk {
   return {
     added,
     newFiles,
-    content: [...content].map(([file, lines]) => ({ file, lines })),
+    content: [...content.values()],
   };
 }
 

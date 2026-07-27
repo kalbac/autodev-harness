@@ -56,11 +56,19 @@ the next question is which layer the failure moved to — not whether the fix wo
   header; only the declared line counts settle it. Reuse `gate/diff-lines.ts`'s walker —
   never write a second parser for the same question
   (`validated-one-string-used-another.md`).
+- **A diff hunk belongs to TWO files, and scoping must use both.** The `-` lines are the
+  pre-image file's, the `+` lines the post-image file's, and for a rename those differ. The
+  first implementation attributed everything to the post-image path, and the review gate
+  broke it twice with one input: `git mv includes/class-x.php docs/x.md` carried a zone's
+  contract values out of the zone that governs them (and a doc declaration then dropped the
+  removals), while a deletion (`+++ /dev/null`) lost the only real path it had. In scope if
+  ANY path matches; exempt only if EVERY path is declared — for a leniency rule, always the
+  reading that grants less.
 - Every narrowing is leniency, so every unanswerable case must fall back to the OLD, stricter
-  reading: an unwalkable diff → one unattributed bucket every zone sees; a line with no
-  post-image path → in scope everywhere; a path shape that cannot be trusted → not a declared
-  doc. And catch the parser's throw — turning a diff-shape problem into a gate crash is
-  strictly worse than the behaviour being replaced.
+  reading: an unwalkable diff → one unattributed bucket every zone sees; a section with no
+  known path → in scope everywhere and exempt from nothing; a path shape that cannot be
+  trusted → not a declared doc. And catch the parser's throw — turning a diff-shape problem
+  into a gate crash is strictly worse than the behaviour being replaced.
 
 ## Related
 

@@ -28,8 +28,18 @@
  *
  * Both are LENIENCY, so every uncertainty in here resolves toward the strict, old
  * behaviour (Principle 10): an unwalkable diff falls back to one unattributed
- * bucket that every zone sees; a line with no post-image path stays in scope for
+ * bucket that every zone sees; a section with no known path stays in scope for
  * every zone; a path whose shape cannot be trusted is not treated as a declared doc.
+ *
+ * A diff hunk has TWO sides, and both decide scope. The review gate broke the first
+ * version of this twice with one input: a RENAME carries a file's removed lines
+ * under the NEW path, so attributing by post-image alone would let
+ * `git mv includes/class-x.php docs/x.md` walk a zone's contract values out of the
+ * zone that governs them — and (b) would then drop them entirely. Hence: a section
+ * is IN SCOPE for a zone when ANY of its paths matches (union, the strict
+ * direction), and EXEMPT from a declaration only when EVERY one of them is declared
+ * (intersection, also the strict direction). Same reasoning both times — a leniency
+ * rule takes the reading that grants less.
  *
  * What this deliberately does NOT touch: the constitution check
  * (`inv.constitution.path_globs` + `contract.constitutionPaths`). That fence is the
@@ -60,8 +70,21 @@ export function attributeDiffLines(diffText: string, fallbackLines: string[]): D
   try {
     return diffContentLinesByFile(diffText);
   } catch {
-    return [{ file: null, lines: fallbackLines }];
+    return [{ files: [], lines: fallbackLines }];
   }
+}
+
+/**
+ * Every path the diff names, either side, deduped and in first-appearance order.
+ *
+ * `zonesTouchedInDiff` needs a changed-file list and has only the diff to derive it
+ * from. It must include the PRE-image paths: a deletion's post-image is `/dev/null`
+ * and a rename's is a different file, so a post-image-only list silently omits the
+ * very file whose contract just changed — which is how the conductor's contract-risk
+ * answer ends up contradicting the gate's.
+ */
+export function diffPaths(byFile: DiffFileContent[]): string[] {
+  return [...new Set(byFile.flatMap((e) => e.files))];
 }
 
 /**
@@ -81,17 +104,21 @@ export function isDeclaredDoc(path: string, docPathGlobs: string[]): boolean {
 }
 
 /**
- * (b) Drop every entry whose file the operator declared as documentation.
+ * (b) Drop every section the operator declared as documentation — but only when
+ * EVERY path of that section is declared.
  *
- * An UNATTRIBUTED entry (`file === null`) is kept: it is a deleted file's lines, and
- * `adr/007` is explicit that removing documented behaviour never earns the docs
- * narrowing — the attack it keeps closed is "rewrite the documented contract first".
- * Deleting a declared doc that names a contract value therefore still trips the zone,
- * which is the same answer `adr/007` gives one layer up.
+ * A rename has two paths, and only the intersection is safe: renaming
+ * `includes/class-x.php` to `docs/x.md` names one declared path and one that is not,
+ * so its lines stay fully zone-checked. Taking the union instead (exempt if ANY path
+ * is declared) would make `git mv` a way to move contract values out of their zone,
+ * which is the same class of hole `adr/007` keeps closed one layer up.
+ *
+ * A section with NO known path is never exempt, for the same reason: an exemption
+ * must be earned by a declaration that actually covers the change.
  */
 export function excludeDeclaredDocs(byFile: DiffFileContent[], docPathGlobs: string[]): DiffFileContent[] {
   if (docPathGlobs.length === 0) return byFile;
-  return byFile.filter((e) => e.file === null || !isDeclaredDoc(e.file, docPathGlobs));
+  return byFile.filter((e) => e.files.length === 0 || !e.files.every((f) => isDeclaredDoc(f, docPathGlobs)));
 }
 
 /**
@@ -107,8 +134,9 @@ export function excludeDeclaredDocPaths(changedFiles: string[], docPathGlobs: st
 /**
  * (a) The diff lines this zone's string scan may look at.
  *
- * - A zone WITH `path_globs`: only lines from files those globs match, plus every
- *   unattributed line.
+ * - A zone WITH `path_globs`: lines from any section ANY of whose paths those globs
+ *   match, plus every section with no known path. A rename OUT of the zone therefore
+ *   still exposes its removed lines to the zone it left.
  * - A zone WITHOUT `path_globs`: every line. The field is the scope; an absent
  *   scope is not an empty scope, it is "not stated", and the honest reading of
  *   "not stated" is the repository-wide scan the gate has always done.
@@ -118,6 +146,6 @@ export function zoneScopedLines(zone: ContractZone, byFile: DiffFileContent[]): 
     return byFile.flatMap((e) => e.lines);
   }
   return byFile
-    .filter((e) => e.file === null || zone.path_globs.some((g) => globMatch(g, e.file as string)))
+    .filter((e) => e.files.length === 0 || e.files.some((f) => zone.path_globs.some((g) => globMatch(g, f))))
     .flatMap((e) => e.lines);
 }

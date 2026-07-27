@@ -1000,6 +1000,38 @@ describe("contract-zone scoping (adr/008)", () => {
     expect(result.reasons.some((r) => r.includes("constitution path(s) changed"))).toBe(true);
   });
 
+  it("a rename OUT of the zone into a DECLARED doc path still escalates (R1 review finding)", async () => {
+    // The attack the first implementation opened: attribute a hunk's lines to its
+    // post-image path only, and `git mv includes/class-x.php docs/x.md` carries the
+    // zone's contract values into a declared documentation path, where (b) then
+    // drops them. Both sides of the section decide now -- in scope if ANY path
+    // matches the zone, exempt only if EVERY path is declared.
+    const renameDiff = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+      "similarity index 60%",
+      "rename from includes/class-test-shipping-method-pickup.php",
+      "rename to docs/OVERVIEW.md",
+      "--- a/includes/class-test-shipping-method-pickup.php",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -10,1 +10,1 @@",
+      "-        $this->id = 'test_pickup';",
+      "+The plugin used to register test_pickup.",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      // What `git diff --name-only` reports for a detected rename: the new path only.
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: renameDiff,
+      docPaths: ["docs/**"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+    expect(result.zones_touched[0]!.uncovered_strings).toEqual(["test_pickup"]);
+  });
+
   it("an unparseable diff falls back to the OLD unscoped reading, never to leniency", async () => {
     // Truncated mid-hunk: the strict walker throws, and the zone must still be
     // reported touched -- a diff the harness cannot read is not a reason to skip

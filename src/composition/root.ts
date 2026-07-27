@@ -72,7 +72,7 @@ import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 import { CiEventBus } from "../api/ci-events.js";
 import { foldCiStatus, initialCiStatus } from "../gate/ci-status.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
-import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines } from "../gate/zone-scope.js";
+import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines, diffPaths } from "../gate/zone-scope.js";
 import {
   parseGuardsTable,
   isMutationVerified,
@@ -566,7 +566,12 @@ export async function buildProjectRoot(
   const zonesTouchedInDiff = async (diff: string): Promise<string[]> => {
     const inv = await loadInvariantsFrom(cfg, raw, repoRoot);
     const byFile = excludeDeclaredDocs(attributeDiffLines(diff, diffAddedRemovedLines(diff)), cfg.contract.docPaths);
-    const changedFiles = byFile.map((e) => e.file).filter((f): f is string => f !== null);
+    // Both sides of every section (`diffPaths`), not just post-image paths: a
+    // DELETED file's post-image is `/dev/null` and a RENAME's is a different file,
+    // so a post-image-only list omits exactly the file whose contract changed --
+    // the gate, which gets its list from `git diff --name-only`, would then see a
+    // touched zone this call reported as untouched. Review-gate finding, s60.
+    const changedFiles = diffPaths(byFile);
     return inv.contract_zones
       .filter((z) => zoneTouched(z, changedFiles, zoneScopedLines(z, byFile)))
       .map((z) => z.id);
