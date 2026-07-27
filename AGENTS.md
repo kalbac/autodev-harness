@@ -30,32 +30,42 @@
 - **The agent performs ALL git and GitHub operations itself** — commits, branches,
   pushes, PRs, and merges (`gh pr merge`). Never hand a git/GH step back to the
   operator as manual work.
-- **When to merge depends on presence** (reconciled s49 — docs previously granted a
-  blanket auto-merge that attended practice did not follow):
-  - **Attended** (the operator is in the session): the agent prepares everything —
-    branch, commits, PR, gate, green CI — and the final **merge-to-main happens on the
-    operator's in-turn word** ("мержи PR #N"). Do not auto-merge behind him.
-  - **Unattended / overnight** (the autonomy path, `adr/004`): the standing grant
-    applies — gate on the machine bar (codex-clean where required + green CI), then
-    merge and move on, no waiting.
-- Everything *up to* the merge is unconditionally the agent's: never pause a batch to
-  ask whether to open a PR, push, or re-run the gate. The merge word is the ONLY
-  attended checkpoint.
-- The operator is interrupted ONLY at that checkpoint and at genuine forks where his input is 100% required
-  (real UI/UX design decisions, scope changes, expensive unsupervised live runs) —
-  never for routine git/GH mechanics.
+- **DO NOT ASK "мержим?" — EVER** (operator decision, s59 2026-07-27, superseding the
+  s49 attended-merge checkpoint). The merge is the agent's, attended or not. Once the
+  branch has the gate's SAFE verdict and green CI, **merge it and say so in the report**.
+  His words: *"ты меня уже достал с постоянными вопросами 'мержим?'"*. Asking is not
+  caution here — the gate already decided, and re-asking a question a deterministic
+  check has answered is exactly the theatre this project exists to remove.
+  - The ONE exception is his own explicit "не мержи пока" / "подожду" on a specific
+    branch. Absent that, a green batch lands.
+  - **Unattended / overnight** (`adr/004`) was already this way; the two paths are now
+    the same rule.
+- The operator is interrupted ONLY at genuine forks where his input is 100% required —
+  **oracle decisions** (what "pass" means: a corpus expectation, a contract zone, the
+  critic's mandate), real UI/UX design choices, scope changes, expensive unsupervised
+  live runs. **Never** for git/GH mechanics, and never for a merge.
 - If the Claude Code permission classifier blocks a `gh` command in-session, that is
   a tooling prompt to approve in the moment, not a reason to defer the work to a
   future session or hand it to the operator.
 - Commit/PR conventions: Conventional Commits; co-author trailer on commits and the
   Claude Code footer on PR bodies as configured.
-- **Batch merges — do NOT open a PR + merge for every small change.** Small/incremental
-  work (a doc tweak, a gotcha, a state-sync) is just **committed** on the working branch;
-  it rides to `main` with the next substantive PR. Reserve the PR + merge cycle for a
-  **meaningful batch** — a completed module (per-module PRs still apply), a coherent group
-  of changes, or an explicit "land this now" from the operator. When in doubt, keep
-  committing and merge less often. (Direct push to `main` is classifier-gated, so small
-  commits accumulate on a branch until the batch is worth a merge.)
+- **A PR is for a LARGE LOGICAL UNIT, not for every "чих"** (restated with teeth, s59 —
+  the rule existed and was not being followed). The measurable symptom he named: **the
+  merge count was outrunning the session count.** That is the test. If a session produced
+  more than one PR, the split was almost certainly wrong.
+  - **One PR per session is the default.** Session docs, a gotcha, a state-sync, a
+    `.gitignore` line, a config tweak — these are **commits on the working branch**, and
+    they ride to `main` inside that session's substantive PR. They are never their own PR.
+  - A second PR in one session needs a real reason: two genuinely independent modules
+    touching different subsystems, or his explicit "land this now".
+  - **Session docs are not a separate PR.** Write them onto the same branch as the work
+    they describe, before it merges. s58 and s59 both got this wrong — the feature landed,
+    then the docs trailed behind in their own PR, which is how one session became two
+    merges. (s59 also branched the feature off `main` while the docs branch was still
+    open; the fix is to do the work on ONE branch per session.)
+  - When in doubt: keep committing, merge once, later.
+  - (Direct push to `main` is classifier-gated, so small commits accumulate on a branch
+    until the batch is worth a merge — that is the mechanism, not a reason for extra PRs.)
 
 ## Backlog — GitHub Issues + Project board (since s52)
 
@@ -70,9 +80,21 @@
   `gh project item-add 2 --owner kalbac --url <issue-url>`.
   Never a stray `.txt` note; a code TODO must reference an issue (`// TODO(#123): ...`),
   never stand alone.
-- **Triage is the operator's:** items in `Инбокс` wait for his decision; agents do not
-  self-promote them to `Бэклог`. When an agent picks an issue up on the operator's word,
-  move it to `В работе`; move to `Готово` only when the work is merged and verified.
+- **Triage depends on who authored the card** (operator decision, s59 2026-07-27 —
+  this supersedes the earlier blanket "triage is the operator's"):
+  - **Agent-authored cards go straight to `Бэклог`, not `Инбокс`.** The reasoning is his:
+    if an agent captured it, the agent already judged it worth doing — parking it in
+    `Инбокс` only makes him re-triage a decision that was already made. Set `Бэклог` at
+    capture time; do not leave agent-created cards sitting in `Инбокс`.
+  - **Operator-authored cards are his to move.** Never promote a card he created out of
+    `Инбокс` — he moves those himself, or names the card and tells an agent to move it.
+  - `В работе` when an agent picks the issue up on his word; `Готово` only when the work
+    is merged and verified.
+- **Every operator-facing feature needs a UI surface** (operator decision, s59): a
+  capability that exists only as a YAML key or a CLI flag is, in practice, invisible —
+  he said plainly that he can no longer tell what the harness does or why. When a change
+  adds project config, a policy knob, or a new gate behaviour, either surface it in the
+  dashboard in the same batch or file the UI card with it. Umbrella: **#138**.
 - **`docs/FUTURE-BACKLOG.md` is FROZEN** (s52): do not append new items. Its open items
   were migrated to issues #85–#108, #110; the file remains as history plus the
   parked-by-design residuals it documents in place.
