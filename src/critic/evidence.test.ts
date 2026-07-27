@@ -668,16 +668,18 @@ describe("qualifiesForDocsNarrowing — the two readings must describe ONE chang
   });
 
   it("takes the path from the `+++` side, which is what the evidence set describes", () => {
-    // The evidence reads files as they are AFTER the change, so the post-change path is
-    // the one the containment check must compare against.
-    const renamedInPlace = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
---- a/docs/OVERVIEW.md
-+++ b/docs/OVERVIEW.md
-@@ -1,1 +1,2 @@
- existing
+    // R7 low: the first version of this test used the SAME path on both sides, so a
+    // regression reading the `---` side would have passed it. The two sides must differ
+    // for the assertion to mean anything -- the evidence reads files as they are AFTER
+    // the change, so the post-change path is the one containment compares against.
+    const differing = `diff --git a/docs/old.md b/docs/new.md
+--- a/docs/old.md
++++ b/docs/new.md
+@@ -0,0 +1 @@
 +added
 `;
-    expect(qualifiesForDocsNarrowing(renamedInPlace, ev(["docs/OVERVIEW.md"], true))).toBe(true);
+    expect(qualifiesForDocsNarrowing(differing, ev(["docs/new.md"], true))).toBe(true);
+    expect(qualifiesForDocsNarrowing(differing, ev(["docs/old.md"], true))).toBe(false);
   });
 
   it("refuses a diff whose headers name nothing it can parse", () => {
