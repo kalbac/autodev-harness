@@ -49,7 +49,7 @@
 
 import { globMatch } from "../util/glob.js";
 import { isPlainRelativePath } from "../util/path-shape.js";
-import { diffContentLinesByFile, type DiffFileContent } from "./diff-lines.js";
+import { diffContentLinesByFile, diffNamedPaths, type DiffFileContent } from "./diff-lines.js";
 import type { ContractZone } from "./invariants.js";
 
 export type { DiffFileContent };
@@ -78,13 +78,29 @@ export function attributeDiffLines(diffText: string, fallbackLines: string[]): D
  * Every path the diff names, either side, deduped and in first-appearance order.
  *
  * `zonesTouchedInDiff` needs a changed-file list and has only the diff to derive it
- * from. It must include the PRE-image paths: a deletion's post-image is `/dev/null`
- * and a rename's is a different file, so a post-image-only list silently omits the
- * very file whose contract just changed — which is how the conductor's contract-risk
- * answer ends up contradicting the gate's.
+ * from. Two things it must not do, each found by a review round on this change:
+ *
+ * - It must include the PRE-image paths (R1): a deletion's post-image is `/dev/null`
+ *   and a rename's is a different file, so a post-image-only list silently omits the
+ *   very file whose contract just changed.
+ * - It must read the DIFF, not the content buckets (R2): a 100%-similarity rename, a
+ *   mode-only change and a binary change name files while emitting no `+`/`-` line
+ *   at all, so anything derived from attributed lines reports them untouched — while
+ *   the gate, whose list comes from `git diff --name-only`, reports them touched.
+ *
+ * Both are the same failure: the conductor's contract-risk answer contradicting the
+ * gate's on one diff.
+ *
+ * An unparseable diff yields `[]` rather than a throw, and that is not leniency here:
+ * the same failure makes `attributeDiffLines` hand every zone every line, so the
+ * string-scan arm of `zoneTouched` fires on the whole diff — the pre-adr/008 answer.
  */
-export function diffPaths(byFile: DiffFileContent[]): string[] {
-  return [...new Set(byFile.flatMap((e) => e.files))];
+export function diffPaths(diffText: string): string[] {
+  try {
+    return diffNamedPaths(diffText);
+  } catch {
+    return [];
+  }
 }
 
 /**

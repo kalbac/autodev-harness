@@ -100,7 +100,7 @@ describe("attributeDiffLines", () => {
         lines: ["-        $this->id = 'test_pickup';"],
       },
     ]);
-    expect(diffPaths(byFile)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
+    expect(diffPaths(deletion)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
   });
 
   it("attributes a RENAME to BOTH paths, pre-image first", () => {
@@ -117,8 +117,76 @@ describe("attributeDiffLines", () => {
   });
 
   it("a section with neither header known is attributed to no path at all", () => {
-    const byFile = [{ files: [], lines: ["+orphan line"] }];
-    expect(diffPaths(byFile)).toEqual([]);
+    const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
+    const flat = diffAddedRemovedLines(truncated);
+    expect(attributeDiffLines(truncated, flat)).toEqual([{ files: [], lines: flat }]);
+  });
+});
+
+describe("diffPaths -- the touched-file list the conductor asks for (R2 review finding)", () => {
+  // The gate derives its file list from `git diff --name-only`; this one has only
+  // the diff text. Every shape below names a file while producing NO `+`/`-` line,
+  // so a list read off the attributed content buckets reports it untouched and the
+  // two layers then disagree about the same diff (invariant 9).
+
+  it("sees a 100%-similarity rename, which has no hunk at all", () => {
+    const pureRename = [
+      "diff --git a/docs/x.md b/includes/class-test-shipping-method-pickup.php",
+      "similarity index 100%",
+      "rename from docs/x.md",
+      "rename to includes/class-test-shipping-method-pickup.php",
+    ].join("\n");
+    expect(diffPaths(pureRename)).toEqual(["docs/x.md", "includes/class-test-shipping-method-pickup.php"]);
+  });
+
+  it("sees a mode-only change, which stops after the `diff --git` header", () => {
+    const modeOnly = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-test-shipping-method-pickup.php",
+      "old mode 100644",
+      "new mode 100755",
+    ].join("\n");
+    expect(diffPaths(modeOnly)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
+  });
+
+  it("sees a binary change, which has no hunk body either", () => {
+    const binary = [
+      "diff --git a/includes/logo.png b/includes/logo.png",
+      "index 1a2b3c4..5d6e7f8 100644",
+      "Binary files a/includes/logo.png and b/includes/logo.png differ",
+    ].join("\n");
+    expect(diffPaths(binary)).toEqual(["includes/logo.png"]);
+  });
+
+  it("sees a binary DELETION by its pre-image path", () => {
+    const binaryDeletion = [
+      "diff --git a/includes/logo.png b/includes/logo.png",
+      "deleted file mode 100644",
+      "index 1a2b3c4..0000000",
+      "Binary files a/includes/logo.png and /dev/null differ",
+    ].join("\n");
+    expect(diffPaths(binaryDeletion)).toEqual(["includes/logo.png"]);
+  });
+
+  it("sees a copy, both sides", () => {
+    const copy = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-copy.php",
+      "similarity index 100%",
+      "copy from includes/class-test-shipping-method-pickup.php",
+      "copy to includes/class-copy.php",
+    ].join("\n");
+    expect(diffPaths(copy)).toEqual(["includes/class-test-shipping-method-pickup.php", "includes/class-copy.php"]);
+  });
+
+  it("still sees an ordinary text diff, both sides of every section", () => {
+    expect(diffPaths(TWO_FILE_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
+    expect(diffPaths(RENAME_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
+  });
+
+  it("returns [] for a diff it cannot parse -- the line-scan arm is what stays strict there", () => {
+    // Not leniency: the same throw makes `attributeDiffLines` hand every zone every
+    // line, so `zoneTouched`'s string arm fires on the whole diff (pre-adr/008).
+    const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
+    expect(diffPaths(truncated)).toEqual([]);
   });
 });
 

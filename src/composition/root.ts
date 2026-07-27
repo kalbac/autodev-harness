@@ -72,7 +72,13 @@ import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 import { CiEventBus } from "../api/ci-events.js";
 import { foldCiStatus, initialCiStatus } from "../gate/ci-status.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
-import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines, diffPaths } from "../gate/zone-scope.js";
+import {
+  attributeDiffLines,
+  excludeDeclaredDocs,
+  excludeDeclaredDocPaths,
+  zoneScopedLines,
+  diffPaths,
+} from "../gate/zone-scope.js";
 import {
   parseGuardsTable,
   isMutationVerified,
@@ -566,12 +572,17 @@ export async function buildProjectRoot(
   const zonesTouchedInDiff = async (diff: string): Promise<string[]> => {
     const inv = await loadInvariantsFrom(cfg, raw, repoRoot);
     const byFile = excludeDeclaredDocs(attributeDiffLines(diff, diffAddedRemovedLines(diff)), cfg.contract.docPaths);
-    // Both sides of every section (`diffPaths`), not just post-image paths: a
-    // DELETED file's post-image is `/dev/null` and a RENAME's is a different file,
-    // so a post-image-only list omits exactly the file whose contract changed --
-    // the gate, which gets its list from `git diff --name-only`, would then see a
-    // touched zone this call reported as untouched. Review-gate finding, s60.
-    const changedFiles = diffPaths(byFile);
+    // The file list comes from the DIFF TEXT, both sides of every section, and
+    // NOT from the attributed lines above. Two review rounds, one failure: the
+    // gate gets its list from `git diff --name-only`, so anything this list omits
+    // is a zone the gate calls touched and this call calls clean. A post-image-only
+    // list omits a deletion's and a rename's real file (R1); a list read off the
+    // content buckets omits every section with no `+`/`-` line at all -- a
+    // 100%-similarity rename, a mode-only change, a binary change (R2).
+    // Declared doc paths are dropped per path, which is (b) at path granularity:
+    // a rename with one declared side keeps its undeclared side, so the zone that
+    // governs it still fires.
+    const changedFiles = excludeDeclaredDocPaths(diffPaths(diff), cfg.contract.docPaths);
     return inv.contract_zones
       .filter((z) => zoneTouched(z, changedFiles, zoneScopedLines(z, byFile)))
       .map((z) => z.id);

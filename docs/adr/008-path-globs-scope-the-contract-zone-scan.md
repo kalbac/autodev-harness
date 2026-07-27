@@ -89,6 +89,16 @@ this; (b) is a new exemption that rests on an existing declaration.
   only real path is the pre-image one, and a post-image-only reading loses exactly the file
   whose contract just changed.
 
+- **"Which files did this diff touch" is a different question from "whose lines are these",
+  and must be read off the diff, not off the attributed lines.** The next review round broke
+  the fix again through the other end: a **100%-similarity rename, a mode-only change and a
+  binary change each name a file while emitting no `+`/`-` line at all**. A touched-file list
+  derived from the content buckets is therefore EMPTY for them, so `zonesTouchedInDiff`
+  reported a zone clean that the gate — whose list comes from `git diff --name-only` —
+  reported touched. `diffNamedPaths` answers the file question directly from the headers
+  (`--- `/`+++ `, `rename from`/`rename to`, `copy from`/`copy to`, and a `diff --git` line
+  whose two sides are equal), so a section with no body is still a section that names files.
+
 ### Every uncertainty resolves toward the old, stricter behaviour
 
 Both narrowings are leniency, so Principle 10 governs each failure path:
@@ -98,6 +108,7 @@ Both narrowings are leniency, so Principle 10 governs each failure path:
 | The diff cannot be walked (truncated, malformed) | Fall back to ONE unattributed bucket = the pre-adr/008 whole-diff scan. A diff the harness cannot read never buys leniency — and never crashes the gate either, which is what letting the parser's throw escape would have done. |
 | A section names no path at all (neither header seen) | In scope for every zone, and exempt from nothing. |
 | A section names two different paths (rename, copy) | In scope if EITHER matches the zone; exempt only if BOTH are declared docs. |
+| A section names files but carries no `+`/`-` line (100% rename, mode-only, binary) | It has no lines to scan, but it still COUNTS AS TOUCHING its files — the paths come from the headers, so the conductor's answer matches the gate's. |
 | A path with `..`, a drive letter or a root anchor | NOT a declared doc. `globMatch` is textual, so `docs/**` matches the string `docs/../includes/class-foo.php`; the shape test refuses rather than normalizes. |
 | `contract.docPaths` is empty (the shipped default) | (b) is inert; behaviour is byte-identical to s59. |
 
@@ -165,9 +176,13 @@ itself is unchanged — the *callers* now decide which lines it may see — so t
   reason the gate had already cleared. Two side effects, both deliberate: its changed-file
   list is now derived from the diff instead of being passed empty, so a zone's `path_globs`
   arm actually fires there for the first time (strictly MORE zones reported — the safe
-  direction), and declared doc paths are excluded there too. That list is built from BOTH
-  sides of every section (`diffPaths`); a post-image-only version disagreed with the gate
-  for every deletion, which is the first of the two findings the review gate raised.
+  direction), and declared doc paths are excluded there too (per path, so a rename with one
+  declared side keeps its undeclared side). That list is built by `diffPaths` → 
+  `diffNamedPaths`, straight off the diff headers and from BOTH sides of every section. Both
+  review rounds landed here, on the same invariant: a post-image-only version disagreed with
+  the gate for every deletion and rename (R1), and a version derived from the attributed
+  content lines disagreed for every section with no hunk body — a 100% rename, a mode-only
+  change, a binary change (R2).
 - The dashboard's "Contract (oracle)" section states both effects of a `docPaths`
   declaration on the same row it is read from (#138, operator rule s59: a capability that
   lives only in YAML is invisible).

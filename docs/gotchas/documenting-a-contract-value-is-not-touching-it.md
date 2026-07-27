@@ -64,6 +64,15 @@ the next question is which layer the failure moved to — not whether the fix wo
   removals), while a deletion (`+++ /dev/null`) lost the only real path it had. In scope if
   ANY path matches; exempt only if EVERY path is declared — for a leniency rule, always the
   reading that grants less.
+- **"Which files did this diff touch" is NOT answerable from the lines it changed.** A
+  100%-similarity rename, a mode-only change and a binary change each name a file and emit
+  no `+`/`-` line at all, so a touched-file list derived from attributed lines is empty for
+  exactly those — and then the conductor calls a zone clean that the gate, reading
+  `git diff --name-only`, calls touched. Read the file question off the diff HEADERS
+  (`diffNamedPaths`), including `rename from`/`rename to` and a `diff --git` line whose two
+  sides are equal. Both review rounds on `adr/008` failed on this one invariant, from
+  opposite ends: **if two layers answer the same question, derive both answers from the same
+  place, and test the shapes that carry no content at all.**
 - Every narrowing is leniency, so every unanswerable case must fall back to the OLD, stricter
   reading: an unwalkable diff → one unattributed bucket every zone sees; a section with no
   known path → in scope everywhere and exempt from nothing; a path shape that cannot be

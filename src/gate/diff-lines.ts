@@ -293,10 +293,16 @@ export interface DiffFileContent {
   lines: string[];
 }
 
-/** Everything one walk of a diff yields. Split into two narrow exported readers
+/** Everything one walk of a diff yields. Split into narrow exported readers
  *  below so each caller states which question it is asking. */
 interface DiffWalk extends AddedLines {
   content: DiffFileContent[];
+  /** EVERY path the diff names, either side, whether or not that path's section
+   *  carries a single `+`/`-` line. Deliberately NOT derived from `content`: a
+   *  100%-similarity rename, a mode-only change and a binary change all name
+   *  files while producing no hunk body at all, so a content-derived list omits
+   *  exactly those (R2 review finding, s60). */
+  paths: string[];
 }
 
 /**
@@ -330,9 +336,39 @@ export function diffContentLinesByFile(diffText: string): DiffFileContent[] {
   return walkDiff(diffText).content;
 }
 
+/**
+ * Every path the diff NAMES, either side, in first-appearance order.
+ *
+ * This is the "which files did this diff touch" question, and it is a different
+ * question from "whose lines are these" (`diffContentLinesByFile`). The R2 review
+ * gate closed the gap between them: a 100%-similarity rename, a mode-only change
+ * and a binary change each name a file while emitting no `+`/`-` line, so a caller
+ * that derives its touched-file list from the CONTENT buckets reports those files
+ * as untouched — while the mechanical gate, whose list comes from
+ * `git diff --name-only`, reports them touched. Two answers to one question is the
+ * defect this repository names most often, and here it decides whether the
+ * conductor escalates a contract risk now or retries.
+ *
+ * Both sides are included for the same reason `DiffFileContent.files` carries both:
+ * a deletion's post-image is `/dev/null` and a rename's is a different file.
+ *
+ * THROWS on a malformed or truncated diff, exactly like the other two readers.
+ */
+export function diffNamedPaths(diffText: string): string[] {
+  return walkDiff(diffText).paths;
+}
+
 function walkDiff(diffText: string): DiffWalk {
   const added = new Map<string, Set<number>>();
   const newFiles = new Set<string>();
+  // Every path any header names, recorded the moment it is parsed and NOT at the
+  // point a line is attributed -- that is the whole difference between this and
+  // `content`. A section with no hunk body never calls `record()`, so anything
+  // read off `content` cannot see it (R2 review finding, s60).
+  const namedPaths = new Set<string>();
+  const notePath = (path: string | null): void => {
+    if (path !== null) namedPaths.add(path);
+  };
   // One bucket per file SECTION, keyed by both sides so a rename's two paths
   // stay together and an ordinary edit's single path does not collide with
   // anything. NUL cannot occur in either path (`unquotePath` refuses control
@@ -530,6 +566,7 @@ function walkDiff(diffText: string): DiffWalk {
       const raw = unquotePath(line.slice(4).trim());
       oldWasDevNull = raw === "/dev/null";
       currentOldPath = oldWasDevNull ? null : stripPrefix(raw);
+      notePath(currentOldPath);
       continue;
     }
 
@@ -544,6 +581,7 @@ function walkDiff(diffText: string): DiffWalk {
       // must run on the DECODED string, not the raw quoted one.
       const raw = unquotePath(line.slice(4).trim());
       currentPath = raw === "/dev/null" ? null : stripPrefix(raw);
+      notePath(currentPath);
       if ((oldWasDevNull || sawNewFileSignal) && currentPath !== null) {
         newFiles.add(currentPath);
       }
@@ -591,7 +629,9 @@ function walkDiff(diffText: string): DiffWalk {
         // rather than waiting for a `+++` header a binary copy never has
         // ("Binary files ... differ" instead). Redundant-but-harmless for a
         // text copy, which also reaches the `+++` branch below.
-        newFiles.add(unquotePath(line.slice("copy to ".length).trim()));
+        const copyTo = unquotePath(line.slice("copy to ".length).trim());
+        newFiles.add(copyTo);
+        notePath(copyTo);
       } else if (pendingNewFilePath !== null) {
         // R3-FIX2: likewise for `new file mode` -- its own text carries no
         // path, so fall back to the new-side path already parsed off the
@@ -599,7 +639,21 @@ function walkDiff(diffText: string): DiffWalk {
         // than only inside `+++`) is what makes a binary addition (which
         // never reaches a `+++` header at all) actually get recorded.
         newFiles.add(pendingNewFilePath);
+        notePath(pendingNewFilePath);
       }
+      continue;
+    }
+
+    // `rename from`/`rename to`/`copy from` name a path WITHOUT saying anything
+    // about newness -- which is why they are read here and not in the branch
+    // above. They are the only place a 100%-similarity rename states its two
+    // paths at all: such a section has no `---`/`+++` pair and no hunk, and its
+    // `diff --git` line proves nothing (the two sides differ), so without this
+    // the diff would name files nobody downstream could see (R2 finding, s60).
+    // These headers carry no `a/`/`b/` convention prefix -- same as `copy to`.
+    if (line.startsWith("rename from ") || line.startsWith("rename to ") || line.startsWith("copy from ")) {
+      const marker = line.startsWith("rename from ") ? "rename from " : line.startsWith("rename to ") ? "rename to " : "copy from ";
+      notePath(unquotePath(line.slice(marker.length).trim()));
       continue;
     }
 
@@ -627,6 +681,11 @@ function walkDiff(diffText: string): DiffWalk {
       // `new file mode` header anyway, so `pendingNewFilePath` is simply
       // never consumed for them.
       pendingNewFilePath = newFilePathFromDiffGitLine(line);
+      // A section whose two sides are the SAME path states that path here and
+      // may state it nowhere else: a binary change and a mode-only change both
+      // stop after this header. (For a rename or copy the helper returns null by
+      // design, and `rename from`/`rename to` above carry those paths instead.)
+      notePath(pendingNewFilePath);
       continue;
     }
 
@@ -654,6 +713,7 @@ function walkDiff(diffText: string): DiffWalk {
     added,
     newFiles,
     content: [...content.values()],
+    paths: [...namedPaths],
   };
 }
 
