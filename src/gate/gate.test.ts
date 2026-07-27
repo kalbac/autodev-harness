@@ -1036,6 +1036,12 @@ describe("contract-zone scoping (adr/008)", () => {
     // Truncated mid-hunk: the strict walker throws, and the zone must still be
     // reported touched -- a diff the harness cannot read is not a reason to skip
     // a contract check (Principle 10).
+    //
+    // R3 review finding: asserting ESCALATE alone proves nothing, because the
+    // PRE-adr/008 code escalated on this input too (it scanned the whole diff
+    // unconditionally). The control below is what makes this test non-vacuous --
+    // the SAME content in a WELL-FORMED diff must NOT escalate, so the only thing
+    // that can explain the difference is the fallback actually running.
     const truncated = [
       "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
       "--- a/docs/OVERVIEW.md",
@@ -1043,10 +1049,54 @@ describe("contract-zone scoping (adr/008)", () => {
       "@@ -3,4 +4,4 @@",
       "+The plugin registers test_pickup as a shipping method id.",
     ].join("\n");
+    const wellFormed = [
+      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+      "--- a/docs/OVERVIEW.md",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -3,0 +4,1 @@",
+      "+The plugin registers test_pickup as a shipping method id.",
+    ].join("\n");
+
     const { deps } = makeDeps({
       invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
       changedFiles: ["docs/OVERVIEW.md"],
       diffText: truncated,
+    });
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+
+    const { deps: controlDeps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: wellFormed,
+    });
+    const control = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, controlDeps);
+
+    expect(control.zones_touched).toEqual([]);
+    expect(control.decision).toBe("COMMIT");
+  });
+
+  it("a 100%-similarity rename OUT of the zone still trips it (R3 review finding)", async () => {
+    // The shape that has no hunk body at all: no `---`/`+++` pair, no `+`/`-`
+    // line, and `git diff --name-only` -- which is where the gate's changedFiles
+    // come from -- names ONLY the destination. Without unioning in the paths the
+    // diff itself names, the zone globbing the SOURCE file sees no changed file
+    // and no lines to scan, so the gate reports untouched while the conductor
+    // reports touched: two answers to one question, on a change that physically
+    // moved a contract value out of the zone that governs it.
+    const pureRename = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+      "similarity index 100%",
+      "rename from includes/class-test-shipping-method-pickup.php",
+      "rename to docs/OVERVIEW.md",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      // What git reports for a detected rename: the post-image path only.
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: pureRename,
     });
 
     const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);

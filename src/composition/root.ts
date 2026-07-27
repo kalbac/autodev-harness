@@ -77,7 +77,7 @@ import {
   excludeDeclaredDocs,
   excludeDeclaredDocPaths,
   zoneScopedLines,
-  diffPaths,
+  scanDiffPaths,
 } from "../gate/zone-scope.js";
 import {
   parseGuardsTable,
@@ -572,17 +572,26 @@ export async function buildProjectRoot(
   const zonesTouchedInDiff = async (diff: string): Promise<string[]> => {
     const inv = await loadInvariantsFrom(cfg, raw, repoRoot);
     const byFile = excludeDeclaredDocs(attributeDiffLines(diff, diffAddedRemovedLines(diff)), cfg.contract.docPaths);
-    // The file list comes from the DIFF TEXT, both sides of every section, and
-    // NOT from the attributed lines above. Two review rounds, one failure: the
-    // gate gets its list from `git diff --name-only`, so anything this list omits
-    // is a zone the gate calls touched and this call calls clean. A post-image-only
-    // list omits a deletion's and a rename's real file (R1); a list read off the
-    // content buckets omits every section with no `+`/`-` line at all -- a
-    // 100%-similarity rename, a mode-only change, a binary change (R2).
-    // Declared doc paths are dropped per path, which is (b) at path granularity:
-    // a rename with one declared side keeps its undeclared side, so the zone that
+    // This call has ONLY the diff -- no `git diff --name-only` list -- so it reads
+    // the file list off the diff's own headers, which is the same list the gate
+    // builds once it unions git's post-image list with those headers. Three review
+    // rounds landed on this one line: a post-image-only list omits a deletion's and
+    // a rename's real file (R1); a list read off the attributed CONTENT lines omits
+    // every section with no `+`/`-` line -- a 100% rename, a mode-only change, a
+    // binary change (R2); and an UNREADABLE diff must not be reported as "names no
+    // files", because that silently drops the path arm here while the gate still has
+    // git's list (R3).
+    //
+    // So a diff this cannot read reports EVERY zone as touched. That is the honest
+    // answer -- nothing has been ruled out -- and it is the fail-closed direction:
+    // `contractRisk` decides escalate-now versus retry on a change the critic has
+    // already declined to call clean.
+    const scan = scanDiffPaths(diff);
+    if (!scan.readable) return inv.contract_zones.map((z) => z.id);
+    // Declared doc paths are dropped per PATH, which is (b) at path granularity: a
+    // rename with one declared side keeps its undeclared side, so the zone that
     // governs it still fires.
-    const changedFiles = excludeDeclaredDocPaths(diffPaths(diff), cfg.contract.docPaths);
+    const changedFiles = excludeDeclaredDocPaths(scan.paths, cfg.contract.docPaths);
     return inv.contract_zones
       .filter((z) => zoneTouched(z, changedFiles, zoneScopedLines(z, byFile)))
       .map((z) => z.id);

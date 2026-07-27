@@ -5,6 +5,7 @@ import {
   excludeDeclaredDocs,
   excludeDeclaredDocPaths,
   zoneScopedLines,
+  unionDiffNamedPaths,
 } from "./zone-scope.js";
 import type { Invariants } from "./invariants.js";
 import { isBlessed, selectGuardForValue, selectGuardForZone } from "./guards.js";
@@ -215,7 +216,16 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     // the diff cannot be walked.
     const docPaths = deps.docPaths ?? [];
     const zoneLinesByFile = excludeDeclaredDocs(attributeDiffLines(diffText, diffLines), docPaths);
-    const zoneChangedFiles = excludeDeclaredDocPaths(changedFiles, docPaths);
+    // The zone check's file list is git's list UNIONED with every path the diff
+    // itself names (R3 review finding). `git diff --name-only` reports POST-IMAGE
+    // paths, so a 100%-similarity rename of a zone file OUT of its zone reports
+    // only the destination -- and with no hunk body there are no lines to scan
+    // either, so the zone that governs the value the rename just moved is reported
+    // untouched. The diff's own headers still name the source. This is strictly
+    // MORE files, never fewer, so it can only make the gate stricter; and it is the
+    // SAME list `zonesTouchedInDiff` builds, which is what keeps the conductor's
+    // answer to this question from contradicting the gate's (invariant 9).
+    const zoneChangedFiles = excludeDeclaredDocPaths(unionDiffNamedPaths(changedFiles, diffText), docPaths);
 
     // 1. check command (whole tree). null = skip.
     let composerGreen = true;

@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines, isDeclaredDoc, diffPaths } from "./zone-scope.js";
+import {
+  attributeDiffLines,
+  excludeDeclaredDocs,
+  zoneScopedLines,
+  isDeclaredDoc,
+  scanDiffPaths,
+  unionDiffNamedPaths,
+} from "./zone-scope.js";
 import type { ContractZone } from "./invariants.js";
 import { diffAddedRemovedLines } from "./invariants.js";
 
@@ -45,6 +52,20 @@ const RENAME_DIFF = [
   "+The plugin used to register test_pickup.",
 ].join("\n");
 
+
+/** Truncated mid-hunk: the strict walker throws on it. Shared, because three tests
+ *  now assert three DIFFERENT fallbacks for the same unreadable input. */
+const TRUNCATED_DIFF = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
+
+/** A 100%-similarity rename OUT of the zone: no `---`/`+++` pair, no hunk, no line to
+ *  scan -- and `git diff --name-only` names only the destination (R3 finding). */
+const PURE_RENAME_DIFF = [
+  "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+  "similarity index 100%",
+  "rename from includes/class-test-shipping-method-pickup.php",
+  "rename to docs/OVERVIEW.md",
+].join("\n");
+
 /** The #140 shape exactly: the ONLY changed file is a doc that MENTIONS the values. */
 const DOCS_ONLY_DIFF = [
   "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
@@ -78,9 +99,8 @@ describe("attributeDiffLines", () => {
     // Truncated mid-hunk: the strict walker throws. Scoping must then behave
     // exactly as it did before #140 -- every line in scope for every zone --
     // rather than propagating a new crash path into the gate (Principle 10).
-    const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
-    const flat = diffAddedRemovedLines(truncated);
-    expect(attributeDiffLines(truncated, flat)).toEqual([{ files: [], lines: flat }]);
+    const flat = diffAddedRemovedLines(TRUNCATED_DIFF);
+    expect(attributeDiffLines(TRUNCATED_DIFF, flat)).toEqual([{ files: [], lines: flat }]);
   });
 
   it("attributes a DELETED file's lines to its pre-image path, not to nothing", () => {
@@ -100,7 +120,7 @@ describe("attributeDiffLines", () => {
         lines: ["-        $this->id = 'test_pickup';"],
       },
     ]);
-    expect(diffPaths(deletion)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
+    expect(namedPaths(deletion)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
   });
 
   it("attributes a RENAME to BOTH paths, pre-image first", () => {
@@ -116,27 +136,25 @@ describe("attributeDiffLines", () => {
     ]);
   });
 
-  it("a section with neither header known is attributed to no path at all", () => {
-    const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
-    const flat = diffAddedRemovedLines(truncated);
-    expect(attributeDiffLines(truncated, flat)).toEqual([{ files: [], lines: flat }]);
-  });
 });
 
-describe("diffPaths -- the touched-file list the conductor asks for (R2 review finding)", () => {
+/** The paths, or a hard failure if the walk refused the diff. Every assertion below
+ *  states which of the two it expects -- an empty list and "unreadable" are different
+ *  answers, and conflating them is exactly the defect R3 found. */
+function namedPaths(diffText: string): string[] {
+  const scan = scanDiffPaths(diffText);
+  if (!scan.readable) throw new Error("expected a readable diff");
+  return scan.paths;
+}
+
+describe("scanDiffPaths -- the touched-file list, read off the diff headers (R2/R3 findings)", () => {
   // The gate derives its file list from `git diff --name-only`; this one has only
   // the diff text. Every shape below names a file while producing NO `+`/`-` line,
   // so a list read off the attributed content buckets reports it untouched and the
   // two layers then disagree about the same diff (invariant 9).
 
   it("sees a 100%-similarity rename, which has no hunk at all", () => {
-    const pureRename = [
-      "diff --git a/docs/x.md b/includes/class-test-shipping-method-pickup.php",
-      "similarity index 100%",
-      "rename from docs/x.md",
-      "rename to includes/class-test-shipping-method-pickup.php",
-    ].join("\n");
-    expect(diffPaths(pureRename)).toEqual(["docs/x.md", "includes/class-test-shipping-method-pickup.php"]);
+    expect(namedPaths(PURE_RENAME_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
   });
 
   it("sees a mode-only change, which stops after the `diff --git` header", () => {
@@ -145,7 +163,7 @@ describe("diffPaths -- the touched-file list the conductor asks for (R2 review f
       "old mode 100644",
       "new mode 100755",
     ].join("\n");
-    expect(diffPaths(modeOnly)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
+    expect(namedPaths(modeOnly)).toEqual(["includes/class-test-shipping-method-pickup.php"]);
   });
 
   it("sees a binary change, which has no hunk body either", () => {
@@ -154,7 +172,7 @@ describe("diffPaths -- the touched-file list the conductor asks for (R2 review f
       "index 1a2b3c4..5d6e7f8 100644",
       "Binary files a/includes/logo.png and b/includes/logo.png differ",
     ].join("\n");
-    expect(diffPaths(binary)).toEqual(["includes/logo.png"]);
+    expect(namedPaths(binary)).toEqual(["includes/logo.png"]);
   });
 
   it("sees a binary DELETION by its pre-image path", () => {
@@ -164,7 +182,7 @@ describe("diffPaths -- the touched-file list the conductor asks for (R2 review f
       "index 1a2b3c4..0000000",
       "Binary files a/includes/logo.png and /dev/null differ",
     ].join("\n");
-    expect(diffPaths(binaryDeletion)).toEqual(["includes/logo.png"]);
+    expect(namedPaths(binaryDeletion)).toEqual(["includes/logo.png"]);
   });
 
   it("sees a copy, both sides", () => {
@@ -174,19 +192,50 @@ describe("diffPaths -- the touched-file list the conductor asks for (R2 review f
       "copy from includes/class-test-shipping-method-pickup.php",
       "copy to includes/class-copy.php",
     ].join("\n");
-    expect(diffPaths(copy)).toEqual(["includes/class-test-shipping-method-pickup.php", "includes/class-copy.php"]);
+    expect(namedPaths(copy)).toEqual(["includes/class-test-shipping-method-pickup.php", "includes/class-copy.php"]);
   });
 
   it("still sees an ordinary text diff, both sides of every section", () => {
-    expect(diffPaths(TWO_FILE_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
-    expect(diffPaths(RENAME_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
+    expect(namedPaths(TWO_FILE_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
+    expect(namedPaths(RENAME_DIFF)).toEqual(["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"]);
   });
 
-  it("returns [] for a diff it cannot parse -- the line-scan arm is what stays strict there", () => {
-    // Not leniency: the same throw makes `attributeDiffLines` hand every zone every
-    // line, so `zoneTouched`'s string arm fires on the whole diff (pre-adr/008).
-    const truncated = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,4 +1,4 @@", "+only one line"].join("\n");
-    expect(diffPaths(truncated)).toEqual([]);
+  it("reports a diff it cannot parse as UNREADABLE, never as an empty path list", () => {
+    // R3 review finding. `[]` would mean "this diff names no files", and the caller
+    // would then drop the path arm of the zone check entirely while the gate still
+    // has git's list -- two answers to one question. `readable: false` forces every
+    // caller to state what it does when there is no answer.
+    expect(scanDiffPaths(TRUNCATED_DIFF)).toEqual({ readable: false });
+  });
+
+  it("distinguishes UNREADABLE from a diff that genuinely names nothing", () => {
+    expect(scanDiffPaths("")).toEqual({ readable: true, paths: [] });
+  });
+});
+
+describe("unionDiffNamedPaths -- the gate's file list (R3 review finding)", () => {
+  it("adds the PRE-image path git's --name-only omits for a rename", () => {
+    // `git diff --name-only` reports POST-IMAGE paths, so for this diff it reports
+    // the destination alone. Without the union, the zone globbing the SOURCE sees no
+    // changed file and no lines either (the section has no hunk), so the gate calls
+    // it untouched while the conductor calls it touched -- invariant 9.
+    expect(unionDiffNamedPaths(["docs/OVERVIEW.md"], PURE_RENAME_DIFF)).toEqual([
+      "docs/OVERVIEW.md",
+      "includes/class-test-shipping-method-pickup.php",
+    ]);
+  });
+
+  it("adds nothing and drops nothing for an ordinary diff whose two lists already agree", () => {
+    const gitList = ["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"];
+    expect(unionDiffNamedPaths(gitList, TWO_FILE_DIFF)).toEqual(gitList);
+  });
+
+  it("falls back to git's list ALONE when the diff cannot be walked -- never to nothing", () => {
+    // The pre-adr/008 gate exactly: unreadable input never removes a file from the
+    // check, and never turns a diff-shape problem into a gate crash either.
+    expect(unionDiffNamedPaths(["includes/class-test-shipping-method-pickup.php"], TRUNCATED_DIFF)).toEqual([
+      "includes/class-test-shipping-method-pickup.php",
+    ]);
   });
 });
 

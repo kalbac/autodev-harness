@@ -70,9 +70,24 @@ the next question is which layer the failure moved to — not whether the fix wo
   exactly those — and then the conductor calls a zone clean that the gate, reading
   `git diff --name-only`, calls touched. Read the file question off the diff HEADERS
   (`diffNamedPaths`), including `rename from`/`rename to` and a `diff --git` line whose two
-  sides are equal. Both review rounds on `adr/008` failed on this one invariant, from
-  opposite ends: **if two layers answer the same question, derive both answers from the same
+  sides are equal. Three review rounds on `adr/008` failed on this one invariant, from three
+  different ends: **if two layers answer the same question, derive both answers from the same
   place, and test the shapes that carry no content at all.**
+- **`git diff --name-only` reports POST-IMAGE paths**, so it is not by itself "the files this
+  diff touched": a 100%-similarity `git mv` OUT of a contract zone names only the destination,
+  and with no hunk body there are no lines to scan either — so the gate misses a change that
+  physically moved a contract value out of the zone that governs it. Union git's list with the
+  paths the diff itself names.
+- **"I could not read the input" must never be encoded as an empty result.** Returning `[]`
+  for an unparseable diff reads downstream as "this diff touches no files", which silently
+  disables the path arm of the check while the other layer still has git's list. Return a
+  distinguishable "unreadable" and make every caller state its own fallback — this is
+  `boolean-whose-no-means-two-things.md` (`[logic/ambiguous-false]`) in list form.
+- **A test whose expected result matches the OLD, buggy behaviour proves nothing.** The
+  fallback test here asserted `ESCALATE`, which the pre-`adr/008` code produced on the same
+  input; only a paired control — the same content in a WELL-FORMED diff, which must NOT
+  escalate — shows the fallback ran at all. Settle it by measurement: revert the fix and watch
+  the test go red.
 - Every narrowing is leniency, so every unanswerable case must fall back to the OLD, stricter
   reading: an unwalkable diff → one unattributed bucket every zone sees; a section with no
   known path → in scope everywhere and exempt from nothing; a path shape that cannot be
@@ -87,5 +102,7 @@ the next question is which layer the failure moved to — not whether the fix wo
   same narrowing one layer up; the fix that exposed this one.
 - `docs/gotchas/critic-sees-only-the-diff-hunk.md` — #123, the layer above that.
 - `docs/gotchas/validated-one-string-used-another.md` — why the diff walker is shared.
+- `docs/gotchas/boolean-whose-no-means-two-things.md` — the same defect in list form: an empty
+  path list meaning both "names nothing" and "could not read the diff".
 - `docs/PRINCIPLES.md` #10 (fail toward the safe state), #15 (the gate proves only formalized
   properties).

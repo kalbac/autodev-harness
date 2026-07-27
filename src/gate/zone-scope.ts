@@ -91,16 +91,40 @@ export function attributeDiffLines(diffText: string, fallbackLines: string[]): D
  * Both are the same failure: the conductor's contract-risk answer contradicting the
  * gate's on one diff.
  *
- * An unparseable diff yields `[]` rather than a throw, and that is not leniency here:
- * the same failure makes `attributeDiffLines` hand every zone every line, so the
- * string-scan arm of `zoneTouched` fires on the whole diff — the pre-adr/008 answer.
+ * An unparseable diff is reported as `readable: false` and NEVER as an empty path list.
+ * That distinction is the whole point of the return type: an empty list means "this diff
+ * names no files", while unreadable means "no answer", and a caller that conflates the two
+ * silently drops the path arm of the zone check for every truncated diff — which is the
+ * `ambiguous-false` shape this repository keeps producing. Each caller states its own
+ * fallback for "no answer", and both fall back toward MORE checking, never less.
  */
-export function diffPaths(diffText: string): string[] {
+export type DiffPathScan = { readable: true; paths: string[] } | { readable: false };
+
+export function scanDiffPaths(diffText: string): DiffPathScan {
   try {
-    return diffNamedPaths(diffText);
+    return { readable: true, paths: diffNamedPaths(diffText) };
   } catch {
-    return [];
+    return { readable: false };
   }
+}
+
+/**
+ * The zone check's file list: git's changed files UNIONED with every path the diff
+ * names. Used by the GATE, whose `changedFiles` comes from `git diff --name-only`.
+ *
+ * `--name-only` reports POST-IMAGE paths, so a 100%-similarity rename of a zone file
+ * out of its zone reports only the destination — and a section with no hunk body has
+ * no lines to scan either, so the zone that governs the value the rename just moved
+ * was reported untouched (R3 review finding). The diff's own headers still name the
+ * source. Strictly more files, never fewer.
+ *
+ * A diff that cannot be walked falls back to git's list ALONE, which is exactly the
+ * pre-adr/008 gate: unreadable input never removes a file from the check, and never
+ * turns a diff-shape problem into a gate crash either.
+ */
+export function unionDiffNamedPaths(changedFiles: string[], diffText: string): string[] {
+  const scan = scanDiffPaths(diffText);
+  return scan.readable ? [...new Set([...changedFiles, ...scan.paths])] : changedFiles;
 }
 
 /**
