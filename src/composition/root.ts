@@ -72,6 +72,7 @@ import type { AgentCiCapability } from "../gate/agent-ci-exec.js";
 import { CiEventBus } from "../api/ci-events.js";
 import { foldCiStatus, initialCiStatus } from "../gate/ci-status.js";
 import { parseInvariants, zoneTouched, diffAddedRemovedLines, type Invariants } from "../gate/invariants.js";
+import { attributeDiffLines, excludeDeclaredDocs, zoneScopedLines } from "../gate/zone-scope.js";
 import {
   parseGuardsTable,
   isMutationVerified,
@@ -548,13 +549,27 @@ export async function buildProjectRoot(
   // `loadInvariantsFrom`/`loadGuardPairsFrom` are the module-level, trusted-root loaders
   // defined above (adr/006 Phase 1) -- both closures below pass `cfg`/`raw` explicitly.
 
-  /** Which contract zones (by id) does this diff touch? Path-less: only the +/- diff lines
-   *  are checked. Already read from `repoRoot` pre-Phase-1 (this is the symmetry `gateDeps`
-   *  below now matches). */
+  /** Which contract zones (by id) does this diff touch? Read from `repoRoot` pre-Phase-1
+   *  (this is the symmetry `gateDeps` below now matches).
+   *
+   *  Scoped exactly like the machine gate's own zone step as of `adr/008` (#140), and for
+   *  the reason the ADR gives: this answer and the gate's answer to the same question must
+   *  not disagree -- the conductor uses it to decide `contractRisk` (escalate now vs retry),
+   *  and a diff the gate will pass while this call says "contract touched" escalates work
+   *  the gate would have committed.
+   *
+   *  Two consequences, both deliberate. The changed-file list is now derived FROM THE DIFF
+   *  rather than passed as `[]`, so a zone's `path_globs` arm actually fires here (it never
+   *  could before -- strictly MORE zones are reported, the safe direction). And declared
+   *  `contract.docPaths` are excluded here too, so a docs-only change is not read as
+   *  contract risk one layer above the gate that just cleared it. */
   const zonesTouchedInDiff = async (diff: string): Promise<string[]> => {
     const inv = await loadInvariantsFrom(cfg, raw, repoRoot);
-    const diffLines = diffAddedRemovedLines(diff);
-    return inv.contract_zones.filter((z) => zoneTouched(z, [], diffLines)).map((z) => z.id);
+    const byFile = excludeDeclaredDocs(attributeDiffLines(diff, diffAddedRemovedLines(diff)), cfg.contract.docPaths);
+    const changedFiles = byFile.map((e) => e.file).filter((f): f is string => f !== null);
+    return inv.contract_zones
+      .filter((z) => zoneTouched(z, changedFiles, zoneScopedLines(z, byFile)))
+      .map((z) => z.id);
   };
 
   // --- Gate --------------------------------------------------------------
@@ -576,6 +591,11 @@ export async function buildProjectRoot(
       loadInvariants: () => loadInvariantsFrom(cfg, raw, repoRoot),
       loadGuardPairs: () => loadGuardPairsFrom(cfg, raw, repoRoot),
       constitutionPaths: cfg.contract.constitutionPaths,
+      // adr/008 (#140): the same trusted-root declaration adr/007 gave the critic,
+      // reused to scope the machine gate's CONTRACT-ZONE step -- and only that step.
+      // `contract.*` is read from `cfg`, i.e. the trusted root, never the worktree
+      // (adr/006 Phase 1), so a worker cannot declare its own leniency here either.
+      docPaths: cfg.contract.docPaths,
       resolveScope: async (inp: GateInput) => {
         const g = createGit(wt.path);
         return { changedFiles: await g.changedFiles(inp.fileSet), diffText: await g.diffText(inp.fileSet) };

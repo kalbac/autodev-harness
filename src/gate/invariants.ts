@@ -97,6 +97,14 @@ export function diffAddedRemovedLines(diffText: string): string[] {
 /**
  * Does the change touch this zone? Parity: `_common.ps1 Test-ZoneTouched`.
  *
+ * SCOPE IS THE CALLER'S JOB as of `adr/008` (#140). This function matches the zone's
+ * patterns against whatever `changedFiles`/`diffLines` it is handed; deciding WHICH
+ * lines a zone may see -- `path_globs` as the scope of the string scan, and declared
+ * `contract.docPaths` excluded outright -- lives in `gate/zone-scope.ts`, because both
+ * are oracle-semantic narrowings with their own fail-closed reasoning. Pass unscoped
+ * lines here and you get the pre-adr/008 behaviour, where documenting a contract value
+ * counted as changing it. The PS original has that behaviour; we deliberately diverge.
+ *
  * Deliberate PS-parity quirk: PowerShell's `-match` (regex) and `-like`
  * (wildcard/contains) operators are CASE-INSENSITIVE by default, so both
  * the grep_patterns and exact_strings checks below are case-insensitive —

@@ -386,14 +386,17 @@ function ConfigSections({
           value={
             <PathList
               paths={contract.docPaths}
-              empty="none — the critic's mandate is never narrowed"
+              empty="none — the critic's mandate is never narrowed, and contract zones are checked in every file"
             />
           }
         />
         <p className="pt-2 text-[11px] leading-relaxed text-muted-foreground">
-          A change touching <em>only</em> documentation paths gets one narrowing: an assertion it adds about code it
-          does not touch is reported as a note instead of blocking the merge, because the critic cannot verify it
-          either way. A diff that rewrites documented behaviour is still reviewed in full.
+          Declaring a path here has <strong>two</strong> effects, both of them narrowings. For the{" "}
+          <strong>critic</strong>: a change touching <em>only</em> these paths has an assertion it adds about code it
+          does not touch reported as a note instead of blocking the merge, because the critic cannot verify it either
+          way. For the <strong>machine gate</strong>: these paths are outside contract-zone checking, so documenting a
+          contract value is not treated as changing it. Neither narrowing touches the protected paths above, and a diff
+          that rewrites documented behaviour is still reviewed in full.
         </p>
       </SettingsSection>
 

@@ -41,6 +41,10 @@ import { resolve } from "node:path";
 import { READ_NO_FOLLOW_FLAGS } from "../util/bounded-read.js";
 import { realpathContains } from "../util/path-contain.js";
 import { globMatch } from "../util/glob.js";
+// Shared with the machine gate's zone scoping (`gate/zone-scope.ts`, adr/008): the same
+// `contract.docPaths` values are shape-checked in both places, and two copies of a path
+// predicate is this repo's most recurring defect shape (`[critic/validated-one-string-used-another]`).
+import { isPlainRelativePath } from "../util/path-shape.js";
 
 /**
  * Per-file and total attachment budgets, in bytes.
@@ -125,35 +129,6 @@ export function isDeclaredDocsOnlyChange(changedPaths: string[], docPathGlobs: s
     if (!globs.some((g) => globMatch(g, p))) return false;
   }
   return true;
-}
-
-/**
- * Is this a worktree-relative path with no traversal and no drive/root anchor?
- *
- * `globMatch` is a pure textual matcher: `docs/**` compiles to `^docs/.*$`, which the
- * string `docs/../src/index.php` satisfies while naming a file that is not under `docs/`
- * at all (R1 blocker 2). Git's `--name-only` output never contains a `..` segment, so
- * this is not reachable through the conductor today — but `isDeclaredDocsOnlyChange` is
- * an exported predicate guarding an oracle decision, and "unreachable today" is not the
- * standard a leniency gate is held to.
- *
- * It REFUSES rather than normalizes, deliberately. Normalizing would silently accept a
- * path list that should never have contained a traversal segment in the first place; a
- * `..` arriving here means the caller is not passing what this function documents, and
- * the honest response to an input you cannot explain is to decline
- * (`docs/gotchas/boolean-whose-no-means-two-things.md`).
- */
-function isPlainRelativePath(p: string): boolean {
-  // A control character (NUL above all) cannot occur in a path git reports, and a NUL
-  // in particular truncates the string for any C-level consumer downstream — so
-  // `docs/README.md\0src/index.php` would match `docs/**` here and name a different
-  // file to something else (R2 minor 3).
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(p)) return false;
-  const s = p.replace(/\\/g, "/");
-  if (s.startsWith("/")) return false; // POSIX absolute, and UNC `//server/share`
-  if (/^[a-zA-Z]:/.test(s)) return false; // Windows drive-anchored, incl. a bare `D:`
-  return !s.split("/").includes("..");
 }
 
 /**

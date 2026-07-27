@@ -25,3 +25,4 @@
 | [005](005-critic-is-a-correctness-gate-coverage-is-mechanical.md) | The critic is a correctness gate; coverage is the machine gate's job | accepted |
 | [006](006-capability-based-authority-model.md) | Capability-based Authority Model — the worker never controls its own oracle | accepted |
 | [007](007-critic-judges-the-diff-not-unverifiable-claims-about-untouched-code.md) | The critic judges the diff, not unverifiable claims about untouched code (leniency scoped by operator-declared `contract.docPaths`) | accepted |
+| [008](008-path-globs-scope-the-contract-zone-scan.md) | A contract zone's `path_globs` is its SCOPE, and a declared doc path is outside zone checking | accepted |

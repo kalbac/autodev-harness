@@ -268,14 +268,72 @@ export interface AddedLines {
 }
 
 /**
+ * The `+`/`-` CONTENT lines of one file's hunks, in source order, with their
+ * diff prefix intact (`+$id = 'x';`) — the exact strings `diffAddedRemovedLines`
+ * produces, but attributed to the file they came from.
+ *
+ * `file` is `null` for lines the walk cannot attribute to a post-image path: a
+ * DELETED file's hunks, whose new side is `+++ /dev/null`. Callers treat an
+ * unattributed line as in-scope everywhere (adr/008) — removing a documented
+ * contract value is exactly the shape `adr/007` refuses leniency for, so
+ * "unknown file" must fail toward being checked, never toward being skipped.
+ */
+export interface DiffFileContent {
+  file: string | null;
+  lines: string[];
+}
+
+/** Everything one walk of a diff yields. Split into two narrow exported readers
+ *  below so each caller states which question it is asking. */
+interface DiffWalk extends AddedLines {
+  content: DiffFileContent[];
+}
+
+/**
  * Walks a unified diff (possibly covering several files and several hunks per
  * file) and returns, per worktree-relative `/`-separated path, the set of
  * new-file line numbers the diff added, plus the set of paths that are brand
  * new (see `AddedLines`).
  */
 export function addedLineNumbers(diffText: string): AddedLines {
+  const { added, newFiles } = walkDiff(diffText);
+  return { added, newFiles };
+}
+
+/**
+ * The diff's `+`/`-` content lines, grouped by the file each came from
+ * (`DiffFileContent`), in first-appearance order.
+ *
+ * Why this shares `addedLineNumbers`'s walk rather than re-deriving the split with
+ * its own scan: the flat reader (`diffAddedRemovedLines`) tells `+++ b/path` from an
+ * added line whose own content starts with `++` by TEXT, which is undecidable — the
+ * two are byte-identical on the wire. Only the hunk headers' declared line counts
+ * settle it, and this module already counts them (trap #1). A second parser answering
+ * the same question a different way is the defect shape this repo names most often
+ * (`docs/gotchas/validated-one-string-used-another.md`).
+ *
+ * THROWS on a malformed or truncated diff, exactly like `addedLineNumbers` — the gate
+ * catches it and falls back to the unscoped flat reading (`gate/zone-scope.ts`), which
+ * is the stricter answer, so a diff this cannot parse never buys anyone leniency.
+ */
+export function diffContentLinesByFile(diffText: string): DiffFileContent[] {
+  return walkDiff(diffText).content;
+}
+
+function walkDiff(diffText: string): DiffWalk {
   const added = new Map<string, Set<number>>();
   const newFiles = new Set<string>();
+  // Keyed by post-image path, with `null` as a real key for a deleted file's
+  // lines. Insertion-ordered, which is what gives `content` its source order.
+  const content = new Map<string | null, string[]>();
+  const record = (path: string | null, line: string): void => {
+    let bucket = content.get(path);
+    if (!bucket) {
+      bucket = [];
+      content.set(path, bucket);
+    }
+    bucket.push(line);
+  };
 
   // Strip a trailing `\r` from every line UP FRONT, before any header/hunk/body
   // logic runs, so a CRLF-captured diff (routine on Windows) behaves identically
@@ -344,6 +402,9 @@ export function addedLineNumbers(diffText: string): AddedLines {
           }
           set.add(cursor);
         }
+        // Recorded for EVERY added line, including one in a file with no
+        // post-image path -- see `DiffFileContent.file`.
+        record(currentPath, line);
         cursor++;
         remainingNew--;
         continue;
@@ -360,6 +421,10 @@ export function addedLineNumbers(diffText: string): AddedLines {
               `its header declared -- the diff is malformed or was truncated. Offending line: ${JSON.stringify(line)}`,
           );
         }
+        // A removed line has no NEW-file line number (that is trap #3, and why
+        // the cursor does not advance) -- but it is still diff content the zone
+        // scan must see: removing a contract value is touching it.
+        record(currentPath, line);
         remainingOld--;
         continue;
       }
@@ -556,7 +621,11 @@ export function addedLineNumbers(diffText: string): AddedLines {
     );
   }
 
-  return { added, newFiles };
+  return {
+    added,
+    newFiles,
+    content: [...content].map(([file, lines]) => ({ file, lines })),
+  };
 }
 
 /**
