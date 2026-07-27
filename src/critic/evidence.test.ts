@@ -17,6 +17,14 @@ import {
 
 const sized = (path: string, bytes: number): EvidenceEntry => ({ path, kind: "sized", bytes });
 
+/** A minimal well-formed file-header block for diff fixtures. Since R5 a bare hunk is
+ *  refused on purpose (a hunk with no `+++ ` belongs to a file `diffHeaderPaths` cannot
+ *  name), so every fixture exercising the COUNTING logic has to carry real headers. */
+const HDR = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+`;
+
 describe("planEvidence (the single budget decision)", () => {
   it("plans every file that fits, in a stable path order", () => {
     const plan = planEvidence([sized("b.php", 2), sized("a.php", 1), sized("c.php", 3)]);
@@ -356,7 +364,7 @@ rename to docs/B.md
   });
 
   it("refuses a hunk body line it cannot classify, instead of assuming it is context", () => {
-    expect(isAdditionsOnlyDiff("@@ -1,1 +1,2 @@\n+ok\n?? what is this\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,2 @@\n+ok\n?? what is this\n")).toBe(false);
   });
 
   it("handles a multi-file diff: additions in one file, a removal in another", () => {
@@ -470,6 +478,70 @@ ${trailer}
     expect(isAdditionsOnlyDiff("--- a/docs/x.md\n+++ b/docs/x.md\n@@ -1,1 +1,2 @@\n c\n+a\n")).toBe(false);
   });
 
+  it("R5 high 1: an EMPTY file deletion carries no hunk, so it is refused at the header", () => {
+    // Waiting to encounter a `-` line can never catch this: git deletes an empty file
+    // with a `deleted file mode` header and nothing else. The additions from the FIRST
+    // file made the whole diff qualify while the second one was being deleted.
+    const evil = `diff --git a/docs/add.md b/docs/add.md
+new file mode 100644
+--- /dev/null
++++ b/docs/add.md
+@@ -0,0 +1 @@
++added
+diff --git a/docs/empty.md b/docs/empty.md
+deleted file mode 100644
+index e69de29..0000000
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R5 high 1: a rename is refused too — it removes a path this predicate cannot weigh", () => {
+    const renamed = `diff --git a/docs/add.md b/docs/add.md
+--- a/docs/add.md
++++ b/docs/add.md
+@@ -1,1 +1,2 @@
+ first
++added
+diff --git a/docs/old.md b/docs/new.md
+similarity index 100%
+rename from docs/old.md
+rename to docs/new.md
+`;
+    expect(isAdditionsOnlyDiff(renamed)).toBe(false);
+  });
+
+  it("R5 high 2: a hunk with no `+++ ` header is refused — its file cannot be named", () => {
+    // Without this, `diffHeaderPaths` names only the first file, so
+    // `qualifiesForDocsNarrowing`'s subset check silently does not cover the second one
+    // and a code file rides along inside a "docs-only" change.
+    const evil = `diff --git a/docs/ok.md b/docs/ok.md
+--- /dev/null
++++ b/docs/ok.md
+@@ -0,0 +1 @@
++ok
+diff --git a/src/secret.ts b/src/secret.ts
+@@ -0,0 +1 @@
++secret
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+    expect(
+      qualifiesForDocsNarrowing(evil, {
+        attached: [{ path: "docs/ok.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("R5 medium: a hunk supplying more lines than it declared is refused, not absorbed", () => {
+    // `-1,1 +1,1` with `+a`/`+b`/` c` drove newLeft to -2 while the `oldLeft > 0` arm
+    // kept the loop alive, so every line was consumed and a malformed diff reported as
+    // additions-only. The counters may not go negative, and the loop may only end at
+    // exactly zero.
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,1 @@\n+a\n+b\n c\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -0,0 +1,1 @@\n+a\n context\n")).toBe(false);
+  });
+
   it("still accepts a well-formed MULTI-hunk, multi-file additions-only diff", () => {
     // The allow-list must not break the ordinary case it guards -- a strictness fix that
     // rejects every real diff would silently disable the narrowing rather than scope it.
@@ -508,30 +580,30 @@ diff --git a/docs/a.md b/docs/a.md
   });
 
   it("refuses a hunk whose body is shorter than its declared counts", () => {
-    expect(isAdditionsOnlyDiff("@@ -1,5 +1,6 @@\n+one\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,5 +1,6 @@\n+one\n")).toBe(false);
   });
 
   it("refuses an unparseable hunk header instead of skipping it", () => {
-    expect(isAdditionsOnlyDiff("@@ garbage @@\n+one\n")).toBe(false);
-    expect(isAdditionsOnlyDiff("@@@ -1,1 -1,1 +1,2 @@@\n++combined\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ garbage @@\n+one\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@@ -1,1 -1,1 +1,2 @@@\n++combined\n")).toBe(false);
   });
 
   it("accepts the single-line hunk form where the size is omitted", () => {
-    expect(isAdditionsOnlyDiff("@@ -1 +1,2 @@\n context\n+added\n")).toBe(true);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1 +1,2 @@\n context\n+added\n")).toBe(true);
   });
 
   it("accepts a hunk header carrying a section heading after the second @@", () => {
-    expect(isAdditionsOnlyDiff("@@ -1,1 +1,2 @@ class Foo\n context\n+added\n")).toBe(true);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,2 @@ class Foo\n context\n+added\n")).toBe(true);
   });
 
   it("counts an ADDED line that merely looks like a header as content, not as structure", () => {
     // This repo commits `.diff` fixtures, so a doc really can gain a line reading
     // `diff --git ...` or `@@ ... @@`. Inside a hunk body it arrives prefixed.
-    expect(isAdditionsOnlyDiff("@@ -1,1 +1,3 @@\n context\n+diff --git a/x b/x\n+@@ -1 +1 @@\n")).toBe(true);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,3 @@\n context\n+diff --git a/x b/x\n+@@ -1 +1 @@\n")).toBe(true);
   });
 
   it("still refuses a diff whose only hunk adds nothing", () => {
-    expect(isAdditionsOnlyDiff("@@ -1,1 +1,1 @@\n unchanged\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,1 @@\n unchanged\n")).toBe(false);
   });
 });
 

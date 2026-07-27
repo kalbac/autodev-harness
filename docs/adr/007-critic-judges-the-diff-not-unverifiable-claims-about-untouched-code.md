@@ -69,7 +69,7 @@ demanded a test in a repo where no test could exist.
 `notes`; it does not lower the verdict — but ONLY for a diff that ADDS prose, never for
 one that rewrites an existing documented contract.**
 
-**Both halves of "does this change qualify" are settled MECHANICALLY, and the prompt is
+**Every part of "does this change qualify" is settled MECHANICALLY, and the prompt is
 told only the answer.** The section is rendered when, and only when:
 
 1. **Every path the diff touches matches an OPERATOR DECLARATION.** The project lists its
@@ -248,8 +248,21 @@ the guarantee.
   dashboard toggle.
 - **Unit tests cannot prove a prompt change** (self-authored fixtures do not exercise
   the model — `[chat/launch-marker-needs-prompt-contract]`). Verification is a REAL
-  critic invocation on the two shapes: the corpus's docs-only append must reach `clean`,
-  and a docs diff that rewrites a documented contract must still be reviewable.
+  critic invocation on both shapes, repeated on a HASHED prompt so a single observation
+  cannot be mistaken for a property of the model (the s58 lesson). Measured on
+  `gpt-5.6-luna`, s59:
+
+  | Shape | prompt sha | runs | result |
+  |---|---|---|---|
+  | docs append, paths DECLARED (narrowing rendered) | `e1895e341ffa` | 4 | **4/4 `clean`** @ 0.98–0.99, each naming the unverifiable assertions in `notes` |
+  | same diff, nothing declared (control, no narrowing) | `c30aa575bee6` | 5 | **4/5 `uncertain`** @ 0.84–0.91; 1/5 `clean` @ 0.82 |
+  | contract REWRITE, paths declared (narrowing mechanically ABSENT) | `cd9e273c487b` | 3 | **3/3 non-clean** (2 `broken` @ 0.98–0.99, 1 `uncertain` @ 0.94), **3/3 naming the reversed contract** |
+
+  Stated honestly: the control is not a hard `uncertain` — one run in five reached
+  `clean` without the narrowing. So the narrowing produces a strong shift (4/5 uncertain
+  → 4/4 clean), not a switch flip, and the class was *mostly* blocked rather than
+  *always* blocked. What is unambiguous is the other direction: the rewrite shape never
+  reached `clean` and never failed to name the contract it reversed.
 - The `corpus/RESULTS-2026-07-26b.md` run measured the prompt **before** this ADR, so
   its docs-case result is the pre-decision behaviour and must not be reread as a
   post-decision one. The corpus polygon must declare `contract.docPaths` for the

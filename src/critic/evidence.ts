@@ -201,6 +201,10 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
   // characters resemble.
   type Ctx = "start" | "fileHeader" | "afterHunk";
   let ctx: Ctx = "start";
+  /** Has the CURRENT file block produced a `+++ ` header? R5 high 2: a hunk accepted
+   *  without one belongs to a file `diffHeaderPaths` cannot name, which makes
+   *  `qualifiesForDocsNarrowing`'s subset check vacuous for exactly that file. */
+  let blockHasNewPath = false;
 
   for (let i = 0; i < lines.length; i++) {
     const header = lines[i]!;
@@ -209,13 +213,22 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
       if (header === "") continue;
       if (header.startsWith("diff --git ")) {
         ctx = "fileHeader";
+        blockHasNewPath = false;
         continue;
       }
       // `\ No newline at end of file` can trail the last counted line of a hunk.
       if (ctx === "afterHunk" && header.startsWith("\\ ")) continue;
-      if (ctx === "fileHeader" && FILE_HEADER_BLOCK_PREFIXES.some((p) => header.startsWith(p))) continue;
+      if (ctx === "fileHeader" && FILE_HEADER_BLOCK_PREFIXES.some((p) => header.startsWith(p))) {
+        if (header.startsWith("+++ ")) blockHasNewPath = true;
+        continue;
+      }
       return false;
     }
+
+    // R5 high 2: every hunk must belong to a file this diff actually NAMED. A hunk with
+    // no `+++ ` header ahead of it is a hunk `diffHeaderPaths` cannot see, so the subset
+    // check in `qualifiesForDocsNarrowing` would silently not cover it.
+    if (!blockHasNewPath) return false;
 
     // `@@ -l[,s] +l[,s] @@ optional section heading`. A missing size means 1.
     const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(header);
@@ -224,6 +237,10 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
     let newLeft = m[2] === undefined ? 1 : Number(m[2]);
     sawHunk = true;
 
+    // R5 medium: the counters may never go NEGATIVE, and the loop may only end with both
+    // at exactly zero. Exiting on `<= 0` let a hunk declaring `-1,1 +1,1` supply
+    // `+a`/`+b`/` c`, drive newLeft to -2, consume every line, and report a malformed
+    // diff as additions-only.
     while (oldLeft > 0 || newLeft > 0) {
       i++;
       if (i >= lines.length) return false; // truncated hunk -- do not guess the rest
@@ -231,6 +248,7 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
 
       if (line.startsWith("-")) return false; // the whole point
       if (line.startsWith("+")) {
+        if (newLeft <= 0) return false; // more additions than the header declared
         additions++;
         newLeft--;
         continue;
@@ -240,6 +258,7 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
       if (line.startsWith("\\")) continue;
       // ` ` context, and the bare empty line git emits for an empty context line.
       if (line === "" || line.startsWith(" ")) {
+        if (oldLeft <= 0 || newLeft <= 0) return false; // context outside both counts
         oldLeft--;
         newLeft--;
         continue;
@@ -258,25 +277,18 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
  * which they are headers: after a hunk, a line starting `--- ` is a removed line whose
  * content is `-- ` (R4 high).
  *
- * Two deliberate omissions: `Binary files ... differ` and `GIT binary patch`. A binary
- * change is content the parser cannot read at all, so it can neither confirm nor deny a
- * removal, and the honest answer is to decline the whole diff.
+ * The list is deliberately SHORT, and every omission from it is a refusal:
+ *
+ *  - `deleted file mode` — a deletion is not an additions-only change, and an EMPTY file
+ *    is deleted with NO HUNK AT ALL, so waiting to encounter a `-` line never catches it.
+ *    R5 high 1: a diff that added one doc and deleted an empty one qualified.
+ *  - `rename from`/`rename to`/`copy from`/`copy to`/`similarity index`/
+ *    `dissimilarity index` — a rename removes a path, which this predicate cannot weigh,
+ *    and a pure rename has nothing to be lenient about in the first place.
+ *  - `Binary files ... differ` / `GIT binary patch` — content the parser cannot read, so
+ *    it can neither confirm nor deny a removal.
  */
-const FILE_HEADER_BLOCK_PREFIXES = [
-  "index ",
-  "--- ",
-  "+++ ",
-  "old mode ",
-  "new mode ",
-  "new file mode ",
-  "deleted file mode ",
-  "similarity index ",
-  "dissimilarity index ",
-  "rename from ",
-  "rename to ",
-  "copy from ",
-  "copy to ",
-];
+const FILE_HEADER_BLOCK_PREFIXES = ["index ", "--- ", "+++ ", "old mode ", "new mode ", "new file mode "];
 
 /**
  * The paths a unified diff's FILE HEADERS name, taken from the `--- a/x` / `+++ b/x`
