@@ -84,4 +84,5 @@ invariant checking · agent-CI · role/model separation. (I.e. materially more t
 - `PRINCIPLES.md` — the invariants (risk 3 + "worker never controls its oracle" feed it).
 - `adr/004-live-orchestrator-presence-and-post-review-autonomy.md` — north-star ↔ profile relation.
 - `CURRENT-STATE.md` — where the Authority-Model → Profiles thrust sits in the plan.
-- (planned) `adr/006` — the Authority Model.
+- `adr/006-capability-based-authority-model.md` — the Authority Model this note seeded
+  (all three phases shipped by s51; risk 5 closed, risk 3 became Principle 15).
