@@ -125,6 +125,10 @@ export interface ProjectConfigView {
    *  ~/.claude + project extension set unless the operator opts in). Mirrors
    *  `src/api/config-view.ts`'s `buildProjectConfigView` projection. */
   isolation: { worker: { cleanRoom: boolean; mcp: boolean; skills: boolean } };
+  /** Oracle definitions the operator has blessed, read-only (#138). Deliberately not
+   *  part of `ProjectConfigForm`: these change what "pass" means, and `adr/006` keeps
+   *  that behind a deliberate edit of `.autodev/config.yaml`, not a dashboard control. */
+  contract: { constitutionPaths: string[]; docPaths: string[] };
   /** Read-only policy toggle the UI shows but never writes. */
   policy: { heterogeneity: "warn" | "off" };
   /** Server-computed warnings (rendered verbatim) — non-empty when worker &

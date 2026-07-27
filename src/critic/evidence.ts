@@ -40,6 +40,7 @@ import { open, lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { READ_NO_FOLLOW_FLAGS } from "../util/bounded-read.js";
 import { realpathContains } from "../util/path-contain.js";
+import { globMatch } from "../util/glob.js";
 
 /**
  * Per-file and total attachment budgets, in bytes.
@@ -69,6 +70,298 @@ export const CRITIC_DIFF_CONTEXT_LINES = 25;
  *  reasons — never contents). Named here so the writer and any reader of the archived
  *  corpus artifacts agree on it by construction. */
 export const CRITIC_EVIDENCE_FILE = "critic-evidence.json";
+
+/**
+ * `adr/007`: does this change touch ONLY paths the operator declared as documentation?
+ *
+ * The critic's mandate is narrowed for such a change — an assertion it makes about code
+ * the diff does not touch becomes a `notes` entry instead of a lowered verdict, because
+ * the code in question is deliberately outside the change and the critic's only honest
+ * answer is "I cannot verify this". A question with one possible answer is not a gate;
+ * it is a permanent `uncertain` that blocks the whole class forever.
+ *
+ * **This is a DECLARATION check, not a detection.** The first implementation inferred
+ * prose from the file extension plus a blacklist of executable markers, and three review
+ * rounds found three different markers it missed — a fence arriving as a diff CONTEXT
+ * line, then `<script>`, then `<iframe>`/`onerror`/`javascript:`/`{% include %}`. The
+ * blacklist was not merely incomplete, it was unclosable: whether a `.md` executes is a
+ * property of the PROJECT's toolchain (a doc-test runner, a static-site generator, a
+ * templating include), which the harness has no way to see. So the operator declares
+ * (`contract.docPaths`) and the harness verifies the declaration covers the change. That
+ * is `adr/006`'s pattern applied to the mandate: the oracle is blessed, never guessed.
+ *
+ * Refusals, all of which yield `false` — the failure direction is always "no leniency",
+ * so every way this can go wrong leaves the gate exactly as strict as it is today:
+ *
+ *  1. **Nothing declared.** An empty `docPaths` is the default, and it means the project
+ *     has not opted in. No leniency anywhere.
+ *  2. **No changed paths.** Nothing to vouch for; the question is not meaningful.
+ *  3. **A non-string or blank path.** REFUSED, never filtered away. A blank entry names
+ *     nothing, so it cannot be matched against a declaration — and quietly skipping it
+ *     would let `["", "docs/x.md"]` qualify on the strength of a list only half read
+ *     (`docs/gotchas/empty-path-resolves-to-repo-root.md` is the same shape one layer
+ *     down).
+ *  4. **Any path outside the declaration.** Every path must match; one unmatched path
+ *     disqualifies the change. A mixed docs-plus-code diff is a code diff.
+ *
+ * `changedPaths` must be the file list of the SAME diff the critic reads — the
+ * authoritative set, before any budget or blank filtering (see `CriticEvidence`).
+ */
+export function isDeclaredDocsOnlyChange(changedPaths: string[], docPathGlobs: string[]): boolean {
+  // Both arguments cross a module boundary and one of them arrives from a config file.
+  // A non-array here would throw out of a predicate whose every other failure mode is a
+  // quiet `false`, turning "no leniency" into "the evidence collection died" (R1 major:
+  // the middle-inserted positional parameter makes a mis-ordered call plausible, and TS
+  // catches it only for callers it can see).
+  if (!Array.isArray(changedPaths) || !Array.isArray(docPathGlobs)) return false;
+
+  const globs = docPathGlobs.filter((g) => typeof g === "string" && g.trim() !== "");
+  if (globs.length === 0) return false;
+  if (changedPaths.length === 0) return false;
+
+  for (const p of changedPaths) {
+    if (typeof p !== "string" || p.trim() === "") return false;
+    if (!isPlainRelativePath(p)) return false;
+    if (!globs.some((g) => globMatch(g, p))) return false;
+  }
+  return true;
+}
+
+/**
+ * Is this a worktree-relative path with no traversal and no drive/root anchor?
+ *
+ * `globMatch` is a pure textual matcher: `docs/**` compiles to `^docs/.*$`, which the
+ * string `docs/../src/index.php` satisfies while naming a file that is not under `docs/`
+ * at all (R1 blocker 2). Git's `--name-only` output never contains a `..` segment, so
+ * this is not reachable through the conductor today — but `isDeclaredDocsOnlyChange` is
+ * an exported predicate guarding an oracle decision, and "unreachable today" is not the
+ * standard a leniency gate is held to.
+ *
+ * It REFUSES rather than normalizes, deliberately. Normalizing would silently accept a
+ * path list that should never have contained a traversal segment in the first place; a
+ * `..` arriving here means the caller is not passing what this function documents, and
+ * the honest response to an input you cannot explain is to decline
+ * (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+ */
+function isPlainRelativePath(p: string): boolean {
+  // A control character (NUL above all) cannot occur in a path git reports, and a NUL
+  // in particular truncates the string for any C-level consumer downstream — so
+  // `docs/README.md\0src/index.php` would match `docs/**` here and name a different
+  // file to something else (R2 minor 3).
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(p)) return false;
+  const s = p.replace(/\\/g, "/");
+  if (s.startsWith("/")) return false; // POSIX absolute, and UNC `//server/share`
+  if (/^[a-zA-Z]:/.test(s)) return false; // Windows drive-anchored, incl. a bare `D:`
+  return !s.split("/").includes("..");
+}
+
+/**
+ * Does this unified diff consist of ADDITIONS ONLY — at least one added line, and not a
+ * single removed one?
+ *
+ * `adr/007`'s narrowing is scoped to added prose, because the attack it must keep closed
+ * is "rewrite the documented contract, then ship code that matches the documentation".
+ * The first version of this change stated that scope in the PROMPT and left the
+ * added-vs-modified call to the model, which R1 called a blocker — correctly, and for the
+ * same reason R1 of the parked attempt was a blocker: in this project the enforcement
+ * decision is never the model's (Principles 1 and 3). The distinction is mechanically
+ * decidable from the diff, so it is decided here.
+ *
+ * It parses hunks by their DECLARED LINE COUNTS (`@@ -old,n +new,m @@`) and consumes
+ * exactly that many body lines, rather than guessing where a hunk ends from line
+ * prefixes. R2 is why. The prefix version ended a hunk on the next `diff --git `, which
+ * meant a bare `diff --git` line appearing *inside* a hunk body silently reset the parser
+ * and hid every removal after it. Counting from the header removes the guess: inside a
+ * hunk the first character is unambiguous, and outside one nothing is interpreted as
+ * content at all.
+ *
+ * Refuses (returns `false`) on: any removal, a diff with no hunks (a pure rename or mode
+ * change has nothing to be lenient about), a hunk whose body does not match its declared
+ * counts, an unparseable hunk header, and any hunk-body line it cannot classify. Every
+ * refusal costs only leniency (Principle 10).
+ */
+export function isAdditionsOnlyDiff(diff: string): boolean {
+  if (typeof diff !== "string" || diff.trim() === "") return false;
+
+  const lines = diff.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+  let additions = 0;
+  let sawHunk = false;
+
+  // R4: a POSITIONAL state machine, not a flat allow-list. R3 accepted any recognized
+  // header prefix anywhere outside a hunk, and `--- ` is such a prefix — so a removed
+  // line whose content is `-- ` renders as `--- `, lands after a consumed hunk, and was
+  // skipped as a header instead of examined as a removal. `--- ` and `+++ ` are only
+  // headers in ONE position: inside the block that a `diff --git` line opens. After a
+  // hunk they are not headers at all, so they are not accepted there.
+  //
+  // This is the fifth round of the same shape (each fix removing one way to skip a line
+  // rather than removing skip-by-default), and position is what finally makes the
+  // question decidable: a line means what its LOCATION says it means, not what its first
+  // characters resemble.
+  type Ctx = "start" | "fileHeader" | "afterHunk";
+  let ctx: Ctx = "start";
+  /** Has the CURRENT file block produced a `+++ ` header? R5 high 2: a hunk accepted
+   *  without one belongs to a file `diffHeaderPaths` cannot name, which makes
+   *  `qualifiesForDocsNarrowing`'s subset check vacuous for exactly that file. */
+  let blockHasNewPath = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i]!;
+    if (!header.startsWith("@@")) {
+      // The empty split element from a trailing newline can never be a removal.
+      if (header === "") continue;
+      if (header.startsWith("diff --git ")) {
+        ctx = "fileHeader";
+        blockHasNewPath = false;
+        continue;
+      }
+      // `\ No newline at end of file` can trail the last counted line of a hunk.
+      if (ctx === "afterHunk" && header.startsWith("\\ ")) continue;
+      if (ctx === "fileHeader" && FILE_HEADER_BLOCK_PREFIXES.some((p) => header.startsWith(p))) {
+        if (header.startsWith("+++ ")) blockHasNewPath = true;
+        continue;
+      }
+      return false;
+    }
+
+    // R5 high 2: every hunk must belong to a file this diff actually NAMED. A hunk with
+    // no `+++ ` header ahead of it is a hunk `diffHeaderPaths` cannot see, so the subset
+    // check in `qualifiesForDocsNarrowing` would silently not cover it.
+    if (!blockHasNewPath) return false;
+
+    // `@@ -l[,s] +l[,s] @@ optional section heading`. A missing size means 1.
+    const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(header);
+    if (!m) return false;
+    let oldLeft = m[1] === undefined ? 1 : Number(m[1]);
+    let newLeft = m[2] === undefined ? 1 : Number(m[2]);
+    sawHunk = true;
+
+    // R5 medium: the counters may never go NEGATIVE, and the loop may only end with both
+    // at exactly zero. Exiting on `<= 0` let a hunk declaring `-1,1 +1,1` supply
+    // `+a`/`+b`/` c`, drive newLeft to -2, consume every line, and report a malformed
+    // diff as additions-only.
+    while (oldLeft > 0 || newLeft > 0) {
+      i++;
+      if (i >= lines.length) return false; // truncated hunk -- do not guess the rest
+      const line = lines[i]!;
+
+      if (line.startsWith("-")) return false; // the whole point
+      if (line.startsWith("+")) {
+        if (newLeft <= 0) return false; // more additions than the header declared
+        additions++;
+        newLeft--;
+        continue;
+      }
+      // A `\ No newline at end of file` marker belongs to the preceding line and
+      // consumes no count of its own.
+      if (line.startsWith("\\")) continue;
+      // ` ` context, and the bare empty line git emits for an empty context line.
+      if (line === "" || line.startsWith(" ")) {
+        if (oldLeft <= 0 || newLeft <= 0) return false; // context outside both counts
+        oldLeft--;
+        newLeft--;
+        continue;
+      }
+      return false; // anything else: we are not reading a hunk body we understand
+    }
+    ctx = "afterHunk";
+  }
+
+  return sawHunk && additions > 0;
+}
+
+/**
+ * Lines git may emit INSIDE the header block a `diff --git` line opens, and nowhere else.
+ * `--- `/`+++ ` are here rather than in a global list because that is the only position in
+ * which they are headers: after a hunk, a line starting `--- ` is a removed line whose
+ * content is `-- ` (R4 high).
+ *
+ * The list is deliberately SHORT, and every omission from it is a refusal:
+ *
+ *  - `deleted file mode` — a deletion is not an additions-only change, and an EMPTY file
+ *    is deleted with NO HUNK AT ALL, so waiting to encounter a `-` line never catches it.
+ *    R5 high 1: a diff that added one doc and deleted an empty one qualified.
+ *  - `rename from`/`rename to`/`copy from`/`copy to`/`similarity index`/
+ *    `dissimilarity index` — a rename removes a path, which this predicate cannot weigh,
+ *    and a pure rename has nothing to be lenient about in the first place.
+ *  - `Binary files ... differ` / `GIT binary patch` — content the parser cannot read, so
+ *    it can neither confirm nor deny a removal.
+ */
+const FILE_HEADER_BLOCK_PREFIXES = ["index ", "--- ", "+++ ", "old mode ", "new mode ", "new file mode "];
+
+/**
+ * The post-change paths a unified diff's FILE HEADERS name — or `null` when the headers
+ * are not the shape this function is willing to vouch for.
+ *
+ * Deliberately a separate reading of the diff TEXT, used only to cross-check the evidence
+ * set against it (`qualifiesForDocsNarrowing`).
+ *
+ * It PINS the diff mode instead of stripping a prefix heuristically. R6 found why: under
+ * `git diff --no-prefix`, a repository file genuinely at `a/x.md` is rendered
+ * `--- a/x.md` / `+++ a/x.md`, and a blind `a/`-strip turns it into `x.md` — which then
+ * matches an evidence entry for a DIFFERENT file. So the `---` side must be `a/…` or
+ * `/dev/null` and the `+++` side must be `b/…` or `/dev/null`, which is exactly what
+ * `buildDiffArgs` produces and nothing else does. A header that violates that returns
+ * `null` and the narrowing is refused.
+ *
+ * Paths come from the `+++` side only: it is the post-change path, and the evidence set
+ * describes files as they are AFTER the change. (`+++ /dev/null` is a deletion, which
+ * `isAdditionsOnlyDiff` has already refused at the `deleted file mode` header.)
+ *
+ * `null` rather than `[]` because "these headers are wrong" and "this diff names no
+ * files" are different facts, and folding them into one empty array is the shape this
+ * repo keeps re-learning (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+ */
+function diffHeaderPaths(diff: string): string[] | null {
+  const out = new Set<string>();
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const isOld = line.startsWith("--- ");
+    if (!isOld && !line.startsWith("+++ ")) continue;
+    // Strip the marker, then git's trailing tab-timestamp field if present.
+    const p = line.slice(4).split("\t")[0] ?? "";
+    if (p === "/dev/null") continue;
+    const expected = isOld ? "a/" : "b/";
+    if (!p.startsWith(expected)) return null; // not the mode we know how to read
+    const rel = p.slice(2);
+    if (rel === "") return null;
+    if (!isOld) out.add(rel);
+  }
+  return [...out];
+}
+
+/**
+ * `adr/007`: may this diff be reviewed under the narrowed mandate?
+ *
+ * ONE predicate rather than two conditions at the call site, because R2's second finding
+ * was precisely that the two mechanical checks read two different inputs and nothing
+ * required them to describe the same change: `declaredDocsOnly` is computed from
+ * `worktree.diffFiles`, while the additions check reads the diff TEXT. In production they
+ * agree by construction (`buildDiffArgs` is shared, see `util/git.ts`) — but "agree by
+ * construction elsewhere" is exactly the kind of invariant this repo has watched drift
+ * (`docs/gotchas/validated-one-string-used-another.md`), and here drifting means granting
+ * leniency to a diff that touches code.
+ *
+ * Three conditions, all required:
+ *
+ *  1. `evidence.declaredDocsOnly` — every changed path matched `contract.docPaths`.
+ *  2. `isAdditionsOnlyDiff(diff)` — nothing is removed, so no documented contract is
+ *     being rewritten.
+ *  3. **Every path the diff's own headers name is present in the evidence set.** If the
+ *     diff mentions a file the flag never saw, the two describe different changes and
+ *     the flag vouches for nothing.
+ */
+export function qualifiesForDocsNarrowing(diff: string, evidence: CriticEvidence | undefined): boolean {
+  if (evidence?.declaredDocsOnly !== true) return false;
+  if (!isAdditionsOnlyDiff(diff)) return false;
+
+  const known = new Set<string>([...evidence.attached.map((a) => a.path), ...evidence.omitted.map((o) => o.path)]);
+  const named = diffHeaderPaths(diff);
+  if (named === null) return false; // headers in a shape we will not vouch for (R6)
+  if (named.length === 0) return false; // a diff whose files we cannot name is not vouched for
+  return named.every((p) => known.has(p));
+}
 
 /** Why a touched file is not attached. Each value is a genuinely different fact about
  *  the file, and the prompt renders it verbatim so the critic can weigh it. */
@@ -107,6 +400,19 @@ export interface OmittedFile {
 export interface CriticEvidence {
   attached: AttachedFile[];
   omitted: OmittedFile[];
+  /**
+   * `adr/007`: every path this change touches matched an operator-declared documentation
+   * path (`contract.docPaths`). The prompt renders its leniency section only when this
+   * is `true`, so the determination is the HARNESS's and the model never sees the
+   * question — only the answer.
+   *
+   * Computed by `isDeclaredDocsOnlyChange` from the diff's own file list, NOT from
+   * `attached`/`omitted` above. Those two are a budget-limited *view* of the change
+   * and `collectCriticEvidence` drops blank entries before building them, so deriving
+   * the flag from them would let a change qualify on the strength of a file list it
+   * had not actually read in full.
+   */
+  declaredDocsOnly: boolean;
 }
 
 /** One touched file as the PLANNER sees it: a size, or an already-settled omission.
@@ -401,9 +707,15 @@ async function readPlanned(
 export async function collectCriticEvidence(
   root: string,
   relPaths: string[],
+  docPathGlobs: string[] = [],
   limits: EvidenceLimits = DEFAULT_EVIDENCE_LIMITS,
   deps: EvidenceReaderDeps = DEFAULT_READER_DEPS,
 ): Promise<CriticEvidence> {
+  // `adr/007`, and it is deliberately computed from `relPaths` -- the diff's own file
+  // list -- BEFORE the blank filter below. Deriving it from the attached/omitted lists
+  // would ask the declaration to vouch for a set the blank filter had already pruned.
+  const declaredDocsOnly = isDeclaredDocsOnlyChange(relPaths, docPathGlobs);
+
   const paths = relPaths.filter((p) => typeof p === "string" && p.trim() !== "");
 
   const entries: EvidenceEntry[] = [];
@@ -423,7 +735,7 @@ export async function collectCriticEvidence(
   // prompt text for a given task is stable across runs.
   const byPath = (a: { path: string }, b: { path: string }): number =>
     a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-  return { attached: attached.sort(byPath), omitted: omitted.sort(byPath) };
+  return { attached: attached.sort(byPath), omitted: omitted.sort(byPath), declaredDocsOnly };
 }
 
 /** One-line summary for the conductor log and the runtime manifest. */

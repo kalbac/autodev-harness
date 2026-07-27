@@ -72,6 +72,7 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
   const evidence = {
     attached: [{ path: "foo.php", bytes: 42, content: "<?php\nconst SUPPORTED = [1, 2];\nreturn self::SUPPORTED;\n" }],
     omitted: [{ path: "logo.png", reason: "not-text" as const, bytes: null }],
+    declaredDocsOnly: false,
   };
 
   it("omitting the argument reproduces the pre-#123 diff-only prompt (promises nothing)", () => {
@@ -118,6 +119,7 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
     const prompt = buildCriticPrompt(diff, {
       attached: [],
       omitted: reasons.map((reason, i) => ({ path: `f${i}.php`, reason, bytes: null })),
+      declaredDocsOnly: false,
     });
     expect(prompt).toMatch(/never sent truncated/);
     expect(prompt).toMatch(/total attachment budget/);
@@ -147,5 +149,98 @@ describe("buildCriticPrompt — the evidence window (#123)", () => {
     expect(prompt).not.toMatch(/review it from that text alone/i);
     expect(prompt).not.toMatch(/Judge ONLY the diff shown below/i);
     expect(prompt).toMatch(/worker's own rationale is fenced/i);
+  });
+});
+
+describe("buildCriticPrompt — the adr/007 mandate narrowing", () => {
+  // A REAL unified diff, not a fragment: the narrowing is now gated on a mechanical
+  // read of this text (`isAdditionsOnlyDiff`), so a fixture that skips the hunk header
+  // would exercise nothing (R1 minor: the first version of these tests asserted static
+  // prompt phrases against a diff that could not distinguish add from rewrite).
+  const diff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,1 +1,2 @@
+ The plugin adds a shipping method.
++The plugin registers \`test_pickup\`.
+`;
+  /** The same declared file, but the diff REWRITES the documented contract. */
+  const rewriteDiff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,2 +1,2 @@
+ The plugin adds a shipping method.
+-The ids are persisted and must not be renamed.
++The ids are internal and may be renamed freely.
+`;
+  const docsEvidence = {
+    attached: [{ path: "docs/OVERVIEW.md", bytes: 12, content: "# Overview\n" }],
+    omitted: [],
+    declaredDocsOnly: true,
+  };
+  const codeEvidence = { ...docsEvidence, declaredDocsOnly: false };
+
+  it("renders the narrowing ONLY when the harness has already decided the change qualifies", () => {
+    // The section's presence IS the decision. It is never phrased as a question the
+    // model answers -- Principles 1 and 3 put "does this change get leniency" in code
+    // the model cannot argue with, and the parked first attempt lost a review round
+    // precisely for leaving that judgement to the critic.
+    expect(buildCriticPrompt(diff, docsEvidence)).toContain("A claim you cannot verify is not a defect you found");
+    expect(buildCriticPrompt(diff, codeEvidence)).not.toContain("A claim you cannot verify");
+    expect(buildCriticPrompt(diff)).not.toContain("A claim you cannot verify");
+  });
+
+  it("attributes the determination to the OPERATOR's declaration, not to a content sniff", () => {
+    // If the prompt claimed the harness had inspected the text and found it inert, it
+    // would be overclaiming: nothing here reads the bytes. It says what is true --
+    // the operator declared these paths to be documentation for this project.
+    const prompt = buildCriticPrompt(diff, docsEvidence);
+    expect(prompt).toMatch(/the OPERATOR has declared to be\s+documentation/);
+    expect(prompt).toMatch(/not yours to make or to revisit/i);
+  });
+
+  it("instructs `notes` instead of a lowered verdict, and says why a permanent uncertain is not a gate", () => {
+    const prompt = buildCriticPrompt(diff, docsEvidence);
+    expect(prompt).toMatch(/do NOT\s+lower the verdict/);
+    expect(prompt).toMatch(/permanent `uncertain`/);
+    expect(prompt).toContain("SAY SO in `notes`");
+  });
+
+  it("BEHAVIOUR: a diff that rewrites a declared doc file gets NO narrowing at all", () => {
+    // The attack this exists to keep closed: rewrite the documented contract first,
+    // then ship code that "matches the documentation". Both files are declared docs and
+    // `declaredDocsOnly` is true for both — the ONLY difference is that this diff has a
+    // `-` line. If the narrowing were still prompt-advice rather than a gate, this
+    // prompt would carry the section and the model would be left to apply the rule.
+    const prompt = buildCriticPrompt(rewriteDiff, docsEvidence);
+    expect(prompt).not.toContain("A claim you cannot verify");
+    expect(prompt).not.toMatch(/ADDED assertions/);
+    // ...while the pure append, same evidence, same declaration, does get it.
+    expect(buildCriticPrompt(diff, docsEvidence)).toContain("A claim you cannot verify");
+  });
+
+  it("states the ADDED-prose scope as an already-settled fact, not as a rule to apply", () => {
+    // Wording matters here: the section may not read as "apply this rule yourself",
+    // because by the time it is rendered the harness has already excluded every diff
+    // the rule would have excluded.
+    const prompt = buildCriticPrompt(diff, docsEvidence);
+    expect(prompt).toMatch(/harness has already confirmed the\s+diff removes nothing/);
+    expect(prompt).toMatch(/never reaches this section at all/);
+  });
+
+  it("does not soften anything else — the other clean-blockers survive the narrowing", () => {
+    // adr/005's list and the adversarial framing must read identically on a qualifying
+    // change. A narrowing that quietly relaxed the rest would trade one measured number
+    // for a weaker gate, which is the opposite of the point.
+    const prompt = buildCriticPrompt(diff, docsEvidence);
+    expect(prompt).toMatch(/Assume, by default, that this diff BREAKS a contract/);
+    expect(prompt).toMatch(/fabricated proof/i);
+    expect(prompt).toMatch(/internal contradictions/);
+    expect(prompt).toMatch(/worker's own rationale is fenced/i);
+  });
+
+  it("adds the checklist step only for a qualifying change", () => {
+    expect(buildCriticPrompt(diff, docsEvidence)).toMatch(/5\. Which of this change's ADDED assertions/);
+    expect(buildCriticPrompt(diff, codeEvidence)).not.toMatch(/ADDED assertions/);
   });
 });

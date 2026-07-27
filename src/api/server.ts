@@ -188,6 +188,18 @@ export interface ProjectConfigView {
   /** Per-project overnight-autonomy opt-in. Effective autonomy is this ANDed with
    *  daemon-global operator presence (GET /settings). */
   autonomy: { overnight: { enabled: boolean } };
+  /** Oracle definitions the operator has blessed, projected READ-ONLY so the dashboard
+   *  can answer "what does this harness currently guarantee for this project" without
+   *  the operator having to open `.autodev/config.yaml` (#138). Not writable from the
+   *  form on purpose: these change what "pass" means, and `adr/006` puts that behind a
+   *  deliberate operator edit rather than a dashboard toggle. */
+  contract: {
+    /** `contract.constitutionPaths` — paths the oracle fence protects outright. */
+    constitutionPaths: string[];
+    /** `contract.docPaths` — paths declared as documentation (`adr/007`). Empty means
+     *  the critic's mandate is never narrowed, which is the default. */
+    docPaths: string[];
+  };
   /** Wire-time policy toggles the UI shows read-only (not writable via the form). */
   policy: { heterogeneity: "warn" | "off" };
   /** The heterogeneity warnings the daemon computes at wire-time (empty when
