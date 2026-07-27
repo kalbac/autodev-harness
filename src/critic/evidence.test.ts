@@ -647,6 +647,39 @@ describe("qualifiesForDocsNarrowing — the two readings must describe ONE chang
     expect(qualifiesForDocsNarrowing(docsDiff, undefined)).toBe(false);
   });
 
+  it("R6 high: `--no-prefix` output is refused, not silently mis-stripped", () => {
+    // Under `git diff --no-prefix` a repository file genuinely at `a/x.md` renders as
+    // `--- a/x.md` / `+++ a/x.md`; a blind `a/`-strip turned that into `x.md`, which then
+    // matched an evidence entry for a DIFFERENT file. The `+++` side must be `b/…`, which
+    // is what `buildDiffArgs` produces and what `--no-prefix` never does.
+    const noPrefix = `diff --git a/x.md a/x.md
+--- a/x.md
++++ a/x.md
+@@ -0,0 +1 @@
++secret
+`;
+    expect(
+      qualifiesForDocsNarrowing(noPrefix, {
+        attached: [{ path: "x.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("takes the path from the `+++` side, which is what the evidence set describes", () => {
+    // The evidence reads files as they are AFTER the change, so the post-change path is
+    // the one the containment check must compare against.
+    const renamedInPlace = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,1 +1,2 @@
+ existing
++added
+`;
+    expect(qualifiesForDocsNarrowing(renamedInPlace, ev(["docs/OVERVIEW.md"], true))).toBe(true);
+  });
+
   it("refuses a diff whose headers name nothing it can parse", () => {
     expect(qualifiesForDocsNarrowing("@@ -1,1 +1,2 @@\n x\n+y\n", ev(["docs/OVERVIEW.md"], true))).toBe(false);
   });

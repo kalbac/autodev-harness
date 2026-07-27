@@ -291,25 +291,42 @@ export function isAdditionsOnlyDiff(diff: string): boolean {
 const FILE_HEADER_BLOCK_PREFIXES = ["index ", "--- ", "+++ ", "old mode ", "new mode ", "new file mode "];
 
 /**
- * The paths a unified diff's FILE HEADERS name, taken from the `--- a/x` / `+++ b/x`
- * pair. `/dev/null` (an add or a delete) is skipped; a `a/`/`b/` prefix is stripped.
+ * The post-change paths a unified diff's FILE HEADERS name — or `null` when the headers
+ * are not the shape this function is willing to vouch for.
  *
- * Deliberately a separate reading of the diff TEXT, used only to cross-check the
- * evidence set against it (`qualifiesForDocsNarrowing`). It is not a general-purpose
- * path extractor and must not become one: quoted paths (git's octal wire form when
- * `core.quotepath` is on) come back verbatim and will simply fail the cross-check,
- * which is the safe direction.
+ * Deliberately a separate reading of the diff TEXT, used only to cross-check the evidence
+ * set against it (`qualifiesForDocsNarrowing`).
+ *
+ * It PINS the diff mode instead of stripping a prefix heuristically. R6 found why: under
+ * `git diff --no-prefix`, a repository file genuinely at `a/x.md` is rendered
+ * `--- a/x.md` / `+++ a/x.md`, and a blind `a/`-strip turns it into `x.md` — which then
+ * matches an evidence entry for a DIFFERENT file. So the `---` side must be `a/…` or
+ * `/dev/null` and the `+++` side must be `b/…` or `/dev/null`, which is exactly what
+ * `buildDiffArgs` produces and nothing else does. A header that violates that returns
+ * `null` and the narrowing is refused.
+ *
+ * Paths come from the `+++` side only: it is the post-change path, and the evidence set
+ * describes files as they are AFTER the change. (`+++ /dev/null` is a deletion, which
+ * `isAdditionsOnlyDiff` has already refused at the `deleted file mode` header.)
+ *
+ * `null` rather than `[]` because "these headers are wrong" and "this diff names no
+ * files" are different facts, and folding them into one empty array is the shape this
+ * repo keeps re-learning (`docs/gotchas/boolean-whose-no-means-two-things.md`).
  */
-function diffHeaderPaths(diff: string): string[] {
+function diffHeaderPaths(diff: string): string[] | null {
   const out = new Set<string>();
   for (const raw of diff.split("\n")) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (!line.startsWith("--- ") && !line.startsWith("+++ ")) continue;
+    const isOld = line.startsWith("--- ");
+    if (!isOld && !line.startsWith("+++ ")) continue;
     // Strip the marker, then git's trailing tab-timestamp field if present.
-    let p = line.slice(4).split("\t")[0] ?? "";
-    if (p === "/dev/null" || p === "") continue;
-    if (p.startsWith("a/") || p.startsWith("b/")) p = p.slice(2);
-    if (p !== "") out.add(p);
+    const p = line.slice(4).split("\t")[0] ?? "";
+    if (p === "/dev/null") continue;
+    const expected = isOld ? "a/" : "b/";
+    if (!p.startsWith(expected)) return null; // not the mode we know how to read
+    const rel = p.slice(2);
+    if (rel === "") return null;
+    if (!isOld) out.add(rel);
   }
   return [...out];
 }
@@ -341,6 +358,7 @@ export function qualifiesForDocsNarrowing(diff: string, evidence: CriticEvidence
 
   const known = new Set<string>([...evidence.attached.map((a) => a.path), ...evidence.omitted.map((o) => o.path)]);
   const named = diffHeaderPaths(diff);
+  if (named === null) return false; // headers in a shape we will not vouch for (R6)
   if (named.length === 0) return false; // a diff whose files we cannot name is not vouched for
   return named.every((p) => known.has(p));
 }
