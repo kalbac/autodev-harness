@@ -5,6 +5,9 @@ import { join } from "node:path";
 import {
   planEvidence,
   collectCriticEvidence,
+  isDeclaredDocsOnlyChange,
+  isAdditionsOnlyDiff,
+  qualifiesForDocsNarrowing,
   summarizeEvidence,
   DEFAULT_EVIDENCE_LIMITS,
   MAX_EVIDENCE_BYTES_PER_FILE,
@@ -13,6 +16,14 @@ import {
 } from "./evidence.js";
 
 const sized = (path: string, bytes: number): EvidenceEntry => ({ path, kind: "sized", bytes });
+
+/** A minimal well-formed file-header block for diff fixtures. Since R5 a bare hunk is
+ *  refused on purpose (a hunk with no `+++ ` belongs to a file `diffHeaderPaths` cannot
+ *  name), so every fixture exercising the COUNTING logic has to carry real headers. */
+const HDR = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+`;
 
 describe("planEvidence (the single budget decision)", () => {
   it("plans every file that fits, in a stable path order", () => {
@@ -137,7 +148,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
 
   it("omits a file it cannot prove lives inside the worktree", async () => {
     writeFileSync(join(root, "a.php"), "x\n");
-    const ev = await collectCriticEvidence(root, ["a.php"], DEFAULT_EVIDENCE_LIMITS, {
+    const ev = await collectCriticEvidence(root, ["a.php"], [], DEFAULT_EVIDENCE_LIMITS, {
       contains: async () => false,
     });
     expect(ev.attached).toEqual([]);
@@ -146,7 +157,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
 
   it("refuses an over-size file WITHOUT reading it, reporting its real size", async () => {
     writeFileSync(join(root, "big.php"), "x".repeat(50));
-    const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 10, totalBytes: 1000 });
+    const ev = await collectCriticEvidence(root, ["big.php"], [], { perFileBytes: 10, totalBytes: 1000 });
     expect(ev.omitted).toEqual([{ path: "big.php", reason: "too-large", bytes: 50 }]);
   });
 
@@ -169,7 +180,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // be accepted as the complete file and labelled "complete" in the prompt).
     const body = "x".repeat(300_000);
     writeFileSync(join(root, "big.php"), body);
-    const ev = await collectCriticEvidence(root, ["big.php"], { perFileBytes: 400_000, totalBytes: 400_000 });
+    const ev = await collectCriticEvidence(root, ["big.php"], [], { perFileBytes: 400_000, totalBytes: 400_000 });
     expect(ev.omitted).toEqual([]);
     expect(ev.attached[0]!.content).toBe(body);
     expect(ev.attached[0]!.bytes).toBe(Buffer.byteLength(ev.attached[0]!.content, "utf8"));
@@ -180,7 +191,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // four of them, not forty (codex R1 finding 1).
     for (let i = 0; i < 40; i++) writeFileSync(join(root, `f${String(i).padStart(2, "0")}.php`), "x".repeat(1000));
     const paths = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, "0")}.php`);
-    const ev = await collectCriticEvidence(root, paths, { perFileBytes: 64_000, totalBytes: 4000 });
+    const ev = await collectCriticEvidence(root, paths, [], { perFileBytes: 64_000, totalBytes: 4000 });
     expect(ev.attached).toHaveLength(4);
     expect(ev.attached.reduce((n, a) => n + a.bytes, 0)).toBeLessThanOrEqual(4000);
     expect(ev.omitted).toHaveLength(36);
@@ -192,7 +203,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // (docs/gotchas/empty-path-resolves-to-repo-root.md) -- a blank entry must never
     // reach the reader, and there is nothing to tell the critic about it either.
     const ev = await collectCriticEvidence(root, ["", "   "]);
-    expect(ev).toEqual({ attached: [], omitted: [] });
+    expect(ev).toEqual({ attached: [], omitted: [], declaredDocsOnly: false });
   });
 
   it("a REJECTING containment seam omits that file, it does not abort the collection", async () => {
@@ -201,7 +212,7 @@ describe("collectCriticEvidence (filesystem pass)", () => {
     // that rejects used to escape and kill the whole evidence set (codex R2 finding 2).
     writeFileSync(join(root, "a.php"), "x\n");
     writeFileSync(join(root, "b.php"), "y\n");
-    const ev = await collectCriticEvidence(root, ["a.php", "b.php"], DEFAULT_EVIDENCE_LIMITS, {
+    const ev = await collectCriticEvidence(root, ["a.php", "b.php"], [], DEFAULT_EVIDENCE_LIMITS, {
       contains: async (_root, candidate) => {
         if (candidate.endsWith("a.php")) throw new Error("seam blew up");
         return true;
@@ -219,11 +230,545 @@ describe("collectCriticEvidence (filesystem pass)", () => {
   });
 });
 
+describe("isDeclaredDocsOnlyChange (adr/007 — a declaration, not a detection)", () => {
+  const DOCS = ["docs/**", "README.md"];
+
+  it("qualifies a change whose every path the operator declared as documentation", () => {
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md", "README.md"], DOCS)).toBe(true);
+    expect(isDeclaredDocsOnlyChange(["docs/deep/nested/guide.md"], DOCS)).toBe(true);
+  });
+
+  it("refuses when the project declared nothing — the default is no leniency anywhere", () => {
+    // `contract.docPaths: []` is the shipped default, and it must reproduce the
+    // pre-adr/007 gate exactly. A project that never opts in loses nothing.
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md"], [])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md"], ["", "   "])).toBe(false);
+  });
+
+  it("refuses a change that touches ANY path outside the declaration", () => {
+    // The whole point: docs-plus-code is a code change. One unmatched path is enough.
+    expect(isDeclaredDocsOnlyChange(["docs/OVERVIEW.md", "includes/class-x.php"], DOCS)).toBe(false);
+    // A `.md` that was NOT declared gets nothing either -- the extension is not the
+    // test any more, which is precisely what replaced the unclosable marker blacklist.
+    expect(isDeclaredDocsOnlyChange(["notes/scratch.md"], DOCS)).toBe(false);
+  });
+
+  it("refuses a blank or non-string path instead of filtering it away", () => {
+    // A blank entry names nothing, so no declaration can vouch for it. Dropping it
+    // silently would let this list qualify on the strength of the ONE path it did
+    // read -- the same shape as `empty-path-resolves-to-repo-root`, one layer up.
+    expect(isDeclaredDocsOnlyChange(["", "docs/OVERVIEW.md"], DOCS)).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["   ", "docs/OVERVIEW.md"], DOCS)).toBe(false);
+    expect(isDeclaredDocsOnlyChange([null as unknown as string, "docs/OVERVIEW.md"], DOCS)).toBe(false);
+  });
+
+  it("refuses an empty change set — there is nothing to vouch for", () => {
+    expect(isDeclaredDocsOnlyChange([], DOCS)).toBe(false);
+  });
+
+  it("does not grant leniency on CONTENT, only on the declared path", () => {
+    // The predicate never looks at bytes. This is the whole difference from the parked
+    // first attempt, whose extension+marker blacklist lost three review rounds to three
+    // different markers it had not thought of. A declared doc path stays declared
+    // whatever is written inside it; if a project's toolchain DOES execute that file,
+    // the operator's remedy is to not declare it (or to fence it via
+    // `contract.constitutionPaths`), which is a decision only the project can make.
+    expect(isDeclaredDocsOnlyChange(["docs/RUNBOOK.md"], DOCS)).toBe(true);
+  });
+
+  it("R1 blocker 2 regression: a traversal segment is REFUSED, not textually matched", () => {
+    // `globMatch("docs/**", x)` compiles to `^docs/.*$`, which the string
+    // `docs/../src/index.php` satisfies while naming a file outside `docs/` entirely.
+    // Git never emits such a path, so this is not reachable through the conductor --
+    // but an exported predicate guarding an oracle decision does not get to rely on
+    // its callers being well-behaved.
+    expect(isDeclaredDocsOnlyChange(["docs/../src/index.php"], ["docs/**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs\..\src\index.php"], ["docs/**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/a/../b.md"], ["docs/**"])).toBe(false);
+    // A path merely CONTAINING dots is fine -- only a `..` SEGMENT is refused.
+    expect(isDeclaredDocsOnlyChange(["docs/v1..2/notes.md"], ["docs/**"])).toBe(true);
+  });
+
+  it("refuses an absolute or drive-anchored path", () => {
+    expect(isDeclaredDocsOnlyChange(["/docs/a.md"], ["**"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["D:/docs/a.md"], ["**"])).toBe(false);
+  });
+
+  it("R1 major hardening: a non-array argument declines instead of throwing", () => {
+    // The 3rd positional parameter makes a mis-ordered call plausible, and a throw out
+    // of this predicate would turn "no leniency" into "evidence collection died".
+    expect(() =>
+      isDeclaredDocsOnlyChange(["docs/a.md"], { perFileBytes: 10 } as unknown as string[]),
+    ).not.toThrow();
+    expect(isDeclaredDocsOnlyChange(["docs/a.md"], { perFileBytes: 10 } as unknown as string[])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(null as unknown as string[], ["docs/**"])).toBe(false);
+  });
+
+  it("matches with the harness's own glob semantics, not a substring test", () => {
+    // `*` is segment-local, `**` crosses segments -- parity with the dirty-file fence
+    // and `constitutionPaths`, so one mental model covers every declared-path field.
+    expect(isDeclaredDocsOnlyChange(["docs/a/b.md"], ["docs/*"])).toBe(false);
+    expect(isDeclaredDocsOnlyChange(["docs/a.md"], ["docs/*"])).toBe(true);
+    expect(isDeclaredDocsOnlyChange(["xdocs/a.md"], ["docs/**"])).toBe(false);
+  });
+});
+
+describe("isAdditionsOnlyDiff (adr/007 — the added-vs-modified half, decided in code)", () => {
+  const ADD_ONLY = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+index 111..222 100644
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,2 +1,4 @@
+ existing line
+ another existing line
++## Shipping method ids
++The plugin registers \`test_pickup\`.
+`;
+
+  it("accepts a pure append", () => {
+    expect(isAdditionsOnlyDiff(ADD_ONLY)).toBe(true);
+  });
+
+  it("REFUSES a diff that removes a line — the attack the carve-out exists to stop", () => {
+    // This is the finding R1 raised as a blocker: before this predicate the scope was
+    // stated in the prompt and applied by the model. Now a rewrite never reaches it.
+    expect(isAdditionsOnlyDiff(ADD_ONLY.replace(" another existing line", "-another existing line"))).toBe(false);
+  });
+
+  it("is not fooled by a removed line whose CONTENT is a dash run", () => {
+    // A removed line containing `--` renders as `---`, which a naive prefix match reads
+    // as a `--- a/file` header and skips. Hunk-state tracking is what makes this safe.
+    const rewrite = `diff --git a/docs/A.md b/docs/A.md
+--- a/docs/A.md
++++ b/docs/A.md
+@@ -1,2 +1,2 @@
+---
++new line
+`;
+    expect(isAdditionsOnlyDiff(rewrite)).toBe(false);
+  });
+
+  it("refuses a diff with no hunks at all — a rename has nothing to be lenient about", () => {
+    const rename = `diff --git a/docs/A.md b/docs/B.md
+similarity index 100%
+rename from docs/A.md
+rename to docs/B.md
+`;
+    expect(isAdditionsOnlyDiff(rename)).toBe(false);
+  });
+
+  it("refuses an empty, blank or non-string diff", () => {
+    expect(isAdditionsOnlyDiff("")).toBe(false);
+    expect(isAdditionsOnlyDiff("   \n  ")).toBe(false);
+    expect(isAdditionsOnlyDiff(null as unknown as string)).toBe(false);
+  });
+
+  it("refuses a hunk body line it cannot classify, instead of assuming it is context", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,2 @@\n+ok\n?? what is this\n")).toBe(false);
+  });
+
+  it("handles a multi-file diff: additions in one file, a removal in another", () => {
+    const twoFiles =
+      ADD_ONLY +
+      `diff --git a/docs/B.md b/docs/B.md
+--- a/docs/B.md
++++ b/docs/B.md
+@@ -1,2 +1,1 @@
+-the documented contract
+ kept line
+`;
+    expect(isAdditionsOnlyDiff(twoFiles)).toBe(false);
+  });
+
+  it("tolerates CRLF and the no-newline marker", () => {
+    const crlf = ADD_ONLY.split("\n").join("\r\n") + "\\ No newline at end of file\r\n";
+    expect(isAdditionsOnlyDiff(crlf)).toBe(true);
+  });
+});
+
+describe("isAdditionsOnlyDiff — R2 regressions (hunk counts, not prefix guessing)", () => {
+  it("R2 major 1: a bare `diff --git` INSIDE a hunk body no longer hides a later removal", () => {
+    // The prefix parser ended a hunk on the next `diff --git `, so this input reset the
+    // state and the `-rewritten contract` line was never examined. Counting body lines
+    // from the hunk header means the parser is never guessing where a hunk ends.
+    //
+    // R3 minor: this input is rejected at the unclassifiable `diff --git` body line,
+    // BEFORE the removal is reached, so on its own it cannot distinguish "detects the
+    // removal" from "rejected early". The two tests below carry that weight.
+    const evil = `@@ -1,1 +1,2 @@
++new assertion
+diff --git a/docs/contract.md b/docs/contract.md
+-rewritten contract
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R3 major: a removal BETWEEN hunks, reached via an under-declared count, is caught", () => {
+    // The counting parser exited the first hunk correctly (its declared 1/1 was consumed
+    // by ` context`), and the outer loop then skipped every non-`@@` line -- including
+    // `-removed` -- until the next header. The fix is an ALLOW-LIST outside hunks: only a
+    // recognized git file header may be skipped, everything else declines.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,1 @@
+ context
+-removed
+@@ -2,0 +2,1 @@
++added
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+    expect(
+      qualifiesForDocsNarrowing(evil, {
+        attached: [{ path: "docs/x.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("REACHES a removal that follows a fully-consumed hunk in the SAME file", () => {
+    // The positive control for the test above: nothing rejects this input early -- every
+    // line up to the removal is either a valid header or a correctly-counted body line.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+-sneaked in after the count was spent
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R4 high: a removed line whose CONTENT is `-- ` is not mistaken for a `--- ` header", () => {
+    // R3's flat allow-list accepted any header prefix anywhere outside a hunk, and
+    // `--- ` is one. A removal rendering as `--- `, landing after a consumed hunk, was
+    // skipped as structure. Position is what decides now: `--- ` is a header only inside
+    // the block a `diff --git` line opens.
+    const evil = `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+---
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R4: the same collision via `+++ `, `index ` and a bare `\\\\ ` after a hunk", () => {
+    const mk = (trailer: string) => `diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,2 @@
+ context
++added
+${trailer}
+`;
+    // `+++ ` and `index ` are headers only in the opening block -- after a hunk they are
+    // content the parser has no business skipping.
+    expect(isAdditionsOnlyDiff(mk("+++ b/elsewhere"))).toBe(false);
+    expect(isAdditionsOnlyDiff(mk("index deadbeef..cafe 100644"))).toBe(false);
+    // `\\ No newline at end of file` genuinely does trail a hunk, and cannot be a removal.
+    expect(isAdditionsOnlyDiff(mk("\\ No newline at end of file"))).toBe(true);
+  });
+
+  it("R4: a `--- ` line before any `diff --git` block is refused, not read as a header", () => {
+    expect(isAdditionsOnlyDiff("--- a/docs/x.md\n+++ b/docs/x.md\n@@ -1,1 +1,2 @@\n c\n+a\n")).toBe(false);
+  });
+
+  it("R5 high 1: an EMPTY file deletion carries no hunk, so it is refused at the header", () => {
+    // Waiting to encounter a `-` line can never catch this: git deletes an empty file
+    // with a `deleted file mode` header and nothing else. The additions from the FIRST
+    // file made the whole diff qualify while the second one was being deleted.
+    const evil = `diff --git a/docs/add.md b/docs/add.md
+new file mode 100644
+--- /dev/null
++++ b/docs/add.md
+@@ -0,0 +1 @@
++added
+diff --git a/docs/empty.md b/docs/empty.md
+deleted file mode 100644
+index e69de29..0000000
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+  });
+
+  it("R5 high 1: a rename is refused too — it removes a path this predicate cannot weigh", () => {
+    const renamed = `diff --git a/docs/add.md b/docs/add.md
+--- a/docs/add.md
++++ b/docs/add.md
+@@ -1,1 +1,2 @@
+ first
++added
+diff --git a/docs/old.md b/docs/new.md
+similarity index 100%
+rename from docs/old.md
+rename to docs/new.md
+`;
+    expect(isAdditionsOnlyDiff(renamed)).toBe(false);
+  });
+
+  it("R5 high 2: a hunk with no `+++ ` header is refused — its file cannot be named", () => {
+    // Without this, `diffHeaderPaths` names only the first file, so
+    // `qualifiesForDocsNarrowing`'s subset check silently does not cover the second one
+    // and a code file rides along inside a "docs-only" change.
+    const evil = `diff --git a/docs/ok.md b/docs/ok.md
+--- /dev/null
++++ b/docs/ok.md
+@@ -0,0 +1 @@
++ok
+diff --git a/src/secret.ts b/src/secret.ts
+@@ -0,0 +1 @@
++secret
+`;
+    expect(isAdditionsOnlyDiff(evil)).toBe(false);
+    expect(
+      qualifiesForDocsNarrowing(evil, {
+        attached: [{ path: "docs/ok.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("R5 medium: a hunk supplying more lines than it declared is refused, not absorbed", () => {
+    // `-1,1 +1,1` with `+a`/`+b`/` c` drove newLeft to -2 while the `oldLeft > 0` arm
+    // kept the loop alive, so every line was consumed and a malformed diff reported as
+    // additions-only. The counters may not go negative, and the loop may only end at
+    // exactly zero.
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,1 @@\n+a\n+b\n c\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@ -0,0 +1,1 @@\n+a\n context\n")).toBe(false);
+  });
+
+  it("still accepts a well-formed MULTI-hunk, multi-file additions-only diff", () => {
+    // The allow-list must not break the ordinary case it guards -- a strictness fix that
+    // rejects every real diff would silently disable the narrowing rather than scope it.
+    const ok = `diff --git a/docs/a.md b/docs/a.md
+index 111..222 100644
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -1,1 +1,2 @@
+ first
++added to a
+@@ -10,1 +11,2 @@
+ tenth
++also added to a
+diff --git a/docs/b.md b/docs/b.md
+new file mode 100644
+--- /dev/null
++++ b/docs/b.md
+@@ -0,0 +1,1 @@
++brand new
+`;
+    expect(isAdditionsOnlyDiff(ok)).toBe(true);
+  });
+
+  it("declines a binary change rather than guessing whether it removed anything", () => {
+    const bin = `diff --git a/docs/logo.png b/docs/logo.png
+index 111..222 100644
+Binary files a/docs/logo.png and b/docs/logo.png differ
+diff --git a/docs/a.md b/docs/a.md
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -1,1 +1,2 @@
+ first
++added
+`;
+    expect(isAdditionsOnlyDiff(bin)).toBe(false);
+  });
+
+  it("refuses a hunk whose body is shorter than its declared counts", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,5 +1,6 @@\n+one\n")).toBe(false);
+  });
+
+  it("refuses an unparseable hunk header instead of skipping it", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ garbage @@\n+one\n")).toBe(false);
+    expect(isAdditionsOnlyDiff(HDR + "@@@ -1,1 -1,1 +1,2 @@@\n++combined\n")).toBe(false);
+  });
+
+  it("accepts the single-line hunk form where the size is omitted", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1 +1,2 @@\n context\n+added\n")).toBe(true);
+  });
+
+  it("accepts a hunk header carrying a section heading after the second @@", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,2 @@ class Foo\n context\n+added\n")).toBe(true);
+  });
+
+  it("counts an ADDED line that merely looks like a header as content, not as structure", () => {
+    // This repo commits `.diff` fixtures, so a doc really can gain a line reading
+    // `diff --git ...` or `@@ ... @@`. Inside a hunk body it arrives prefixed.
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,3 @@\n context\n+diff --git a/x b/x\n+@@ -1 +1 @@\n")).toBe(true);
+  });
+
+  it("still refuses a diff whose only hunk adds nothing", () => {
+    expect(isAdditionsOnlyDiff(HDR + "@@ -1,1 +1,1 @@\n unchanged\n")).toBe(false);
+  });
+});
+
+describe("qualifiesForDocsNarrowing — the two readings must describe ONE change", () => {
+  const docsDiff = `diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md
+--- a/docs/OVERVIEW.md
++++ b/docs/OVERVIEW.md
+@@ -1,1 +1,2 @@
+ existing
++added assertion
+`;
+  const ev = (paths: string[], declaredDocsOnly: boolean) => ({
+    attached: paths.map((p) => ({ path: p, bytes: 1, content: "x" })),
+    omitted: [],
+    declaredDocsOnly,
+  });
+
+  it("qualifies when the flag, the diff and the evidence all agree", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, ev(["docs/OVERVIEW.md"], true))).toBe(true);
+  });
+
+  it("R2 major 2: refuses when the diff names a file the evidence never saw", () => {
+    // The flag comes from `worktree.diffFiles`, the additions check from the diff TEXT.
+    // In production they agree by construction -- but nothing REQUIRED them to, and a
+    // stale or mismatched flag would have granted leniency to a diff touching code.
+    const codeDiff = `diff --git a/src/index.php b/src/index.php
+--- a/src/index.php
++++ b/src/index.php
+@@ -1,1 +1,2 @@
+ <?php
++unreviewed behavior
+`;
+    expect(qualifiesForDocsNarrowing(codeDiff, ev(["docs/OVERVIEW.md"], true))).toBe(false);
+  });
+
+  it("refuses when the flag is false, whatever the diff looks like", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, ev(["docs/OVERVIEW.md"], false))).toBe(false);
+  });
+
+  it("refuses when there is no evidence at all", () => {
+    expect(qualifiesForDocsNarrowing(docsDiff, undefined)).toBe(false);
+  });
+
+  it("R6 high: `--no-prefix` output is refused, not silently mis-stripped", () => {
+    // Under `git diff --no-prefix` a repository file genuinely at `a/x.md` renders as
+    // `--- a/x.md` / `+++ a/x.md`; a blind `a/`-strip turned that into `x.md`, which then
+    // matched an evidence entry for a DIFFERENT file. The `+++` side must be `b/…`, which
+    // is what `buildDiffArgs` produces and what `--no-prefix` never does.
+    const noPrefix = `diff --git a/x.md a/x.md
+--- a/x.md
++++ a/x.md
+@@ -0,0 +1 @@
++secret
+`;
+    expect(
+      qualifiesForDocsNarrowing(noPrefix, {
+        attached: [{ path: "x.md", bytes: 1, content: "x" }],
+        omitted: [],
+        declaredDocsOnly: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("takes the path from the `+++` side, which is what the evidence set describes", () => {
+    // R7 low: the first version of this test used the SAME path on both sides, so a
+    // regression reading the `---` side would have passed it. The two sides must differ
+    // for the assertion to mean anything -- the evidence reads files as they are AFTER
+    // the change, so the post-change path is the one containment compares against.
+    const differing = `diff --git a/docs/old.md b/docs/new.md
+--- a/docs/old.md
++++ b/docs/new.md
+@@ -0,0 +1 @@
++added
+`;
+    expect(qualifiesForDocsNarrowing(differing, ev(["docs/new.md"], true))).toBe(true);
+    expect(qualifiesForDocsNarrowing(differing, ev(["docs/old.md"], true))).toBe(false);
+  });
+
+  it("refuses a diff whose headers name nothing it can parse", () => {
+    expect(qualifiesForDocsNarrowing("@@ -1,1 +1,2 @@\n x\n+y\n", ev(["docs/OVERVIEW.md"], true))).toBe(false);
+  });
+
+  it("counts an OMITTED file as known — omission is an evidence fact, not an unknown file", () => {
+    const omittedOnly = {
+      attached: [],
+      omitted: [{ path: "docs/OVERVIEW.md", reason: "too-large" as const, bytes: 99999 }],
+      declaredDocsOnly: true,
+    };
+    expect(qualifiesForDocsNarrowing(docsDiff, omittedOnly)).toBe(true);
+  });
+
+  it("treats /dev/null in a new-file diff as no path, and matches on the real side", () => {
+    const newFile = `diff --git a/docs/NEW.md b/docs/NEW.md
+new file mode 100644
+--- /dev/null
++++ b/docs/NEW.md
+@@ -0,0 +1,1 @@
++brand new prose
+`;
+    expect(qualifiesForDocsNarrowing(newFile, ev(["docs/NEW.md"], true))).toBe(true);
+  });
+});
+
+describe("collectCriticEvidence — the adr/007 flag", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "adr007-"));
+    mkdirSync(join(root, "docs"), { recursive: true });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("sets the flag from the DIFF's file list, not from what survived the budget", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md"], ["docs/**"]);
+    expect(ev.declaredDocsOnly).toBe(true);
+    expect(ev.attached.map((a) => a.path)).toEqual(["docs/OVERVIEW.md"]);
+  });
+
+  it("a declared doc file too large to attach still qualifies — the path is the declaration", async () => {
+    // Omission is an EVIDENCE fact (the critic will not see the bytes); the mandate
+    // narrowing is a PATH fact. Conflating them would silently withdraw the operator's
+    // declaration for a large file, for a reason that has nothing to do with it.
+    writeFileSync(join(root, "docs", "BIG.md"), "x".repeat(50));
+    const ev = await collectCriticEvidence(root, ["docs/BIG.md"], ["docs/**"], {
+      perFileBytes: 10,
+      totalBytes: 1000,
+    });
+    expect(ev.attached).toEqual([]);
+    expect(ev.omitted[0]!.reason).toBe("too-large");
+    expect(ev.declaredDocsOnly).toBe(true);
+  });
+
+  it("REGRESSION: a blank path in the diff list denies leniency, though it never reaches the evidence", async () => {
+    // `collectCriticEvidence` filters blanks before measuring, so `attached`/`omitted`
+    // would show a clean all-docs set. Deriving the flag from those lists (rather than
+    // from `relPaths`) is therefore a live way to grant leniency to a change the
+    // harness did not fully inspect -- this test is what pins the flag to the
+    // authoritative list.
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["", "docs/OVERVIEW.md"], ["docs/**"]);
+    expect(ev.attached.map((a) => a.path)).toEqual(["docs/OVERVIEW.md"]);
+    expect(ev.omitted).toEqual([]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+
+  it("defaults to no leniency when no declaration is passed at all", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md"]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+
+  it("a mixed docs+code change does not qualify", async () => {
+    writeFileSync(join(root, "docs", "OVERVIEW.md"), "# Overview\n");
+    writeFileSync(join(root, "plugin.php"), "<?php\n");
+    const ev = await collectCriticEvidence(root, ["docs/OVERVIEW.md", "plugin.php"], ["docs/**"]);
+    expect(ev.declaredDocsOnly).toBe(false);
+  });
+});
+
 describe("summarizeEvidence", () => {
   it("names every omitted file and its reason, so a log line is actionable", () => {
     const line = summarizeEvidence({
       attached: [{ path: "a.php", bytes: 10, content: "x" }],
       omitted: [{ path: "b.png", reason: "not-text", bytes: null }],
+      declaredDocsOnly: false,
     });
     expect(line).toContain("attached 1 file(s), 10 byte(s)");
     expect(line).toContain("b.png (not-text)");

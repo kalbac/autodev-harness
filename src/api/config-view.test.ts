@@ -103,4 +103,31 @@ describe("buildProjectConfigView", () => {
     const cfg = HarnessConfigSchema.parse({});
     expect(buildProjectConfigView(cfg, false).autonomy).toEqual({ overnight: { enabled: false } });
   });
+
+  it("projects the declared oracle paths read-only, so the UI can show what the gate enforces (#138)", () => {
+    const cfg = HarnessConfigSchema.parse({
+      contract: { constitutionPaths: ["ci.yml"], docPaths: ["docs/**", "README.md"] },
+    });
+    expect(buildProjectConfigView(cfg, false).contract).toEqual({
+      constitutionPaths: ["ci.yml"],
+      docPaths: ["docs/**", "README.md"],
+    });
+  });
+
+  it("copies the oracle arrays instead of aliasing the loaded config", () => {
+    // The view is handed to a JSON serializer and, in tests, to consumers that may
+    // mutate it. Aliasing would let a downstream push rewrite the live config object
+    // the daemon is running on.
+    const cfg = HarnessConfigSchema.parse({ contract: { docPaths: ["docs/**"] } });
+    const view = buildProjectConfigView(cfg, false);
+    view.contract.docPaths.push("evil/**");
+    expect(cfg.contract.docPaths).toEqual(["docs/**"]);
+  });
+
+  it("projects empty oracle lists as empty, never as absent", () => {
+    // `docPaths: []` is a meaningful state ("the mandate is never narrowed"), and the
+    // UI renders a sentence for it. Dropping the key would render as "not loaded".
+    const view = buildProjectConfigView(HarnessConfigSchema.parse({}), false);
+    expect(view.contract).toEqual({ constitutionPaths: [], docPaths: [] });
+  });
 });

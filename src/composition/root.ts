@@ -976,8 +976,12 @@ export async function buildProjectRoot(
     // `worktree.diffFiles`, which shares its comparison basis with `worktree.diff`
     // (see `buildDiffArgs` in `util/git.ts`), so the attached set always describes the
     // same change as the diff the critic is reading.
+    // `contract.docPaths` (adr/007) comes from `cfg`, which is loaded from the TRUSTED
+    // ROOT like every other oracle definition (adr/006 Phase 1) -- never from `wt.path`.
+    // It decides whether the critic's mandate is narrowed for this change, so a worker
+    // that could write it would be rewriting the standard it is judged against.
     collectCriticEvidence: async (wt, scope) =>
-      collectCriticEvidence(wt.path, await worktree.diffFiles(wt, scope)),
+      collectCriticEvidence(wt.path, await worktree.diffFiles(wt, scope), cfg.contract.docPaths),
     gitChangedPaths,
     snapshotFingerprints,
     resolveOracleSet: resolveProjectOracleSet,

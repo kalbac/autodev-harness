@@ -3726,6 +3726,7 @@ describe("GET /projects/:id/config", () => {
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     autonomy: { overnight: { enabled: false } },
+    contract: { constitutionPaths: [], docPaths: [] },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };
@@ -3787,6 +3788,7 @@ describe("PATCH /projects/:id/config", () => {
     },
     isolation: { worker: { cleanRoom: false, mcp: false, skills: false } },
     autonomy: { overnight: { enabled: false } },
+    contract: { constitutionPaths: [], docPaths: [] },
     policy: { heterogeneity: "warn" },
     heterogeneityWarnings: [],
   };

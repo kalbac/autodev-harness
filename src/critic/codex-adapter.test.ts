@@ -160,6 +160,7 @@ describe("CodexCriticAdapter", () => {
     const evidence = {
       attached: [{ path: "foo.php", bytes: 9, content: "const X=1" }],
       omitted: [{ path: "logo.png", reason: "not-text" as const, bytes: null }],
+      declaredDocsOnly: false,
     };
 
     await adapter.run({ diff: "diff content", runtimeDir: dir, workerReportPath: null, evidence });
