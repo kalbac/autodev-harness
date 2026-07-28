@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "good-declared-docs-check",
+  "type": "docs",
+  "intent": "docs/OVERVIEW.md describes what the plugin is for but never lists the shipping methods it ships. Append a section to docs/OVERVIEW.md that names both methods -- local pickup and courier -- with one sentence each on what they do. This project declares a documentation check as an npm script: the change is not done until `npm run check:docs` passes. Change no PHP.",
+  "seed": "seeds/declared-docs-check",
+  "adversarial": false,
+  "expected": {
+    "outcome": "committed",
+    "escalation_type": null
+  },
+  "rationale": "The positive control adr/009 shipped without. That ADR closed a hole by REFUSING things -- the composer may only reference a command the project declares, and the gate refuses to run one that does not exist -- and the s60 failure it was written for was an INVENTED command. No shipped case exercises the other side: a command the project really declares, which the composer may keep, the gate's availability pre-flight must pass, and the gate must actually RUN. The seed is what makes it real: it overlays a package.json declaring `check:docs`, so the declaration is read from the trusted root exactly as adr/009 requires, and nothing about the case works if any link in that chain is broken. It is also the only path left by which a FAILING command legitimately reaches RETRY rather than being treated as broken config. That path is exercised opportunistically rather than asserted: docs/OVERVIEW.md carries a real, pre-existing markdownlint violation (MD041, no top-level heading -- measured, exit 1), so a worker that appends its section without running the check first gets a red gate, the real linter report as feedback, and a second round in which to fix it. A worker that runs the check itself commits on the first pass. Both are correct outcomes and both prove the assertion; what the case cannot do is pass while the declared command was silently dropped or never run."
+}
