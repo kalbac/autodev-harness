@@ -34,7 +34,8 @@ See [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) for the invariants and *why* each
 orchestrator doctrine are shipped — attended live presence (chat as the project's main
 screen) and unattended overnight autonomy — and the harness now **measures itself**
 against an evaluation corpus. That measurement does not currently flatter it: it catches
-every planted defect and lets almost no correct work through. See
+every planted defect (escaped-defect rate 0%) while only half of the correct work it is
+given reaches a commit on the first pass. See
 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for live status and next steps.
 
 ## Running it

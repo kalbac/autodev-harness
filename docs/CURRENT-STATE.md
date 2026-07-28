@@ -5,35 +5,34 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s59)
+## Where we are (leaving s60)
 
-A working **Node daemon + web dashboard**, measured twice now. `main` is at **`1b99e29`**.
-s59 landed the decision s58 parked — and the honest headline is that **the metric did not
-move.**
+A working **Node daemon + web dashboard**, measured three times. s60 landed the decision s59
+handed the operator, and the honest headline is that **the code is in and the metric is not
+re-measured yet.**
 
-| | s58 | s59 (`corpus/RESULTS-2026-07-27.md`) | Meaning |
+**`adr/008` MERGED** (PR #142, closes #140, CI 4/4, **nine** gate rounds, R9 SAFE). A contract
+zone's `path_globs` is now the SCOPE of its string scan, and a path declared in
+`contract.docPaths` is outside contract-zone checking. Documenting a contract value no longer
+counts as changing it — which is the single thing that stood between `good-docs-overview-note`
+and a commit in s59.
+
+**What the review gate cost, and what it was worth.** Nine rounds, **ten defects**, every one
+on the same boundary — *which files does this diff touch, and which lines belong to them* —
+and **not one caught by the tests written with the feature**. Two were blockers of the same
+class: a strict, correct parser checking LESS than the sloppy reader it replaced, letting a
+diff that names a protected contract value reach `COMMIT`. That class is now closed
+structurally (every line the flat reader produces must appear in the attributed output;
+whatever is missing is added back unattributed), and the two shape-specific patches were
+deleted after measuring that the guarantee alone keeps their tests green. New gotcha **91**.
+
+| | s58 | s59 | s60 |
 |---|---|---|---|
-| **Throughput** — `first_pass_commit_rate` | 50% | **50%** | unchanged |
-| **Catching power** — `escaped_defect_rate` | 0% | **0%** | "never merge bullshit" still holds |
-| Cases passed | 4/7 | 5/7 | **not progress — see below** |
+| **Throughput** — `first_pass_commit_rate` | 50% | 50% | **not re-measured** |
+| **Catching power** — `escaped_defect_rate` | 0% | 0% | **not re-measured** |
 
-**`adr/007` worked, and the case it targeted still fails.** On `good-docs-overview-note`
-the critic returned **`clean` @0.99**, naming the unverifiable assertions in `notes`,
-against `uncertain` @0.84 in s58. The mandate half of #123 is closed. The case then
-escalated `needs-guard` from the **mechanical gate**: the only changed file is
-`docs/OVERVIEW.md`, which MENTIONS `test_pickup`/`test_courier` because documenting them
-was the task. `zoneTouched` treats `path_globs` as an OR-arm rather than a scope, so
-**documenting a contract value counts as touching the contract** → **#140** (oracle
-semantics, four options, (a) recommended, deliberately not fixed in place).
-
-**The +1 case is instrument noise, not catching power.** `adv-relax-phpcs-ruleset` flipped
-to PASS — the case s58 diagnosed as **#136**, a false negative in the corpus itself. It
-scored correctly this run by luck of task ordering.
-
-**A new failure, worse in kind.** `good-wc-compat-hpos-flag` errored before a task existed
-(decomposition returned a string where a task spec belongs). It reached `disagreement` in
-s58, so the fault is **intermittent** — and a corpus whose runs are not comparable has lost
-its purpose → **#141**.
+**The number is the next step, not a claim.** `adr/008` is *expected* to take
+`good-docs-overview-note` to a commit. Until the corpus runs again, that is a prediction.
 
 ## Phase status
 
@@ -47,10 +46,11 @@ its purpose → **#141**.
 | Authority Model (`adr/006`) | ✅ Phase 1 + 2 + 3 shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) — 2 facets, WP/WC first |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
-| Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; **run three times; pass bar NOT met**. Two of its own defects are now load-bearing (#136, #141) |
-| Corpus run diagnostics (#126) | ✅ shipped s57 — and it earned its keep in s58, explaining a case failure without a re-run. **Unreachable by default on Windows** (#135) |
-| **Critic evidence window (#123)** | ✅ **FIXED + MEASURED** (PR #134, `ebb85ea`) — 0% → 50% first-pass commit |
-| Critic mandate (`adr/007`) | ✅ **MERGED** (PR #139, `1b99e29`, CI 4/4, 7 critic rounds, R7 SAFE). Leniency is scoped by an operator-declared `contract.docPaths`, not by inferring what is prose. Live-verified on hashed prompts: 4/4 `clean` declared, 4/5 `uncertain` undeclared, 3/3 non-clean on a contract rewrite |
+| Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; run three times; pass bar NOT met. Two of its own defects are load-bearing (#136, #141) |
+| Corpus run diagnostics (#126) | ✅ shipped s57. **Unreachable by default on Windows** (#135) |
+| Critic evidence window (#123) | ✅ FIXED + MEASURED (PR #134) — 0% → 50% first-pass commit |
+| Critic mandate (`adr/007`) | ✅ MERGED (PR #139) — leniency scoped by an operator-declared `contract.docPaths` |
+| **Contract-zone scope (`adr/008`)** | ✅ **MERGED** (PR #142, closes #140, CI 4/4, 9 rounds). **NOT yet re-measured against the corpus** |
 | Critic availability | ✅ working. Residual: ONE provider is both the review gate and the harness's own critic (#129) |
 
 > Per-feature shipping history belongs in `SESSION-LOG.md`, not here.
@@ -61,33 +61,26 @@ its purpose → **#141**.
 Authority Model → Profiles → two reports → Evaluation Corpus → fix what it measures
 ```
 
-Every link of `wiki/architecture-review-external-2026-07.md`'s chain landed by s56. s58 is the
-first session of the mode that follows: **the corpus names a defect, the defect is fixed, the
-corpus is re-run, and the two numbers go side by side.** That loop now has one completed
-turn — which is the only reason "50%" means anything.
+s58 was the first turn of *the corpus names a defect, the defect is fixed, the corpus is
+re-run, and the two numbers go side by side*. s59 completed a second turn and moved nothing.
+s60 fixed what s59's run named — **and the turn is only half done until the corpus runs.**
 
 ## NEXT ACTIONS
 
-1. **#140 — the docs-vs-contract-zone question. Oracle semantics, so it is yours.** A
-   change that only DOCUMENTS a contract value is treated as changing it, because
-   `zoneTouched` uses `path_globs` as an OR-arm rather than a scope. This is the single
-   thing standing between `good-docs-overview-note` and a commit, and therefore between
-   the metric and 5/7-that-means-something. Four options in the issue; **(a)** — make
-   `path_globs` the scope for the string scan — is recommended and restores what the
-   field already claims to mean. Once decided, implement and **re-run the corpus**.
-2. **Fix the measuring instrument before trusting another number.** **#141** (an
-   intermittent decomposition-shape failure makes runs non-comparable) and **#136** (the
-   corpus scores a multi-task case off the wrong record) are both defects in the ruler,
-   and s59 was distorted by both. Do them as ONE pass, not one per session — that pattern
-   is what made the last four sessions feel like standing still. **#131** (escalations
-   not purged between cases) and **#132**/**#135** (manual pre-run steps) ride along.
-3. **#138 — make the harness legible.** The operator's words: he can no longer tell what
-   the harness does or why. `contract.docPaths` shipped with its UI row; everything from
-   `adr/006` onward did not. Start with the "what does this project actually guarantee"
-   screen.
-4. **#124** (a `broken` verdict naming no defect — still unconfirmed; capture
-   `broken_contracts` next time) · **#125** (`critic_total` tokens always 0, so this run's
-   `41963 / 0` understates cost by the critic's whole share).
+1. **Re-run the corpus. This is the whole point, and it is unfinished work, not a new task.**
+   `adr/008` is expected to take `good-docs-overview-note` to a commit; if it does not, say so
+   plainly and find the layer the failure moved to (that pattern has now held three sessions
+   running). Pre-flight BY EXACT NAME — gotcha 89 — and launch DETACHED.
+2. **Fix the measuring instrument as ONE pass.** **#141** (an intermittent decomposition-shape
+   failure makes runs non-comparable) and **#136** (a multi-task case scored off the wrong
+   record) are defects in the ruler, and s59 was distorted by both. **#131** (escalations not
+   purged between cases) and **#132**/**#135** (manual pre-run steps) ride along.
+3. **#138 — make the harness legible.** The operator can no longer tell what the harness does
+   or why. `contract.docPaths` shipped with its UI row and `adr/008` extended that row;
+   everything from `adr/006` onward did not. Start with the "what does this project actually
+   guarantee" screen.
+4. **#124** (a `broken` verdict naming no defect — capture `broken_contracts` next time) ·
+   **#125** (`critic_total` tokens always 0).
 5. **#129** — one provider is both the review gate and the harness's own critic.
 6. **#133** (`readBoundedFileText` accepts a short read as a whole file) · **#122** (board
    auto-add, board-UI only, so it is the operator's).
@@ -101,6 +94,11 @@ turn — which is the only reason "50%" means anything.
   a human is not a fallback at 3am.
 - **How should a multi-task case be scored?** (#136) The decisive-record rule is part of the
   oracle, so it is the operator's call, not a fix.
+- **Is the conductor allowed to be stricter than the gate?** `adr/008` says yes in one place:
+  on a diff neither can parse, the conductor reports every zone while the gate keeps git's
+  file list, so a malformed diff can escalate a task the gate would have cleared. Named and
+  accepted (the direction is toward a human); equalizing it means plumbing the gate's git file
+  list through the conductor's dependency surface.
 - **PHPStan in a profile.** Deliberately not a v1 gate: useful WordPress analysis needs
   `szepeviktor/phpstan-wordpress`, whose `extension.neon` a profile-shipped config cannot
   portably reference. Measured: without it, a correct file draws 14 phantom findings.
@@ -108,19 +106,16 @@ turn — which is the only reason "50%" means anything.
   and `vendor` comes from the project's own `composer.json`. Named residual, not closed.
 - **Oracle protection for `success_command`/`checkCommand`** — they are commands, not declared
   paths, so Phase 2 protects them only via `constitutionPaths`.
-- **Does documenting a contract value count as touching it?** (#140) `zoneTouched` says yes
-  today, because `path_globs` is an OR-arm rather than a scope. Answering "no" is the obvious
-  reading of what the field means — and it hands a declared doc path leniency in a SECOND
-  mechanism on the strength of one declaration, which is a real widening. Operator's call.
 - **Should one declaration buy two exemptions?** `contract.docPaths` was introduced for the
-  critic's mandate (`adr/007`). Option (b) of #140 would reuse it to scope the machine gate
-  too. Convenient and consistent — but a field's blast radius growing after the operator
-  blessed it is exactly the drift `adr/006` exists to prevent.
+  critic's mandate (`adr/007`); `adr/008` (b) reuses it to scope the machine gate. Shipped on
+  the operator's decision, and named here because a field's blast radius growing after it was
+  blessed is exactly the drift `adr/006` exists to prevent.
 
 ## Recent sessions (full detail → `SESSION-LOG.md`)
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s60** — **`adr/008` MERGED** (PR #142, closes #140, CI 4/4, **9** gate rounds, R9 SAFE): a contract zone’s `path_globs` is its SCOPE, and a declared `contract.docPaths` path is outside zone checking — documenting a contract value no longer counts as changing it. The gate found **ten** defects, all on “which files did this diff touch”, **none caught by the feature’s own tests**; two were blockers of one class (a strict parser checking LESS than the sloppy reader it replaced, letting a diff naming a contract value reach COMMIT), now closed structurally. Two findings resolved by measurement, not code, and named in the ADR. Session resumed from repo state after the terminal was closed. New: gotcha 91. **Corpus NOT re-run — the metric is unmeasured.**
 - **s59** — **`adr/007` MERGED** (PR #139, `1b99e29`, CI 4/4, **7** critic rounds, R7 SAFE): the critic's mandate narrows on an operator-declared `contract.docPaths`, never on inferring what is prose. Live-verified on hashed prompts (4/4 `clean` declared vs 4/5 `uncertain` undeclared; 3/3 non-clean on a rewrite). **Corpus re-run: `first_pass_commit_rate` 50% → 50% — the metric did NOT move.** The critic now returns `clean` @0.99 on the docs case, but the MECHANICAL gate escalates it `needs-guard`: documenting a contract value counts as touching it (#140). The 4/7 → 5/7 is #136 noise, not catching power; `good-wc-compat-hpos-flag` errored on a decomposition-shape fault (#141). New: gotcha 89, issues #138/#140/#141, two operator rules in `AGENTS.md`.
 - **s58** — **#123 FIXED AND MEASURED**: the critic sees whole changed files, not just the hunk (PR #134, `ebb85ea`, CI 4/4, 4 codex rounds, R4 SAFE). Corpus re-run: `first_pass_commit_rate` **0% → 50%**, escaped-defect still 0%, 2/7 → 4/7 — **pass bar still not met**. Mechanism proven by a paired live-critic control (`uncertain` 0.88 → `clean` 0.99). `adr/007` decided + live-verified (mandate narrowing for code-free diffs). R3's regression test exposed 11 pre-existing instances of the same defect class in `conductor.ts`. New: gotchas 87/88, issues #133/#135/#136.
 - **s57** — **Corpus diagnostics MERGED** (#126, PR #130, `21c2c41`, CI 4/4) after **7 codex rounds** — 25 findings: 21 real, 2 disproved on facts, 2 unreachable by measurement, 2 declined. Rounds 2–5 each found a narrower defect inside the previous fix; one shape 4× → new gotcha `[logic/ambiguous-false]` (86). Mid-session the critic hit its quota, blocking gate AND corpus → `[ops/codex-quota-exit-zero]` + #129; operator renewed the subscription. Also: full docs audit (CURRENT-STATE 287→~165), #104 closed as already-shipped, #131/#132 filed. **#123 NOT started — the metric was not re-measured.**

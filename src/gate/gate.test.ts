@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { runGate } from "./gate.js";
 import type { GateDeps, GateInput } from "./gate.js";
 import type { Invariants, ContractZone } from "./invariants.js";
+import { diffAddedRemovedLines } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { AgentCiUnavailableError } from "./agent-ci-exec.js";
 import { parseCheckstyle } from "./checkstyle.js";
@@ -104,6 +105,7 @@ interface DepsOverrides {
   runAgentCi?: GateDeps["runAgentCi"];
   runProfileGates?: GateDeps["runProfileGates"];
   writeGateFeedback?: GateDeps["writeGateFeedback"];
+  docPaths?: GateDeps["docPaths"];
 }
 
 interface Calls {
@@ -139,6 +141,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     runAgentCi: overrides.runAgentCi !== undefined ? overrides.runAgentCi : null,
     runProfileGates: overrides.runProfileGates !== undefined ? overrides.runProfileGates : null,
     ...(overrides.writeGateFeedback !== undefined ? { writeGateFeedback: overrides.writeGateFeedback } : {}),
+    ...(overrides.docPaths !== undefined ? { docPaths: overrides.docPaths } : {}),
   };
 
   return { deps, calls };
@@ -869,5 +872,319 @@ describe("ProfileGateRecord (Task 1 -- per-gate records, including skipped)", ()
     const { deps } = makeDeps({ changedFiles: ["src/foo.ts"], runProfileGates: null });
     const v = await runGate({ taskId: "t1", fileSet: ["src/foo.ts"] }, deps);
     expect(v.profile_gates).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adr/008 (#140): documenting a contract value is not touching the contract.
+//
+// The measured shape, from the s59 corpus run: the ONLY changed file is
+// `docs/OVERVIEW.md`, whose whole purpose was to document that the plugin
+// registers `test_pickup` -- and the gate escalated `needs-guard`, demanding a
+// mutation-verified guard for a sentence of prose, because `path_globs` was an
+// OR-arm rather than the zone's scope.
+// ---------------------------------------------------------------------------
+describe("contract-zone scoping (adr/008)", () => {
+  /** The polygon's real zone: it declares WHERE its contract lives. */
+  const scopedZone: ContractZone = {
+    id: "shipping-method-ids",
+    why: "persisted shipping-method ids",
+    auto_guardable: true,
+    path_globs: ["includes/class-test-shipping-method-*.php"],
+    grep_patterns: [],
+    exact_strings: ["test_pickup"],
+  };
+
+  /** A zone that declares no scope at all -- (a) cannot help it, only (b) can. */
+  const unscopedZone: ContractZone = { ...scopedZone, id: "unscoped-ids", path_globs: [] };
+
+  /** No constitution globs: these tests are about the ZONE step, and the default
+   *  fixture fences `docs/**` outright, which would mask the behaviour under test. */
+  const noConstitution = { constitution: { path_globs: [] } };
+
+  const docsDiff = [
+    "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+    "--- a/docs/OVERVIEW.md",
+    "+++ b/docs/OVERVIEW.md",
+    "@@ -3,0 +4,1 @@",
+    "+The plugin registers test_pickup as a shipping method id.",
+  ].join("\n");
+
+  const codeDiff = [
+    "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-test-shipping-method-pickup.php",
+    "--- a/includes/class-test-shipping-method-pickup.php",
+    "+++ b/includes/class-test-shipping-method-pickup.php",
+    "@@ -10,0 +11,1 @@",
+    "+        $this->id = 'test_pickup';",
+    "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+    "--- a/docs/OVERVIEW.md",
+    "+++ b/docs/OVERVIEW.md",
+    "@@ -3,0 +4,1 @@",
+    "+The plugin registers test_pickup as a shipping method id.",
+  ].join("\n");
+
+  it("(a) a docs-only change does NOT touch a zone that declared where its contract lives", async () => {
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: docsDiff,
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.zones_touched).toEqual([]);
+    expect(result.reasons).toEqual([]);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("(a) still catches the value when the change actually touches the zone's files", async () => {
+    // The other direction of the same test -- without this, "no escalation" above
+    // could equally mean the zone check stopped working (a mutation of the fix
+    // that passes the first test alone).
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"],
+      diffText: codeDiff,
+    });
+
+    const result = await runGate(
+      { taskId: "T1", fileSet: ["includes/class-test-shipping-method-pickup.php", "docs/OVERVIEW.md"] },
+      deps,
+    );
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+    expect(result.zones_touched[0]!.uncovered_strings).toEqual(["test_pickup"]);
+  });
+
+  it("(a) leaves a zone with NO path_globs scanning the whole diff (unchanged default)", async () => {
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [unscopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: docsDiff,
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["unscoped-ids"]);
+  });
+
+  it("(b) a declared contract.docPaths path is outside zone checking, even for an unscoped zone", async () => {
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [unscopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: docsDiff,
+      docPaths: ["docs/**", "README.md"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.zones_touched).toEqual([]);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("(b) does NOT exempt a declared doc path from the constitution fence", async () => {
+    // The narrowing is scoped to contract zones. The human-only fence is the
+    // stronger guarantee, and one declaration must not quietly buy two exemptions.
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [unscopedZone], constitution: { path_globs: ["docs/**"] } }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: docsDiff,
+      docPaths: ["docs/**"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.constitution_touched).toEqual(["docs/OVERVIEW.md"]);
+    expect(result.reasons.some((r) => r.includes("constitution path(s) changed"))).toBe(true);
+  });
+
+  it("a rename OUT of the zone into a DECLARED doc path still escalates (R1 review finding)", async () => {
+    // The attack the first implementation opened: attribute a hunk's lines to its
+    // post-image path only, and `git mv includes/class-x.php docs/x.md` carries the
+    // zone's contract values into a declared documentation path, where (b) then
+    // drops them. Both sides of the section decide now -- in scope if ANY path
+    // matches the zone, exempt only if EVERY path is declared.
+    const renameDiff = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+      "similarity index 60%",
+      "rename from includes/class-test-shipping-method-pickup.php",
+      "rename to docs/OVERVIEW.md",
+      "--- a/includes/class-test-shipping-method-pickup.php",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -10,1 +10,1 @@",
+      "-        $this->id = 'test_pickup';",
+      "+The plugin used to register test_pickup.",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      // What `git diff --name-only` reports for a detected rename: the new path only.
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: renameDiff,
+      docPaths: ["docs/**"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+    expect(result.zones_touched[0]!.uncovered_strings).toEqual(["test_pickup"]);
+  });
+
+  it("an unparseable diff falls back to the OLD unscoped reading, never to leniency", async () => {
+    // Truncated mid-hunk: the strict walker throws, and the zone must still be
+    // reported touched -- a diff the harness cannot read is not a reason to skip
+    // a contract check (Principle 10).
+    //
+    // R3 review finding: asserting ESCALATE alone proves nothing, because the
+    // PRE-adr/008 code escalated on this input too (it scanned the whole diff
+    // unconditionally). The control below is what makes this test non-vacuous --
+    // the SAME content in a WELL-FORMED diff must NOT escalate, so the only thing
+    // that can explain the difference is the fallback actually running.
+    const truncated = [
+      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+      "--- a/docs/OVERVIEW.md",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -3,4 +4,4 @@",
+      "+The plugin registers test_pickup as a shipping method id.",
+    ].join("\n");
+    const wellFormed = [
+      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+      "--- a/docs/OVERVIEW.md",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -3,0 +4,1 @@",
+      "+The plugin registers test_pickup as a shipping method id.",
+    ].join("\n");
+
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: truncated,
+    });
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+
+    const { deps: controlDeps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: wellFormed,
+    });
+    const control = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, controlDeps);
+
+    expect(control.zones_touched).toEqual([]);
+    expect(control.decision).toBe("COMMIT");
+  });
+
+it("catches a contract value on a line the OLD flat reader dropped (R5 review finding)", async () => {
+    // The strict walker tells a `+++ b/path` HEADER from an added line whose own
+    // content starts with `++` by the hunk's declared counts, which is the only
+    // way to tell them apart -- they are byte-identical on the wire. The flat
+    // reader cannot, so it drops every such line (`/^(\+\+\+|---)/` in
+    // `diffAddedRemovedLines`), and the pre-adr/008 gate never saw a contract
+    // value written on one.
+    //
+    // So adr/008 is NOT byte-identical for a zone with no `path_globs` and no
+    // declared docs: it is STRICTER, on exactly the shape a worker would use to
+    // slip a contract value past the scan. First the measurement that the two
+    // readers really do disagree, then the gate behaviour that follows from it.
+    const sneaky = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-test-shipping-method-pickup.php",
+      "--- a/includes/class-test-shipping-method-pickup.php",
+      "+++ b/includes/class-test-shipping-method-pickup.php",
+      "@@ -1,0 +1,1 @@",
+      "+++test_pickup",
+    ].join("\n");
+
+    expect(diffAddedRemovedLines(sneaky).join("|")).not.toContain("test_pickup");
+
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [unscopedZone], ...noConstitution }),
+      changedFiles: ["includes/class-test-shipping-method-pickup.php"],
+      diffText: sneaky,
+    });
+
+    const result = await runGate(
+      { taskId: "T1", fileSet: ["includes/class-test-shipping-method-pickup.php"] },
+      deps,
+    );
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["unscoped-ids"]);
+  });
+
+  it("a headerless contract value still escalates -- malformed input is never LESS checked (R7 finding)", async () => {
+    // The diff names a contract value and nothing else: no `diff --git`, no file
+    // header, no hunk. The pre-adr/008 gate caught it, because its flat reader
+    // takes any line starting with `+`. The strict walker ignored it, so the zone
+    // saw no lines at all and the gate committed -- leniency introduced by a
+    // parser upgrade, on exactly the input a parser upgrade must not relax.
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: "+test_pickup",
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+  });
+
+  it("an extra line past the hunk's declared count cannot hide behind the previous file (R8 finding)", async () => {
+    // The hunk claims ONE added line. The second `+` line is outside it, and the
+    // only path in scope belongs to the hunk that already ended. Filing it under
+    // that path put a contract value inside a declared documentation file, where
+    // a zone scoped to `includes/**` never looks -- so the gate committed a diff
+    // naming `test_pickup`. A line no hunk accounts for belongs to no file.
+    const extraLine = [
+      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+      "--- a/docs/OVERVIEW.md",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -3,0 +4,1 @@",
+      "+ordinary documentation",
+      "+test_pickup",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: extraLine,
+      docPaths: ["docs/**"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+  });
+
+  it("a 100%-similarity rename OUT of the zone still trips it (R3 review finding)", async () => {
+    // The shape that has no hunk body at all: no `---`/`+++` pair, no `+`/`-`
+    // line, and `git diff --name-only` -- which is where the gate's changedFiles
+    // come from -- names ONLY the destination. Without unioning in the paths the
+    // diff itself names, the zone globbing the SOURCE file sees no changed file
+    // and no lines to scan, so the gate reports untouched while the conductor
+    // reports touched: two answers to one question, on a change that physically
+    // moved a contract value out of the zone that governs it.
+    const pureRename = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/OVERVIEW.md",
+      "similarity index 100%",
+      "rename from includes/class-test-shipping-method-pickup.php",
+      "rename to docs/OVERVIEW.md",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      // What git reports for a detected rename: the post-image path only.
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: pureRename,
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
   });
 });

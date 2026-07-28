@@ -47,11 +47,12 @@ narrower version of the same bug across 4 rounds in s46.)
 Never claim done on words alone. Run it, observe behaviour, verify each CI job is a
 pass and the critic is CLEAN before merge. Squash-merge; never `gh pr merge --auto`.
 
-**Green CI is a precondition for merging, not a trigger.** Whether the merge then
-happens depends on presence — attended, it waits for the operator's in-turn word;
-unattended/overnight, the standing grant applies. `AGENTS.md` ("Git ownership") is
-the single statement of that policy; do not restate the condition here, or the two
-drift apart again (they did, until s49 reconciled them).
+**A SAFE gate verdict plus green CI is the merge.** Attended and unattended are the
+SAME rule since s59: the agent merges and reports it, and never asks. `AGENTS.md`
+("Git ownership") is the single statement of that policy; do not restate its
+conditions here, or the two drift apart again (they did, until s49 reconciled them —
+and the s49 wording itself went stale here for a whole session before this audit
+caught it).
 
 ### Single source of truth
 The file-blackboard (`.autodev/queue|runtime|done`, project config in

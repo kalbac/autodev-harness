@@ -76,7 +76,7 @@
   captured **immediately** as an issue — `gh issue create` with a type label
   (`bug`/`enhancement`/`idea`/`tech-debt`/`research`/`polish`) + an `area:*` label and a
   **Russian** title/body (see the language exception above) — then added to the board
-  with status `Инбокс`:
+  at the status the triage rule below assigns (an agent's own card: `Бэклог`):
   `gh project item-add 2 --owner kalbac --url <issue-url>`.
   Never a stray `.txt` note; a code TODO must reference an issue (`// TODO(#123): ...`),
   never stand alone.

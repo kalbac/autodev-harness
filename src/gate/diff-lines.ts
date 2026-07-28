@@ -56,6 +56,8 @@
  * skip that and a diff parses differently depending on which OS produced it.
  */
 
+import { diffAddedRemovedLines } from "./invariants.js";
+
 /** Matches a hunk header and captures all four line-count fields: the OLD-file
  *  start/count and the NEW-file start/count. Both counts are OPTIONAL in a
  *  unified diff (a single-line hunk omits the comma-count and defaults to `1`)
@@ -268,14 +270,170 @@ export interface AddedLines {
 }
 
 /**
+ * The `+`/`-` CONTENT lines of one file section's hunks, in source order, with
+ * their diff prefix intact (`+$id = 'x';`) — the exact strings
+ * `diffAddedRemovedLines` produces, but attributed to the file they came from.
+ *
+ * `files` carries BOTH SIDES of the section, pre-image first: `["src/a.php"]` for
+ * an ordinary edit or a deletion, `["docs/x.md"]` for a creation, and BOTH paths
+ * for a rename or copy. `/dev/null` is not a path and never appears.
+ *
+ * Two sides rather than one, because a diff hunk's `-` lines belong to the OLD
+ * file and its `+` lines to the NEW one, and for a rename those are different
+ * files. The first version of this attributed everything to the post-image path
+ * alone, which the review gate broke twice with one input shape: renaming
+ * `includes/class-x.php` to a declared documentation path would have carried its
+ * removed contract values out of the zone that governs them. A section is
+ * therefore in scope for a zone when ANY of its paths matches, and exempt from a
+ * declaration only when EVERY one of them is declared.
+ *
+ * `files` is EMPTY only when the walk saw neither header — no path is known, so
+ * callers treat those lines as in scope everywhere and exempt from nothing.
+ */
+export interface DiffFileContent {
+  files: string[];
+  lines: string[];
+}
+
+/** Everything one walk of a diff yields. Split into narrow exported readers
+ *  below so each caller states which question it is asking. */
+interface DiffWalk extends AddedLines {
+  content: DiffFileContent[];
+  /** EVERY path the diff names, either side, whether or not that path's section
+   *  carries a single `+`/`-` line. Deliberately NOT derived from `content`: a
+   *  100%-similarity rename, a mode-only change and a binary change all name
+   *  files while producing no hunk body at all, so a content-derived list omits
+   *  exactly those (R2 review finding, s60). */
+  paths: string[];
+  /** True when the diff carried a `+`/`-` line belonging to no file this parser
+   *  could name -- a hunk with no file header. The path list is then not an
+   *  answer at all, and a caller that reads it as "touches no files" drops its
+   *  path check on a diff that plainly changes something (R4 review finding). */
+  unattributedContent: boolean;
+}
+
+/**
  * Walks a unified diff (possibly covering several files and several hunks per
  * file) and returns, per worktree-relative `/`-separated path, the set of
  * new-file line numbers the diff added, plus the set of paths that are brand
  * new (see `AddedLines`).
  */
 export function addedLineNumbers(diffText: string): AddedLines {
+  const { added, newFiles } = walkDiff(diffText);
+  return { added, newFiles };
+}
+
+/**
+ * The diff's `+`/`-` content lines, grouped by the file each came from
+ * (`DiffFileContent`), in first-appearance order.
+ *
+ * Why this shares `addedLineNumbers`'s walk rather than re-deriving the split with
+ * its own scan: the flat reader (`diffAddedRemovedLines`) tells `+++ b/path` from an
+ * added line whose own content starts with `++` by TEXT, which is undecidable — the
+ * two are byte-identical on the wire. Only the hunk headers' declared line counts
+ * settle it, and this module already counts them (trap #1). A second parser answering
+ * the same question a different way is the defect shape this repo names most often
+ * (`docs/gotchas/validated-one-string-used-another.md`).
+ *
+ * THROWS on a malformed or truncated diff, exactly like `addedLineNumbers` — the gate
+ * catches it and falls back to the unscoped flat reading (`gate/zone-scope.ts`), which
+ * is the stricter answer, so a diff this cannot parse never buys anyone leniency.
+ */
+export function diffContentLinesByFile(diffText: string): DiffFileContent[] {
+  return walkDiff(diffText).content;
+}
+
+/**
+ * Every path the diff NAMES, either side, in first-appearance order.
+ *
+ * This is the "which files did this diff touch" question, and it is a different
+ * question from "whose lines are these" (`diffContentLinesByFile`). The R2 review
+ * gate closed the gap between them: a 100%-similarity rename, a mode-only change
+ * and a binary change each name a file while emitting no `+`/`-` line, so a caller
+ * that derives its touched-file list from the CONTENT buckets reports those files
+ * as untouched — while the mechanical gate, whose list comes from
+ * `git diff --name-only`, reports them touched. Two answers to one question is the
+ * defect this repository names most often, and here it decides whether the
+ * conductor escalates a contract risk now or retries.
+ *
+ * Both sides are included for the same reason `DiffFileContent.files` carries both:
+ * a deletion's post-image is `/dev/null` and a rename's is a different file.
+ *
+ * THROWS on a malformed or truncated diff, exactly like the other two readers.
+ */
+export function diffNamedPaths(diffText: string): string[] {
+  const walk = walkDiff(diffText);
+  if (walk.unattributedContent) {
+    // R4 review finding. A hunk with no file header parses without error -- its own
+    // counts are consistent -- but its lines belong to no file this parser can name.
+    // Returning the (possibly empty) path list would tell a caller "these files were
+    // touched" when the truth is "there are changes here I cannot place", and the
+    // caller would then compare it against a git-derived list that DOES name the
+    // file. Refusing is what routes both callers to their stated fallback.
+    throw new Error(
+      "diffNamedPaths: the diff contains changed lines that belong to no file header -- " +
+        "the diff is malformed or was truncated, so its file list cannot be trusted",
+    );
+  }
+  return walk.paths;
+}
+
+function walkDiff(diffText: string): DiffWalk {
   const added = new Map<string, Set<number>>();
   const newFiles = new Set<string>();
+  // Every path any header names, recorded the moment it is parsed and NOT at the
+  // point a line is attributed -- that is the whole difference between this and
+  // `content`. A section with no hunk body never calls `record()`, so anything
+  // read off `content` cannot see it (R2 review finding, s60).
+  const namedPaths = new Set<string>();
+  const notePath = (path: string | null): void => {
+    if (path !== null) namedPaths.add(path);
+  };
+  // One bucket per file SECTION, keyed by both sides so a rename's two paths
+  // stay together and an ordinary edit's single path does not collide with
+  // anything. NUL cannot occur in either path (`unquotePath` refuses control
+  // characters) and a SPACE can, so NUL is the joiner and a space would be a
+  // collision. Written as the ESCAPE `\u0000`, never as a raw byte: one raw NUL
+  // makes the whole file binary to git, which silently turns off end-of-line
+  // normalization and rewrites the file's every line in the next diff.
+  // Insertion-ordered, which is what gives `content` its source order.
+  const content = new Map<string, { files: string[]; lines: string[] }>();
+  // Set when the walk meets a hunk belonging to no file section -- either a hunk
+  // header seen while neither side's path is known, or a `+`/`-` line recorded in
+  // that state. The walk does not throw on that shape (the hunk's own
+  // counts are consistent, so nothing is detectably truncated), but it means the diff
+  // carries changes belonging to no file this parser can name. The LINE arm already
+  // handles that (an unattributed section is in scope for every zone); for the FILE
+  // arm it is not "names no files", it is "no answer" -- R4 review finding.
+  let unattributedContent = false;
+  /** A `+`/`-` line that no hunk accounts for. It is NOT attributed to the section
+   *  it happens to follow: the last `+++ b/<path>` header says which file the last
+   *  HUNK was about, and a line outside every hunk is not covered by that claim.
+   *  Guessing sent it into that file's bucket, where a zone scoped elsewhere never
+   *  saw it -- so an extra line after an exhausted hunk count could smuggle a
+   *  contract value past a scoped zone (R8 review finding, a blocker). Unattributed
+   *  means in scope for every zone and exempt from nothing, which is the answer the
+   *  pre-adr/008 flat reader gave. */
+  const recordUnattributed = (line: string): void => {
+    unattributedContent = true;
+    let bucket = content.get("");
+    if (!bucket) {
+      bucket = { files: [], lines: [] };
+      content.set("", bucket);
+    }
+    bucket.lines.push(line);
+  };
+  const record = (line: string): void => {
+    const files = [currentOldPath, currentPath].filter((p): p is string => p !== null);
+    if (files.length === 0) unattributedContent = true;
+    const key = files.join("\u0000");
+    let bucket = content.get(key);
+    if (!bucket) {
+      bucket = { files: [...new Set(files)], lines: [] };
+      content.set(key, bucket);
+    }
+    bucket.lines.push(line);
+  };
 
   // Strip a trailing `\r` from every line UP FRONT, before any header/hunk/body
   // logic runs, so a CRLF-captured diff (routine on Windows) behaves identically
@@ -295,6 +453,10 @@ export function addedLineNumbers(diffText: string): AddedLines {
   const lines = diffText.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
 
   let currentPath: string | null = null;
+  // The PRE-image path of the current section (`--- a/<path>`), `null` for a
+  // creation's `--- /dev/null`. Tracked only for `content`'s attribution -- the
+  // added-line map is a new-file question and never consults it.
+  let currentOldPath: string | null = null;
   let cursor = 0; // next NEW-file line number; only meaningful once a hunk header set it
   let remainingOld = 0; // old-file body lines still owed by the current hunk
   let remainingNew = 0; // new-file body lines still owed by the current hunk
@@ -309,6 +471,14 @@ export function addedLineNumbers(diffText: string): AddedLines {
   // for. A RENAME must NOT set this — its content moved, it did not
   // originate — so only `copy to` (never `rename to`) is recognized here.
   let sawNewFileSignal = false;
+  // Set on a `copy from`/`copy to` extended header, cleared at the next section
+  // (R4 review finding). A COPY's old side is a file the diff does NOT change:
+  // `git diff --name-only` names only the destination, and nothing moved out of
+  // the source's contract zone. Counting the source as touched -- which the
+  // pre-image rules for a rename and a deletion correctly do -- would demand a
+  // mutation-verified guard for a file nobody edited, the exact complaint #140
+  // exists to fix, one shape over.
+  let sectionIsCopy = false;
   // R3-FIX2: the new-side path parsed off the most recent `diff --git` line,
   // ONLY when that line proves (per `newFilePathFromDiffGitLine`) it is a
   // genuinely new file's line (old side textually identical to new side) --
@@ -344,6 +514,9 @@ export function addedLineNumbers(diffText: string): AddedLines {
           }
           set.add(cursor);
         }
+        // Recorded for EVERY added line, including one in a file with no
+        // post-image path -- see `DiffFileContent.file`.
+        record(line);
         cursor++;
         remainingNew--;
         continue;
@@ -360,6 +533,10 @@ export function addedLineNumbers(diffText: string): AddedLines {
               `its header declared -- the diff is malformed or was truncated. Offending line: ${JSON.stringify(line)}`,
           );
         }
+        // A removed line has no NEW-file line number (that is trap #3, and why
+        // the cursor does not advance) -- but it is still diff content the zone
+        // scan must see: removing a contract value is touching it.
+        record(line);
         remainingOld--;
         continue;
       }
@@ -442,6 +619,10 @@ export function addedLineNumbers(diffText: string): AddedLines {
       // the real path, not the still-escaped wire form.
       const raw = unquotePath(line.slice(4).trim());
       oldWasDevNull = raw === "/dev/null";
+      // A copy's `--- a/<source>` names the file it was copied FROM, which this
+      // diff leaves untouched -- so it is neither attributed nor reported (R4).
+      currentOldPath = oldWasDevNull || sectionIsCopy ? null : stripPrefix(raw);
+      notePath(currentOldPath);
       continue;
     }
 
@@ -456,6 +637,7 @@ export function addedLineNumbers(diffText: string): AddedLines {
       // must run on the DECODED string, not the raw quoted one.
       const raw = unquotePath(line.slice(4).trim());
       currentPath = raw === "/dev/null" ? null : stripPrefix(raw);
+      notePath(currentPath);
       if ((oldWasDevNull || sawNewFileSignal) && currentPath !== null) {
         newFiles.add(currentPath);
       }
@@ -466,6 +648,14 @@ export function addedLineNumbers(diffText: string): AddedLines {
 
     const hunkMatch = HUNK_HEADER.exec(line);
     if (hunkMatch) {
+      // R6 review finding: a HUNK belonging to no file section is itself the
+      // unanswerable case, whether or not it goes on to carry a body line. An
+      // EMPTY hunk (`@@ -1,0 +1,0 @@`) records nothing, so waiting for a `+`/`-`
+      // line to notice left `paths: []` looking like a confident "names no
+      // files" -- and the conductor then reported fewer zones than the gate,
+      // which still had git's list. The question is asked at the hunk, so the
+      // "no answer" is recorded at the hunk.
+      if (currentPath === null && currentOldPath === null) unattributedContent = true;
       cursor = Number(hunkMatch[3]);
       remainingOld = hunkMatch[2] !== undefined ? Number(hunkMatch[2]) : 1;
       remainingNew = hunkMatch[4] !== undefined ? Number(hunkMatch[4]) : 1;
@@ -496,6 +686,7 @@ export function addedLineNumbers(diffText: string): AddedLines {
     // does not originate it, so its file-level findings stay pre-existing.
     if (line.startsWith("copy to ") || line.startsWith("new file mode ")) {
       sawNewFileSignal = true;
+      if (line.startsWith("copy to ")) sectionIsCopy = true;
       if (line.startsWith("copy to ")) {
         // R3-FIX2: a git copy's destination is known directly from THIS
         // header (no a//b/ convention prefix on it -- confirmed against real
@@ -503,7 +694,9 @@ export function addedLineNumbers(diffText: string): AddedLines {
         // rather than waiting for a `+++` header a binary copy never has
         // ("Binary files ... differ" instead). Redundant-but-harmless for a
         // text copy, which also reaches the `+++` branch below.
-        newFiles.add(unquotePath(line.slice("copy to ".length).trim()));
+        const copyTo = unquotePath(line.slice("copy to ".length).trim());
+        newFiles.add(copyTo);
+        notePath(copyTo);
       } else if (pendingNewFilePath !== null) {
         // R3-FIX2: likewise for `new file mode` -- its own text carries no
         // path, so fall back to the new-side path already parsed off the
@@ -511,7 +704,29 @@ export function addedLineNumbers(diffText: string): AddedLines {
         // than only inside `+++`) is what makes a binary addition (which
         // never reaches a `+++` header at all) actually get recorded.
         newFiles.add(pendingNewFilePath);
+        notePath(pendingNewFilePath);
       }
+      continue;
+    }
+
+    // `rename from`/`rename to`/`copy from` name a path WITHOUT saying anything
+    // about newness -- which is why they are read here and not in the branch
+    // above. They are the only place a 100%-similarity rename states its two
+    // paths at all: such a section has no `---`/`+++` pair and no hunk, and its
+    // `diff --git` line proves nothing (the two sides differ), so without this
+    // the diff would name files nobody downstream could see (R2 finding, s60).
+    // These headers carry no `a/`/`b/` convention prefix -- same as `copy to`.
+    if (line.startsWith("copy from ")) {
+      // NOT a touched file: the source of a copy is unchanged (R4 finding). The
+      // flag is what stops the paired `--- a/<source>` header below from
+      // recording it, and it must be set even when this parser has nothing else
+      // to do with the line.
+      sectionIsCopy = true;
+      continue;
+    }
+    if (line.startsWith("rename from ") || line.startsWith("rename to ")) {
+      const marker = line.startsWith("rename from ") ? "rename from " : "rename to ";
+      notePath(unquotePath(line.slice(marker.length).trim()));
       continue;
     }
 
@@ -527,12 +742,24 @@ export function addedLineNumbers(diffText: string): AddedLines {
     if (line.startsWith("diff --git ")) {
       oldWasDevNull = false;
       sawNewFileSignal = false;
+      sectionIsCopy = false;
+      // Both sides are cleared for the SAME reason the new-file signals are: a
+      // section with no `---`/`+++` pair at all (a binary change, a pure mode
+      // change) would otherwise inherit the previous section's paths and
+      // attribute its lines to the wrong file.
+      currentOldPath = null;
+      currentPath = null;
       // R3-FIX2: (re)compute the pending new-file path for THIS file's
       // section. `null` when the line does not prove old==new (a rename or
       // copy, or a shape this parser cannot resolve) -- those never carry a
       // `new file mode` header anyway, so `pendingNewFilePath` is simply
       // never consumed for them.
       pendingNewFilePath = newFilePathFromDiffGitLine(line);
+      // A section whose two sides are the SAME path states that path here and
+      // may state it nowhere else: a binary change and a mode-only change both
+      // stop after this header. (For a rename or copy the helper returns null by
+      // design, and `rename from`/`rename to` above carry those paths instead.)
+      notePath(pendingNewFilePath);
       continue;
     }
 
@@ -556,7 +783,37 @@ export function addedLineNumbers(diffText: string): AddedLines {
     );
   }
 
-  return { added, newFiles };
+  // THE BACKSTOP, and the reason this class of defect is now closed rather than
+  // patched: whatever the strict walk did not record, but the FLAT reader
+  // (`diffAddedRemovedLines`, the pre-adr/008 gate's only reading) would have,
+  // is added back as unattributed -- in scope for every zone, exempt from
+  // nothing. Two review rounds found two separate ways for the walker to drop a
+  // line the flat reader kept: a content line outside every hunk (R7), and a
+  // line past a hunk's declared count (R8), each of which let a contract value
+  // reach COMMIT. The branches above handle both precisely and in source order;
+  // this makes the GUARANTEE structural -- a stricter parser can never check
+  // less than the one it replaced, whatever shape comes next.
+  const recorded = new Map<string, number>();
+  for (const bucket of content.values()) {
+    for (const l of bucket.lines) recorded.set(l, (recorded.get(l) ?? 0) + 1);
+  }
+  const missing: string[] = [];
+  for (const l of diffAddedRemovedLines(diffText)) {
+    const left = recorded.get(l) ?? 0;
+    if (left > 0) recorded.set(l, left - 1);
+    else missing.push(l);
+  }
+  if (missing.length > 0) {
+    for (const l of missing) recordUnattributed(l);
+  }
+
+  return {
+    added,
+    newFiles,
+    content: [...content.values()],
+    paths: [...namedPaths],
+    unattributedContent,
+  };
 }
 
 /**

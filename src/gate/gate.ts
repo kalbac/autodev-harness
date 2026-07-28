@@ -1,5 +1,12 @@
 import { globMatch } from "../util/glob.js";
 import { diffAddedRemovedLines, zoneTouched, zoneTouchedStrings } from "./invariants.js";
+import {
+  attributeDiffLines,
+  excludeDeclaredDocs,
+  excludeDeclaredDocPaths,
+  zoneScopedLines,
+  unionDiffNamedPaths,
+} from "./zone-scope.js";
 import type { Invariants } from "./invariants.js";
 import { isBlessed, selectGuardForValue, selectGuardForZone } from "./guards.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
@@ -116,6 +123,14 @@ export interface GateDeps {
    *  config). Unioned with `inv.constitution.path_globs` for the constitution check.
    *  Optional so the existing gate unit tests keep compiling unchanged. */
   constitutionPaths?: string[];
+  /** Config-level (trusted-root, worker-inaccessible) DOCUMENTATION path globs --
+   *  `contract.docPaths`, the same operator declaration `adr/007` gave the critic.
+   *  `adr/008` (#140) reuses it one layer down: a declared doc path is outside
+   *  CONTRACT-ZONE checking, so documenting a contract value is not touching it.
+   *  It is NOT unioned into the constitution check -- a doc declaration buys no
+   *  exemption from the human-only fence. Default `[]` reproduces the pre-adr/008
+   *  gate exactly, and omitting it keeps the existing unit tests compiling. */
+  docPaths?: string[];
   /** Optional: persist gate-verdict.json. Omit in unit tests. */
   writeVerdict?: (taskId: string, verdict: GateVerdict) => Promise<void>;
   /** Optional: persist (or CLEAR) the gate-failure document the next round's worker reads.
@@ -192,6 +207,25 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     const { changedFiles, diffText } = await deps.resolveScope(input);
     const diffLines = diffAddedRemovedLines(diffText);
     const reasons: string[] = [];
+
+    // Zone scoping (adr/008 / #140). Computed ONCE here, and deliberately as two
+    // separate values from the ones the constitution check below uses: a declared
+    // doc path is outside CONTRACT-ZONE checking, never outside the constitution
+    // fence. Both narrowings live in `zone-scope.ts` with their fail-closed
+    // reasoning; `attributeDiffLines` falls back to the old unscoped reading when
+    // the diff cannot be walked.
+    const docPaths = deps.docPaths ?? [];
+    const zoneLinesByFile = excludeDeclaredDocs(attributeDiffLines(diffText, diffLines), docPaths);
+    // The zone check's file list is git's list UNIONED with every path the diff
+    // itself names (R3 review finding). `git diff --name-only` reports POST-IMAGE
+    // paths, so a 100%-similarity rename of a zone file OUT of its zone reports
+    // only the destination -- and with no hunk body there are no lines to scan
+    // either, so the zone that governs the value the rename just moved is reported
+    // untouched. The diff's own headers still name the source. This is strictly
+    // MORE files, never fewer, so it can only make the gate stricter; and it is the
+    // SAME list `zonesTouchedInDiff` builds, which is what keeps the conductor's
+    // answer to this question from contradicting the gate's (invariant 9).
+    const zoneChangedFiles = excludeDeclaredDocPaths(unionDiffNamedPaths(changedFiles, diffText), docPaths);
 
     // 1. check command (whole tree). null = skip.
     let composerGreen = true;
@@ -292,7 +326,12 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     // 3. per-zone coverage (per-VALUE first, zone-level fallback)
     const zonesTouched: ZoneResult[] = [];
     for (const zone of inv.contract_zones) {
-      if (!zoneTouched(zone, changedFiles, diffLines)) {
+      // adr/008: `path_globs` is this zone's SCOPE, so both the boolean "was it
+      // touched" and the per-value enumeration below read the SAME scoped lines.
+      // Scoping one and not the other is how a zone ends up reporting a contract
+      // value it was never touched by.
+      const zoneLines = zoneScopedLines(zone, zoneLinesByFile);
+      if (!zoneTouched(zone, zoneChangedFiles, zoneLines)) {
         continue;
       }
 
@@ -313,7 +352,7 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
         continue;
       }
 
-      const touchedStrings = zoneTouchedStrings(zone, diffLines);
+      const touchedStrings = zoneTouchedStrings(zone, zoneLines);
       zr.touched_strings = touchedStrings;
 
       if (touchedStrings.length > 0) {

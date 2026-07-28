@@ -13,7 +13,11 @@ At the start of **every** session, read in this order:
 3. `AGENTS.md` — the agent contract for this repo (language, git-ownership, batch-merges, review discipline)
 4. `docs/CURRENT-STATE.md` — phase status, next concrete actions, open questions
 5. `docs/GOTCHAS.md` — scan the index to avoid repeated mistakes
-6. `docs/reference/` — the ported reference docs (autodev-loop runbook + critic protocol)
+6. If touching ported logic, the relevant `docs/reference/` doc (autodev-loop runbook,
+   critic protocol)
+
+This is the same list as `docs/AGENT-RULES.md`'s Session Start Checklist — one list, two
+entry points. Change one, change the other.
 
 ## What this project is
 
