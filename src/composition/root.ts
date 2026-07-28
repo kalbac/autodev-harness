@@ -111,6 +111,8 @@ import { superviseOvernight, parseReworkCount } from "../autonomy/overnight-supe
 import { serializeDecision, parseDecisionJournal } from "../autonomy/decision-journal.js";
 import { parseEscalation } from "../escalate/escalate.js";
 import { loadSettings, defaultSettingsFile } from "../settings/settings.js";
+import { buildProjectGuaranteesView } from "../api/guarantees-view.js";
+import type { ProjectGuaranteesView } from "../api/server.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
@@ -404,6 +406,55 @@ export async function loadInvariantsFrom(
 }
 
 /**
+ * Read + parse the invariants file for the GUARANTEES projection (#138) — a
+ * DIFFERENT tri-state need than `loadInvariantsFrom`'s gate-facing contract above.
+ * `loadInvariantsFrom` deliberately collapses two cases into byte-identical
+ * `EMPTY_INVARIANTS`: a project that never configured/wrote an invariants file at
+ * all, and one whose file IS present, parses fine, and deliberately declares ZERO
+ * zones. That fold is correct for the gate — a zero-zone contract behaves the same
+ * either way — but it is exactly the shape
+ * `docs/gotchas/boolean-whose-no-means-two-things.md` warns against for a caller
+ * that DOES care: the guarantees dashboard's whole point is telling an operator
+ * "you have not established an invariants contract" apart from "you established
+ * one, and it protects nothing" — the latter reads as a deliberate blessing that
+ * never happened.
+ *
+ * Reuses the SAME trusted-root containment check (`resolveContainedOracleFile`)
+ * and the SAME parser (`parseInvariants`) `loadInvariantsFrom` uses above — no
+ * second reader for the same oracle definition
+ * (`docs/gotchas/validated-one-string-used-another.md`). Deliberately ignores
+ * `raw`/"explicitly configured": unlike the gate, which must distinguish an
+ * operator's deliberate misconfiguration (throw) from a project that never opted
+ * in (silently empty), this projection only ever REPORTS, so both collapse to the
+ * same honest `readable: false` — there is no oracle to enforce against right now,
+ * whichever reason.
+ *
+ * JUDGEMENT CALL: an empty (whitespace-only) file is also `readable: false`, not
+ * "declares zero zones" — an empty file has no MACHINE-INVARIANTS block at all, so
+ * nothing was actually parsed; treating it as a deliberate zero-zone declaration
+ * would be inventing an answer the file never gave.
+ */
+export async function readInvariantsForGuarantees(
+  cfg: HarnessConfig,
+  root: string,
+): Promise<{ readable: true; invariants: Invariants } | { readable: false }> {
+  const resolution = await resolveContainedOracleFile(root, cfg.contract.invariantsFile);
+  if (!resolution.readable) return { readable: false };
+  let text: string;
+  try {
+    text = await readFile(resolution.path, "utf8");
+  } catch {
+    return { readable: false };
+  }
+  if (text.trim() === "") return { readable: false };
+  try {
+    return { readable: true, invariants: parseInvariants(text) };
+  } catch {
+    return { readable: false };
+  }
+}
+
+/**
  * Parse `<root>/<cfg.contract.guardsFile>` and load each mutation-verified row's recipe
  * JSON -- oracle-DEFINITION read, same trusted-root / fail-closed contract as
  * `loadInvariantsFrom` above (`adr/006` Phase 1). Best-effort per-row: a guard row whose
@@ -543,6 +594,11 @@ export interface ProjectRoot {
    *  orchestrator model for a one-paragraph narration (best-effort -- a narration
    *  failure degrades to the structured summary, it never fails the whole call). */
   morningReport(opts?: { since?: string }): Promise<{ report: MorningReport; markdown: string }>;
+  /** Assemble the read-only "what does this harness guarantee" projection (#138) on
+   *  demand — GET /projects/:id/guarantees. Never cached: the invariants file and
+   *  package.json live on disk and can change between requests without a daemon
+   *  restart, so this re-reads the trusted root exactly like the gate does per run. */
+  guarantees(): Promise<ProjectGuaranteesView>;
 }
 
 /** The threads capability object the HTTP `ProjectView.threads` consumes; also
@@ -1650,6 +1706,18 @@ export async function buildProjectRoot(
     return { report, markdown: renderMorningReport(report) };
   };
 
+  /** See `ProjectRoot.guarantees` doc comment. Reads the SAME trusted-root oracle
+   *  sources the gate itself judges against (`readInvariantsForGuarantees`,
+   *  `readPackageScripts`, the already-loaded `profile`), then hands them to the
+   *  pure mapping step (`buildProjectGuaranteesView`) so the deterministic
+   *  assembly logic stays directly unit-testable without this full ProjectRoot. */
+  const guarantees = async (): Promise<ProjectGuaranteesView> => {
+    const invResult = await readInvariantsForGuarantees(cfg, repoRoot);
+    const packageScriptsSet = await readPackageScripts(repoRoot);
+    const packageScripts = packageScriptsSet === null ? null : [...packageScriptsSet];
+    return buildProjectGuaranteesView(cfg, invResult, profile, packageScripts);
+  };
+
   return {
     repoRoot,
     cfg,
@@ -1691,6 +1759,7 @@ export async function buildProjectRoot(
     readExecutionReportJson,
     qualificationReport,
     morningReport,
+    guarantees,
   };
 }
 

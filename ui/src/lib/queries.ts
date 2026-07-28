@@ -28,6 +28,7 @@ export const qk = {
   runtimeFile: (p: string, taskId: string, name: string) => ["runtime-file", p, taskId, name] as const,
   escalation: (p: string, id: string) => ["escalation", p, id] as const,
   config: (p: string) => ["config", p] as const,
+  guarantees: (p: string) => ["guarantees", p] as const,
   sessionUsage: (p: string) => ["session-usage", p] as const,
   taskVerdict: (p: string, taskId: string) => ["task-verdict", p, taskId] as const,
   detectedAgents: ["detected-agents"] as const,
@@ -223,6 +224,14 @@ export const useCiEvents = (projectId: string, taskId: string): CiEventFrame[] =
  *  by WS like everything else. `enabled` guards the daemon-global routes. */
 export const useConfig = (p: string) =>
   useQuery({ queryKey: qk.config(p), queryFn: () => api.getConfig(p), enabled: p !== "" });
+
+/** The plain-language "what will this harness do to my code" projection (#138).
+ *  Static-ish, same shape as `useConfig` — invalidated by WS like everything else.
+ *  A 404 (endpoint not yet deployed on this daemon) surfaces as a normal
+ *  `ApiError` through `query.error`, which the view renders as a calm empty
+ *  state rather than treating as a crash. */
+export const useGuarantees = (p: string) =>
+  useQuery({ queryKey: qk.guarantees(p), queryFn: () => api.getGuarantees(p), enabled: p !== "" });
 
 /** Write a partial project config update; invalidates this project's config
  *  query (and the daemon-wide project list, since a broken config can become

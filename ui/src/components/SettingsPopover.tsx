@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ChevronsUpDown, Settings } from "lucide-react";
+import { ChevronsUpDown, Settings, ShieldCheck } from "lucide-react";
 import { useTheme, type Theme } from "@/lib/theme";
 import { toneVar } from "@/lib/status";
 import type { ConnState } from "@/lib/store";
@@ -88,6 +88,19 @@ export function SidebarSettingsMenu({
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem disabled>Project settings</DropdownMenuItem>
+            )}
+            {projectId ? (
+              <DropdownMenuItem
+                render={<Link to="/p/$projectId/guarantees" params={{ projectId }} />}
+              >
+                <ShieldCheck className="size-4" />
+                What this project guarantees
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem disabled>
+                <ShieldCheck className="size-4" />
+                What this project guarantees
+              </DropdownMenuItem>
             )}
 
             <DropdownMenuSeparator />

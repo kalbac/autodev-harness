@@ -654,7 +654,7 @@ function ConfigSections({
  *  when nothing is declared, and it is deliberately a SENTENCE rather than a dash: an
  *  empty oracle list is a meaningful state ("no leniency", "nothing fenced"), and a bare
  *  em-dash reads as "not loaded" instead (#138 is about exactly this kind of silence). */
-function ChipList({ items, empty }: { items: string[]; empty: string }) {
+export function ChipList({ items, empty }: { items: string[]; empty: string }) {
   if (items.length === 0) return <span className="text-muted-foreground">{empty}</span>;
   return (
     <span className="inline-flex flex-wrap justify-end gap-1.5">

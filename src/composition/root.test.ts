@@ -13,6 +13,7 @@ import {
   buildOrchestratorCapabilities,
   loadInvariantsFrom,
   loadGuardPairsFrom,
+  readInvariantsForGuarantees,
   readPackageScripts,
   makeProgramExistsProbe,
 } from "./root.js";
@@ -574,6 +575,107 @@ describe("loadInvariantsFrom / loadGuardPairsFrom (adr/006 Phase 1 — trusted-r
       expect(pairs.map((p) => p.guard.contract_id)).toEqual([]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `readInvariantsForGuarantees` (#138): a DIFFERENT tri-state than
+ * `loadInvariantsFrom`'s gate-facing contract above. The guarantees dashboard must
+ * tell "no invariants file was ever established" (readable: false) apart from "a
+ * real file was read and parsed, and it declares zero zones" (readable: true,
+ * zones: []) -- exactly the shape `docs/gotchas/boolean-whose-no-means-two-things.md`
+ * warns against folding into one boolean.
+ */
+describe("readInvariantsForGuarantees", () => {
+  let trustedRoot: string;
+
+  beforeEach(() => {
+    trustedRoot = mkdtempSync(join(tmpdir(), "adh-guar-inv-"));
+  });
+  afterEach(() => {
+    rmSync(trustedRoot, { recursive: true, force: true });
+  });
+
+  it("readable: true, with mapped zones, for a valid file declaring a zone", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "INVARIANTS.md"), invariantsMdWithZone("zone-x"));
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result.readable).toBe(true);
+    if (result.readable) {
+      expect(result.invariants.contract_zones.map((z) => z.id)).toEqual(["zone-x"]);
+    }
+  });
+
+  it("readable: true, zones: [] for a VALID file that declares ZERO zones -- a real answer, not a failure", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "INVARIANTS.md"), EMPTY_INVARIANTS_MD);
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result.readable).toBe(true);
+    if (result.readable) {
+      expect(result.invariants.contract_zones).toEqual([]);
+    }
+  });
+
+  it("readable: false for an ABSENT invariants file (never folded into 'zero zones declared')", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    // trustedRoot has no INVARIANTS.md on disk at all.
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result).toEqual({ readable: false });
+  });
+
+  it("readable: false for a MALFORMED invariants file (missing BEGIN/END markers)", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "INVARIANTS.md"), "# just some prose, no machine block\n");
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result).toEqual({ readable: false });
+  });
+
+  it("readable: false for a present file with invalid JSON between the markers", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(
+      join(trustedRoot, "INVARIANTS.md"),
+      ["<!-- BEGIN MACHINE-INVARIANTS -->", "```json", "{ not valid json", "```", "<!-- END MACHINE-INVARIANTS -->"].join(
+        "\n",
+      ),
+    );
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result).toEqual({ readable: false });
+  });
+
+  it("readable: false for an empty (whitespace-only) file -- not a deliberate zero-zone blessing", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    writeFileSync(join(trustedRoot, "INVARIANTS.md"), "   \n\n  ");
+
+    const result = await readInvariantsForGuarantees(cfg, trustedRoot);
+
+    expect(result).toEqual({ readable: false });
+  });
+
+  it("reads the TRUSTED ROOT it is given, not any other root", async () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const otherRoot = mkdtempSync(join(tmpdir(), "adh-guar-inv-other-"));
+    try {
+      writeFileSync(join(trustedRoot, "INVARIANTS.md"), invariantsMdWithZone("zone-trusted"));
+      writeFileSync(join(otherRoot, "INVARIANTS.md"), invariantsMdWithZone("zone-other"));
+
+      const fromTrusted = await readInvariantsForGuarantees(cfg, trustedRoot);
+      const fromOther = await readInvariantsForGuarantees(cfg, otherRoot);
+
+      expect(fromTrusted.readable && fromTrusted.invariants.contract_zones.map((z) => z.id)).toEqual(["zone-trusted"]);
+      expect(fromOther.readable && fromOther.invariants.contract_zones.map((z) => z.id)).toEqual(["zone-other"]);
+    } finally {
+      rmSync(otherRoot, { recursive: true, force: true });
     }
   });
 });
