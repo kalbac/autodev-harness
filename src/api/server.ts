@@ -212,6 +212,79 @@ export interface ProjectConfigView {
   heterogeneityWarnings: string[];
 }
 
+/**
+ * Read-only projection of "what does this harness currently guarantee for this
+ * project" (#138), assembled from the SAME trusted-root oracle sources the gate
+ * itself judges against (`contract.invariantsFile`, the attached qualification
+ * profile, the trusted root's `package.json` scripts) — so the dashboard can never
+ * show a guarantee the gate does not actually enforce. Nothing here is writable;
+ * see `ProjectConfigView` for the sibling read-only projection this complements.
+ */
+export interface ProjectGuaranteesView {
+  /** Branch the conductor is allowed to run on (config `allowedBranchPattern`). */
+  branchPattern: string;
+  contract: {
+    /** Declared path of the invariants file, verbatim from config. */
+    invariantsFile: string;
+    /** FALSE when the invariants file could not be read or parsed at all. Distinct
+     *  from `zones: []`, which is a real answer ("declared, and it declares no zones").
+     *  See docs/gotchas/boolean-whose-no-means-two-things.md — never fold
+     *  "could not determine" into "no". */
+    invariantsReadable: boolean;
+    zones: Array<{
+      id: string;
+      /** The zone's own `why` text — the human explanation of what breaks. May be "". */
+      why: string;
+      pathGlobs: string[];
+      /** `exact_strings` — the literal values the zone protects. */
+      namedValues: string[];
+      /** `grep_patterns` — regex forms the zone protects. */
+      namedPatterns: string[];
+      autoGuardable: boolean;
+    }>;
+    /** The constitution block's `path_globs`. */
+    constitutionGlobs: string[];
+    /** config `contract.constitutionPaths`. */
+    protectedPaths: string[];
+    /** config `contract.docPaths`. */
+    docPaths: string[];
+  };
+  checks: {
+    profile: {
+      id: string;
+      version: number;
+      gates: Array<{
+        id: string;
+        run: string;
+        /** null = the gate runs over the whole project on every task. */
+        filesGlob: string | null;
+      }>;
+      /** Oracle paths this profile protects (worktree-relative). */
+      protectedPaths: string[];
+    } | null;
+    checkCommand: string | null;
+    agentCi: { enabled: boolean; workflows: string[] };
+    /** config `gate.successCommands` — extra commands a TASK is allowed to declare. */
+    taskCommands: string[];
+    /** Script names from the trusted root's package.json. NULL means unreadable/
+     *  malformed (we could not tell), [] means the project genuinely declares none. */
+    packageScripts: string[] | null;
+  };
+  review: {
+    adapter: string;
+    model: string;
+    effort: string;
+    /** True when `contract.docPaths` is non-empty, i.e. the critic's mandate can
+     *  narrow on a docs-only change (adr/007). */
+    mandateNarrows: boolean;
+  };
+  onFailure: {
+    /** config `loop.maxAttempts` — how many times a task is retried before it parks. */
+    maxAttempts: number;
+  };
+  autonomy: { overnightOptIn: boolean };
+}
+
 /** Per-project view the server needs — a narrow slice of the hub's ProjectRoot. */
 export interface ProjectView {
   repo: BlackboardRepository;
@@ -306,6 +379,16 @@ export interface ProjectView {
    * envelope. An optional `since` (ISO timestamp) narrows the journal window.
    */
   onMorningReport?: (opts: { since?: string }) => Promise<unknown>;
+  /**
+   * OPTIONAL read-only "what does this harness guarantee" projection for `GET
+   * /projects/:id/guarantees` (#138). When unset, that route 404s (mirrors
+   * `onQualificationReport`/`onMorningReport`). Unlike `config` (a plain field,
+   * captured once when the ProjectRoot is built) this is a THUNK: the invariants
+   * file and package.json live on disk and can change between requests without a
+   * daemon restart, so every call re-reads the trusted root exactly like the gate
+   * does per run.
+   */
+  onGuarantees?: () => Promise<ProjectGuaranteesView>;
   /**
    * OPTIONAL live-orchestrator thread capability for `GET/POST/DELETE
    * /projects/:id/threads*`. When unset, those routes 404 (mirrors `chat`/`ci`).
@@ -2338,6 +2421,25 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
   }
 
   /**
+   * GET /projects/:id/guarantees — the read-only "what does this harness
+   * guarantee" projection (#138). Mirrors `handleMorningReport`'s missing-
+   * capability 404 and failure-mode 500; no query params or body.
+   */
+  async function handleGetGuarantees(p: ProjectView, res: ServerResponse): Promise<void> {
+    if (!p.onGuarantees) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    try {
+      const view = await p.onGuarantees();
+      sendJson(res, 200, view);
+    } catch (err) {
+      log("WARN", `api: guarantees projection failed: ${safeErrorText(err)}`);
+      sendJson(res, 500, { error: `guarantees projection failed: ${safeErrorText(err)}` });
+    }
+  }
+
+  /**
    * A `from`/`to` value is passed to `git rev-list` as an ARGV element (never a shell
    * string), so there is no injection surface -- but a value starting with `-` would be
    * read by git as a FLAG, so the allowlist rejects it outright along with whitespace,
@@ -2605,6 +2707,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServerHandle {
         sendJson(res, 200, p.config);
         return;
       }
+      if (req.method === "GET" && (sub === "/guarantees" || sub === "/guarantees/"))
+        return void (await handleGetGuarantees(p, res));
       if (req.method === "GET" && (sub === "/runs" || sub === "/runs/")) return void (await handleListRuns(p, url, res));
       const runMatch = /^\/runs\/([^/]+)\/?$/.exec(sub);
       if (req.method === "GET" && runMatch) return void (await handleGetRun(p, runMatch[1]!, res));

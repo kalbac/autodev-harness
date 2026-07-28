@@ -373,6 +373,11 @@ async function main(): Promise<void> {
               // orchestrator model. GET-only (a read, not an action) -- unwrap to the
               // report doc itself, which is what `GET .../morning-report` returns.
               onMorningReport: (opts) => root.morningReport(opts).then(({ report }) => report),
+              // Read-only "what does this harness guarantee" projection (#138) — a
+              // thin pass-through to the composition root, which re-reads the
+              // trusted-root oracle sources fresh on every call (see
+              // `ProjectRoot.guarantees`'s doc comment).
+              onGuarantees: () => root.guarantees(),
             },
           };
         },

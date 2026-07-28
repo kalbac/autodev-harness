@@ -165,6 +165,61 @@ export interface ProjectConfigForm {
   autonomy?: { overnight?: { enabled?: boolean } };
 }
 
+/** One contract zone as declared in the invariants file (`docs/gate/invariants.ts`
+ *  `ContractZone`, parity: `path_globs`/`grep_patterns`/`exact_strings`/`auto_guardable`).
+ *  A zone VALUE-protects, not FILE-protects: the files it scopes may otherwise be
+ *  edited freely, but the exact strings / patterns it names may not change. */
+export interface ProjectGuaranteesZone {
+  id: string;
+  /** The human explanation of what breaks — written for a reader, not a diff. */
+  why: string;
+  pathGlobs: string[];
+  namedValues: string[];
+  namedPatterns: string[];
+  autoGuardable: boolean;
+}
+
+/** The attached gate profile, curated for display (#138). `gates[].filesGlob` is
+ *  `null` when a gate runs against the whole project rather than being scoped to
+ *  changed files. */
+export interface ProjectGuaranteesProfile {
+  id: string;
+  version: number;
+  gates: Array<{ id: string; run: string; filesGlob: string | null }>;
+  protectedPaths: string[];
+}
+
+/** Mirrors `GET /projects/:id/guarantees` (#138) — the plain-language "what will
+ *  this harness do to my code, and what will it refuse" explanation screen. Purely
+ *  a read projection of contract/gate/critic config the operator already declared
+ *  in `.autodev/config.yaml` + the invariants file; nothing here is written back. */
+export interface ProjectGuaranteesView {
+  branchPattern: string;
+  contract: {
+    invariantsFile: string;
+    /** `false` = the invariants file could not be read/parsed AT ALL — a materially
+     *  worse state than "no zones declared" (zero zones is a legitimate choice;
+     *  an unreadable file means the harness isn't enforcing zones at all, silently).
+     *  The UI must never let the two look alike. */
+    invariantsReadable: boolean;
+    zones: ProjectGuaranteesZone[];
+    constitutionGlobs: string[];
+    protectedPaths: string[];
+    docPaths: string[];
+  };
+  checks: {
+    profile: ProjectGuaranteesProfile | null;
+    checkCommand: string | null;
+    agentCi: { enabled: boolean; workflows: string[] };
+    taskCommands: string[];
+    /** `null` = the daemon could not read this project's `package.json`. */
+    packageScripts: string[] | null;
+  };
+  review: { adapter: string; model: string; effort: string; mandateNarrows: boolean };
+  onFailure: { maxAttempts: number };
+  autonomy: { overnightOptIn: boolean };
+}
+
 /** One directory entry from `GET /fs/dirs` (M3 folder browser). `path` is the
  *  absolute path for the next `?path=` request; for a symlink it is the resolved
  *  real target. */
@@ -511,6 +566,10 @@ export const api = {
   getEscalation: (projectId: string, id: string) =>
     req<Escalation>(projectPath(projectId, `/escalations/${encodeURIComponent(id)}`)),
   getConfig: (projectId: string) => req<ProjectConfigView>(projectPath(projectId, "/config")),
+
+  /** Plain-language "what will this harness do to my code" projection (#138). See
+   *  GET /projects/:id/guarantees. */
+  getGuarantees: (projectId: string) => req<ProjectGuaranteesView>(projectPath(projectId, "/guarantees")),
 
   /** Write a partial config update (registry-adjacent, project-scoped). Returns
    *  the fresh curated config view. See PATCH /projects/:id/config. */

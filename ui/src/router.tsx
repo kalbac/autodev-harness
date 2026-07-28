@@ -14,6 +14,7 @@ import { BoardView } from "./views/BoardView";
 import { NewProjectView } from "./views/NewProjectView";
 import { GlobalSettingsView } from "./views/GlobalSettingsView";
 import { ProjectSettingsView } from "./views/ProjectSettingsView";
+import { GuaranteesView } from "./views/GuaranteesView";
 import { CiRunView } from "./views/CiRunView";
 import { api } from "./lib/api";
 
@@ -78,6 +79,11 @@ const projectSettingsRoute = createRoute({
   path: "/settings",
   component: ProjectSettingsView,
 });
+const projectGuaranteesRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/guarantees",
+  component: GuaranteesView,
+});
 const projectThreadRoute = createRoute({ getParentRoute: () => projectRoute, path: "/t/$threadId", component: ThreadView });
 const runRoute = createRoute({ getParentRoute: () => projectRoute, path: "/runs/$runId", component: RunView });
 const taskRoute = createRoute({ getParentRoute: () => projectRoute, path: "/tasks/$taskId", component: TaskDetailView });
@@ -91,6 +97,7 @@ const routeTree = rootRoute.addChildren([
   projectRoute.addChildren([
     projectHomeRoute,
     projectSettingsRoute,
+    projectGuaranteesRoute,
     projectThreadRoute,
     runRoute,
     taskRoute,

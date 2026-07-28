@@ -8,7 +8,15 @@ import { FileBlackboardRepository } from "../blackboard/file-repository.js";
 import type { BlackboardRepository } from "../blackboard/repository.js";
 import { escalate } from "../escalate/escalate.js";
 import type { EscalationInput } from "../escalate/escalate.js";
-import { createApiServer, applyRunPatch, type ApiServerHandle, type ApiServerDeps, type ProjectConfigView, type ProjectView } from "./server.js";
+import {
+  createApiServer,
+  applyRunPatch,
+  type ApiServerHandle,
+  type ApiServerDeps,
+  type ProjectConfigView,
+  type ProjectGuaranteesView,
+  type ProjectView,
+} from "./server.js";
 import { ThreadEventBus } from "./thread-events.js";
 import type { ThreadMeta } from "../thread/thread-types.js";
 import type { RegisterResult, GitInitResult } from "../registry/admin.js";
@@ -54,6 +62,7 @@ function projectDeps(
     threads?: ProjectView["threads"];
     onQualificationReport?: ProjectView["onQualificationReport"];
     onMorningReport?: ProjectView["onMorningReport"];
+    onGuarantees?: ProjectView["onGuarantees"];
     /** Overrides the default temp-dir-backed reader (see `storedReportReader`). */
     readExecutionReportJson?: ProjectView["readExecutionReportJson"];
   },
@@ -82,6 +91,7 @@ function projectDeps(
                   ? { onQualificationReport: one.onQualificationReport }
                   : {}),
                 ...(one.onMorningReport !== undefined ? { onMorningReport: one.onMorningReport } : {}),
+                ...(one.onGuarantees !== undefined ? { onGuarantees: one.onGuarantees } : {}),
               },
             }
           : null,
@@ -4244,5 +4254,123 @@ describe("createApiServer / GET /morning-report", () => {
     const res = await fetch(`http://127.0.0.1:${port}${p1("/morning-report")}`);
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain("decision journal unreadable");
+  });
+});
+
+describe("GET /projects/:id/guarantees", () => {
+  const sampleGuarantees: ProjectGuaranteesView = {
+    branchPattern: "^autodev/",
+    contract: {
+      invariantsFile: "INVARIANTS.md",
+      invariantsReadable: true,
+      zones: [
+        {
+          id: "zone-x",
+          why: "protects the pricing formula",
+          pathGlobs: ["src/pricing/**"],
+          namedValues: ["PRICE_FLOOR"],
+          namedPatterns: ["price.*floor"],
+          autoGuardable: true,
+        },
+      ],
+      constitutionGlobs: ["ci.yml"],
+      protectedPaths: ["ci.yml"],
+      docPaths: ["docs/**"],
+    },
+    checks: {
+      profile: {
+        id: "wordpress-woocommerce",
+        version: 1,
+        gates: [{ id: "phpcs", run: "vendor/bin/phpcs {files}", filesGlob: "**/*.php" }],
+        protectedPaths: ["phpcs.xml"],
+      },
+      checkCommand: "npm test",
+      agentCi: { enabled: false, workflows: [] },
+      taskCommands: ["composer check"],
+      packageScripts: ["lint", "build"],
+    },
+    review: { adapter: "codex", model: "gpt-5.6-luna", effort: "high", mandateNarrows: true },
+    onFailure: { maxAttempts: 3 },
+    autonomy: { overnightOptIn: false },
+  };
+
+  it("404s when the project exposes no guarantees capability", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/guarantees")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the exact curated guarantees object when the project exposes it", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, onGuarantees: async () => sampleGuarantees }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/guarantees")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectGuaranteesView;
+    expect(body).toEqual(sampleGuarantees);
+  });
+
+  it("projects profile: null when no profile is attached", async () => {
+    const noProfile: ProjectGuaranteesView = {
+      ...sampleGuarantees,
+      checks: { ...sampleGuarantees.checks, profile: null },
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir, onGuarantees: async () => noProfile }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/guarantees")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProjectGuaranteesView;
+    expect(body.checks.profile).toBeNull();
+  });
+
+  it("distinguishes invariantsReadable: false (zones: []) from a valid zero-zone file (also zones: [])", async () => {
+    const unreadable: ProjectGuaranteesView = {
+      ...sampleGuarantees,
+      contract: { ...sampleGuarantees.contract, invariantsReadable: false, zones: [], constitutionGlobs: [] },
+    };
+    handle = createApiServer(projectDeps({ repo, stateDir, onGuarantees: async () => unreadable }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/guarantees")}`);
+    const body = (await res.json()) as ProjectGuaranteesView;
+    expect(body.contract.invariantsReadable).toBe(false);
+    expect(body.contract.zones).toEqual([]);
+  });
+
+  it("400s on an invalid project id", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, onGuarantees: async () => sampleGuarantees }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects/@bad/guarantees`);
+    expect(res.status).toBe(400);
+  });
+
+  it("404s on an unknown project id, same shape as the config endpoint", async () => {
+    handle = createApiServer(projectDeps({ repo, stateDir, onGuarantees: async () => sampleGuarantees }));
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}/projects/ghost/guarantees`);
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toEqual({ error: "project not found" });
+  });
+
+  it("500s when the guarantees projection throws", async () => {
+    handle = createApiServer(
+      projectDeps({
+        repo,
+        stateDir,
+        onGuarantees: async () => {
+          throw new Error("invariants read failed");
+        },
+      }),
+    );
+    const port = await handle.listen(0);
+
+    const res = await fetch(`http://127.0.0.1:${port}${p1("/guarantees")}`);
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain("invariants read failed");
   });
 });
