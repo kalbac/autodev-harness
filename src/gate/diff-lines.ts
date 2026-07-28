@@ -396,8 +396,9 @@ function walkDiff(diffText: string): DiffWalk {
   // normalization and rewrites the file's every line in the next diff.
   // Insertion-ordered, which is what gives `content` its source order.
   const content = new Map<string, { files: string[]; lines: string[] }>();
-  // Set when a `+`/`-` line is recorded while NEITHER side's path is known -- a hunk
-  // with no file header at all. The walk does not throw on that shape (the hunk's own
+  // Set when the walk meets a hunk belonging to no file section -- either a hunk
+  // header seen while neither side's path is known, or a `+`/`-` line recorded in
+  // that state. The walk does not throw on that shape (the hunk's own
   // counts are consistent, so nothing is detectably truncated), but it means the diff
   // carries changes belonging to no file this parser can name. The LINE arm already
   // handles that (an unattributed section is in scope for every zone); for the FILE
@@ -628,6 +629,14 @@ function walkDiff(diffText: string): DiffWalk {
 
     const hunkMatch = HUNK_HEADER.exec(line);
     if (hunkMatch) {
+      // R6 review finding: a HUNK belonging to no file section is itself the
+      // unanswerable case, whether or not it goes on to carry a body line. An
+      // EMPTY hunk (`@@ -1,0 +1,0 @@`) records nothing, so waiting for a `+`/`-`
+      // line to notice left `paths: []` looking like a confident "names no
+      // files" -- and the conductor then reported fewer zones than the gate,
+      // which still had git's list. The question is asked at the hunk, so the
+      // "no answer" is recorded at the hunk.
+      if (currentPath === null && currentOldPath === null) unattributedContent = true;
       cursor = Number(hunkMatch[3]);
       remainingOld = hunkMatch[2] !== undefined ? Number(hunkMatch[2]) : 1;
       remainingNew = hunkMatch[4] !== undefined ? Number(hunkMatch[4]) : 1;

@@ -261,6 +261,13 @@ describe("scanDiffPaths -- what is NOT touched, and what is not an answer (R4 fi
     expect(scanDiffPaths(headerless)).toEqual({ readable: false });
   });
 
+  it("reports an EMPTY headerless hunk as unreadable too (R6 review finding)", () => {
+    // `@@ -1,0 +1,0 @@` records no content line at all, so a flag set only when a
+    // line is attributed never fires -- and `paths: []` then reads as a confident
+    // "this diff names no files" while the gate still has git's list.
+    expect(scanDiffPaths("@@ -1,0 +1,0 @@")).toEqual({ readable: false });
+  });
+
   it("the gate keeps git's list for that same headerless hunk", () => {
     const headerless = ["@@ -1,0 +1,1 @@", "+unrelated"].join("\n");
     expect(unionDiffNamedPaths(["includes/class-test-shipping-method-pickup.php"], headerless)).toEqual([
