@@ -4,7 +4,7 @@
 
 ---
 
-## s60 (28.07.2026) — `adr/008` MERGED (PR #142, `#140` closed, CI 4/4, **NINE** gate rounds, R9 SAFE) — `path_globs` is a SCOPE, and the review gate found ten defects the tests did not
+## s60 (28.07.2026) — `adr/008` MERGED **and MEASURED** (PR #142, `#140` closed, CI 4/4, **NINE** gate rounds, R9 SAFE) — the targeted case commits, the metric does not move, and the instrument is why
 
 The session was interrupted by a closed terminal and resumed from repository state alone: branch, working tree, the R1 review output still on disk. Nothing was lost, and the reconstruction is itself the finding — *the state a session leaves on disk is the only handoff that survives*.
 
@@ -16,7 +16,11 @@ The session was interrupted by a closed terminal and resumed from repository sta
 - **Non-vacuity was measured, not asserted, for every blocker-class test**: reverting the fix alone turns exactly those tests red (the R3 union, the R7 stray line, the R8 attribution), and green again on restore. R3-3's vacuous fallback test now carries a paired control — the same content in a well-formed diff, which must NOT escalate.
 - **A raw NUL byte in `diff-lines.ts`** (the bucket-key joiner written as a literal instead of the escape) made the whole file BINARY to git: end-of-line normalization silently off, and the first fix commit rewrote all 1326 lines. Caught only because the review diff was five times larger than the change.
 - **Tests 2009 green + 3 skipped, typecheck clean, CI 4/4.** ONE PR (#142) carrying the feature, nine fix commits and these docs.
-- **Not measured end-to-end.** The corpus re-run is the next step; `adr/008` is expected to take `good-docs-overview-note` to a commit, and if it does not, that gets said plainly.
+- **THE RUN, same session** (`corpus/RESULTS-2026-07-28.md`, 532.5s, 27892 worker tokens, baseline `fb21553`). `first_pass_commit_rate` **50% → 50%**. `escaped_defect_rate` **0%** (3/3 adversarial escalated). 5/7 cases — the same count as s59 and, again, not the same cases.
+- **The prediction held, in the harness.** `good-docs-overview-note` — which died at the critic in s58 and at the machine gate in s59 — **COMMITTED**. `adr/008` did exactly what it was argued it would do, end-to-end rather than in a unit test.
+- **And the aggregate did not move, because the INSTRUMENT ate two cases.** `good-bugfix-supported-zones`, which committed in s59, was **quarantined (poison)** after 4 attempts: critic `clean` @0.99, `zones_touched: []`, both profile gates green, and the gate returning RETRY three times on `success_command FAILED (exit 1): pnpm lint:php:changes` — **a script the polygon does not have.** The composer invented it: that task's spec carries `success_commands: [pnpm lint:php:changes]` while every other case in the run got `[]`. Correct code, approving critic, task lost to a command nobody asked for → **#143** (three options, (c) recommended: restrict the composer to project-declared commands AND make the gate treat a missing command as broken config, not a worker RETRY). `good-wc-compat-hpos-flag` errored on **#141** again — second occurrence in two runs, which is what "intermittent" means.
+- **So: the fix is proven and the ruler is now the blocker.** Three instrument defects are load-bearing (#136, #141, #143), two of which cost a case in this run. The arithmetic "it would have been 75–100% without them" is deliberately NOT reported as a measurement — it is arithmetic on a broken instrument.
+- **Also earned:** `gh project item-add` exited **0 without adding the card**; only the GraphQL `addProjectV2ItemById` mutation worked. Verify a board write, never assume it.
 
 ---
 
