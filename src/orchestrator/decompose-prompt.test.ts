@@ -87,3 +87,72 @@ describe("buildDecomposePrompt", () => {
     expect(prompt).toMatch(/file_set[\s\S]{0,200}already defines/);
   });
 });
+
+/**
+ * The prompt half of the s61 `success_commands` contract. The code half is
+ * `success-command-policy.ts`; a contract split across code and prompt must add
+ * BOTH in one change, and pin both -- gotcha
+ * `[chat/launch-marker-needs-prompt-contract]`, where a marker the backend
+ * detected was never taught to the model and the feature silently never fired.
+ */
+describe("buildDecomposePrompt — success_commands contract", () => {
+  it("tells the model success_commands may only contain commands the PROJECT declares", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot());
+    expect(prompt).toContain("success_commands");
+    expect(prompt).toMatch(/package\.json/);
+    expect(prompt).toMatch(/declare/i);
+  });
+
+  it("tells the model that inventing a command is a defect", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot());
+    expect(prompt).toMatch(/invent/i);
+    expect(prompt).toMatch(/DEFECT/i);
+  });
+
+  it("tells the model that omitting success_commands entirely is the normal case", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot());
+    expect(prompt).toMatch(/NORMAL case/i);
+    expect(prompt).toMatch(/leave it out/i);
+  });
+
+  it("tells the model an undeclared command is dropped", () => {
+    expect(buildDecomposePrompt("intent", emptySnapshot())).toMatch(/DROPPED/i);
+  });
+});
+
+describe("buildDecomposePrompt — retry feedback (#141)", () => {
+  const VALIDATION_ERROR =
+    "orchestrator decomposition element [0] is invalid: Invalid task spec: (root): Expected object, received string";
+
+  it("omits the rejection section entirely on a first attempt", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot());
+    expect(prompt).not.toMatch(/previous attempt was REJECTED/i);
+  });
+
+  it("omits the rejection section for an empty failure string", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot(), "   ");
+    expect(prompt).not.toMatch(/previous attempt was REJECTED/i);
+  });
+
+  it("includes the EXACT previous validation error verbatim", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot(), VALIDATION_ERROR);
+    expect(prompt).toContain(VALIDATION_ERROR);
+  });
+
+  it("says the attempt was rejected and demands an array of OBJECTS, never bare strings", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot(), VALIDATION_ERROR);
+    expect(prompt).toMatch(/previous attempt was REJECTED/i);
+    expect(prompt).toMatch(/never bare strings/i);
+    expect(prompt).toMatch(/OBJECTS/);
+  });
+
+  it("tells the model to fix precisely what was named", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot(), VALIDATION_ERROR);
+    expect(prompt).toMatch(/Fix precisely what/i);
+  });
+
+  it("keeps the rejection section LAST, after the output-format instruction", () => {
+    const prompt = buildDecomposePrompt("intent", emptySnapshot(), VALIDATION_ERROR);
+    expect(prompt.indexOf("## Your previous attempt was REJECTED")).toBeGreaterThan(prompt.indexOf("## Output format"));
+  });
+});

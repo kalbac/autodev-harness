@@ -10,6 +10,10 @@
 import { readFile, writeFile, appendFile, mkdir, lstat, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { splitCommand } from "../util/command-ref.js";
+import { isExecutableFile, resolveBinary, defaultPathDirs, computeExts } from "../detect/detect-agents.js";
+import { classifyCommand, type CommandProbe } from "../gate/command-availability.js";
+import type { CommandDeclaration } from "../orchestrator/success-command-policy.js";
 import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured, isContractFileConfigured } from "../config/config.js";
@@ -110,12 +114,82 @@ import { loadSettings, defaultSettingsFile } from "../settings/settings.js";
 
 const EMPTY_INVARIANTS: Invariants = { version: 1, updated: "", contract_zones: [], constitution: { path_globs: [] } };
 
-/** Split a shell-style single-line command into `[cmd, ...args]`, guarding the noUncheckedIndexedAccess `[0]`. */
-function splitCommand(cmd: string): { c: string; a: string[] } {
-  const parts = cmd.trim().split(/\s+/);
-  const c = parts[0];
-  if (!c) throw new Error(`splitCommand: empty command: ${JSON.stringify(cmd)}`);
-  return { c, a: parts.slice(1) };
+/**
+ * Read the script names the PROJECT declares, from `<root>/package.json`.
+ *
+ * `root` is the TRUSTED ROOT (`repoRoot`), never a worktree. Which commands a
+ * project declares is an ORACLE DEFINITION -- it decides what "pass" can even
+ * mean -- so adr/006 Phase 1 applies unchanged: it is read from the tree the
+ * worker cannot write. A task that ADDS a script therefore does not
+ * self-authorize that script in the same run; the operator blesses it first,
+ * exactly like a newly-added contract zone (Principle 14).
+ *
+ * The return value is a TRI-STATE by way of the nullable set, and the two "no
+ * scripts" cases are deliberately NOT the same value
+ * (`docs/gotchas/boolean-whose-no-means-two-things.md`):
+ *
+ *   - an ABSENT package.json  -> an EMPTY SET: this project genuinely declares
+ *     no npm scripts (the normal state of a PHP/Python repo). Reading it as
+ *     "unknown" would make the whole check inert for every non-Node project.
+ *   - an UNREADABLE or MALFORMED one -> `null`: we could not tell, and the
+ *     callers must fall back rather than manufacture a refusal.
+ */
+export async function readPackageScripts(root: string): Promise<Set<string> | null> {
+  let text: string;
+  try {
+    text = await readFile(join(root, "package.json"), "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // Nothing there (or the path is not a directory at all) = declares no scripts.
+    if (code === "ENOENT" || code === "ENOTDIR") return new Set();
+    return null; // EACCES, EISDIR, ... -> genuinely unknown
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+
+  const scripts = (parsed as { scripts?: unknown }).scripts;
+  if (scripts === undefined || scripts === null) return new Set();
+  if (typeof scripts !== "object" || Array.isArray(scripts)) return null;
+  return new Set(Object.keys(scripts as Record<string, unknown>));
+}
+
+/**
+ * Build the PATH/worktree probe for a command's PROGRAM token. Returns `true`
+ * (resolves), `false` (positively does not resolve) or `null` (could not tell).
+ *
+ * Two resolution modes, chosen by the shape of the token exactly as a shell would:
+ *
+ *   - a token CONTAINING a path separator is a path, resolved as a FILE relative
+ *     to the worktree (never a PATH lookup) -- `./scripts/check.sh` means the file,
+ *     and `resolve` handles an already-absolute token unchanged;
+ *   - a bare name is walked over PATH x PATHEXT via the SAME `resolveBinary` the
+ *     agent detector uses. Not `existsSync`: gotcha `[detect/executable-probe]`
+ *     records that it is a false positive in BOTH directions (it misses a Windows
+ *     `.cmd` shim, and it says yes to a directory of the same name).
+ *
+ * KNOWN RESIDUAL: `isExecutableFile` answers `false` for a path it could not stat
+ * for ANY reason, including EACCES -- so an existing-but-unreadable file reads as
+ * "does not exist". That resolves to a named refusal (escalate), the conservative
+ * direction (Principle 10), never to a command being let through unchecked.
+ */
+export function makeProgramExistsProbe(worktreePath: string): (program: string) => Promise<boolean | null> {
+  return async (program: string): Promise<boolean | null> => {
+    try {
+      const platform = process.platform;
+      if (program.includes("/") || program.includes("\\")) {
+        return isExecutableFile(resolve(worktreePath, program), platform);
+      }
+      return resolveBinary([program], defaultPathDirs(platform), computeExts(platform, undefined), platform) !== null;
+    } catch {
+      return null;
+    }
+  };
 }
 
 /**
@@ -609,6 +683,8 @@ export async function buildProjectRoot(
   function gateDeps(wt: Worktree): GateDeps {
     const checkCommand = cfg.gate.checkCommand;
     const agentCi = cfg.gate.agentCi;
+    /** Per-gate-run memo of the trusted root's declared scripts (see `commandAvailability`). */
+    let packageScriptsOnce: Promise<Set<string> | null> | undefined;
     return {
       // Oracle DEFINITIONS read from the trusted root (adr/006 Phase 1) -- NOT `wt.path`.
       // A worker only ever writes a per-task worktree, never `repoRoot`, so a diff cannot
@@ -636,6 +712,22 @@ export async function buildProjectRoot(
         const { c, a } = splitCommand(cmd);
         const r = await runNative(c, a, { cwd: wt.path });
         return { exitCode: r.exitCode, output: mergedOutput(r) };
+      },
+      // The step-1b pre-flight: refuse to RUN a success_command that does not exist
+      // (s61 -- the s60 corpus lost a correct task to a hallucinated
+      // `pnpm lint:php:changes`). `packageScripts` reads the TRUSTED ROOT; the PATH
+      // probe resolves against the WORKTREE, because the program is what actually
+      // gets spawned there. Memoized per gate run so a task with several
+      // success_commands reads package.json once -- and so every command in ONE run
+      // is judged against ONE reading of the oracle, not a set that could change
+      // mid-loop.
+      commandAvailability: (cmd: string) => {
+        packageScriptsOnce ??= readPackageScripts(repoRoot);
+        const probe: CommandProbe = {
+          packageScripts: () => packageScriptsOnce!,
+          programExists: makeProgramExistsProbe(wt.path),
+        };
+        return classifyCommand(cmd, probe);
       },
       // Profile gates (spec 2026-07-22) run in the WORKTREE -- that is the code
       // under judgement -- while their rulesets come from the profile directory in
@@ -1689,5 +1781,31 @@ function buildOrchestrator(ctx: {
     }
   })();
 
-  return createOrchestrator({ caps, adapter, log });
+  return createOrchestrator({ caps, adapter, log, successCommandDeclaration: () => successCommandDeclaration(cfg, repoRoot) });
+}
+
+/**
+ * What commands a decomposed task spec may ask for (s61 half (a)). Composed from
+ * the two places the PROJECT declares them, and nowhere else:
+ *
+ *   - the scripts in the TRUSTED ROOT's package.json (adr/006: an oracle
+ *     definition is read from the tree the worker cannot write, so a task that
+ *     adds a script does not self-authorize it in the same run), and
+ *   - the operator's own declarations -- `gate.checkCommand` plus the
+ *     `gate.successCommands` allowlist -- which live in `.autodev/config.yaml`,
+ *     also outside the worktree.
+ *
+ * Read FRESH per intent, never captured: an operator who adds a script or an
+ * allowlist entry must not have to restart the daemon for it to count.
+ */
+async function successCommandDeclaration(cfg: HarnessConfig, repoRoot: string): Promise<CommandDeclaration> {
+  const scripts = await readPackageScripts(repoRoot);
+  return {
+    scripts: scripts === null ? [] : [...scripts],
+    configured: [...(cfg.gate.checkCommand !== null ? [cfg.gate.checkCommand] : []), ...cfg.gate.successCommands],
+    // The tri-state collapses to this ONE flag for the filter: `null` means the
+    // scripts could not be read, and the filter then fails OPEN and loud rather
+    // than denying every command on the strength of an unreadable manifest.
+    scriptsKnown: scripts !== null,
+  };
 }

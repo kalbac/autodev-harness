@@ -14,6 +14,17 @@ export interface ReadSnapshot {
 export interface DecomposeInput {
   intent: string;
   state: ReadSnapshot;
+  /**
+   * Set ONLY on a retry (#141): the exact failure text the previous attempt was
+   * rejected with — an adapter-level parse/validation throw, or the batch
+   * validation problems. The adapter feeds it back into the prompt so the model
+   * fixes the specific thing that was wrong instead of re-rolling.
+   *
+   * A malformed decomposition (e.g. an array element arriving as a bare string)
+   * used to kill a corpus case outright with no retry — and it is INTERMITTENT,
+   * which is the one thing a measuring instrument may not be.
+   */
+  previousFailure?: string;
 }
 
 /**

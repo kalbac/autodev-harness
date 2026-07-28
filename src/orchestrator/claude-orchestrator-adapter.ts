@@ -48,7 +48,7 @@ export class ClaudeOrchestratorAdapter implements OrchestratorAdapter {
   }
 
   async decompose(input: DecomposeInput): Promise<TaskSpec[]> {
-    const prompt = buildDecomposePrompt(input.intent, input.state);
+    const prompt = buildDecomposePrompt(input.intent, input.state, input.previousFailure);
 
     const result = await this.runner(
       resolveOrchestratorExe(this.cfg),

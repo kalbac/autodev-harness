@@ -101,6 +101,21 @@ export const HarnessConfigSchema = z.object({
     .object({
       checkCommand: z.string().nullable().default(null), // e.g. "composer check" / "npm test"
       skipCheckByDefault: z.boolean().default(false),
+      // The operator's ALLOWLIST of extra commands a task's `success_commands` may
+      // use, beyond the scripts the project's package.json already declares
+      // (s61). A decomposed spec asking for anything outside
+      // `package.json` scripts + this list is DROPPED at the composer, before the
+      // task is ever enqueued -- the s60 corpus lost a correct task to an invented
+      // `pnpm lint:php:changes`, and an LLM must not be able to mint the harness's
+      // own acceptance commands (Principle 14: the worker does not write its own
+      // oracle; the same applies to the layer that writes the worker's spec).
+      //
+      // Matched on exactly-normalized text (whitespace-folded), not as a pattern:
+      // a glob here would let one declaration authorize commands the operator never
+      // read. Default `[]` = only package.json scripts are allowed, which is the
+      // right floor for a Node project and no loss for any other (an operator with
+      // a `php -l`-style gate declares it here in one line).
+      successCommands: z.array(z.string()).default([]),
       // OPTIONAL local-CI-replay hardening (spec 2026-07-08-agent-ci-gate-hardening).
       // Fully inert unless `enabled` AND a non-empty `workflows` allowlist — mirrors
       // checkCommand's null-is-a-no-op shape. NEVER auto-discovers workflows (a
@@ -121,6 +136,7 @@ export const HarnessConfigSchema = z.object({
     .default({
       checkCommand: null,
       skipCheckByDefault: false,
+      successCommands: [],
       agentCi: { enabled: false, workflows: [], timeoutMs: 600000 },
     }),
 

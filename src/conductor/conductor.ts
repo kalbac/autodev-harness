@@ -21,6 +21,7 @@ import type { DecisionJournalEntry } from "../autonomy/decision-journal.js";
 import type { HarnessConfig } from "../config/schema.js";
 import type { NormalizeResult } from "../normalize/eol.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
+import { CommandUnavailableError } from "../gate/command-availability.js";
 import { workerTouched, strayChanged, forbiddenTouches } from "../util/fingerprint.js";
 import { oracleGlobTouches, type OracleSet } from "../gate/oracle-paths.js";
 import { globMatch, normalizePath } from "../util/glob.js";
@@ -975,23 +976,42 @@ export function createConductor(deps: ConductorDeps): Conductor {
           gv = await runGate({ taskId: task.id, fileSet: task.file_set, successCommands: task.success_commands }, wt);
         } catch (err) {
           await repo.moveTask(task.id, "active", "escalated");
-          const escType: EscalationType = task.contract_zones_touched.length > 0 ? "constitution" : "needs-guard";
-          const isUnavailable = err instanceof AgentCiUnavailableError;
-          const reason = isUnavailable
-            ? err.detail
-            : "gate threw -- broken operator config";
-          const decision = isUnavailable
-            ? "Install WSL (Windows) or run the daemon on Linux/Mac, then re-queue -- or disable gate.agentCi."
-            : "Fix the broken gate config (INVARIANTS.md / GUARDS.md / check command) before retrying.";
+          const ciUnavailable = err instanceof AgentCiUnavailableError;
+          const cmdUnavailable = err instanceof CommandUnavailableError;
+          const isUnavailable = ciUnavailable || cmdUnavailable;
+          // An "unavailable" gate throw escalates `blocked`, NOT constitution/needs-guard.
+          // `blocked` states the true fact: the harness could not RUN a check for an
+          // environment/config reason. `needs-guard` instead claims the CHANGE needs a
+          // guard -- a statement about the diff that is simply false here, and one that
+          // in the evaluation corpus HIJACKS the case's verdict (the case is scored as
+          // "the harness demanded a guard" when the harness never judged the diff at
+          // all). Every OTHER gate throw keeps the pre-existing mapping: a broken
+          // INVARIANTS.md/GUARDS.md really can mean the contract layer is the problem.
+          const escType: EscalationType = isUnavailable
+            ? "blocked"
+            : task.contract_zones_touched.length > 0
+              ? "constitution"
+              : "needs-guard";
+          const reason = isUnavailable ? (err as Error).message : "gate threw -- broken operator config";
+          const decision = cmdUnavailable
+            ? "Declare the command (a package.json script or gate.successCommands), or remove it from the task spec, then re-queue."
+            : ciUnavailable
+              ? "Install WSL (Windows) or run the daemon on Linux/Mac, then re-queue -- or disable gate.agentCi."
+              : "Fix the broken gate config (INVARIANTS.md / GUARDS.md / check command) before retrying.";
+          const optionA = cmdUnavailable
+            ? "Declare or drop the command and re-queue."
+            : ciUnavailable
+              ? "Enable WSL / switch platform and re-queue."
+              : "Fix the config and re-queue.";
           await escalateAndRecord({
             reason,
             type: escType,
             what: `Task ${task.id} gate invocation threw.`,
             decision,
-            optionA: isUnavailable ? "Enable WSL / switch platform and re-queue." : "Fix the config and re-queue.",
+            optionA,
             optionB: "Abandon the task.",
             costOfWrong: "A broken gate config cannot safely judge ANY task, not just this one.",
-            evidence: `taskId=${task.id}${isUnavailable ? ` reason=${err.reason}` : ""}`,
+            evidence: `taskId=${task.id}${isUnavailable ? ` reason=${(err as { reason?: string }).reason ?? "unknown"}` : ""}`,
           });
           return { claimedTaskId: task.id, committed: false, rateLimited: false };
         }

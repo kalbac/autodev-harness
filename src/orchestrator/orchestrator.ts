@@ -6,6 +6,7 @@ import { fileSetsDisjoint } from "../scheduler/scheduler.js";
 import type { OrchestratorAdapter, ReadSnapshot } from "./adapter.js";
 import { buildReadSnapshot, type OrchestratorCapabilities } from "./capabilities.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
+import { filterSuccessCommands, type CommandDeclaration } from "./success-command-policy.js";
 
 export interface OrchestratorResult {
   intent: string;
@@ -29,6 +30,24 @@ export interface CreateOrchestratorDeps {
    * `unlink`.
    */
   unlink?: (path: string) => Promise<void>;
+  /**
+   * What commands this project declares (s61 half (a)). ABSENT = the filter is
+   * disabled and every decomposed `success_commands` entry passes through
+   * untouched — the pre-s61 behaviour, which is what keeps existing callers and
+   * tests compiling unchanged.
+   *
+   * Read fresh per intent (not captured once): the operator can edit the allowlist
+   * or add a script between runs, and a captured declaration would keep denying a
+   * command the project now declares.
+   */
+  successCommandDeclaration?: () => Promise<CommandDeclaration>;
+}
+
+/** One dropped command, carried out of the decompose step so the caller reports
+ *  it exactly once — for the attempt that actually WON (see `handleIntent`). */
+interface DroppedCommand {
+  taskId: string;
+  command: string;
 }
 
 /** Queue states whose tasks represent live, not-yet-resolved work that a relaunch
@@ -170,14 +189,100 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
         }
       }
 
-      log("INFO", "orchestrator: decomposing intent");
-      const specs = await adapter.decompose({ intent, state });
+      /**
+       * One decomposition attempt: ask the adapter, apply the success-command
+       * policy, then validate the batch. Returns the problems rather than
+       * throwing them, so the retry below can treat BOTH failure modes (an
+       * adapter throw and a non-empty problem list) the same way.
+       *
+       * The policy runs INSIDE the attempt, before validation, but its drops are
+       * only RETURNED — never reported here. Reporting inside would announce
+       * commands dropped from a batch that was then discarded by a retry, which
+       * is a digest line about work that never existed.
+       */
+      const attempt = async (
+        previousFailure?: string,
+      ): Promise<{ specs: TaskSpec[]; drops: DroppedCommand[]; filterSkipped: boolean; problems: string[] }> => {
+        const raw = await adapter.decompose({
+          intent,
+          state,
+          ...(previousFailure !== undefined ? { previousFailure } : {}),
+        });
 
-      const problems = validateBatch(specs, existingIds);
-      if (problems.length > 0) {
-        const message = `orchestrator decomposition rejected (all-or-nothing, nothing enqueued): ${problems.join("; ")}`;
+        const drops: DroppedCommand[] = [];
+        let filterSkipped = false;
+        let specs = raw;
+
+        if (deps.successCommandDeclaration) {
+          const declaration = await deps.successCommandDeclaration();
+          specs = raw.map((spec) => {
+            const r = filterSuccessCommands(spec.success_commands, declaration);
+            filterSkipped ||= r.filterSkipped;
+            for (const command of r.dropped) drops.push({ taskId: spec.id, command });
+            // Rebuilt rather than mutated: the adapter's object may be shared with
+            // the caller's fixtures, and a spec that lost nothing must stay
+            // referentially harmless either way.
+            return { ...spec, success_commands: r.kept };
+          });
+        }
+
+        return { specs, drops, filterSkipped, problems: validateBatch(specs, existingIds) };
+      };
+
+      log("INFO", "orchestrator: decomposing intent");
+
+      // #141: a decomposition that fails EITHER way is retried EXACTLY ONCE with
+      // the failure text fed back to the model. The observed failure -- an array
+      // element arriving as a bare string -- killed a corpus case outright, and it
+      // is INTERMITTENT: the same case succeeded in another run. A measuring
+      // instrument may not have an intermittent failure of its own. A SECOND
+      // failure behaves exactly as before this change, message shape included.
+      //
+      // ONE retry budget spanning BOTH failure modes -- not one each. A first
+      // attempt that throws and a retry that then fails validation must NOT buy a
+      // third call: the budget is per-intent, and "exactly once" has to hold for
+      // every path through the two failure shapes, not just for each shape alone.
+      let outcome: Awaited<ReturnType<typeof attempt>> | undefined;
+      let failureText: string | undefined;
+      try {
+        outcome = await attempt();
+        if (outcome.problems.length > 0) failureText = outcome.problems.join("; ");
+      } catch (err) {
+        failureText = String((err as Error).message ?? err);
+      }
+
+      if (failureText !== undefined) {
+        log("WARN", `orchestrator: decomposition failed, retrying ONCE with the failure fed back: ${failureText}`);
+        // The retry is the LAST attempt. A throw here propagates UNWRAPPED --
+        // today's behaviour exactly, so nothing downstream that reads this
+        // message changes meaning.
+        outcome = await attempt(failureText);
+      }
+
+      const specs = outcome!.specs;
+      if (outcome!.problems.length > 0) {
+        const message = `orchestrator decomposition rejected (all-or-nothing, nothing enqueued): ${outcome!.problems.join("; ")}`;
         await caps.report({ level: "ERROR", message });
         throw new Error(message);
+      }
+
+      // Report the policy's effect for the attempt that actually WON. A silent
+      // discard of LLM output is how a feature becomes invisible, so every drop
+      // gets BOTH a WARN log and a digest line naming the task and the command.
+      if (outcome!.filterSkipped) {
+        const message =
+          "orchestrator: could not read this project's declared commands, so the success_command filter did NOT run; " +
+          "every decomposed success_command was kept unchecked (the gate still refuses to run one that does not exist)";
+        log("WARN", message);
+        await caps.report({ level: "WARN", message });
+      }
+      for (const drop of outcome!.drops) {
+        const message =
+          `orchestrator: dropped success_command '${drop.command}' from task '${drop.taskId}' -- ` +
+          "this project declares no such package.json script and the operator has not declared the command " +
+          "(gate.successCommands); an undeclared command cannot judge a change, it only loses the task";
+        log("WARN", message);
+        await caps.report({ level: "WARN", message });
       }
 
       if (specs.length === 0) {
