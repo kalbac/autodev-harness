@@ -5,48 +5,42 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s60)
+## Where we are (leaving s61)
 
-A working **Node daemon + web dashboard**, measured four times. s60 landed the decision s59
-handed the operator, **and the fix did exactly what it was predicted to do — while the
-aggregate metric stayed flat for a completely different reason.**
+A working **Node daemon + web dashboard**, measured five times — and this is the run where
+**the pass bar was met for the first time.**
 
-**`adr/008` MERGED** (PR #142, `be7fea6`, closes #140, CI 4/4, **nine** gate rounds, R9 SAFE)
-and re-measured the same session (`corpus/RESULTS-2026-07-28.md`).
+s61 fixed the RULER, not the harness: six defects in the Evaluation Corpus and its inputs,
+as one pass (PR #145, closes #131 #132 #135 #136 #141 #143). Then it re-ran the corpus
+(`corpus/RESULTS-2026-07-28b.md`, 691.8s, baseline `fb21553`, default artifacts path).
 
-| | s58 | s59 | **s60** | Meaning |
-|---|---|---|---|---|
-| **Throughput** — `first_pass_commit_rate` | 50% | 50% | **50%** | flat, and the composition changed underneath it |
-| **Catching power** — `escaped_defect_rate` | 0% | 0% | **0%** | "never merge bullshit" still holds — 3/3 adversarial cases escalated |
-| Cases passed | 4/7 | 5/7 | 5/7 | same count, different cases |
+| | s58 | s59 | s60 | **s61** | Meaning |
+|---|---|---|---|---|---|
+| **Throughput** — `first_pass_commit_rate` | 50% | 50% | 50% | **100%** | all four good cases committed, every one on the first pass |
+| **Catching power** — `escaped_defect_rate` | 0% | 0% | 0% | **0%** | "never merge bullshit" holds — 3/3 adversarial escalated |
+| Cases passed | 4/7 | 5/7 | 5/7 | **7/7** | pass bar **MET** |
+| Cases measured | — | — | — | **7/7** | 0 errored: the instrument ate nothing |
 
-**The targeted case went green, end to end.** `good-docs-overview-note` — the case that
-failed in s58 at the critic and in s59 at the machine gate — **committed**. That is the
-prediction from `adr/008` confirmed in the harness, not in a unit test: documenting a
-contract value no longer counts as changing it.
+**What actually changed.** Nothing in this session touched the gate's judgement. Three of the
+four good cases were being lost to the instrument or its inputs, and each loss is now closed
+at its cause:
 
-**And a case that committed in s59 was lost — not to this change.** `good-bugfix-supported-
-zones` went to **quarantine (poison)** after 4 attempts. The critic returned `clean` @0.99,
-`zones_touched` was `[]` (so `adr/008` behaved correctly there too), both profile gates were
-green — and the gate returned RETRY three times on:
+- `good-bugfix-supported-zones` — quarantined in s60 with correct code and an approving
+  critic, because the composer invented `pnpm lint:php:changes` → **committed** (#143).
+- `good-wc-compat-hpos-flag` — errored in two consecutive runs on a malformed decomposition
+  → **committed** (#141, one retry with the validation error fed back).
+- `adv-relax-phpcs-ruleset` — scored off the wrong record in s58 → now scored on its
+  `constitution` catch (#136).
+- `good-docs-overview-note` — the case `adr/008` targeted in s60 — **stayed** committed.
 
-```
-success_command FAILED (exit 1): pnpm lint:php:changes
-ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command "lint:php:changes" not found
-```
+**What this number does and does not say.** It says: on these seven cases, the harness
+committed everything that should land and caught everything that should not, first try. It
+does not say the harness got better this session — `adr/007` and `adr/008` did that work, and
+until now the ruler was hiding it. Seven cases is also a small corpus: the honest next move is
+to make it harder, not to celebrate 100%.
 
-**No such script exists in the polygon.** The COMPOSER invented it: the task spec it built
-from the intent carries `success_commands: [pnpm lint:php:changes]`, while every other case
-in the same run got `success_commands: []`. Correct code, approving critic, and a task
-quarantined for a command nobody asked for → **#143**.
-
-**So the ruler broke two of seven cases this run, and the harness broke none.** #143 above,
-and **#141** again — `good-wc-compat-hpos-flag` errored on the same decomposition-shape
-fault (a string where a task spec belongs), its second occurrence in two runs, which is what
-"intermittent" means and why runs are not yet comparable.
-
-**The honest summary: `adr/008` is proven, and the metric cannot move until the instrument
-stops eating cases.**
+**The critic's token count is still `0`** in the report (#125) — the run cost is understated
+by the critic's whole share.
 
 ## Phase status
 
@@ -60,7 +54,8 @@ stops eating cases.**
 | Authority Model (`adr/006`) | ✅ Phase 1 + 2 + 3 shipped |
 | Profiles / Qualification Layer | ✅ v1 shipped (s51) — 2 facets, WP/WC first |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
-| Evaluation Corpus | ⚠️ machinery + `eval` CLI + 7 cases; run FOUR times; pass bar NOT met. **Three of its own defects are now load-bearing (#136, #141, #143)** — two of them cost a case in this very run |
+| Evaluation Corpus | ✅ machinery + `eval` CLI + 7 cases; run FIVE times; **pass bar MET (s61): 7/7 passed, 100% first-pass commit, 0% escaped, 0 errored.** Its own six defects are closed (#131 #132 #135 #136 #141 #143) — the ruler no longer eats cases |
+| **Task-command authority (`adr/009`)** | ✅ **MERGED + MEASURED** (PR #145) — the composer may only reference declared commands; the gate refuses to RUN one that does not exist |
 | Corpus run diagnostics (#126) | ✅ shipped s57 — and it is what identified #143 from archived artifacts without a re-run |
 | Critic evidence window (#123) | ✅ FIXED + MEASURED (PR #134) — 0% → 50% first-pass commit |
 | Critic mandate (`adr/007`) | ✅ MERGED (PR #139) — leniency scoped by an operator-declared `contract.docPaths` |
@@ -69,36 +64,35 @@ stops eating cases.**
 
 > Per-feature shipping history belongs in `SESSION-LOG.md`, not here.
 
-## The thrust — SHIPPED, and now in its second mode
+## The thrust — SHIPPED, and the loop has now closed once
 
 ```text
 Authority Model → Profiles → two reports → Evaluation Corpus → fix what it measures
 ```
 
-s58 was the first full turn of *the corpus names a defect, the defect is fixed, the corpus is
-re-run, and the two numbers go side by side*. s60 is the third turn, and the first where the
-targeted case actually flipped. **The loop now works; the ruler does not.**
+s58 was the first turn of *the corpus names a defect, the defect is fixed, the corpus is
+re-run, and the two numbers go side by side*. s61 is the fourth, and the first where the
+numbers arrive with nothing in the way: **the loop works and the ruler works.** The corpus's
+job now changes from "prove it can measure" to "measure something harder".
 
 ## NEXT ACTIONS
 
-1. **Fix the measuring instrument, as ONE pass. This is now the only thing standing between
-   the harness and a number that means something.** Three defects, all of which cost cases in
-   real runs: **#143** (the composer invents a `success_command` the project does not have,
-   and the gate then RETRYs to quarantine — correct code, approving critic, lost case),
-   **#141** (decomposition returns a string where a task spec belongs — twice in two runs),
-   **#136** (a multi-task case scored off the wrong record). **#131** (escalations not purged
-   between cases — the polygon now holds 25 stale escalation files) and **#132**/**#135**
-   (manual pre-run steps) ride along. Do them together, then re-run.
-2. **Then, and only then, read the metric.** With #143 and #141 fixed, this run's 50% would
-   have been 75% or 100% — but that is arithmetic on a broken instrument, not a measurement,
-   and it must not be reported as one.
-3. **#138 — make the harness legible.** The operator can no longer tell what the harness does
-   or why. `adr/007` and `adr/008` both shipped with their dashboard row; everything from
-   `adr/006` onward did not. Start with the "what does this project actually guarantee" screen.
-4. **#124** (a `broken` verdict naming no defect) · **#125** (`critic_total` tokens always 0 —
-   this run again reports `27892 / 0`, understating cost by the critic's whole share).
-5. **#129** — one provider is both the review gate and the harness's own critic.
-6. **#133** (`readBoundedFileText` accepts a short read as a whole file) · **#122** (board
+1. **Make the corpus harder — 7/7 on seven cases is a ceiling, not a result.** The cases were
+   written when the harness could pass none of them; four of the five metrics are now
+   saturated. Add cases the harness plausibly FAILS: a multi-file refactor, a change whose
+   correctness lives in a file the diff does not touch, an adversarial case aimed at the
+   critic rather than at a mechanical zone, a task whose spec is genuinely ambiguous. A corpus
+   that cannot fail measures nothing (Principle 15 — the asset is the set of provable
+   properties, and it grows only by formalizing more).
+2. **#138 — make the harness legible.** The operator can no longer tell what the harness does
+   or why. `adr/007`, `adr/008` and now `adr/009` each shipped with their dashboard row;
+   everything from `adr/006` back did not. Start with the "what does this project actually
+   guarantee" screen.
+3. **#125** — `critic_total` tokens are always `0`; this run reports `37900 / 0`, understating
+   the cost by the critic's whole share. It is the one number in the report that is knowably
+   wrong. · **#124** (a `broken` verdict naming no defect).
+4. **#129** — one provider is both the review gate and the harness's own critic.
+5. **#133** (`readBoundedFileText` accepts a short read as a whole file) · **#122** (board
    auto-add — and note that `gh project item-add` exited 0 without adding the card in s60;
    the GraphQL mutation worked. Verify, never assume).
 
@@ -106,16 +100,20 @@ targeted case actually flipped. **The loop now works; the ruler does not.**
 
 ## Open questions
 
-- **May the composer set `success_commands` at all?** (#143) It invented `pnpm
-  lint:php:changes` on a project that has no such script. Three options in the issue; (c) —
-  restrict the composer to project-declared commands AND have the gate treat a missing
-  command as broken config rather than a worker RETRY — is recommended. Oracle semantics, so
-  it is the operator's call.
+- **How hard should the corpus be?** With 7/7 and four saturated metrics, the corpus can no
+  longer distinguish a good harness from a very good one. Which failures it should be able to
+  show is a product question, not a mechanical one — see NEXT ACTIONS #1 for the shapes worth
+  adding.
 - **Does a second critic need operator consent to take over?** (#129) A silent automatic
   fallback changes the acceptance bar without anyone saying so — but a fallback that waits for
   a human is not a fallback at 3am.
-- **How should a multi-task case be scored?** (#136) The decisive-record rule is part of the
-  oracle, so it is the operator's call, not a fix.
+- **Which oracle questions are actually the operator's?** (`adr/009`) s61 put two of them to
+  him with options — the decisive-record rule and the metric denominator — and he declined:
+  *"Реши сам как правильней. Такие архитекурные развилки я не понимаю."* The standing rule is
+  now narrower: an oracle question is his when he can answer it in PRODUCT terms (which cases
+  belong in the corpus, what the pass bar is); one that can only be compared by reasoning
+  about ranking functions and denominators is the agent's — decided, implemented, and written
+  into an ADR where it stays reviewable.
 - **Is the conductor allowed to be stricter than the gate?** `adr/008` says yes in one place:
   on a diff neither can parse, the conductor reports every zone while the gate keeps git's
   file list, so a malformed diff can escalate a task the gate would have cleared. Named and
@@ -127,8 +125,11 @@ targeted case actually flipped. **The loop now works; the ruler does not.**
 - **The analyzer toolchain is project-controlled.** A profile's gates run `vendor/bin/phpcs`,
   and `vendor` comes from the project's own `composer.json`. Named residual, not closed.
 - **Oracle protection for `success_command`/`checkCommand`** — they are commands, not declared
-  paths, so Phase 2 protects them only via `constitutionPaths`. #143 is the other half of this
-  question: nothing today constrains what a `success_command` may BE.
+  paths, so Phase 2 protects them only via `constitutionPaths`. **Half-closed by `adr/009`**: a
+  task may now only reference a command the project DECLARES, and the gate refuses to run one
+  that does not exist. What is still open is the content of an operator-declared command —
+  nothing constrains what `gate.checkCommand` may BE, and `adr/009` deliberately exempts a
+  declared command from the availability check (his declaration is the oracle).
 - **Should one declaration buy two exemptions?** `contract.docPaths` was introduced for the
   critic's mandate (`adr/007`); `adr/008` (b) reuses it to scope the machine gate. Shipped on
   the operator's decision, and named here because a field's blast radius growing after it was
@@ -138,6 +139,7 @@ targeted case actually flipped. **The loop now works; the ruler does not.**
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s61** — **THE PASS BAR WAS MET** (PR #145, closes #131 #132 #135 #136 #141 #143; CI 4/4; two codex review passes → 1 blocker + 4 majors → R2 SAFE). The session fixed the RULER, not the harness: the composer may only reference commands the project declares and the gate refuses to RUN one that does not exist (`adr/009`, the operator's #143 decision, both halves); a malformed decomposition is retried once (#141); a multi-task case is scored on its most decisive ESCALATION (#136); rates are measured over cases that produced a record, with `measured: X/Y` stated above the table; `escalations/` is purged per case (#131); and both Windows pre-run steps are gone (#132/#135). Corpus re-run: **7/7 passed, `first_pass_commit_rate` 50% → 100%, escaped-defect 0%, 0 errored** (`RESULTS-2026-07-28b.md`). Two live-only findings the tests could not reach: `git check-ignore` rejects `--literal-pathspecs` outright (the other half of #135), and a watchdog test raced a fixed 30ms sleep. New: gotcha 92, `adr/009`, and a narrowed rule on which oracle questions are his.
 - **s60** — **`adr/008` MERGED + MEASURED** (PR #142, `be7fea6`, closes #140, CI 4/4, **9** gate rounds, R9 SAFE): a contract zone’s `path_globs` is its SCOPE, and a declared `contract.docPaths` path is outside zone checking. The gate found **ten** defects, all on “which files did this diff touch”, **none caught by the feature’s own tests**; two were blockers of one class (a strict parser checking LESS than the sloppy reader it replaced) now closed structurally. Corpus re-run: **the targeted case `good-docs-overview-note` COMMITTED** — the prediction held end-to-end — but `first_pass_commit_rate` stayed **50%**, because the INSTRUMENT lost two cases: the composer invented a `success_command` the project lacks (#143, new) and #141 recurred. Session resumed from repo state after the terminal was closed. New: gotcha 91, issue #143.
 - **s59** — **`adr/007` MERGED** (PR #139, `1b99e29`, CI 4/4, **7** critic rounds, R7 SAFE): the critic's mandate narrows on an operator-declared `contract.docPaths`, never on inferring what is prose. Live-verified on hashed prompts (4/4 `clean` declared vs 4/5 `uncertain` undeclared; 3/3 non-clean on a rewrite). **Corpus re-run: `first_pass_commit_rate` 50% → 50% — the metric did NOT move.** The critic now returns `clean` @0.99 on the docs case, but the MECHANICAL gate escalates it `needs-guard`: documenting a contract value counts as touching it (#140). The 4/7 → 5/7 is #136 noise, not catching power; `good-wc-compat-hpos-flag` errored on a decomposition-shape fault (#141). New: gotcha 89, issues #138/#140/#141, two operator rules in `AGENTS.md`.
 - **s58** — **#123 FIXED AND MEASURED**: the critic sees whole changed files, not just the hunk (PR #134, `ebb85ea`, CI 4/4, 4 codex rounds, R4 SAFE). Corpus re-run: `first_pass_commit_rate` **0% → 50%**, escaped-defect still 0%, 2/7 → 4/7 — **pass bar still not met**. Mechanism proven by a paired live-critic control (`uncertain` 0.88 → `clean` 0.99). `adr/007` decided + live-verified (mandate narrowing for code-free diffs). R3's regression test exposed 11 pre-existing instances of the same defect class in `conductor.ts`. New: gotchas 87/88, issues #133/#135/#136.

@@ -35,13 +35,48 @@ string form the production caller never produces.
 
 Workaround used to get the s58 measurement: `--artifacts <dir outside the repo>`.
 
+## The second half — `check-ignore` does not accept `--literal-pathspecs` at all
+
+**Fixed s61, and the fix was WRONG until it was run.** The repo-relative rewrite landed
+with `--literal-pathspecs` still on both invocations (it was already there, as defensive
+hardening from an earlier review). The unit tests asserted the string handed to git —
+correct, colon-free, repo-relative — and passed. The very first real run refused anyway:
+
+```
+$ git --literal-pathspecs check-ignore --quiet -- .autodev/corpus-artifacts
+fatal: .autodev/corpus-artifacts: pathspec magic not supported by this command: 'literal'
+(exit 128)
+```
+
+`check-ignore` rejects the literal magic outright, so the flag made the guard
+unanswerable **on every platform, for every path** — a second, independent instance of
+the same "a fail-closed check that can never pass" defect, hiding inside the fix for the
+first one. Measured on real git, all the combinations, before changing anything:
+
+| invocation | result |
+|---|---|
+| `check-ignore --quiet -- ./x` | `0` ignored / `1` not ignored |
+| `check-ignore --literal-pathspecs …` | `128`, always |
+| `ls-files --literal-pathspecs --error-unmatch -- ./x` | `1` nothing tracked / `0` tracked |
+
+So the flag stays on `ls-files`, which accepts it, and is dropped from `check-ignore`,
+which does not; the leading-colon/magic case is instead closed for both by `./`-prefixing
+the pathspec (git parses magic even after `--`). The exact argument vector of each call is
+now pinned by a test, because the difference between them is load-bearing.
+
+**The transferable part: a test that asserts what you send to an external tool proves
+nothing about whether the tool accepts it.** Both halves of this gotcha were found by
+RUNNING the thing, one round apart, and both were invisible to a green test suite
+(Principle 13). Same class as `agent-ci-ndjson-keyed-by-event-not-type.md`.
+
 ## The rules
 
 1. **Never hand a Windows absolute path to a git command that takes a pathspec.**
    Prefer a repo-relative path (`check-ignore` is asking about something inside the
-   repo anyway, so relative is both correct and colon-free). If an absolute path is
-   unavoidable, force literal parsing (`--literal-pathspecs` / `GIT_LITERAL_PATHSPECS=1`),
-   and *measure* that it works rather than assuming.
+   repo anyway, so relative is both correct and colon-free). **Do not reach for
+   `--literal-pathspecs` as the fix** — not every command accepts it; `check-ignore` is
+   one that does not. `./`-prefixing neutralizes a leading colon without any flag.
+   Whatever you choose, *measure* it against real git rather than assuming.
 2. **A cross-platform product needs a path-shaped test fixture from every platform it
    claims to run on.** This is the same lesson as `win-83-shortpath-realpath-divergence.md`
    and `oracle-protected-paths-must-be-worktree-relative.md` (where `path.isAbsolute` was
