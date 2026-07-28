@@ -56,6 +56,8 @@
  * skip that and a diff parses differently depending on which OS produced it.
  */
 
+import { diffAddedRemovedLines } from "./invariants.js";
+
 /** Matches a hunk header and captures all four line-count fields: the OLD-file
  *  start/count and the NEW-file start/count. Both counts are OPTIONAL in a
  *  unified diff (a single-line hunk omits the comma-count and defaults to `1`)
@@ -761,26 +763,6 @@ function walkDiff(diffText: string): DiffWalk {
       continue;
     }
 
-    // A `+`/`-` line OUTSIDE any hunk, and not one of the `--- `/`+++ ` headers
-    // handled above. Real `git diff` never emits one, which is exactly why this
-    // must not be ignored: the OLD flat reader (`diffAddedRemovedLines`) DID see
-    // such a line, so silently dropping it made a malformed diff LESS checked
-    // than before -- a contract value in `+test_pickup` with no headers at all
-    // vanished from the zone scan entirely (R7 review finding, a blocker).
-    //
-    // Recorded UNATTRIBUTED -- never under the section it follows, even when that
-    // section's headers are known. A hunk header says how many lines it covers;
-    // one past that count is a line the diff does not account for, and filing it
-    // under the last-seen path let an extra `+test_pickup` after a docs hunk hide
-    // from a zone scoped to `includes/**` (R8). Unattributed = in scope for every
-    // zone, and the file answer becomes "no answer" rather than a confident list. A mail-patch
-    // signature (`-- `) would land here too and cost one over-strict escalation;
-    // nothing this harness runs produces one.
-    if (line.startsWith("+") || line.startsWith("-")) {
-      recordUnattributed(line);
-      continue;
-    }
-
     // Everything else (the `diff --git` / `index` preamble, or a stray line
     // with no active path) is neither header nor content — ignored.
   }
@@ -799,6 +781,30 @@ function walkDiff(diffText: string): DiffWalk {
         `owed ${remainingNew} new-file and ${remainingOld} old-file line(s) that its header declared. The ` +
         `diff is truncated (a killed process or a clipped buffer), not just short.`,
     );
+  }
+
+  // THE BACKSTOP, and the reason this class of defect is now closed rather than
+  // patched: whatever the strict walk did not record, but the FLAT reader
+  // (`diffAddedRemovedLines`, the pre-adr/008 gate's only reading) would have,
+  // is added back as unattributed -- in scope for every zone, exempt from
+  // nothing. Two review rounds found two separate ways for the walker to drop a
+  // line the flat reader kept: a content line outside every hunk (R7), and a
+  // line past a hunk's declared count (R8), each of which let a contract value
+  // reach COMMIT. The branches above handle both precisely and in source order;
+  // this makes the GUARANTEE structural -- a stricter parser can never check
+  // less than the one it replaced, whatever shape comes next.
+  const recorded = new Map<string, number>();
+  for (const bucket of content.values()) {
+    for (const l of bucket.lines) recorded.set(l, (recorded.get(l) ?? 0) + 1);
+  }
+  const missing: string[] = [];
+  for (const l of diffAddedRemovedLines(diffText)) {
+    const left = recorded.get(l) ?? 0;
+    if (left > 0) recorded.set(l, left - 1);
+    else missing.push(l);
+  }
+  if (missing.length > 0) {
+    for (const l of missing) recordUnattributed(l);
   }
 
   return {
