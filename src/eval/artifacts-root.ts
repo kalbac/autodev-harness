@@ -107,7 +107,14 @@ export function toRepoRelativePathspec(
   // the two halves would describe different platforms.
   const rel = relativeFn(canonicalRoot, canonicalCandidate);
   const normalized = separator === "\\" ? rel.split("\\").join("/") : rel;
-  return normalized === "" ? "." : normalized;
+  // `./`-prefixed, so a directory whose name STARTS with a colon (or any other pathspec
+  // magic prefix) can never be read as magic. That matters more than it looks: git parses
+  // magic even after `--`, and the `--literal-pathspecs` flag that would settle it outright
+  // is not accepted by `check-ignore` (see `assertArtifactsRootSafe`). MEASURED against real
+  // git, both commands, both answers: `check-ignore -- ./x` returns 0 for an ignored
+  // directory and 1 for a tracked one, and `ls-files --error-unmatch -- ./x` returns 1 for
+  // nothing-tracked and 0 for a tracked directory — identical to the unprefixed form.
+  return normalized === "" ? "." : `./${normalized}`;
 }
 
 /** Resolve a path, returning `null` when it cannot be resolved. The caller MUST treat
@@ -153,14 +160,28 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   const repoIsFilesystemRoot = parse(canonicalRepo).root === canonicalRepo;
   if (!repoIsFilesystemRoot && !canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
 
-  // `--literal-pathspecs` on BOTH invocations. A path is data here, never a pattern: without
+  // `--literal-pathspecs` on `ls-files` ONLY. A path is data here, never a pattern: without
   // it, a directory literally named `art[bc]` (or one whose name starts with `:`) is a
   // pathspec with glob/magic semantics, and a pattern that fails to match its own directory
   // answers "nothing tracked" for a directory full of tracked files — a fail-OPEN. codex R6
   // raised this from the git docs; on this git version the scenario did NOT reproduce (a
   // bracket pathspec still matched the literal directory), so the flag is defensive rather
-  // than a fixed bug. It is applied anyway because it costs nothing and closes the whole
-  // class, including future git versions and pathspec-magic prefixes.
+  // than a fixed bug.
+  //
+  // `check-ignore` does NOT accept it, and this is the second half of #135 — the half the
+  // colon diagnosis missed. MEASURED on the real polygon, with a colon-free repo-RELATIVE
+  // path, which is what the first fix produced:
+  //
+  //     git --literal-pathspecs check-ignore --quiet -- .autodev/corpus-artifacts
+  //     fatal: .autodev/corpus-artifacts: pathspec magic not supported by this command: 'literal'
+  //     (exit 128)
+  //
+  // So the guard still could not pass on Windows OR anywhere else: the flag itself made it
+  // unanswerable, independently of the drive colon. Dropping the flag for this one command
+  // and `./`-prefixing the pathspec (see `toRepoRelativePathspec`) is what actually closes
+  // it. Found by RUNNING the corpus with the default artifacts path, not by a unit test —
+  // the tests asserted the string handed to git, which was correct, and could say nothing
+  // about whether git accepts it (Principle 13).
   //
   // Both git checks are asked about a pathspec DERIVED FROM the CANONICAL path, never the
   // path as written. Resolving for the containment decision and then handing git the
@@ -174,7 +195,7 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   // the Windows-drive-colon fix rather than being undone by it (`[git/check-ignore-windows-drive-colon]`).
   const pathspec = toRepoRelativePathspec(canonicalRepo, canonicalArtifacts);
 
-  const ignored = await check.git(["--literal-pathspecs", "check-ignore", "--quiet", "--", pathspec]);
+  const ignored = await check.git(["check-ignore", "--quiet", "--", pathspec]);
   if (ignored.exitCode !== 0) {
     const why =
       ignored.exitCode === 1

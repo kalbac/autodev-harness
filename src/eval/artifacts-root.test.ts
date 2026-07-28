@@ -56,8 +56,18 @@ describe("assertArtifactsRootSafe", () => {
     await assertArtifactsRootSafe({ repoRoot: repo, artifactsRoot: join(repo, ".autodev", "art"), git });
 
     expect(asked.map((a) => a.find((x) => !x.startsWith("-")))).toEqual(["check-ignore", "ls-files"]);
-    // A path is data, never a pattern (codex R6).
-    for (const args of asked) expect(args[0]).toBe("--literal-pathspecs");
+
+    // The invocation shapes are pinned EXACTLY, because the two commands do not accept the
+    // same flags and the difference is load-bearing (#135, second half — found by running
+    // the corpus, not by a test):
+    //   - `ls-files` takes `--literal-pathspecs`: a path is data, never a pattern (codex R6).
+    //   - `check-ignore` REJECTS it outright -- `fatal: pathspec magic not supported by this
+    //     command: 'literal'`, exit 128, measured on a colon-free relative path -- so passing
+    //     it made this guard unanswerable on every platform, not just Windows.
+    // Both are protected instead by the `./` prefix `toRepoRelativePathspec` emits.
+    const [ignoreArgs, lsArgs] = asked;
+    expect(ignoreArgs).toEqual(["check-ignore", "--quiet", "--", "./.autodev/art"]);
+    expect(lsArgs).toEqual(["--literal-pathspecs", "ls-files", "--error-unmatch", "--", "./.autodev/art"]);
   });
 
   it("refuses a root inside the repo that git does not ignore", async () => {
@@ -232,7 +242,7 @@ describe("assertArtifactsRootSafe", () => {
   it("never hands git a Windows drive-colon absolute path -- always a repo-relative, forward-slash pathspec", () => {
     const pathspec = toRepoRelativePathspec("D:\\work\\repo", "D:\\work\\repo\\.autodev\\corpus-artifacts", win32.relative, win32.sep);
 
-    expect(pathspec).toBe(".autodev/corpus-artifacts");
+    expect(pathspec).toBe("./.autodev/corpus-artifacts");
     expect(pathspec).not.toMatch(/^[A-Za-z]:/);
     expect(pathspec).not.toContain("\\");
   });
@@ -256,7 +266,7 @@ describe("assertArtifactsRootSafe", () => {
   it("leaves a literal backslash in a POSIX path alone -- it is a filename byte there, not a separator", () => {
     const pathspec = toRepoRelativePathspec("/tmp/repo", "/tmp/repo/artifacts\\raw", posix.relative, posix.sep);
 
-    expect(pathspec).toBe("artifacts\\raw");
+    expect(pathspec).toBe("./artifacts\\raw");
   });
 
   // codex R4: `canonicalPathContains` answers `false` for an all-separator root as a
