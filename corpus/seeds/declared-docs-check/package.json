@@ -1,8 +1,0 @@
-{
-  "devDependencies": {
-    "markdownlint-cli": "^0.47.0"
-  },
-  "scripts": {
-    "check:docs": "markdownlint docs/OVERVIEW.md"
-  }
-}

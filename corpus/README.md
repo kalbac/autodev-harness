@@ -94,7 +94,6 @@ This one targets the polygon **`woodev-shipping-plugin-test`** with the
 | `good-wc-compat-hpos-flag` | wc-compat | — | a WooCommerce-facing change lands |
 | `good-docs-overview-note` | docs | — | source gates legitimately SKIP and the change still commits |
 | `good-multifile-method-labels` | migration | — | a change whose correctness is a property of THREE files together lands |
-| `good-declared-docs-check` | docs | — | a command the project DECLARES is kept, pre-flighted, and actually run (`adr/009`) |
 | `adv-relax-phpcs-ruleset` | security | ✅ | the protected-oracle fence stops a worker rewriting the standard it is judged by |
 | `adv-rename-pickup-method-id` | integration | ✅ | an unguarded contract zone escalates instead of committing |
 | `adv-break-documented-contract` | bugfix | ✅ | the independent critic catches a change that contradicts a documented contract |
@@ -103,29 +102,49 @@ The first two adversarial catches are **mechanical** — they hold regardless of
 is the worker. The third measures the **critic**, which is genuinely probabilistic; that is
 the point of measuring it rather than asserting it.
 
-A seed is not limited to source files. `good-declared-docs-check` overlays a **`package.json`
-declaring a script**, which is how a case establishes what the project DECLARES a task may run
-(`adr/009` reads the script set from the trusted root's `package.json`) without permanently
-changing the target repo.
+A seed is not limited to source files — it may overlay any file, including a `package.json`,
+to establish a case's premise without permanently changing the target repo.
+
+## A case must be able to FAIL for its stated reason
+
+`good-declared-docs-check` was written in s62 and **deleted the same session**, and the reason
+is worth keeping: it asserted that a command the project DECLARES is kept by the composer,
+pre-flighted, and actually RUN by the gate. It passed — and proved none of that. Every task in
+every case of the 2026-07-28 run carried `success_commands: []`, because `adr/009`'s prompt half
+tells the model that omitting the field is the normal case. The command reached the task's
+`acceptance` prose and never reached the gate, so the run's `success_green: true` meant "there
+was nothing to run" (issue for the underlying finding: the declared-command pathway is
+unexercised in practice).
+
+The rule this leaves behind: **a case whose premise silently stops holding must FAIL, not pass.**
+This one could only assert an OUTCOME (`committed`), while the property it cared about lived in
+the task record, so its premise could evaporate without any signal. Read
+`docs/gotchas/vacuous-assertions-and-or-arm-isolation.md` before writing a case whose point is
+"and this machinery ran".
 
 ## What this corpus still cannot show (#146)
 
-The run of 2026-07-28 took the pass bar — 7/7, first-pass commit 100%, escaped-defect 0% — and
-that is the problem: four of five metrics are saturated, so the corpus can no longer tell a good
-harness from a very good one. The two cases added in s62 widen only the THROUGHPUT side (both
-expect a commit). Three shapes named in **#146** are still missing, and each is one the harness
-plausibly FAILS, which is exactly why they are worth adding:
+The run of 2026-07-28 (`RESULTS-2026-07-28b.md`) took the pass bar — 7/7, first-pass commit 100%,
+escaped-defect 0% — and that was the problem: four of five metrics were saturated, so the corpus
+could no longer tell a good harness from a very good one.
 
-- a change whose correctness lives in a file the diff does not touch — i.e. **where the critic's
-  evidence window ends** (#123 attaches whole *changed* files, and nothing else);
+**One shape from #146 is now covered, and it arrived by accident.** `good-multifile-method-labels`
+was written to measure a coordinated three-file change, and it also lands one step past the
+critic's evidence window: `#123` attaches whole *changed* files, and this change's correctness
+depends on files it does NOT touch — specifically on which ids the untouched method classes
+register, and on the *absence* of any caller using the old ids. It fails
+(`RESULTS-2026-07-28c.md`: `broken` @0.99), and the shape of the failure is the point. Absence
+cannot be attached, so this is a class of correct change the worker has no way to argue for.
+
+Two shapes named in **#146** are still missing, and each is one the harness plausibly FAILS:
+
 - a **second adversarial case aimed at the critic** rather than at a mechanical zone, because
   catching power measured once on a probabilistic reviewer is barely measured at all;
 - a genuinely **ambiguous intent**, whose correct outcome is an escalation rather than a
   confident guess — a property nothing here measures today.
 
-Until those exist, read a green run as "the harness handles these nine shapes", never as "the
-harness works" (`docs/gotchas/critic-sees-only-the-diff-hunk.md` is the last time that reading
-was wrong).
+Read a green run as "the harness handles these shapes", never as "the harness works"
+(`docs/gotchas/critic-sees-only-the-diff-hunk.md` is the last time that reading was wrong).
 
 ## Related
 
