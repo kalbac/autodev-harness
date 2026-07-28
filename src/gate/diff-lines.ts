@@ -404,6 +404,23 @@ function walkDiff(diffText: string): DiffWalk {
   // handles that (an unattributed section is in scope for every zone); for the FILE
   // arm it is not "names no files", it is "no answer" -- R4 review finding.
   let unattributedContent = false;
+  /** A `+`/`-` line that no hunk accounts for. It is NOT attributed to the section
+   *  it happens to follow: the last `+++ b/<path>` header says which file the last
+   *  HUNK was about, and a line outside every hunk is not covered by that claim.
+   *  Guessing sent it into that file's bucket, where a zone scoped elsewhere never
+   *  saw it -- so an extra line after an exhausted hunk count could smuggle a
+   *  contract value past a scoped zone (R8 review finding, a blocker). Unattributed
+   *  means in scope for every zone and exempt from nothing, which is the answer the
+   *  pre-adr/008 flat reader gave. */
+  const recordUnattributed = (line: string): void => {
+    unattributedContent = true;
+    let bucket = content.get("");
+    if (!bucket) {
+      bucket = { files: [], lines: [] };
+      content.set("", bucket);
+    }
+    bucket.lines.push(line);
+  };
   const record = (line: string): void => {
     const files = [currentOldPath, currentPath].filter((p): p is string => p !== null);
     if (files.length === 0) unattributedContent = true;
@@ -751,13 +768,16 @@ function walkDiff(diffText: string): DiffWalk {
     // than before -- a contract value in `+test_pickup` with no headers at all
     // vanished from the zone scan entirely (R7 review finding, a blocker).
     //
-    // Recorded, so the line arm still sees it (with no known path it lands in the
-    // unattributed bucket, in scope for every zone), and flagged, so the file arm
-    // reports "no answer" rather than a confident empty list. A mail-patch
+    // Recorded UNATTRIBUTED -- never under the section it follows, even when that
+    // section's headers are known. A hunk header says how many lines it covers;
+    // one past that count is a line the diff does not account for, and filing it
+    // under the last-seen path let an extra `+test_pickup` after a docs hunk hide
+    // from a zone scoped to `includes/**` (R8). Unattributed = in scope for every
+    // zone, and the file answer becomes "no answer" rather than a confident list. A mail-patch
     // signature (`-- `) would land here too and cost one over-strict escalation;
     // nothing this harness runs produces one.
     if (line.startsWith("+") || line.startsWith("-")) {
-      record(line);
+      recordUnattributed(line);
       continue;
     }
 

@@ -93,6 +93,17 @@ the next question is which layer the failure moved to — not whether the fix wo
   value physically left the zone); a copy leaves the source byte-identical, so reporting it
   demands a mutation-verified guard for a file nobody edited — the same complaint #140 was
   filed for. Read `copy from`/`copy to` and suppress the pre-image side for that section only.
+- **A stricter parser can be a WEAKER check.** The strict walker ignores whatever is neither
+  header nor hunk body; the flat reader it replaced took any line starting with + or -. So a
+  headerless content line, and a line past a hunk’s declared count, were scanned BEFORE the
+  upgrade and dropped after it — the gate committing a diff that names a contract value. Two
+  separate review findings, one of them a blocker. When you replace a parser, enumerate what
+  the old one accepted that the new one drops, and give every dropped line the old answer.
+- **Do not attribute a line to the section it merely FOLLOWS.** A hunk header states how many
+  lines it covers; one past that count is not covered by the last file header. Filing it
+  under the last-seen path let an extra line after a docs hunk carry a contract value into a
+  declared documentation file, invisible to a zone scoped elsewhere. Unattributed — in scope
+  for every zone, exempt from nothing — is the only honest answer.
 - Every narrowing is leniency, so every unanswerable case must fall back to the OLD, stricter
   reading: an unwalkable diff → one unattributed bucket every zone sees; a section with no
   known path → in scope everywhere and exempt from nothing; a path shape that cannot be

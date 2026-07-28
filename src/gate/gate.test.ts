@@ -1134,6 +1134,33 @@ it("catches a contract value on a line the OLD flat reader dropped (R5 review fi
     expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
   });
 
+  it("an extra line past the hunk's declared count cannot hide behind the previous file (R8 finding)", async () => {
+    // The hunk claims ONE added line. The second `+` line is outside it, and the
+    // only path in scope belongs to the hunk that already ended. Filing it under
+    // that path put a contract value inside a declared documentation file, where
+    // a zone scoped to `includes/**` never looks -- so the gate committed a diff
+    // naming `test_pickup`. A line no hunk accounts for belongs to no file.
+    const extraLine = [
+      "diff --git a/docs/OVERVIEW.md b/docs/OVERVIEW.md",
+      "--- a/docs/OVERVIEW.md",
+      "+++ b/docs/OVERVIEW.md",
+      "@@ -3,0 +4,1 @@",
+      "+ordinary documentation",
+      "+test_pickup",
+    ].join("\n");
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: extraLine,
+      docPaths: ["docs/**"],
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+  });
+
   it("a 100%-similarity rename OUT of the zone still trips it (R3 review finding)", async () => {
     // The shape that has no hunk body at all: no `---`/`+++` pair, no `+`/`-`
     // line, and `git diff --name-only` -- which is where the gate's changedFiles
