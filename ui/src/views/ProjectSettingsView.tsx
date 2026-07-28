@@ -379,14 +379,23 @@ function ConfigSections({
         </p>
         <SettingsRow
           label="Protected paths"
-          value={<PathList paths={contract.constitutionPaths} empty="none — nothing fenced beyond the invariants file" />}
+          value={<ChipList items={contract.constitutionPaths} empty="none — nothing fenced beyond the invariants file" />}
         />
         <SettingsRow
           label="Documentation paths"
           value={
-            <PathList
-              paths={contract.docPaths}
+            <ChipList
+              items={contract.docPaths}
               empty="none — the critic's mandate is never narrowed, and contract zones are checked in every file"
+            />
+          }
+        />
+        <SettingsRow
+          label="Task commands"
+          value={
+            <ChipList
+              items={gate.successCommands}
+              empty="none declared — a task may only use this project's own package.json scripts"
             />
           }
         />
@@ -397,6 +406,13 @@ function ConfigSections({
           way. For the <strong>machine gate</strong>: these paths are outside contract-zone checking, so documenting a
           contract value is not treated as changing it. Neither narrowing touches the protected paths above, and a diff
           that rewrites documented behaviour is still reviewed in full.
+        </p>
+        <p className="pt-2 text-[11px] leading-relaxed text-muted-foreground">
+          <strong>Task commands</strong> bounds what a task may be judged by. The orchestrator that turns your intent
+          into tasks may reference only a script this project&apos;s <span className="font-mono">package.json</span>{" "}
+          declares, or a command listed here — anything it invents is dropped before the task is queued, and the drop is
+          reported. If a command still reaches the gate and does not exist, the gate refuses to run it and escalates as
+          broken configuration, rather than sending the worker back to fix a command nobody asked for.
         </p>
       </SettingsSection>
 
@@ -638,11 +654,11 @@ function ConfigSections({
  *  when nothing is declared, and it is deliberately a SENTENCE rather than a dash: an
  *  empty oracle list is a meaningful state ("no leniency", "nothing fenced"), and a bare
  *  em-dash reads as "not loaded" instead (#138 is about exactly this kind of silence). */
-function PathList({ paths, empty }: { paths: string[]; empty: string }) {
-  if (paths.length === 0) return <span className="text-muted-foreground">{empty}</span>;
+function ChipList({ items, empty }: { items: string[]; empty: string }) {
+  if (items.length === 0) return <span className="text-muted-foreground">{empty}</span>;
   return (
     <span className="inline-flex flex-wrap justify-end gap-1.5">
-      {paths.map((p) => (
+      {items.map((p) => (
         <span key={p} className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground">
           {p}
         </span>

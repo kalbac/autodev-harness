@@ -170,7 +170,12 @@ const VALID_RUNTIME_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 export interface ProjectConfigView {
   stateDir: string;
   allowedBranchPattern: string;
-  gate: { checkCommand: string | null; agentCi: { enabled: boolean } };
+  /** `successCommands` is the operator's allowlist of extra commands a TASK may declare
+   *  (`gate.successCommands`). Projected read-only beside the rest of the oracle for the
+   *  same reason as `contract` below: it decides what a task is allowed to be judged by,
+   *  and the composer may reference nothing outside it plus the project's own
+   *  `package.json` scripts (#143). */
+  gate: { checkCommand: string | null; successCommands: string[]; agentCi: { enabled: boolean } };
   worktree: { provision: string[] };
   roles: {
     orchestrator: { adapter: string; model: string; effort?: string };

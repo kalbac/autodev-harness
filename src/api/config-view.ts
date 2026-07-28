@@ -24,7 +24,12 @@ export function buildProjectConfigView(cfg: HarnessConfig, plannerConfigured: bo
   return {
     stateDir: cfg.stateDir,
     allowedBranchPattern: cfg.allowedBranchPattern,
-    gate: { checkCommand: cfg.gate.checkCommand, agentCi: { enabled: cfg.gate.agentCi.enabled } },
+    gate: {
+      checkCommand: cfg.gate.checkCommand,
+      // Copied, not aliased — same rule as `contract` below.
+      successCommands: [...cfg.gate.successCommands],
+      agentCi: { enabled: cfg.gate.agentCi.enabled },
+    },
     worktree: { provision: cfg.worktree.provision },
     autonomy: { overnight: { enabled: cfg.autonomy.overnight.enabled } },
     roles: {

@@ -88,7 +88,7 @@ describe("buildProjectConfigView", () => {
       roles: { worker: { ladder: ["sonnet"] } },
     });
     const view = buildProjectConfigView(cfg, false);
-    expect(view.gate).toEqual({ checkCommand: "npm test", agentCi: { enabled: false } });
+    expect(view.gate).toEqual({ checkCommand: "npm test", successCommands: [], agentCi: { enabled: false } });
     expect(view.worktree).toEqual({ provision: ["vendor"] });
     expect(view.roles.worker).toEqual({ adapter: "claude", ladder: ["sonnet"] });
     expect(view.roles.critic).toEqual({ adapter: "codex", model: "gpt-5.6-luna", effort: "high" });
@@ -122,6 +122,24 @@ describe("buildProjectConfigView", () => {
     const view = buildProjectConfigView(cfg, false);
     view.contract.docPaths.push("evil/**");
     expect(cfg.contract.docPaths).toEqual(["docs/**"]);
+  });
+
+  it("projects the operator's declared task-command allowlist (#143)", () => {
+    const cfg = HarnessConfigSchema.parse({ gate: { successCommands: ["composer check"] } });
+    expect(buildProjectConfigView(cfg, false).gate.successCommands).toEqual(["composer check"]);
+  });
+
+  it("copies the declared task-command allowlist instead of aliasing the loaded config", () => {
+    const cfg = HarnessConfigSchema.parse({ gate: { successCommands: ["composer check"] } });
+    const view = buildProjectConfigView(cfg, false);
+    view.gate.successCommands.push("rm -rf /");
+    expect(cfg.gate.successCommands).toEqual(["composer check"]);
+  });
+
+  it("projects an undeclared allowlist as empty, never as absent", () => {
+    // `[]` is the meaningful default state — only the project's own package.json
+    // scripts are allowed — and the UI renders a sentence for it.
+    expect(buildProjectConfigView(HarnessConfigSchema.parse({}), false).gate.successCommands).toEqual([]);
   });
 
   it("projects empty oracle lists as empty, never as absent", () => {
