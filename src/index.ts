@@ -35,12 +35,14 @@ import { loadCorpus } from "./eval/corpus-loader.js";
 import { createCaseExecutor } from "./eval/case-executor.js";
 import { createHarnessCaseEnvironment } from "./eval/harness-case-environment.js";
 import { assertArtifactsRootSafe } from "./eval/artifacts-root.js";
+import { assertAgentCiRunnable } from "./eval/eval-preflight.js";
 import type { CorpusCaseResult } from "./eval/corpus-metrics.js";
 import {
   buildCorpusRunManifest,
   renderCorpusRunManifest,
   CORPUS_RUN_MANIFEST_FILE,
 } from "./eval/corpus-run-manifest.js";
+import { detectAgentCiCapability } from "./gate/agent-ci.js";
 import { runNative } from "./util/native.js";
 import { safeErrorText, safeLog } from "./util/safe-log.js";
 
@@ -480,6 +482,32 @@ async function main(): Promise<void> {
     // worker/critic calls, which are costly and non-deterministic. The corpus ships with
     // the HARNESS install (not the target repo) so the cases the harness is measured
     // against cannot be edited by the worker whose work they measure.
+
+    // Preflight, before anything else touches the target repo (#132 / Fix 5ii): a target
+    // project with `gate.agentCi.enabled: true` (workflows configured) on a machine that
+    // cannot actually run agent-ci would otherwise escalate every case for an environment
+    // reason and still finish, still write a report -- a run that measures nothing while
+    // looking exactly like a real measurement. The gate itself already fails safely per
+    // task; this stops the WHOLE RUN before it wastes minutes proving that repeatedly.
+    //
+    // The capability probe itself spawns `wsl.exe` on Windows (a real subprocess, seconds
+    // of wall-clock), so it is only invoked when agent-ci would actually engage -- an
+    // every-run cost for the common case (agentCi disabled) would be its own small version
+    // of the same "silent overhead nobody asked for" this fix exists to remove elsewhere.
+    // `assertAgentCiRunnable` re-checks `enabled`/`hasWorkflows` itself regardless, so this
+    // is purely an optimization, never a second copy of the decision.
+    const agentCiCfg = root.cfg.gate.agentCi;
+    const agentCiHasWorkflows = agentCiCfg.workflows.length > 0;
+    if (agentCiCfg.enabled && agentCiHasWorkflows) {
+      // Real capability probe (native/WSL/unavailable) -- the same one `root.ts` wires
+      // into the actual gate, so this asks the identical question the gate itself would.
+      await assertAgentCiRunnable({
+        enabled: true,
+        hasWorkflows: true,
+        capability: await detectAgentCiCapability(),
+      });
+    }
+
     const moduleDir2 = dirname(fileURLToPath(import.meta.url));
     const corpusDir = command.args.corpus ?? join(moduleDir2, "..", "corpus");
 
@@ -632,6 +660,13 @@ async function main(): Promise<void> {
         process.exitCode = 1;
       }
     } finally {
+      // Purge the corpus's OWN leftover blackboard state (#132 / Fix 5i) before releasing
+      // the lock. `purgeLeftoverQueue` never throws and no-ops when the corpus never took
+      // ownership of the queue (see its doc comment) -- so this is safe unconditionally,
+      // including on a path where no case ever ran. Ordering: purge before dispose, so the
+      // purge itself still runs under the corpus's exclusive ownership of the target.
+      await env.purgeLeftoverQueue();
+
       // Releasing the lock must not be able to mask the real failure, nor to fail a run
       // whose measurement already completed. `safeLog`/`safeErrorText` because a throwing
       // logger or a hostile `message` getter inside a catch would resurrect exactly the

@@ -30,6 +30,8 @@ function seedState(): void {
   writeFileSync(join(stateDir, "runtime", "task-1", "critic-verdict.json"), '{"verdict":"uncertain"}');
   mkdirSync(join(stateDir, "queue", "escalated"), { recursive: true });
   writeFileSync(join(stateDir, "queue", "escalated", "task-1.md"), "# task-1");
+  mkdirSync(join(stateDir, "escalations"), { recursive: true });
+  writeFileSync(join(stateDir, "escalations", "task-1.md"), "# ESCALATION task-1");
   mkdirSync(join(stateDir, "runs"), { recursive: true });
   writeFileSync(join(stateDir, "runs", "run-1.json"), "{}");
   writeFileSync(join(stateDir, "digest.md"), "history\n");
@@ -53,9 +55,20 @@ describe("archiveCaseArtifacts", () => {
     expect(result.copied).toContain("runtime/task-1/evidence.json");
     expect(result.copied).toContain("runtime/task-1/critic-verdict.json");
     expect(result.copied).toContain("queue/escalated/task-1.md");
+    expect(result.copied).toContain("escalations/task-1.md");
     expect(readFileSync(join(result.dest, "runtime", "task-1", "evidence.json"), "utf8")).toBe(
       '{"outcome":"escalated"}',
     );
+  });
+
+  // #131: per-case isolation of diagnostics -- an escalation body archived under this
+  // case's directory must be exactly THIS case's, never a mix accumulated across the run.
+  it("archives the escalations subdirectory so a diagnostician sees only this case's bodies", async () => {
+    seedState();
+
+    const result = await archiveCaseArtifacts(req());
+
+    expect(readFileSync(join(result.dest, "escalations", "task-1.md"), "utf8")).toBe("# ESCALATION task-1");
   });
 
   // The archive list is DERIVED from the purge list rather than restated, so extending the

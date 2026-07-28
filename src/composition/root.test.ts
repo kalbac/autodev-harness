@@ -13,6 +13,8 @@ import {
   buildOrchestratorCapabilities,
   loadInvariantsFrom,
   loadGuardPairsFrom,
+  readPackageScripts,
+  makeProgramExistsProbe,
 } from "./root.js";
 import { HarnessConfigSchema } from "../config/schema.js";
 import type { ConductorRunOptions } from "../conductor/conductor.js";
@@ -573,5 +575,111 @@ describe("loadInvariantsFrom / loadGuardPairsFrom (adr/006 Phase 1 — trusted-r
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The gate's command-availability probes (s61). `packageScripts` is an ORACLE
+ * definition -- it decides what "pass" can even mean -- so it is read from the
+ * TRUSTED ROOT, never from the worktree (adr/006 Phase 1, Principle 14).
+ */
+describe("readPackageScripts", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "adh-pkg-"));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns the declared script names", async () => {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { lint: "eslint .", build: "tsc" } }));
+    const scripts = await readPackageScripts(root);
+    expect(scripts).not.toBeNull();
+    expect([...scripts!].sort()).toEqual(["build", "lint"]);
+  });
+
+  it("returns an EMPTY SET (not null) when package.json is absent -- the project declares no scripts", async () => {
+    // Absent must NOT read as "unknown": a project with no package.json genuinely
+    // declares no npm scripts, and collapsing that into "I could not tell" would
+    // make the whole check inert for every non-Node project.
+    const scripts = await readPackageScripts(root);
+    expect(scripts).not.toBeNull();
+    expect([...scripts!]).toEqual([]);
+  });
+
+  it("returns an EMPTY SET when package.json declares no `scripts` key", async () => {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "x" }));
+    const scripts = await readPackageScripts(root);
+    expect(scripts).not.toBeNull();
+    expect([...scripts!]).toEqual([]);
+  });
+
+  it("returns NULL (unknown) for a malformed package.json", async () => {
+    writeFileSync(join(root, "package.json"), "{ not json");
+    expect(await readPackageScripts(root)).toBeNull();
+  });
+
+  it("returns NULL (unknown) when `scripts` is not an object", async () => {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: ["lint"] }));
+    expect(await readPackageScripts(root)).toBeNull();
+  });
+
+  it("reads the TRUSTED ROOT, so a worktree copy cannot self-authorize a script", async () => {
+    // adr/006: a task that ADDS a script does not make that script usable in the
+    // same run -- the operator blesses it, exactly like a new contract zone.
+    const worktree = mkdtempSync(join(tmpdir(), "adh-pkg-wt-"));
+    try {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { lint: "eslint ." } }));
+      writeFileSync(join(worktree, "package.json"), JSON.stringify({ scripts: { lint: "x", "lint:php:changes": "x" } }));
+
+      const scripts = await readPackageScripts(root);
+
+      expect([...scripts!].sort()).toEqual(["lint"]);
+      expect(scripts!.has("lint:php:changes")).toBe(false);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("makeProgramExistsProbe", () => {
+  let worktree: string;
+
+  beforeEach(() => {
+    worktree = mkdtempSync(join(tmpdir(), "adh-prog-"));
+  });
+  afterEach(() => {
+    rmSync(worktree, { recursive: true, force: true });
+  });
+
+  it("resolves a real PATH program (node is always present in this test process)", async () => {
+    const probe = makeProgramExistsProbe(worktree);
+    expect(await probe("node")).toBe(true);
+  });
+
+  it("returns FALSE for a bare name that resolves nowhere on PATH", async () => {
+    const probe = makeProgramExistsProbe(worktree);
+    expect(await probe("definitely-not-a-real-binary-xyzzy")).toBe(false);
+  });
+
+  it("resolves a path-shaped program as a FILE relative to the worktree, not via PATH", async () => {
+    mkdirSync(join(worktree, "scripts"), { recursive: true });
+    writeFileSync(join(worktree, "scripts", "check.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const probe = makeProgramExistsProbe(worktree);
+    expect(await probe("./scripts/check.sh")).toBe(true);
+  });
+
+  it("returns FALSE for a path-shaped program that is not in the worktree", async () => {
+    const probe = makeProgramExistsProbe(worktree);
+    expect(await probe("./scripts/missing.sh")).toBe(false);
+  });
+
+  it("returns FALSE for a path-shaped program that is a DIRECTORY, not a file", async () => {
+    // `existsSync` is a false positive here (gotcha `[detect/executable-probe]`).
+    mkdirSync(join(worktree, "scripts"), { recursive: true });
+    const probe = makeProgramExistsProbe(worktree);
+    expect(await probe("./scripts")).toBe(false);
   });
 });

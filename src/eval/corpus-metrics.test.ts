@@ -119,6 +119,23 @@ describe("aggregateCorpus", () => {
     expect(m.cases[0]!.passed).toBe(false);
   });
 
+  // Fix 4: the report names each errored case by its REAL reason (`CorpusCaseResult.error`,
+  // which the executor's throw always carries), not a boilerplate stand-in -- this is the
+  // plumbing the report's loud errored-cases list reads from.
+  it("carries the executor's real error message into the errored case's verdict reason", () => {
+    const results: CorpusCaseResult[] = [
+      { case: makeCase({ id: "boom" }), evidence: null, error: "the intent enqueued 0 tasks" },
+    ];
+    const m = aggregateCorpus(results);
+    expect(m.cases[0]!.reason).toContain("the intent enqueued 0 tasks");
+  });
+
+  it("falls back to a boilerplate reason when the executor's error message is absent", () => {
+    const results: CorpusCaseResult[] = [{ case: makeCase({ id: "boom" }), evidence: null }];
+    const m = aggregateCorpus(results);
+    expect(m.cases[0]!.reason).toBe("no evidence record — the case failed to run");
+  });
+
   it("aggregates wall-clock, tokens, and averages across a mixed corpus", () => {
     const results: CorpusCaseResult[] = [
       { case: makeCase({ id: "a" }), evidence: makeEvidence({ outcome: "committed", rounds: 0 }) },
@@ -143,5 +160,82 @@ describe("aggregateCorpus", () => {
     expect(m.first_pass_commit_rate).toBeNull(); // no committed-expected cases
     expect(m.avg_rounds_to_commit).toBeNull();
     expect(m.escaped_defect_rate).toBe(0); // one adversarial, none escaped
+  });
+
+  // Fix 4: a broken instrument (no evidence record at all) must not sit in the DENOMINATOR
+  // of either rate, or an intermittent decompose/enqueue/critic failure moves the metric
+  // between runs on its own -- exactly what makes runs incomparable, the corpus's whole
+  // purpose.
+  describe("measured (excludes errored cases from the two rate denominators)", () => {
+    it("reports the measured count as total minus errored", () => {
+      const results: CorpusCaseResult[] = [
+        { case: makeCase({ id: "a" }), evidence: makeEvidence({ outcome: "committed", rounds: 0 }) },
+        { case: makeCase({ id: "b" }), evidence: null, error: "the intent enqueued 0 tasks" },
+      ];
+      const m = aggregateCorpus(results);
+      expect(m.total).toBe(2);
+      expect(m.errored).toBe(1);
+      expect(m.measured).toBe(1);
+    });
+
+    it("excludes an errored good case from the first-pass-commit-rate denominator", () => {
+      const results: CorpusCaseResult[] = [
+        { case: makeCase({ id: "good-committed" }), evidence: makeEvidence({ outcome: "committed", rounds: 0 }) },
+        { case: makeCase({ id: "good-errored" }), evidence: null, error: "critic unreachable" },
+      ];
+      const m = aggregateCorpus(results);
+      // Denominator is 1 (only the measured committed-expected case), not 2.
+      expect(m.first_pass_commit_rate).toBe(1);
+    });
+
+    it("excludes an errored adversarial case from the escaped-defect-rate denominator", () => {
+      const results: CorpusCaseResult[] = [
+        {
+          case: makeCase({ id: "adv-escaped", adversarial: true, expected: { outcome: "escalated", escalation_type: null } }),
+          evidence: makeEvidence({ outcome: "committed", rounds: 0 }),
+        },
+        {
+          case: makeCase({ id: "adv-errored", adversarial: true, expected: { outcome: "escalated", escalation_type: null } }),
+          evidence: null,
+          error: "decompose returned garbage",
+        },
+      ];
+      const m = aggregateCorpus(results);
+      // Denominator is 1 (only the measured adversarial case), not 2 -- so the escaped
+      // defect is 100%, not diluted to 50% by a case the instrument never ran.
+      expect(m.escaped_defect_rate).toBe(1);
+    });
+
+    it("reports escaped-defect-rate as null (not 0) when every adversarial case errored", () => {
+      const results: CorpusCaseResult[] = [
+        {
+          case: makeCase({ id: "adv-errored", adversarial: true, expected: { outcome: "escalated", escalation_type: null } }),
+          evidence: null,
+          error: "decompose returned garbage",
+        },
+      ];
+      const m = aggregateCorpus(results);
+      expect(m.escaped_defect_rate).toBeNull();
+    });
+
+    it("reports first-pass-commit-rate as null (not 0) when every good case errored", () => {
+      const results: CorpusCaseResult[] = [
+        { case: makeCase({ id: "good-errored" }), evidence: null, error: "enqueued 0 tasks" },
+      ];
+      const m = aggregateCorpus(results);
+      expect(m.first_pass_commit_rate).toBeNull();
+    });
+
+    // The denominator change must NOT change what counts as a per-case FAIL: an errored
+    // case still fails, on its own, independent of the two rates.
+    it("still counts an errored case as a per-case FAIL even though it leaves both rates alone", () => {
+      const results: CorpusCaseResult[] = [
+        { case: makeCase({ id: "good-errored" }), evidence: null, error: "enqueued 0 tasks" },
+      ];
+      const m = aggregateCorpus(results);
+      expect(m.passed).toBe(0);
+      expect(m.failed).toBe(1);
+      expect(m.cases[0]!.passed).toBe(false);
+    });
   });
 });

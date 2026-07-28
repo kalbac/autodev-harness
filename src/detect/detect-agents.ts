@@ -172,8 +172,13 @@ export function defaultPathDirs(platform: NodeJS.Platform): string[] {
 
 /** True iff `p` is a real FILE and (on POSIX) is `X_OK`-executable. On win32 a
  *  PATHEXT match already implies "executable", so a real file is enough. Guards
- *  against `existsSync` returning true for a same-named directory / non-exec file. */
-function isExecutableFile(p: string, platform: NodeJS.Platform): boolean {
+ *  against `existsSync` returning true for a same-named directory / non-exec file.
+ *
+ *  Exported so the gate's command-availability probe (composition/root.ts) resolves
+ *  a path-shaped program with the SAME vetted rules this module uses, instead of
+ *  keeping a second `existsSync`-based copy that would reproduce both false
+ *  positives documented in `docs/gotchas/detect-executable-probe.md`. */
+export function isExecutableFile(p: string, platform: NodeJS.Platform): boolean {
   try {
     if (!statSync(p).isFile()) return false;
   } catch {

@@ -6,6 +6,8 @@ import type { Invariants, ContractZone } from "./invariants.js";
 import { diffAddedRemovedLines } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { AgentCiUnavailableError } from "./agent-ci-exec.js";
+import { CommandUnavailableError, inspectCommand } from "./command-availability.js";
+import type { CommandAvailabilityReport } from "./command-availability.js";
 import { parseCheckstyle } from "./checkstyle.js";
 import { filterFindings } from "./finding-filter.js";
 import { classifyGateExit } from "../profile/profile.js";
@@ -106,6 +108,7 @@ interface DepsOverrides {
   runProfileGates?: GateDeps["runProfileGates"];
   writeGateFeedback?: GateDeps["writeGateFeedback"];
   docPaths?: GateDeps["docPaths"];
+  commandAvailability?: GateDeps["commandAvailability"];
 }
 
 interface Calls {
@@ -142,6 +145,7 @@ function makeDeps(overrides: DepsOverrides = {}): { deps: GateDeps; calls: Calls
     runProfileGates: overrides.runProfileGates !== undefined ? overrides.runProfileGates : null,
     ...(overrides.writeGateFeedback !== undefined ? { writeGateFeedback: overrides.writeGateFeedback } : {}),
     ...(overrides.docPaths !== undefined ? { docPaths: overrides.docPaths } : {}),
+    ...(overrides.commandAvailability !== undefined ? { commandAvailability: overrides.commandAvailability } : {}),
   };
 
   return { deps, calls };
@@ -1186,5 +1190,220 @@ it("catches a contract value on a line the OLD flat reader dropped (R5 review fi
 
     expect(result.decision).toBe("ESCALATE");
     expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+  });
+});
+
+/**
+ * Step 1b's pre-flight (#141 sibling fix, s61): the gate must not RUN a
+ * `success_command` that does not exist. The s60 corpus run lost a correct diff to
+ * exactly this -- a hallucinated `pnpm lint:php:changes` exited 1, the gate read
+ * that as a failing check, and the worker was RETRIED three times against a
+ * command no project ever declared.
+ */
+describe("runGate — success_command availability pre-flight", () => {
+  const noConstitutionDeps = { invariants: makeInvariants({ constitution: { path_globs: [] } }) };
+
+  /** The REAL classifier against a fake probe, rather than a hand-written report: the
+   *  detail the gate throws is composed by the same code the production wiring uses, so
+   *  these tests cannot pass on a message the real path would never produce. The probe
+   *  says "the manager exists, the project declares no scripts", which is exactly the
+   *  s60 shape (`pnpm <script>` with no such script). */
+  const undeclaredScripts = (cmd: string): Promise<CommandAvailabilityReport> =>
+    inspectCommand(cmd, { packageScripts: async () => new Set<string>(), programExists: async () => true });
+  const reportOf = (availability: "available" | "unknown") => async (): Promise<CommandAvailabilityReport> => ({
+    availability,
+  });
+
+  it("throws CommandUnavailableError instead of RUNNING an unavailable command", async () => {
+    const ran: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: undeclaredScripts,
+      runSuccessCommand: async (cmd) => {
+        ran.push(cmd);
+        return { exitCode: 1 };
+      },
+    });
+
+    const input: GateInput = {
+      taskId: "TA1",
+      fileSet: ["src/foo.ts"],
+      successCommands: ["pnpm lint:php:changes"],
+    };
+
+    await expect(runGate(input, deps)).rejects.toBeInstanceOf(CommandUnavailableError);
+    // The command must never have been spawned -- a throw AFTER running it would
+    // still have burned the run and produced the misleading exit-1 output.
+    expect(ran).toEqual([]);
+  });
+
+  it("names the command and what is missing in the thrown error's detail", async () => {
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: undeclaredScripts,
+    });
+
+    let err: unknown;
+    try {
+      await runGate({ taskId: "TA2", fileSet: ["src/foo.ts"], successCommands: ["pnpm lint:php:changes"] }, deps);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(CommandUnavailableError);
+    const cue = err as CommandUnavailableError;
+    expect(cue.reason).toBe("script-not-declared");
+    expect(cue.detail).toContain("pnpm lint:php:changes");
+    expect(cue.detail).toMatch(/package\.json/);
+  });
+
+  it("does NOT return a RETRY verdict for an unavailable command", async () => {
+    // The whole point: a missing command is broken CONFIG. A RETRY verdict here
+    // would hand the worker a defect that is not in its diff.
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: undeclaredScripts,
+    });
+
+    const result = await runGate(
+      { taskId: "TA3", fileSet: ["src/foo.ts"], successCommands: ["pnpm nope"] },
+      deps,
+    ).then(
+      (v) => ({ threw: false as const, v }),
+      (e: unknown) => ({ threw: true as const, e }),
+    );
+
+    expect(result.threw).toBe(true);
+  });
+
+  it("RUNS the command when the verdict is `unknown` (byte-identical to pre-change behaviour)", async () => {
+    const ran: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: reportOf("unknown"),
+      runSuccessCommand: async (cmd) => {
+        ran.push(cmd);
+        return { exitCode: 0 };
+      },
+    });
+
+    const result = await runGate(
+      { taskId: "TA4", fileSet: ["src/foo.ts"], successCommands: ["mystery-tool --check"] },
+      deps,
+    );
+
+    expect(ran).toEqual(["mystery-tool --check"]);
+    expect(result.success_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("RUNS the command when the verdict is `available`, and a real failure is still a RETRY", async () => {
+    const ran: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: reportOf("available"),
+      runSuccessCommand: async (cmd) => {
+        ran.push(cmd);
+        return { exitCode: 1 };
+      },
+    });
+
+    const result = await runGate(
+      { taskId: "TA5", fileSet: ["src/foo.ts"], successCommands: ["npm run lint"] },
+      deps,
+    );
+
+    expect(ran).toEqual(["npm run lint"]);
+    expect(result.decision).toBe("RETRY");
+    expect(result.reasons.some((r) => r.includes("npm run lint"))).toBe(true);
+  });
+
+  it("is INERT when the optional dep is absent (every pre-change caller unchanged)", async () => {
+    const ran: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      runSuccessCommand: async (cmd) => {
+        ran.push(cmd);
+        return { exitCode: 0 };
+      },
+    });
+
+    const result = await runGate(
+      { taskId: "TA6", fileSet: ["src/foo.ts"], successCommands: ["pnpm lint:php:changes"] },
+      deps,
+    );
+
+    expect(ran).toEqual(["pnpm lint:php:changes"]);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("checks each command BEFORE running it, command by command", async () => {
+    // The first command is available and must actually run; the second is not and
+    // must abort the loop before it is spawned.
+    const ran: string[] = [];
+    const asked: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: async (cmd) => {
+        asked.push(cmd);
+        return cmd === "npm run lint" ? { availability: "available" as const } : undeclaredScripts(cmd);
+      },
+      runSuccessCommand: async (cmd) => {
+        ran.push(cmd);
+        return { exitCode: 0 };
+      },
+    });
+
+    await expect(
+      runGate(
+        { taskId: "TA7", fileSet: ["src/foo.ts"], successCommands: ["npm run lint", "pnpm nope"] },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(CommandUnavailableError);
+
+    expect(asked).toEqual(["npm run lint", "pnpm nope"]);
+    expect(ran).toEqual(["npm run lint"]);
+  });
+
+  it("skips blank commands without asking the probe (unchanged skip-blank behaviour)", async () => {
+    const asked: string[] = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      commandAvailability: async (cmd) => {
+        asked.push(cmd);
+        return undeclaredScripts(cmd);
+      },
+    });
+
+    const result = await runGate(
+      { taskId: "TA8", fileSet: ["src/foo.ts"], successCommands: ["", "   "] },
+      deps,
+    );
+
+    expect(asked).toEqual([]);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("still writes a truthful gate-feedback document when it throws", async () => {
+    // The write-once-at-the-decisive-exit contract must survive this new throw:
+    // the check command failed BEFORE the availability abort, and the worker must
+    // still see that -- not a stale document from the previous round.
+    const writes: Array<{ taskId: string; content: string | null }> = [];
+    const { deps } = makeDeps({
+      ...noConstitutionDeps,
+      runCheck: async () => ({ green: false, exitCode: 2, output: "CHECK BOOM" }),
+      commandAvailability: undeclaredScripts,
+      writeGateFeedback: async (taskId, content) => {
+        writes.push({ taskId, content });
+      },
+    });
+
+    await expect(
+      runGate({ taskId: "TA9", fileSet: ["src/foo.ts"], successCommands: ["pnpm nope"] }, deps),
+    ).rejects.toBeInstanceOf(CommandUnavailableError);
+
+    expect(writes.length).toBe(1);
+    expect(writes[0]!.taskId).toBe("TA9");
+    expect(writes[0]!.content).toContain("CHECK BOOM");
   });
 });

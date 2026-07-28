@@ -15,6 +15,8 @@ import type { FailedStep } from "./gate-feedback.js";
 import { addedLineNumbers } from "./diff-lines.js";
 import type { AddedLines } from "./diff-lines.js";
 import type { ProfileGateRecord } from "./profile-gate-record.js";
+import { CommandUnavailableError } from "./command-availability.js";
+import type { CommandAvailabilityReport } from "./command-availability.js";
 
 /**
  * The machine-gate decision core — parity: `gate.ps1 Invoke-AutodevGate`
@@ -81,6 +83,20 @@ export interface GateDeps {
   runCheck: (() => Promise<{ green: boolean; exitCode: number; output?: string }>) | null;
   /** Run one task success_command; exit 0 = pass. `output` optional, same reason as `runCheck`. */
   runSuccessCommand: (cmd: string) => Promise<{ exitCode: number; output?: string }>;
+  /** Optional pre-flight for step 1b: does this success_command EXIST here at all?
+   *  Absent (the default) means the check is not performed and step 1b behaves
+   *  byte-for-byte as it did before -- which is what keeps every existing caller and
+   *  unit test unchanged.
+   *
+   *  Only a positive `"unavailable"` acts. `"unknown"` runs the command exactly as
+   *  today: the probe could not answer, and a probe that cannot answer must never
+   *  manufacture a refusal (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+   *
+   *  A verdict of `"unavailable"` makes step 1b THROW a `CommandUnavailableError`
+   *  rather than return a RETRY -- see the step's own comment for why. The optional
+   *  `unavailable` half carries WHICH thing is missing, decided by whoever asked the
+   *  probes; the gate never re-derives a cause from the command string. */
+  commandAvailability?: (cmd: string) => Promise<CommandAvailabilityReport>;
   /** Live mutation-check for a guard: true iff it still goes red-on-flip. Parity: Test-AutodevGuardStillRed. */
   guardStillRed: (guard: GuardRow) => Promise<boolean>;
   /** Optional agent-ci replay. null = feature off. May THROW: a genuine infra failure or an
@@ -239,10 +255,47 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
     }
 
     // 1b. success commands (each must exit 0; a failure is worker-fixable -> RETRY, like a check failure)
+    //
+    // BEFORE running each one, ask whether it exists at all (`deps.commandAvailability`,
+    // optional -- absent = the pre-s61 behaviour exactly). A command the project does
+    // not declare is broken CONFIG, and the gate must NOT execute it and then read its
+    // exit code as a verdict about the diff. That is precisely what cost the s60 corpus
+    // run a correct task: the LLM decomposition invented `pnpm lint:php:changes`, pnpm
+    // exited 1 with ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL, step 1b called that a failed
+    // success_command -> RETRY, and the worker was looped three times against a defect
+    // that did not exist in its diff before the task was quarantined.
+    //
+    // The refusal THROWS rather than returning ESCALATE, because that is this gate's
+    // already-documented contract for a step that could not RUN (missing tool, absent
+    // vendor, spawn ENOENT -- see runAgentCi/runProfileGates above): the conductor's
+    // try/catch around runGate escalates a gate throw as broken operator config. Adding
+    // a new in-band verdict for the same class of problem would split one contract
+    // across two mechanisms. The `finally` below still writes a truthful
+    // gate-feedback.md on this path, exactly like every other throwing exit.
     let successGreen = true;
     for (const cmd of input.successCommands ?? []) {
       if (!cmd || cmd.trim() === "") {
         continue;
+      }
+      if (deps.commandAvailability) {
+        // ONLY a positive "unavailable" acts; "unknown" falls through and runs the
+        // command unchanged. Folding "unknown" in here would turn every unreadable
+        // package.json into an escalation.
+        //
+        // The REASON travels with the verdict rather than being re-derived from the
+        // command string here: the same string can be unavailable because the script is
+        // undeclared or because the package manager is not installed, and only the code
+        // that asked the probes knows which (review gate, s61 —
+        // `[critic/validated-one-string-used-another]`). The fallback below states the
+        // verdict without guessing a cause, for a dep that supplies none.
+        const report = await deps.commandAvailability(cmd);
+        if (report.availability === "unavailable") {
+          const { reason, detail } = report.unavailable ?? {
+            reason: "program-not-on-path" as const,
+            detail: `success_command '${cmd}' cannot run: the harness could not resolve it on this machine.`,
+          };
+          throw new CommandUnavailableError(reason, detail);
+        }
       }
       const sc = await deps.runSuccessCommand(cmd);
       if (sc.exitCode !== 0) {

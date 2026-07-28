@@ -7,6 +7,7 @@ import type { Task } from "../blackboard/types.js";
 import type { Logger } from "../util/log.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
 import { isDuplicateTask } from "./orchestrator.js";
+import type { CommandDeclaration } from "./success-command-policy.js";
 
 const ALL_STATES: QueueState[] = ["pending", "active", "done", "escalated", "quarantine"];
 
@@ -388,5 +389,348 @@ describe("createOrchestrator / handleIntent", () => {
 
     await expect(orchestrator.handleIntent("intent")).rejects.toThrow(/s1-t2/);
     expect(recorder.triggerCalls).toEqual([]);
+  });
+});
+
+/**
+ * s61 half (a): a decomposed spec may only ask for commands the project declares.
+ * The filter runs at the composer, before validation/enqueue, so an invented
+ * command never reaches the queue in the first place.
+ */
+describe("createOrchestrator — success_command policy", () => {
+  const declared = (over: Partial<CommandDeclaration> = {}): CommandDeclaration => ({
+    scripts: ["lint"],
+    configured: [],
+    scriptsKnown: true,
+    ...over,
+  });
+
+  it("DROPS an undeclared command from the enqueued spec, keeping the declared one", async () => {
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm run lint", "pnpm lint:php:changes"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: noopLog,
+      successCommandDeclaration: async () => declared(),
+    });
+
+    await orchestrator.handleIntent("intent");
+
+    expect(recorder.enqueueCalls).toHaveLength(1);
+    expect(recorder.enqueueCalls[0]!.success_commands).toEqual(["pnpm run lint"]);
+  });
+
+  it("reports every drop to the digest, naming the TASK ID and the COMMAND", async () => {
+    // Silently discarding LLM output is how a feature becomes invisible.
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm lint:php:changes"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: noopLog,
+      successCommandDeclaration: async () => declared(),
+    });
+
+    await orchestrator.handleIntent("intent");
+
+    const dropReports = recorder.reportCalls.filter((r) => r.message.includes("lint:php:changes"));
+    expect(dropReports).toHaveLength(1);
+    expect(dropReports[0]!.level).toBe("WARN");
+    expect(dropReports[0]!.message).toContain("s1-t1");
+  });
+
+  it("logs every drop at WARN", async () => {
+    const logged: Array<{ level: string; message: string }> = [];
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm lint:php:changes"] });
+    const { caps } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: (level, message) => logged.push({ level, message }),
+      successCommandDeclaration: async () => declared(),
+    });
+
+    await orchestrator.handleIntent("intent");
+
+    const warns = logged.filter((l) => l.level === "WARN" && l.message.includes("lint:php:changes"));
+    expect(warns).toHaveLength(1);
+  });
+
+  it("does NOT drop the task itself -- a hallucinated command must not lose the work", async () => {
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm lint:php:changes"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: noopLog,
+      successCommandDeclaration: async () => declared(),
+    });
+
+    const result = await orchestrator.handleIntent("intent");
+
+    expect(result.enqueued.map((e) => e.id)).toEqual(["s1-t1"]);
+    expect(recorder.enqueueCalls[0]!.success_commands).toEqual([]);
+  });
+
+  it("keeps everything and reports LOUDLY when the declaration could not be read", async () => {
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm lint:php:changes"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: noopLog,
+      successCommandDeclaration: async () => declared({ scriptsKnown: false }),
+    });
+
+    await orchestrator.handleIntent("intent");
+
+    expect(recorder.enqueueCalls[0]!.success_commands).toEqual(["pnpm lint:php:changes"]);
+    expect(recorder.reportCalls.some((r) => r.level === "WARN" && /could not/i.test(r.message))).toBe(true);
+  });
+
+  it("is INERT when the dep is absent (existing wiring unchanged)", async () => {
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm lint:php:changes"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({ caps, adapter: makeFakeAdapter([spec]), log: noopLog });
+
+    await orchestrator.handleIntent("intent");
+
+    expect(recorder.enqueueCalls[0]!.success_commands).toEqual(["pnpm lint:php:changes"]);
+    expect(recorder.reportCalls.some((r) => r.message.includes("lint:php:changes"))).toBe(false);
+  });
+
+  it("reports nothing extra when no command is dropped", async () => {
+    const spec = makeSpec("s1-t1", { success_commands: ["pnpm run lint"] });
+    const { caps, recorder } = makeFakeCaps();
+    const orchestrator = createOrchestrator({
+      caps,
+      adapter: makeFakeAdapter([spec]),
+      log: noopLog,
+      successCommandDeclaration: async () => declared(),
+    });
+
+    await orchestrator.handleIntent("intent");
+
+    expect(recorder.reportCalls.filter((r) => r.level === "WARN")).toEqual([]);
+  });
+});
+
+/**
+ * s61 / #141: a malformed decomposition is retried EXACTLY ONCE with the failure
+ * text fed back. The failure is intermittent -- the same corpus case succeeded in
+ * another run -- and an intermittent failure inside a measuring instrument is the
+ * one thing it may not have.
+ */
+describe("createOrchestrator — decomposition retry", () => {
+  /** An adapter that fails the first N calls the given way, then succeeds. */
+  function makeFlakyAdapter(opts: {
+    failures: number;
+    fail: () => never;
+    then: TaskSpec[];
+  }): { adapter: OrchestratorAdapter; inputs: DecomposeInput[] } {
+    const inputs: DecomposeInput[] = [];
+    let calls = 0;
+    return {
+      inputs,
+      adapter: {
+        async decompose(input: DecomposeInput) {
+          inputs.push(input);
+          if (calls++ < opts.failures) return opts.fail();
+          return opts.then;
+        },
+      },
+    };
+  }
+
+  const BARE_STRING_ERROR =
+    "orchestrator decomposition element [0] is invalid: Invalid task spec: (root): Expected object, received string";
+
+  it("retries ONCE after an adapter throw and succeeds", async () => {
+    const { caps, recorder } = makeFakeCaps();
+    const { adapter, inputs } = makeFlakyAdapter({
+      failures: 1,
+      fail: () => {
+        throw new Error(BARE_STRING_ERROR);
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    const result = await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(2);
+    expect(result.enqueued.map((e) => e.id)).toEqual(["s1-t1"]);
+    expect(recorder.enqueueCalls).toHaveLength(1);
+  });
+
+  // Review gate, s61: the retry read `(err as Error).message`, which THROWS a TypeError
+  // of its own when the adapter throws a non-object. The retry this whole block exists to
+  // guarantee would then never happen, and the operator would see an unrelated error.
+  it("still retries when the adapter throws something that is not an Error", async () => {
+    const { caps } = makeFakeCaps();
+    const { adapter, inputs } = makeFlakyAdapter({
+      failures: 1,
+      fail: () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw undefined;
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    const result = await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.previousFailure).toBe("undefined");
+    expect(result.enqueued.map((e) => e.id)).toEqual(["s1-t1"]);
+  });
+
+  it("feeds the EXACT previous failure text back into the retry", async () => {
+    const { caps } = makeFakeCaps();
+    const { adapter, inputs } = makeFlakyAdapter({
+      failures: 1,
+      fail: () => {
+        throw new Error(BARE_STRING_ERROR);
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs[0]!.previousFailure).toBeUndefined();
+    expect(inputs[1]!.previousFailure).toBe(BARE_STRING_ERROR);
+  });
+
+  it("logs the retry at WARN", async () => {
+    const logged: Array<{ level: string; message: string }> = [];
+    const { caps } = makeFakeCaps();
+    const { adapter } = makeFlakyAdapter({
+      failures: 1,
+      fail: () => {
+        throw new Error(BARE_STRING_ERROR);
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    await createOrchestrator({ caps, adapter, log: (level, message) => logged.push({ level, message }) }).handleIntent(
+      "intent",
+    );
+
+    expect(logged.some((l) => l.level === "WARN" && /retry/i.test(l.message))).toBe(true);
+  });
+
+  it("retries a BATCH-VALIDATION failure too, and feeds the problems back", async () => {
+    const good = makeSpec("s1-t1");
+    const bad = { ...good, id: "s1-t2", title: "" } as unknown as TaskSpec;
+    const { caps, recorder } = makeFakeCaps();
+    const inputs: DecomposeInput[] = [];
+    let calls = 0;
+    const adapter: OrchestratorAdapter = {
+      async decompose(input) {
+        inputs.push(input);
+        return calls++ === 0 ? [good, bad] : [good];
+      },
+    };
+
+    const result = await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.previousFailure).toMatch(/title must be non-empty/);
+    expect(result.enqueued.map((e) => e.id)).toEqual(["s1-t1"]);
+    // All-or-nothing survives the retry: NOTHING from the failed attempt was queued.
+    expect(recorder.enqueueCalls.map((s) => s.id)).toEqual(["s1-t1"]);
+  });
+
+  it("retries EXACTLY once -- a second adapter throw propagates unchanged", async () => {
+    const { caps, recorder } = makeFakeCaps();
+    const { adapter, inputs } = makeFlakyAdapter({
+      failures: 2,
+      fail: () => {
+        throw new Error(BARE_STRING_ERROR);
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    // Message shape identical to today's: the adapter's own error, unwrapped.
+    await expect(createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent")).rejects.toThrow(
+      BARE_STRING_ERROR,
+    );
+
+    expect(inputs).toHaveLength(2);
+    expect(recorder.enqueueCalls).toEqual([]);
+    expect(recorder.triggerCalls).toEqual([]);
+  });
+
+  it("a second VALIDATION failure reports + throws with the pre-existing message shape", async () => {
+    const good = makeSpec("s1-t1");
+    const bad = { ...good, id: "s1-t2", title: "" } as unknown as TaskSpec;
+    const { caps, recorder } = makeFakeCaps();
+    const adapter = makeFakeAdapter([good, bad]);
+
+    await expect(createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent")).rejects.toThrow(
+      /all-or-nothing, nothing enqueued/,
+    );
+
+    expect(recorder.enqueueCalls).toEqual([]);
+    expect(recorder.triggerCalls).toEqual([]);
+    // Exactly ONE ERROR report, as before -- the failed first attempt must not
+    // also report, or the digest would double-count one rejection.
+    expect(recorder.reportCalls.filter((r) => r.level === "ERROR")).toHaveLength(1);
+  });
+
+  it("spends ONE retry budget across BOTH failure modes, not one each", async () => {
+    // A first attempt that THROWS and a retry that then fails VALIDATION must not
+    // buy a third call: "exactly once" has to hold for every path through the two
+    // failure shapes, not for each shape independently.
+    const good = makeSpec("s1-t1");
+    const bad = { ...good, id: "s1-t2", title: "" } as unknown as TaskSpec;
+    const { caps, recorder } = makeFakeCaps();
+    const inputs: DecomposeInput[] = [];
+    let calls = 0;
+    const adapter: OrchestratorAdapter = {
+      async decompose(input) {
+        inputs.push(input);
+        if (calls++ === 0) throw new Error(BARE_STRING_ERROR);
+        return [good, bad];
+      },
+    };
+
+    await expect(createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent")).rejects.toThrow(
+      /all-or-nothing, nothing enqueued/,
+    );
+
+    expect(inputs).toHaveLength(2);
+    expect(recorder.enqueueCalls).toEqual([]);
+  });
+
+  it("does not retry a decomposition that succeeded (no extra adapter call)", async () => {
+    const { caps } = makeFakeCaps();
+    const inputs: DecomposeInput[] = [];
+    const adapter: OrchestratorAdapter = {
+      async decompose(input) {
+        inputs.push(input);
+        return [makeSpec("s1-t1")];
+      },
+    };
+
+    await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(1);
+  });
+
+  it("does not retry an EMPTY decomposition -- 0 tasks is a valid answer, not a failure", async () => {
+    const { caps, recorder } = makeFakeCaps();
+    const inputs: DecomposeInput[] = [];
+    const adapter: OrchestratorAdapter = {
+      async decompose(input) {
+        inputs.push(input);
+        return [];
+      },
+    };
+
+    const result = await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(1);
+    expect(result.triggered).toBe(false);
+    expect(recorder.reportCalls.at(-1)?.message).toMatch(/0 tasks/);
   });
 });

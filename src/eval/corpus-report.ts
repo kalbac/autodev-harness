@@ -29,8 +29,28 @@ export function renderCorpusReport(m: CorpusMetrics): string {
 
   lines.push("# Corpus Report");
   lines.push("");
-  lines.push(`**${m.passed}/${m.total} cases passed** (harness outcome matched the case's expectation)` +
-    (m.errored > 0 ? ` — ${m.errored} errored (no record).` : "."));
+
+  // Stated LOUDLY, above the metric table, and unconditionally -- not only when something
+  // errored. An errored case (no evidence record at all) is an INSTRUMENT failure, not a
+  // harness verdict, so `first_pass_commit_rate`/`escaped_defect_rate` below are computed
+  // ONLY over measured cases (Fix 4). A rate whose denominator silently shrank, with the
+  // shrinkage buried below the fold, would be worse than the defect this exists to fix —
+  // so the bound is always visible, and every excluded case is named by id and reason
+  // rather than folded into a bare count (the honest residual: an absent record CAN in
+  // principle be a genuine harness defect, not only a broken instrument — see
+  // `CorpusMetrics.measured`'s doc comment).
+  lines.push(
+    `**measured: ${m.measured}/${m.total} cases** (${m.errored} errored — instrument, not harness). ` +
+      `The rates below are computed only over measured cases; an errored case still counts as a per-case FAIL.`,
+  );
+  lines.push("");
+  const erroredCases = m.cases.filter((c) => c.actual.outcome === "errored");
+  if (erroredCases.length > 0) {
+    for (const c of erroredCases) lines.push(`- \`${cell(c.id)}\`: ${cell(c.reason)}`);
+    lines.push("");
+  }
+
+  lines.push(`**${m.passed}/${m.total} cases passed** (harness outcome matched the case's expectation).`);
   lines.push("");
 
   lines.push("## Aggregate metrics");

@@ -9,6 +9,42 @@ Run it with `node dist/index.js eval` from the target repo's directory. It is **
 part of CI: every case drives real worker and critic calls, which cost real money and are
 not deterministic. It is an on-demand, operator-observed measurement.
 
+## Running it — the pre-flight, by exact name
+
+A killed run leaves state behind whose next report looks exactly like a catastrophic
+regression (`0%`, `0%`, 7/7 FAIL) rather than like the refusal it is, so the checks below
+are by **exact filename**, never by a glob (`docs/gotchas/corpus-lock-survives-a-killed-run.md`):
+
+```
+cat .autodev/corpus.lock                       # MUST NOT EXIST — a killed run leaves it
+ls .autodev/queue/pending .autodev/queue/active .autodev/queue/escalated   # all empty
+git status --short                             # empty
+git log --oneline -1                           # at the intended --baseline
+```
+
+Launch it **detached** (`Start-Process` on Windows), from the TARGET repo's directory — a
+backgrounded shell job gets killed during the nested decompose spawn
+(`docs/gotchas/orchestrate-background-run-killed.md`), and `eval` resolves the baseline
+against the cwd's repo.
+
+Since s61 the run cleans up after itself and refuses rather than measuring nothing:
+
+- **The leftover queue is the corpus's own problem, not yours.** After the last case the run
+  purges the blackboard state it owned, so the next run's preflight no longer refuses on the
+  remains of the previous one. It only ever does this once it has genuinely taken ownership
+  of the queue.
+- **`gate.agentCi` is checked, not assumed.** If the target project has agent-ci enabled with
+  workflows and agent-ci cannot run on this platform (native Windows — see
+  `docs/gotchas/agent-ci-not-runnable-on-native-windows.md`), the run REFUSES to start and
+  names both ways forward. It never edits the operator's config and never silently disables a
+  gate step: a corpus that quietly weakens the gate is not measuring the gate.
+- **The default artifacts directory works on Windows** (#135). `--artifacts` is now a choice,
+  not a workaround.
+
+Reading the report: check `measured: X/Y` **first**. The two rates are computed over the
+cases that produced a record; a case that never ran is named with its reason above the
+table, and still counts as a failed case in the pass bar.
+
 ## Layout
 
 | Path | What it is |

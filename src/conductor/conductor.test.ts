@@ -18,6 +18,7 @@ import type { DecisionJournalEntry } from "../autonomy/decision-journal.js";
 import { NORTH_STAR_UNFILLED_SENTINEL } from "../anti-drift/north-star.js";
 import { HarnessConfigSchema, type HarnessConfig } from "../config/schema.js";
 import { AgentCiUnavailableError } from "../gate/agent-ci-exec.js";
+import { CommandUnavailableError } from "../gate/command-availability.js";
 import type { OracleSet } from "../gate/oracle-paths.js";
 import { EvidenceSchema, type EvidenceRecord } from "../report/evidence-types.js";
 
@@ -621,6 +622,86 @@ describe("runIteration -- fail-closed commit gating", () => {
     expect(escalateCalls[0]!.reason).toMatch(/requires WSL on Windows/);
     expect(escalateCalls[0]!.reason).not.toMatch(/broken operator config/);
     expect(wgSpy.commit.length).toBe(0);
+  });
+
+  it("escalates an AgentCiUnavailableError as `blocked`, never `needs-guard`", async () => {
+    const task = makeTask();
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit } = makeWorktreeGitFactory();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      worktreeGit,
+      runGate: async () => {
+        throw new AgentCiUnavailableError("needs-wsl-on-windows", "agent-ci gate requires WSL on Windows");
+      },
+    });
+
+    await createConductor(deps).runIteration();
+
+    expect(escalateCalls[0]!.type).toBe("blocked");
+  });
+
+  it("escalates a CommandUnavailableError as `blocked` with the command named in the reason", async () => {
+    // s61: a success_command the project never declared is an environment/config
+    // problem. `needs-guard` would claim the DIFF needs a guard -- false about the
+    // change, and in the corpus it hijacks the case's verdict.
+    const task = makeTask();
+    const { repo, state } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit, spy: wgSpy } = makeWorktreeGitFactory();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      worktreeGit,
+      runGate: async () => {
+        throw new CommandUnavailableError(
+          "script-not-declared",
+          "success_command 'pnpm lint:php:changes' cannot run: this project's package.json declares no 'lint:php:changes' script",
+        );
+      },
+    });
+
+    const res = await createConductor(deps).runIteration();
+
+    expect(res.committed).toBe(false);
+    expect(state.locations.get(task.id)).toBe("escalated");
+    expect(escalateCalls.length).toBe(1);
+    expect(escalateCalls[0]!.type).toBe("blocked");
+    expect(escalateCalls[0]!.reason).toMatch(/pnpm lint:php:changes/);
+    expect(escalateCalls[0]!.reason).not.toMatch(/broken operator config/);
+    expect(escalateCalls[0]!.evidence).toMatch(/script-not-declared/);
+    expect(wgSpy.commit.length).toBe(0);
+  });
+
+  it("keeps `constitution` for a plain gate throw on a contract-zone task", async () => {
+    // The pre-existing mapping must survive untouched for every NON-unavailable throw.
+    const task = makeTask({ contract_zones_touched: ["zone-a"] });
+    const { repo } = makeRepo();
+    const { scheduler } = makeScheduler([task], repo);
+    const { escalate, calls: escalateCalls } = makeEscalate();
+    const { worktreeGit } = makeWorktreeGitFactory();
+
+    const deps = buildDeps({
+      repo,
+      scheduler,
+      escalate,
+      worktreeGit,
+      runGate: async () => {
+        throw new Error("broken INVARIANTS.md");
+      },
+    });
+
+    await createConductor(deps).runIteration();
+
+    expect(escalateCalls[0]!.type).toBe("constitution");
   });
 
   it("still uses the generic reason for a non-agent-ci gate throw", async () => {

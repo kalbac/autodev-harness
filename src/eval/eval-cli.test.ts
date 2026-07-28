@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseEvalArgs, evaluatePassBar, runEval, DEFAULT_EVAL_MAX_ITERATIONS } from "./eval-cli.js";
-import type { CorpusMetrics } from "./corpus-metrics.js";
+import { aggregateCorpus, type CorpusCaseResult, type CorpusMetrics } from "./corpus-metrics.js";
 import type { CorpusCase } from "./corpus-case.js";
 import type { CaseExecutor } from "./corpus-runner.js";
 import type { EvidenceRecord } from "../report/evidence-types.js";
@@ -11,6 +11,7 @@ function metrics(over: Partial<CorpusMetrics> = {}): CorpusMetrics {
     passed: 2,
     failed: 0,
     errored: 0,
+    measured: 2,
     first_pass_commit_rate: 1,
     avg_rounds_to_commit: 0,
     escaped_defect_rate: 0,
@@ -112,6 +113,21 @@ describe("evaluatePassBar", () => {
     const bar = evaluatePassBar(metrics({ total: 0, passed: 0, failed: 0, escaped_defect_rate: null }));
     expect(bar.met).toBe(false);
     expect(bar.reasons.join(" ")).toMatch(/corpus is empty/);
+  });
+
+  // Fix 4 integration: excluding an errored case from the two RATE denominators must not
+  // change what counts as a per-case FAIL -- an errored case still fails the pass bar via
+  // `failed > 0`, exactly as before. Driven through the REAL `aggregateCorpus`, not a
+  // hand-built `CorpusMetrics`, so this proves the two functions still agree end to end.
+  it("still fails the pass bar on an errored case, driven through the real aggregateCorpus", () => {
+    const results: CorpusCaseResult[] = [
+      { case: makeCase("good"), evidence: committed("good") },
+      { case: makeCase("broken"), evidence: null, error: "the intent enqueued 0 tasks" },
+    ];
+    const m = aggregateCorpus(results);
+    const bar = evaluatePassBar(m);
+    expect(bar.met).toBe(false);
+    expect(bar.reasons.join(" ")).toMatch(/1\/2 case\(s\) did not match/);
   });
 });
 

@@ -18,8 +18,18 @@ import type { ReadSnapshot } from "./adapter.js";
  *    smallest-atomic-task decomposition instruction.
  * 4. A strict output-format instruction: respond with ONLY a JSON array,
  *    one object per atomic task, nothing else (no prose, no markdown fence).
+ * 5. When this is a RETRY (`previousFailure`), the exact validation error the
+ *    previous attempt was rejected with, so the model fixes that specific thing
+ *    instead of re-rolling the same malformed output (#141).
+ *
+ * The `success_commands` rule in section 3 is HALF of a contract: the other half
+ * is `orchestrator/success-command-policy.ts`, which drops any command the project
+ * does not declare. A rule enforced in code but never taught to the model produces
+ * silent, repeated drops; a rule taught but not enforced produces the s60 incident.
+ * Both halves ship together, and both are pinned by tests -- gotcha
+ * `[chat/launch-marker-needs-prompt-contract]`.
  */
-export function buildDecomposePrompt(intent: string, state: ReadSnapshot): string {
+export function buildDecomposePrompt(intent: string, state: ReadSnapshot, previousFailure?: string): string {
   const sections: string[] = [];
 
   sections.push(
@@ -84,6 +94,22 @@ export function buildDecomposePrompt(intent: string, state: ReadSnapshot): strin
     "  are NOT already in `file_set` and must never be written, even",
     "  accidentally, by this task.",
     "",
+    "`success_commands` semantics — inventing one is a DEFECT:",
+    "- `success_commands` may contain ONLY commands this project actually",
+    "  declares: a script defined in the project's `package.json` `scripts`",
+    "  block, or a command the operator has explicitly declared in the harness",
+    "  config. Nothing else.",
+    "- Do NOT invent a command because it sounds like one the project ought to",
+    "  have. A command that does not exist does not fail the build — it makes",
+    "  the harness unable to judge the change at all, and the task is lost.",
+    "  If you have not SEEN the script declared, it does not exist.",
+    "- Omitting `success_commands` entirely is the NORMAL case. The harness",
+    "  already runs the project's configured check command on every task; a",
+    "  task-specific `success_commands` entry is the rare exception, not the",
+    "  default. When in doubt, leave it out.",
+    "- Any command here that this project does not declare is DROPPED before",
+    "  the task is queued, and the drop is reported to the operator.",
+    "",
     "Decomposition rules:",
     "- Emit ONE atomic task per array element — each task must be independently",
     "  actionable by a single worker agent in one pass.",
@@ -100,6 +126,27 @@ export function buildDecomposePrompt(intent: string, state: ReadSnapshot): strin
     "include any prose, explanation, or markdown code fence — emit the raw",
     "JSON array and nothing else.",
   );
+
+  // Retry feedback (#141). Placed LAST, after the output-format instruction, so
+  // the correction is the final thing the model reads. The failure text is
+  // harness-authored (a validation error), never operator input, so it needs no
+  // fencing of its own.
+  if (previousFailure !== undefined && previousFailure.trim() !== "") {
+    sections.push(
+      "",
+      "## Your previous attempt was REJECTED",
+      "",
+      "The previous response failed validation and nothing was queued. The exact",
+      "error was:",
+      "",
+      previousFailure,
+      "",
+      "Return ONLY a JSON array of task-spec OBJECTS — never bare strings, never",
+      "nested arrays, never a single object outside an array. Every element must",
+      "be a JSON object with the REQUIRED fields listed above. Fix precisely what",
+      "the error above names, and change nothing else about your plan.",
+    );
+  }
 
   return sections.join("\n");
 }

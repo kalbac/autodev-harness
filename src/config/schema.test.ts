@@ -32,3 +32,30 @@ describe("HarnessConfigSchema", () => {
     expect(cfg.contract.guardsFile).toBe("GUARDS.md");
   });
 });
+
+describe("gate.successCommands (s61 — the operator's command allowlist)", () => {
+  it("defaults to an empty allowlist", () => {
+    expect(HarnessConfigSchema.parse({}).gate.successCommands).toEqual([]);
+  });
+
+  it("defaults to an empty allowlist when `gate` is present but the key is not", () => {
+    // The nested-default path: a config that sets only `checkCommand` must still
+    // get a real `successCommands` array, not `undefined`.
+    const cfg = HarnessConfigSchema.parse({ gate: { checkCommand: "composer check" } });
+    expect(cfg.gate.successCommands).toEqual([]);
+  });
+
+  it("accepts the operator's declared commands", () => {
+    const cfg = HarnessConfigSchema.parse({ gate: { successCommands: ["php -l src/x.php", "composer check"] } });
+    expect(cfg.gate.successCommands).toEqual(["php -l src/x.php", "composer check"]);
+  });
+
+  it("rejects a non-string entry", () => {
+    expect(() => HarnessConfigSchema.parse({ gate: { successCommands: [42] } })).toThrow();
+  });
+
+  it("keeps the root schema STRICT (an unknown top-level key still fails loudly)", () => {
+    // gotcha `[config/zod-strict]` — adding a nested field must not weaken this.
+    expect(() => HarnessConfigSchema.parse({ successCommands: [] })).toThrow();
+  });
+});

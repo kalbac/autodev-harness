@@ -1,5 +1,5 @@
 import { mkdir, realpath } from "node:fs/promises";
-import { parse, resolve } from "node:path";
+import { parse, relative, resolve, sep } from "node:path";
 
 import { canonicalPathContains } from "../util/path-contain.js";
 
@@ -32,6 +32,20 @@ import { canonicalPathContains } from "../util/path-contain.js";
  *       directory is still reported by `git status`, so "the directory is ignored" alone does
  *       not mean writing here is invisible (codex R3).
  *
+ * Both git questions are asked about a REPO-RELATIVE, forward-slash pathspec, never the
+ * resolved absolute path (issue #135 / docs/gotchas/git-check-ignore-windows-drive-colon.md,
+ * found the first time this ran on a real Windows box). Git pathspecs treat a leading `:` as
+ * magic (`:(literal)`, `:/`, `:!`), and a Windows absolute path carries a colon in position
+ * 2 — so `git check-ignore D:\...` dies `fatal: pathspec magic not supported by this
+ * command: 'literal'` (exit 128), UNCONDITIONALLY, for every absolute path on that
+ * platform. `--literal-pathspecs` does not help (it turns off magic parsing, but the colon
+ * itself is what the parser trips on before that flag is even consulted). The check being
+ * fail-closed then made it fail-CLOSED-FOREVER: it correctly refused an answer it could
+ * never actually get, which made the default artifacts directory unreachable on Windows.
+ * The fix is legitimate, not a workaround: both questions are asked about a path INSIDE
+ * the repo (this branch is only reached after containment is established above), so a
+ * repo-relative path is both correct and colon-free. See `toRepoRelativePathspec` below.
+ *
  * ACCEPTED RESIDUALS, named rather than papered over:
  *  - TOCTOU between this check and the writes it authorizes. Closing it needs an
  *    `openat2`-style fd-relative API Node does not expose — the same residual already
@@ -49,6 +63,58 @@ export interface ArtifactsRootCheck {
   /** Runs a git command in `repoRoot` and returns its exit code + stderr. Injected so this
    *  module is testable without a real repository. */
   git: (args: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+}
+
+/**
+ * Turn two CANONICAL (post-`realpath`) absolute paths into the repo-relative,
+ * forward-slash pathspec git expects — see the module doc comment (check 3) for why a
+ * Windows absolute path can never be handed to git directly.
+ *
+ * `relativeFn` defaults to the host's own `path.relative`, which is correct at every
+ * production call site: `canonicalRoot`/`canonicalCandidate` were themselves produced by
+ * THIS host's `realpath`, so they are already in this host's own path style. It is a seam
+ * only so a unit test can exercise `path.win32.relative`'s output shape on ANY host, not
+ * only a real Windows machine — the exact gap that let the original bug ship: every
+ * fixture in this suite was POSIX-shaped because CI runs on Linux, so the tests exercised
+ * a string form the real Windows caller never produces
+ * (docs/gotchas/git-check-ignore-windows-drive-colon.md).
+ *
+ * An empty result — `canonicalCandidate` IS `canonicalRoot` (the artifacts root is the
+ * repo root itself) — is mapped to `"."` EXPLICITLY. An empty string handed to a git
+ * pathspec is not a form this code is willing to guess the meaning of; `"."` is git's own
+ * unambiguous spelling of "the current directory," which is exactly what is meant here.
+ */
+export function toRepoRelativePathspec(
+  canonicalRoot: string,
+  canonicalCandidate: string,
+  relativeFn: (from: string, to: string) => string = relative,
+  separator: string = sep,
+): string {
+  // Fold ONLY this host's own separator, and only when it is a backslash. An
+  // unconditional `\` -> `/` is wrong on POSIX, where a backslash is an ordinary
+  // filename byte: a directory genuinely named `artifacts\raw` would be handed to git
+  // as `artifacts/raw`, a DIFFERENT path -- so the safety question would be answered
+  // about something other than the directory about to be written to. That is the
+  // check-one-string/use-another shape this repo keeps paying for
+  // (docs/gotchas/validated-one-string-used-another.md), and the same POSIX-backslash
+  // instance already cost a round in
+  // docs/gotchas/oracle-protected-paths-must-be-worktree-relative.md. Found by the
+  // review gate, s61 -- the test could not have caught it, because it exercised only
+  // the win32 shape.
+  //
+  // `separator` travels WITH `relativeFn` for exactly the same reason that seam exists:
+  // a test driving `path.win32.relative` on a POSIX host must also get win32's `\`, or
+  // the two halves would describe different platforms.
+  const rel = relativeFn(canonicalRoot, canonicalCandidate);
+  const normalized = separator === "\\" ? rel.split("\\").join("/") : rel;
+  // `./`-prefixed, so a directory whose name STARTS with a colon (or any other pathspec
+  // magic prefix) can never be read as magic. That matters more than it looks: git parses
+  // magic even after `--`, and the `--literal-pathspecs` flag that would settle it outright
+  // is not accepted by `check-ignore` (see `assertArtifactsRootSafe`). MEASURED against real
+  // git, both commands, both answers: `check-ignore -- ./x` returns 0 for an ignored
+  // directory and 1 for a tracked one, and `ls-files --error-unmatch -- ./x` returns 1 for
+  // nothing-tracked and 0 for a tracked directory — identical to the unprefixed form.
+  return normalized === "" ? "." : `./${normalized}`;
 }
 
 /** Resolve a path, returning `null` when it cannot be resolved. The caller MUST treat
@@ -94,24 +160,42 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   const repoIsFilesystemRoot = parse(canonicalRepo).root === canonicalRepo;
   if (!repoIsFilesystemRoot && !canonicalPathContains(canonicalRepo, canonicalArtifacts)) return;
 
-  // `--literal-pathspecs` on BOTH invocations. A path is data here, never a pattern: without
+  // `--literal-pathspecs` on `ls-files` ONLY. A path is data here, never a pattern: without
   // it, a directory literally named `art[bc]` (or one whose name starts with `:`) is a
   // pathspec with glob/magic semantics, and a pattern that fails to match its own directory
   // answers "nothing tracked" for a directory full of tracked files — a fail-OPEN. codex R6
   // raised this from the git docs; on this git version the scenario did NOT reproduce (a
   // bracket pathspec still matched the literal directory), so the flag is defensive rather
-  // than a fixed bug. It is applied anyway because it costs nothing and closes the whole
-  // class, including future git versions and pathspec-magic prefixes.
+  // than a fixed bug.
   //
-  // Both git checks are asked about the CANONICAL path, never the path as written. Resolving
-  // for the containment decision and then handing git the unresolved one is the
-  // validated-one-string-used-another shape (codex R5), and it had a concrete exploit: with
-  // `artifactsRoot = <repo>/link` a junction onto `<repo>/real`, `check-ignore link` answers
-  // "ignored" while `ls-files -- link` answers "nothing tracked" — because the index holds
-  // `real/...`, not `link/...`. Both answers are true about `link` and both are irrelevant to
-  // where the writes actually land, so the run was authorized to clear tracked files through
-  // the junction.
-  const ignored = await check.git(["--literal-pathspecs", "check-ignore", "--quiet", "--", canonicalArtifacts]);
+  // `check-ignore` does NOT accept it, and this is the second half of #135 — the half the
+  // colon diagnosis missed. MEASURED on the real polygon, with a colon-free repo-RELATIVE
+  // path, which is what the first fix produced:
+  //
+  //     git --literal-pathspecs check-ignore --quiet -- .autodev/corpus-artifacts
+  //     fatal: .autodev/corpus-artifacts: pathspec magic not supported by this command: 'literal'
+  //     (exit 128)
+  //
+  // So the guard still could not pass on Windows OR anywhere else: the flag itself made it
+  // unanswerable, independently of the drive colon. Dropping the flag for this one command
+  // and `./`-prefixing the pathspec (see `toRepoRelativePathspec`) is what actually closes
+  // it. Found by RUNNING the corpus with the default artifacts path, not by a unit test —
+  // the tests asserted the string handed to git, which was correct, and could say nothing
+  // about whether git accepts it (Principle 13).
+  //
+  // Both git checks are asked about a pathspec DERIVED FROM the CANONICAL path, never the
+  // path as written. Resolving for the containment decision and then handing git the
+  // unresolved one is the validated-one-string-used-another shape (codex R5), and it had a
+  // concrete exploit: with `artifactsRoot = <repo>/link` a junction onto `<repo>/real`,
+  // `check-ignore link` answers "ignored" while `ls-files -- link` answers "nothing tracked"
+  // — because the index holds `real/...`, not `link/...`. Both answers are true about
+  // `link` and both are irrelevant to where the writes actually land, so the run was
+  // authorized to clear tracked files through the junction. `toRepoRelativePathspec` takes
+  // the CANONICAL path as its input for the same reason, so this guarantee carries through
+  // the Windows-drive-colon fix rather than being undone by it (`[git/check-ignore-windows-drive-colon]`).
+  const pathspec = toRepoRelativePathspec(canonicalRepo, canonicalArtifacts);
+
+  const ignored = await check.git(["check-ignore", "--quiet", "--", pathspec]);
   if (ignored.exitCode !== 0) {
     const why =
       ignored.exitCode === 1
@@ -134,7 +218,7 @@ export async function assertArtifactsRootSafe(check: ArtifactsRootCheck): Promis
   // and "I do not understand this answer" is a refusal, not a pass. An earlier version
   // ALLOWED it, which is the fourth appearance of fold-cannot-determine-into-no in this
   // cycle (codex R5).
-  const tracked = await check.git(["--literal-pathspecs", "ls-files", "--error-unmatch", "--", canonicalArtifacts]);
+  const tracked = await check.git(["--literal-pathspecs", "ls-files", "--error-unmatch", "--", pathspec]);
   if (tracked.exitCode === 1) return; // nothing tracked here
   if (tracked.exitCode === 0) {
     const names = tracked.stdout.trim() === "" ? [] : tracked.stdout.trim().split(/\r?\n/);

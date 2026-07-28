@@ -9,6 +9,27 @@ import type { WatchedRunInput } from "./runner.js";
 
 const realDelay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Wait for an OBSERVABLE condition instead of sleeping a guessed number of milliseconds.
+ *
+ * The two tests below used to `realDelay(30)` to "let `runWatched` finish its async setup".
+ * That is a real-clock race, and it lost: under a full parallel suite the stdout handler was
+ * not attached within 30ms, the first bursts were emitted into an EventEmitter nobody was
+ * listening to, and the run failed on a missing `line 1` — a flake that only ever appears
+ * under load, i.e. in CI. Polling a condition the test can actually see makes the wait as
+ * long as the machine needs and no longer (docs/gotchas/deterministic-real-clock-loop.md:
+ * a real-clock loop is tested by driving observable state, never by hoping about timing).
+ * The deadline is generous and THROWS with a named reason, so a genuinely-broken setup
+ * fails loudly rather than silently degrading into the flake it replaced.
+ */
+async function waitUntil(predicate: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`waitUntil: ${what} did not happen within ${timeoutMs}ms`);
+    await realDelay(1);
+  }
+}
+
 /** A minimal in-process stand-in for a spawned child: EventEmitters for stdout/stderr/self,
  *  a no-op stdin, and NO pid so `killTree()` is a guaranteed no-op (it early-returns on a
  *  null pid) — no real OS process is ever touched. Lets a test drive activity + exit
@@ -17,6 +38,9 @@ function makeFakeChild(): {
   child: ChildProcess;
   emitStdout: (s: string) => void;
   close: (code: number) => void;
+  /** True once `runWatched` has attached its stdout `data` handler — the one thing a test
+   *  must wait for before emitting, and the thing the fixed sleeps only guessed at. */
+  stdoutAttached: () => boolean;
 } {
   const stdout = Object.assign(new EventEmitter(), { setEncoding: () => {} });
   const stderr = Object.assign(new EventEmitter(), { setEncoding: () => {} });
@@ -30,6 +54,7 @@ function makeFakeChild(): {
     child: child as unknown as ChildProcess,
     emitStdout: (s: string) => stdout.emit("data", s),
     close: (code: number) => child.emit("close", code),
+    stdoutAttached: () => stdout.listenerCount("data") > 0,
   };
 }
 
@@ -188,7 +213,9 @@ describe("runWatched with an injected clock + spawn (deterministic wiring)", () 
     const input = baseInput({ args: [], staleSeconds: 0.6, timeoutSeconds: 600, pollMs: 5 });
 
     const p = runWatched(input, { now: () => now, spawn: () => fake.child });
-    await realDelay(30); // let the loop start ticking at the seeded clock (idle 0 -> alive)
+    // The attached stdout handler is the observable proof that `runWatched` got through its
+    // async setup and its poll loop is running at the seeded clock (idle 0 -> alive).
+    await waitUntil(fake.stdoutAttached, "runWatched attached its stdout handler");
     now = CLOCK0 + 2_000; // jump 2s past the last activity: idle 2000ms > 600ms stale window
     // pollMs (5) << this delay, so an earlier-expiring poll timer always fires — observing
     // the advanced clock and killing — BEFORE the close below, even under scheduling load.
@@ -207,7 +234,9 @@ describe("runWatched with an injected clock + spawn (deterministic wiring)", () 
     const input = baseInput({ args: [], staleSeconds: 0.6, timeoutSeconds: 600, pollMs: 5 });
 
     const p = runWatched(input, { now: () => now, spawn: () => fake.child });
-    await realDelay(30); // let runWatched finish its async setup and attach the stdout handler
+    // Emitting before the handler is attached loses the burst into an EventEmitter with no
+    // listeners, which is exactly how this test used to flake under a loaded suite.
+    await waitUntil(fake.stdoutAttached, "runWatched attached its stdout handler");
     // Eight stdout bursts. The clock is advanced BEFORE each emit, so the handler's
     // `lastActivity = now()` records the ADVANCED time — this test only stays alive if the
     // stdout->lastActivity wiring actually fires. Total elapsed reaches 800ms, PAST the

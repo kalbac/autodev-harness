@@ -109,7 +109,10 @@ export interface ProjectSummary {
 export interface ProjectConfigView {
   stateDir: string;
   allowedBranchPattern: string;
-  gate: { checkCommand: string | null; agentCi: { enabled: boolean } };
+  /** `successCommands` mirrors `gate.successCommands` — the operator's allowlist of extra
+   *  commands a TASK may declare. Read-only here for the same reason as `contract`: it is
+   *  part of what a task can be judged by (#143). */
+  gate: { checkCommand: string | null; successCommands: string[]; agentCi: { enabled: boolean } };
   worktree: { provision: string[] };
   roles: {
     orchestrator: { adapter: string; model: string; effort?: string };
