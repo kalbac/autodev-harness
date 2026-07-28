@@ -114,6 +114,15 @@ this; (b) is a new exemption that rests on an existing declaration.
   `{readable: false}` instead, and each caller states its own fallback — the gate keeps git's
   list, and the conductor reports EVERY zone as touched, because nothing has been ruled out.
 
+- **One deliberate way this is NOT byte-identical to s59, and it is stricter.** The zone scan
+  used to read the diff through `diffAddedRemovedLines`, which drops every line matching
+  `/^(+++|---)/` — it cannot tell a `+++ b/path` HEADER from an added line whose own
+  content starts with `++`, because the two are byte-identical on the wire. So a contract
+  value written on such a line was invisible to the gate. The strict walker settles it by the
+  hunk’s declared counts and keeps the line, so that value is now caught. Found by the review
+  gate as an invariant-3 violation, and kept: the difference exists only on the shape a worker
+  would use to slip a value past the scan. Pinned by a test that asserts BOTH halves — the
+  flat reader drops it, and the gate escalates on it.
 ### Every uncertainty resolves toward the old, stricter behaviour
 
 Both narrowings are leniency, so Principle 10 governs each failure path:
@@ -129,7 +138,7 @@ Both narrowings are leniency, so Principle 10 governs each failure path:
 | The diff cannot be walked, at the GATE | Keep git's `--name-only` list alone — the pre-adr/008 file list, so unreadable input never removes a file from the check. |
 | The diff cannot be walked, at the CONDUCTOR (no git list to fall back on) | Report EVERY contract zone as touched. Nothing has been ruled out, and `contractRisk` only chooses escalate-now over retry on a change the critic already declined to call clean. |
 | A path with `..`, a drive letter or a root anchor | NOT a declared doc. `globMatch` is textual, so `docs/**` matches the string `docs/../includes/class-foo.php`; the shape test refuses rather than normalizes. |
-| `contract.docPaths` is empty (the shipped default) | (b) is inert; behaviour is byte-identical to s59. |
+| `contract.docPaths` is empty (the shipped default) | (b) is inert. Behaviour is identical to s59 with ONE deliberate exception, below. |
 
 ## The risk the operator accepted
 

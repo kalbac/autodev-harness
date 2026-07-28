@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { runGate } from "./gate.js";
 import type { GateDeps, GateInput } from "./gate.js";
 import type { Invariants, ContractZone } from "./invariants.js";
+import { diffAddedRemovedLines } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { AgentCiUnavailableError } from "./agent-ci-exec.js";
 import { parseCheckstyle } from "./checkstyle.js";
@@ -1076,6 +1077,43 @@ describe("contract-zone scoping (adr/008)", () => {
 
     expect(control.zones_touched).toEqual([]);
     expect(control.decision).toBe("COMMIT");
+  });
+
+it("catches a contract value on a line the OLD flat reader dropped (R5 review finding)", async () => {
+    // The strict walker tells a `+++ b/path` HEADER from an added line whose own
+    // content starts with `++` by the hunk's declared counts, which is the only
+    // way to tell them apart -- they are byte-identical on the wire. The flat
+    // reader cannot, so it drops every such line (`/^(\+\+\+|---)/` in
+    // `diffAddedRemovedLines`), and the pre-adr/008 gate never saw a contract
+    // value written on one.
+    //
+    // So adr/008 is NOT byte-identical for a zone with no `path_globs` and no
+    // declared docs: it is STRICTER, on exactly the shape a worker would use to
+    // slip a contract value past the scan. First the measurement that the two
+    // readers really do disagree, then the gate behaviour that follows from it.
+    const sneaky = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-test-shipping-method-pickup.php",
+      "--- a/includes/class-test-shipping-method-pickup.php",
+      "+++ b/includes/class-test-shipping-method-pickup.php",
+      "@@ -1,0 +1,1 @@",
+      "+++test_pickup",
+    ].join("\n");
+
+    expect(diffAddedRemovedLines(sneaky).join("|")).not.toContain("test_pickup");
+
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [unscopedZone], ...noConstitution }),
+      changedFiles: ["includes/class-test-shipping-method-pickup.php"],
+      diffText: sneaky,
+    });
+
+    const result = await runGate(
+      { taskId: "T1", fileSet: ["includes/class-test-shipping-method-pickup.php"] },
+      deps,
+    );
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["unscoped-ids"]);
   });
 
   it("a 100%-similarity rename OUT of the zone still trips it (R3 review finding)", async () => {
