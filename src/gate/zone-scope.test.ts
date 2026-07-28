@@ -261,6 +261,20 @@ describe("scanDiffPaths -- what is NOT touched, and what is not an answer (R4 fi
     expect(scanDiffPaths(headerless)).toEqual({ readable: false });
   });
 
+  it("a bare `+` line with no headers at all is UNREADABLE, not an empty answer", () => {
+    // R7 review finding (blocker). Real `git diff` never emits a content line
+    // outside a hunk, so the walker used to ignore it -- but the OLD flat reader
+    // saw it, which made a malformed diff LESS checked than before adr/008.
+    expect(scanDiffPaths("+test_pickup")).toEqual({ readable: false });
+  });
+
+  it("keeps that line for the LINE arm, in the unattributed bucket", () => {
+    // Ignoring it was the actual harm: with no bucket, the zone scan saw nothing
+    // at all and the gate committed a diff naming a contract value.
+    const flat = diffAddedRemovedLines("+test_pickup");
+    expect(attributeDiffLines("+test_pickup", flat)).toEqual([{ files: [], lines: ["+test_pickup"] }]);
+  });
+
   it("reports an EMPTY headerless hunk as unreadable too (R6 review finding)", () => {
     // `@@ -1,0 +1,0 @@` records no content line at all, so a flag set only when a
     // line is attributed never fires -- and `paths: []` then reads as a confident

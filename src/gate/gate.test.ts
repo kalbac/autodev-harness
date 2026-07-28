@@ -1116,6 +1116,24 @@ it("catches a contract value on a line the OLD flat reader dropped (R5 review fi
     expect(result.zones_touched.map((z) => z.id)).toEqual(["unscoped-ids"]);
   });
 
+  it("a headerless contract value still escalates -- malformed input is never LESS checked (R7 finding)", async () => {
+    // The diff names a contract value and nothing else: no `diff --git`, no file
+    // header, no hunk. The pre-adr/008 gate caught it, because its flat reader
+    // takes any line starting with `+`. The strict walker ignored it, so the zone
+    // saw no lines at all and the gate committed -- leniency introduced by a
+    // parser upgrade, on exactly the input a parser upgrade must not relax.
+    const { deps } = makeDeps({
+      invariants: makeInvariants({ contract_zones: [scopedZone], ...noConstitution }),
+      changedFiles: ["docs/OVERVIEW.md"],
+      diffText: "+test_pickup",
+    });
+
+    const result = await runGate({ taskId: "T1", fileSet: ["docs/OVERVIEW.md"] }, deps);
+
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.zones_touched.map((z) => z.id)).toEqual(["shipping-method-ids"]);
+  });
+
   it("a 100%-similarity rename OUT of the zone still trips it (R3 review finding)", async () => {
     // The shape that has no hunk body at all: no `---`/`+++` pair, no `+`/`-`
     // line, and `git diff --name-only` -- which is where the gate's changedFiles

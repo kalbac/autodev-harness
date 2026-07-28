@@ -744,6 +744,23 @@ function walkDiff(diffText: string): DiffWalk {
       continue;
     }
 
+    // A `+`/`-` line OUTSIDE any hunk, and not one of the `--- `/`+++ ` headers
+    // handled above. Real `git diff` never emits one, which is exactly why this
+    // must not be ignored: the OLD flat reader (`diffAddedRemovedLines`) DID see
+    // such a line, so silently dropping it made a malformed diff LESS checked
+    // than before -- a contract value in `+test_pickup` with no headers at all
+    // vanished from the zone scan entirely (R7 review finding, a blocker).
+    //
+    // Recorded, so the line arm still sees it (with no known path it lands in the
+    // unattributed bucket, in scope for every zone), and flagged, so the file arm
+    // reports "no answer" rather than a confident empty list. A mail-patch
+    // signature (`-- `) would land here too and cost one over-strict escalation;
+    // nothing this harness runs produces one.
+    if (line.startsWith("+") || line.startsWith("-")) {
+      record(line);
+      continue;
+    }
+
     // Everything else (the `diff --git` / `index` preamble, or a stray line
     // with no active path) is neither header nor content — ignored.
   }

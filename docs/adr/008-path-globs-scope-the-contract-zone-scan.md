@@ -123,6 +123,23 @@ this; (b) is a new exemption that rests on an existing declaration.
   gate as an invariant-3 violation, and kept: the difference exists only on the shape a worker
   would use to slip a value past the scan. Pinned by a test that asserts BOTH halves — the
   flat reader drops it, and the gate escalates on it.
+- **The two layers must never disagree in the LENIENT direction, and on an unreadable diff
+  they deliberately disagree in the strict one.** The precise invariant is: *the conductor
+  must never report FEWER zones than the gate.* On a diff neither can parse, the gate keeps
+  git's file list (and may then clear a zone) while the conductor, which has no git list at
+  all, reports every zone — so a malformed diff can escalate a task the gate would have
+  cleared. Accepted, and not the same defect as R1–R4: the direction is toward a human, the
+  shape is one `git diff` does not produce, and removing it would mean plumbing the gate's
+  git-derived file list through the conductor's dependency surface for that shape alone.
+  Named here so a later reader does not "fix" it by weakening the conductor.
+
+- **A parser upgrade must never check LESS than the parser it replaces.** The strict walker
+  ignores anything that is not a header or a hunk body; the old flat reader took any line
+  starting with `+`/`-`. So a headerless `+test_pickup` — no `diff --git`, no file header, no
+  hunk — was scanned before `adr/008` and silently dropped after it, until the review gate
+  caught it (R7, a blocker). Such lines are now recorded into the unattributed bucket that
+  every zone sees, and flagged as "no answer" for the file arm.
+
 ### Every uncertainty resolves toward the old, stricter behaviour
 
 Both narrowings are leniency, so Principle 10 governs each failure path:
