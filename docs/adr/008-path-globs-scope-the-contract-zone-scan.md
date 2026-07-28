@@ -122,8 +122,10 @@ Both narrowings are leniency, so Principle 10 governs each failure path:
 |---|---|
 | The diff cannot be walked (truncated, malformed) | Fall back to ONE unattributed bucket = the pre-adr/008 whole-diff scan. A diff the harness cannot read never buys leniency — and never crashes the gate either, which is what letting the parser's throw escape would have done. |
 | A section names no path at all (neither header seen) | In scope for every zone, and exempt from nothing. |
-| A section names two different paths (rename, copy) | In scope if EITHER matches the zone; exempt only if BOTH are declared docs. |
+| A section names two different paths (a RENAME) | In scope if EITHER matches the zone; exempt only if BOTH are declared docs. |
 | A section names files but carries no `+`/`-` line (100% rename, mode-only, binary) | It has no lines to scan, but it still COUNTS AS TOUCHING its files — the paths come from the headers, so the conductor's answer matches the gate's. |
+| A COPY section (`copy from`/`copy to`) | The DESTINATION is touched; the SOURCE is NOT. A copy leaves its source unchanged, so counting it would demand a guard for a file nobody edited — #140 one shape over. A RENAME is the opposite case and keeps both sides. |
+| A hunk with NO file header (parses cleanly, belongs to no file) | Not "names no files" — UNREADABLE. Each caller falls back as below. |
 | The diff cannot be walked, at the GATE | Keep git's `--name-only` list alone — the pre-adr/008 file list, so unreadable input never removes a file from the check. |
 | The diff cannot be walked, at the CONDUCTOR (no git list to fall back on) | Report EVERY contract zone as touched. Nothing has been ruled out, and `contractRisk` only chooses escalate-now over retry on a change the critic already declined to call clean. |
 | A path with `..`, a drive letter or a root anchor | NOT a declared doc. `globMatch` is textual, so `docs/**` matches the string `docs/../includes/class-foo.php`; the shape test refuses rather than normalizes. |

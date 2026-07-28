@@ -88,6 +88,11 @@ the next question is which layer the failure moved to — not whether the fix wo
   input; only a paired control — the same content in a WELL-FORMED diff, which must NOT
   escalate — shows the fallback ran at all. Settle it by measurement: revert the fix and watch
   the test go red.
+- **A rename’s source is touched; a COPY’s source is not.** Both name two paths, and the
+  temptation is one rule for both. A rename removes the file from its old path (the contract
+  value physically left the zone); a copy leaves the source byte-identical, so reporting it
+  demands a mutation-verified guard for a file nobody edited — the same complaint #140 was
+  filed for. Read `copy from`/`copy to` and suppress the pre-image side for that section only.
 - Every narrowing is leniency, so every unanswerable case must fall back to the OLD, stricter
   reading: an unwalkable diff → one unattributed bucket every zone sees; a section with no
   known path → in scope everywhere and exempt from nothing; a path shape that cannot be

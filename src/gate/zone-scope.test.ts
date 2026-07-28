@@ -185,14 +185,14 @@ describe("scanDiffPaths -- the touched-file list, read off the diff headers (R2/
     expect(namedPaths(binaryDeletion)).toEqual(["includes/logo.png"]);
   });
 
-  it("sees a copy, both sides", () => {
+  it("sees a copy DESTINATION, which is the only side a copy changes", () => {
     const copy = [
       "diff --git a/includes/class-test-shipping-method-pickup.php b/includes/class-copy.php",
       "similarity index 100%",
       "copy from includes/class-test-shipping-method-pickup.php",
       "copy to includes/class-copy.php",
     ].join("\n");
-    expect(namedPaths(copy)).toEqual(["includes/class-test-shipping-method-pickup.php", "includes/class-copy.php"]);
+    expect(namedPaths(copy)).toEqual(["includes/class-copy.php"]);
   });
 
   it("still sees an ordinary text diff, both sides of every section", () => {
@@ -210,6 +210,62 @@ describe("scanDiffPaths -- the touched-file list, read off the diff headers (R2/
 
   it("distinguishes UNREADABLE from a diff that genuinely names nothing", () => {
     expect(scanDiffPaths("")).toEqual({ readable: true, paths: [] });
+  });
+});
+
+describe("scanDiffPaths -- what is NOT touched, and what is not an answer (R4 findings)", () => {
+  it("does NOT report a copy's SOURCE as touched -- the diff leaves it unchanged", () => {
+    // R4 review finding. A rename's pre-image IS touched (the file stops existing
+    // there), which is why R1 added it. A COPY's is not: `git diff --name-only`
+    // names only the destination, and nothing moved out of the source's zone.
+    // Reporting it would demand a mutation-verified guard for a file nobody
+    // edited -- #140's complaint, one shape over.
+    const copy = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/contract.md",
+      "similarity index 100%",
+      "copy from includes/class-test-shipping-method-pickup.php",
+      "copy to docs/contract.md",
+    ].join("\n");
+    expect(namedPaths(copy)).toEqual(["docs/contract.md"]);
+  });
+
+  it("does not attribute a modified copy's lines to the source file either", () => {
+    const copyWithEdits = [
+      "diff --git a/includes/class-test-shipping-method-pickup.php b/docs/contract.md",
+      "similarity index 80%",
+      "copy from includes/class-test-shipping-method-pickup.php",
+      "copy to docs/contract.md",
+      "--- a/includes/class-test-shipping-method-pickup.php",
+      "+++ b/docs/contract.md",
+      "@@ -10,1 +10,1 @@",
+      "-        $this->id = 'test_pickup';",
+      "+The plugin registers test_pickup.",
+    ].join("\n");
+    const byFile = attributeDiffLines(copyWithEdits, diffAddedRemovedLines(copyWithEdits));
+    expect(byFile.map((e) => e.files)).toEqual([["docs/contract.md"]]);
+    expect(namedPaths(copyWithEdits)).toEqual(["docs/contract.md"]);
+  });
+
+  it("a RENAME's source is still touched -- the copy rule must not weaken that", () => {
+    expect(namedPaths(PURE_RENAME_DIFF)).toEqual([
+      "includes/class-test-shipping-method-pickup.php",
+      "docs/OVERVIEW.md",
+    ]);
+  });
+
+  it("reports a headerless hunk as UNREADABLE, not as a diff that names no files", () => {
+    // R4 review finding: this parses without error (the hunk's counts are
+    // consistent), so it used to yield `readable: true, paths: []` -- which the
+    // conductor read as "touches nothing" while the gate still had git's list.
+    const headerless = ["@@ -1,0 +1,1 @@", "+unrelated"].join("\n");
+    expect(scanDiffPaths(headerless)).toEqual({ readable: false });
+  });
+
+  it("the gate keeps git's list for that same headerless hunk", () => {
+    const headerless = ["@@ -1,0 +1,1 @@", "+unrelated"].join("\n");
+    expect(unionDiffNamedPaths(["includes/class-test-shipping-method-pickup.php"], headerless)).toEqual([
+      "includes/class-test-shipping-method-pickup.php",
+    ]);
   });
 });
 

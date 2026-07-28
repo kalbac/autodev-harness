@@ -303,6 +303,11 @@ interface DiffWalk extends AddedLines {
    *  files while producing no hunk body at all, so a content-derived list omits
    *  exactly those (R2 review finding, s60). */
   paths: string[];
+  /** True when the diff carried a `+`/`-` line belonging to no file this parser
+   *  could name -- a hunk with no file header. The path list is then not an
+   *  answer at all, and a caller that reads it as "touches no files" drops its
+   *  path check on a diff that plainly changes something (R4 review finding). */
+  unattributedContent: boolean;
 }
 
 /**
@@ -355,7 +360,20 @@ export function diffContentLinesByFile(diffText: string): DiffFileContent[] {
  * THROWS on a malformed or truncated diff, exactly like the other two readers.
  */
 export function diffNamedPaths(diffText: string): string[] {
-  return walkDiff(diffText).paths;
+  const walk = walkDiff(diffText);
+  if (walk.unattributedContent) {
+    // R4 review finding. A hunk with no file header parses without error -- its own
+    // counts are consistent -- but its lines belong to no file this parser can name.
+    // Returning the (possibly empty) path list would tell a caller "these files were
+    // touched" when the truth is "there are changes here I cannot place", and the
+    // caller would then compare it against a git-derived list that DOES name the
+    // file. Refusing is what routes both callers to their stated fallback.
+    throw new Error(
+      "diffNamedPaths: the diff contains changed lines that belong to no file header -- " +
+        "the diff is malformed or was truncated, so its file list cannot be trusted",
+    );
+  }
+  return walk.paths;
 }
 
 function walkDiff(diffText: string): DiffWalk {
@@ -378,8 +396,16 @@ function walkDiff(diffText: string): DiffWalk {
   // normalization and rewrites the file's every line in the next diff.
   // Insertion-ordered, which is what gives `content` its source order.
   const content = new Map<string, { files: string[]; lines: string[] }>();
+  // Set when a `+`/`-` line is recorded while NEITHER side's path is known -- a hunk
+  // with no file header at all. The walk does not throw on that shape (the hunk's own
+  // counts are consistent, so nothing is detectably truncated), but it means the diff
+  // carries changes belonging to no file this parser can name. The LINE arm already
+  // handles that (an unattributed section is in scope for every zone); for the FILE
+  // arm it is not "names no files", it is "no answer" -- R4 review finding.
+  let unattributedContent = false;
   const record = (line: string): void => {
     const files = [currentOldPath, currentPath].filter((p): p is string => p !== null);
+    if (files.length === 0) unattributedContent = true;
     const key = files.join("\u0000");
     let bucket = content.get(key);
     if (!bucket) {
@@ -425,6 +451,14 @@ function walkDiff(diffText: string): DiffWalk {
   // for. A RENAME must NOT set this — its content moved, it did not
   // originate — so only `copy to` (never `rename to`) is recognized here.
   let sawNewFileSignal = false;
+  // Set on a `copy from`/`copy to` extended header, cleared at the next section
+  // (R4 review finding). A COPY's old side is a file the diff does NOT change:
+  // `git diff --name-only` names only the destination, and nothing moved out of
+  // the source's contract zone. Counting the source as touched -- which the
+  // pre-image rules for a rename and a deletion correctly do -- would demand a
+  // mutation-verified guard for a file nobody edited, the exact complaint #140
+  // exists to fix, one shape over.
+  let sectionIsCopy = false;
   // R3-FIX2: the new-side path parsed off the most recent `diff --git` line,
   // ONLY when that line proves (per `newFilePathFromDiffGitLine`) it is a
   // genuinely new file's line (old side textually identical to new side) --
@@ -565,7 +599,9 @@ function walkDiff(diffText: string): DiffWalk {
       // the real path, not the still-escaped wire form.
       const raw = unquotePath(line.slice(4).trim());
       oldWasDevNull = raw === "/dev/null";
-      currentOldPath = oldWasDevNull ? null : stripPrefix(raw);
+      // A copy's `--- a/<source>` names the file it was copied FROM, which this
+      // diff leaves untouched -- so it is neither attributed nor reported (R4).
+      currentOldPath = oldWasDevNull || sectionIsCopy ? null : stripPrefix(raw);
       notePath(currentOldPath);
       continue;
     }
@@ -622,6 +658,7 @@ function walkDiff(diffText: string): DiffWalk {
     // does not originate it, so its file-level findings stay pre-existing.
     if (line.startsWith("copy to ") || line.startsWith("new file mode ")) {
       sawNewFileSignal = true;
+      if (line.startsWith("copy to ")) sectionIsCopy = true;
       if (line.startsWith("copy to ")) {
         // R3-FIX2: a git copy's destination is known directly from THIS
         // header (no a//b/ convention prefix on it -- confirmed against real
@@ -651,8 +688,16 @@ function walkDiff(diffText: string): DiffWalk {
     // `diff --git` line proves nothing (the two sides differ), so without this
     // the diff would name files nobody downstream could see (R2 finding, s60).
     // These headers carry no `a/`/`b/` convention prefix -- same as `copy to`.
-    if (line.startsWith("rename from ") || line.startsWith("rename to ") || line.startsWith("copy from ")) {
-      const marker = line.startsWith("rename from ") ? "rename from " : line.startsWith("rename to ") ? "rename to " : "copy from ";
+    if (line.startsWith("copy from ")) {
+      // NOT a touched file: the source of a copy is unchanged (R4 finding). The
+      // flag is what stops the paired `--- a/<source>` header below from
+      // recording it, and it must be set even when this parser has nothing else
+      // to do with the line.
+      sectionIsCopy = true;
+      continue;
+    }
+    if (line.startsWith("rename from ") || line.startsWith("rename to ")) {
+      const marker = line.startsWith("rename from ") ? "rename from " : "rename to ";
       notePath(unquotePath(line.slice(marker.length).trim()));
       continue;
     }
@@ -669,6 +714,7 @@ function walkDiff(diffText: string): DiffWalk {
     if (line.startsWith("diff --git ")) {
       oldWasDevNull = false;
       sawNewFileSignal = false;
+      sectionIsCopy = false;
       // Both sides are cleared for the SAME reason the new-file signals are: a
       // section with no `---`/`+++` pair at all (a binary change, a pure mode
       // change) would otherwise inherit the previous section's paths and
@@ -714,6 +760,7 @@ function walkDiff(diffText: string): DiffWalk {
     newFiles,
     content: [...content.values()],
     paths: [...namedPaths],
+    unattributedContent,
   };
 }
 
