@@ -7,6 +7,7 @@ import type { OrchestratorAdapter, ReadSnapshot } from "./adapter.js";
 import { buildReadSnapshot, type OrchestratorCapabilities } from "./capabilities.js";
 import { validateTaskSpec, type TaskSpec } from "./task-spec.js";
 import { filterSuccessCommands, type CommandDeclaration } from "./success-command-policy.js";
+import { safeErrorText } from "../util/safe-log.js";
 
 export interface OrchestratorResult {
   intent: string;
@@ -248,7 +249,12 @@ export function createOrchestrator(deps: CreateOrchestratorDeps): {
         outcome = await attempt();
         if (outcome.problems.length > 0) failureText = outcome.problems.join("; ");
       } catch (err) {
-        failureText = String((err as Error).message ?? err);
+        // `safeErrorText`, never `(err as Error).message`: an adapter that throws a
+        // non-object (`throw undefined`) makes that property read throw a TypeError of
+        // its own, and the retry this whole block exists to guarantee would never
+        // happen -- the failure would propagate as a different, misleading error
+        // (review gate, s61).
+        failureText = safeErrorText(err);
       }
 
       if (failureText !== undefined) {

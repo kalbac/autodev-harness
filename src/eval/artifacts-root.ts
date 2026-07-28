@@ -1,5 +1,5 @@
 import { mkdir, realpath } from "node:fs/promises";
-import { parse, relative, resolve } from "node:path";
+import { parse, relative, resolve, sep } from "node:path";
 
 import { canonicalPathContains } from "../util/path-contain.js";
 
@@ -88,9 +88,26 @@ export function toRepoRelativePathspec(
   canonicalRoot: string,
   canonicalCandidate: string,
   relativeFn: (from: string, to: string) => string = relative,
+  separator: string = sep,
 ): string {
-  const rel = relativeFn(canonicalRoot, canonicalCandidate).replace(/\\/g, "/");
-  return rel === "" ? "." : rel;
+  // Fold ONLY this host's own separator, and only when it is a backslash. An
+  // unconditional `\` -> `/` is wrong on POSIX, where a backslash is an ordinary
+  // filename byte: a directory genuinely named `artifacts\raw` would be handed to git
+  // as `artifacts/raw`, a DIFFERENT path -- so the safety question would be answered
+  // about something other than the directory about to be written to. That is the
+  // check-one-string/use-another shape this repo keeps paying for
+  // (docs/gotchas/validated-one-string-used-another.md), and the same POSIX-backslash
+  // instance already cost a round in
+  // docs/gotchas/oracle-protected-paths-must-be-worktree-relative.md. Found by the
+  // review gate, s61 -- the test could not have caught it, because it exercised only
+  // the win32 shape.
+  //
+  // `separator` travels WITH `relativeFn` for exactly the same reason that seam exists:
+  // a test driving `path.win32.relative` on a POSIX host must also get win32's `\`, or
+  // the two halves would describe different platforms.
+  const rel = relativeFn(canonicalRoot, canonicalCandidate);
+  const normalized = separator === "\\" ? rel.split("\\").join("/") : rel;
+  return normalized === "" ? "." : normalized;
 }
 
 /** Resolve a path, returning `null` when it cannot be resolved. The caller MUST treat

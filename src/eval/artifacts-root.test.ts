@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, parse, sep, win32 } from "node:path";
+import { isAbsolute, join, parse, posix, sep, win32 } from "node:path";
 import { assertArtifactsRootSafe, toRepoRelativePathspec } from "./artifacts-root.js";
 
 let repo: string;
@@ -230,7 +230,7 @@ describe("assertArtifactsRootSafe", () => {
   // real `path.win32.relative`, not the host's own `path.relative` -- so it catches a
   // regression on ANY CI platform, not only when this suite happens to run on Windows.
   it("never hands git a Windows drive-colon absolute path -- always a repo-relative, forward-slash pathspec", () => {
-    const pathspec = toRepoRelativePathspec("D:\\work\\repo", "D:\\work\\repo\\.autodev\\corpus-artifacts", win32.relative);
+    const pathspec = toRepoRelativePathspec("D:\\work\\repo", "D:\\work\\repo\\.autodev\\corpus-artifacts", win32.relative, win32.sep);
 
     expect(pathspec).toBe(".autodev/corpus-artifacts");
     expect(pathspec).not.toMatch(/^[A-Za-z]:/);
@@ -242,9 +242,21 @@ describe("assertArtifactsRootSafe", () => {
   // meaning is not something this code wants to gamble on -- it must become an EXPLICIT
   // "." (the repo root itself), never a silently-empty argument.
   it("maps the artifacts-root-is-the-repo-root case to an explicit '.' pathspec, never an empty string", () => {
-    const pathspec = toRepoRelativePathspec("D:\\work\\repo", "D:\\work\\repo", win32.relative);
+    const pathspec = toRepoRelativePathspec("D:\\work\\repo", "D:\\work\\repo", win32.relative, win32.sep);
 
     expect(pathspec).toBe(".");
+  });
+
+  // Review gate, s61 (blocker): the first fix folded EVERY backslash to a slash,
+  // unconditionally. On POSIX a backslash is an ordinary filename byte, so a directory
+  // genuinely named `artifacts\raw` would have been described to git as `artifacts/raw` --
+  // a different path -- and the safety question would then have been answered about
+  // something other than the directory about to be written to. Only the host's own
+  // separator may be folded, and only when it is a backslash.
+  it("leaves a literal backslash in a POSIX path alone -- it is a filename byte there, not a separator", () => {
+    const pathspec = toRepoRelativePathspec("/tmp/repo", "/tmp/repo/artifacts\\raw", posix.relative, posix.sep);
+
+    expect(pathspec).toBe("artifacts\\raw");
   });
 
   // codex R4: `canonicalPathContains` answers `false` for an all-separator root as a

@@ -15,8 +15,8 @@ import type { FailedStep } from "./gate-feedback.js";
 import { addedLineNumbers } from "./diff-lines.js";
 import type { AddedLines } from "./diff-lines.js";
 import type { ProfileGateRecord } from "./profile-gate-record.js";
-import { CommandUnavailableError, describeUnavailableCommand } from "./command-availability.js";
-import type { CommandAvailability } from "./command-availability.js";
+import { CommandUnavailableError } from "./command-availability.js";
+import type { CommandAvailabilityReport } from "./command-availability.js";
 
 /**
  * The machine-gate decision core — parity: `gate.ps1 Invoke-AutodevGate`
@@ -93,8 +93,10 @@ export interface GateDeps {
    *  manufacture a refusal (`docs/gotchas/boolean-whose-no-means-two-things.md`).
    *
    *  A verdict of `"unavailable"` makes step 1b THROW a `CommandUnavailableError`
-   *  rather than return a RETRY -- see the step's own comment for why. */
-  commandAvailability?: (cmd: string) => Promise<CommandAvailability>;
+   *  rather than return a RETRY -- see the step's own comment for why. The optional
+   *  `unavailable` half carries WHICH thing is missing, decided by whoever asked the
+   *  probes; the gate never re-derives a cause from the command string. */
+  commandAvailability?: (cmd: string) => Promise<CommandAvailabilityReport>;
   /** Live mutation-check for a guard: true iff it still goes red-on-flip. Parity: Test-AutodevGuardStillRed. */
   guardStillRed: (guard: GuardRow) => Promise<boolean>;
   /** Optional agent-ci replay. null = feature off. May THROW: a genuine infra failure or an
@@ -279,9 +281,19 @@ export async function runGate(input: GateInput, deps: GateDeps): Promise<GateVer
         // ONLY a positive "unavailable" acts; "unknown" falls through and runs the
         // command unchanged. Folding "unknown" in here would turn every unreadable
         // package.json into an escalation.
-        const availability = await deps.commandAvailability(cmd);
-        if (availability === "unavailable") {
-          const { reason, detail } = describeUnavailableCommand(cmd);
+        //
+        // The REASON travels with the verdict rather than being re-derived from the
+        // command string here: the same string can be unavailable because the script is
+        // undeclared or because the package manager is not installed, and only the code
+        // that asked the probes knows which (review gate, s61 —
+        // `[critic/validated-one-string-used-another]`). The fallback below states the
+        // verdict without guessing a cause, for a dep that supplies none.
+        const report = await deps.commandAvailability(cmd);
+        if (report.availability === "unavailable") {
+          const { reason, detail } = report.unavailable ?? {
+            reason: "program-not-on-path" as const,
+            detail: `success_command '${cmd}' cannot run: the harness could not resolve it on this machine.`,
+          };
           throw new CommandUnavailableError(reason, detail);
         }
       }

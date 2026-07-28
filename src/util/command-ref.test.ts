@@ -52,8 +52,14 @@ describe("parseCommandRef — npm", () => {
     expect(script("npm test")).toEqual({ manager: "npm", script: "test" });
   });
 
-  it("reads `npm start` as the `start` script", () => {
-    expect(script("npm start")).toEqual({ manager: "npm", script: "start" });
+  // Review gate, s61: `npm start` is NOT read as a script, because npm documents a
+  // default for it — with no `start` script and a `server.js` in the package root it runs
+  // `node server.js` and succeeds. Reading it as a script would let a command that runs
+  // perfectly well be reported as "no such script", and a false refusal escalates a task
+  // for nothing. `npm test` has no such default (it exits 1 with "Missing script: test"),
+  // which is why the two are treated differently.
+  it("does NOT read `npm start` as a script — npm defaults it to `node server.js`", () => {
+    expect(program("npm start").program).toBe("npm");
   });
 
   it.each(["npm ci", "npm install", "npm exec foo", "npm publish"])(

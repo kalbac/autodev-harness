@@ -96,8 +96,15 @@ const MANAGER_SUBCOMMANDS = new Set([
  * npm subcommands that DO run a package script of the same name. Everything else
  * after a bare `npm` is an npm subcommand (`ci`, `install`, `exec`, ...), never a
  * script -- npm has no `npm <script>` shorthand.
+ *
+ * `start` is deliberately NOT here (review gate, s61). npm documents a DEFAULT for it:
+ * with no `start` script and a `server.js` in the package root, `npm start` runs `node
+ * server.js` and succeeds. Reading it as a script would let this module report a command
+ * that runs perfectly well as "no such script" -- a false refusal, which escalates a task
+ * for nothing. `test` has no such default (npm exits 1 with "Missing script: test"), so
+ * for it the missing-script answer is the honest one.
  */
-const NPM_IMPLICIT_SCRIPTS = new Set(["test", "start"]);
+const NPM_IMPLICIT_SCRIPTS = new Set(["test"]);
 
 /** The `run` forms every supported manager accepts. */
 const RUN_TOKENS = new Set(["run", "run-script"]);

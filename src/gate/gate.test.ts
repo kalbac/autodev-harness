@@ -6,7 +6,8 @@ import type { Invariants, ContractZone } from "./invariants.js";
 import { diffAddedRemovedLines } from "./invariants.js";
 import type { GuardRow, GuardRecipePair } from "./guards.js";
 import { AgentCiUnavailableError } from "./agent-ci-exec.js";
-import { CommandUnavailableError } from "./command-availability.js";
+import { CommandUnavailableError, inspectCommand } from "./command-availability.js";
+import type { CommandAvailabilityReport } from "./command-availability.js";
 import { parseCheckstyle } from "./checkstyle.js";
 import { filterFindings } from "./finding-filter.js";
 import { classifyGateExit } from "../profile/profile.js";
@@ -1202,11 +1203,22 @@ it("catches a contract value on a line the OLD flat reader dropped (R5 review fi
 describe("runGate — success_command availability pre-flight", () => {
   const noConstitutionDeps = { invariants: makeInvariants({ constitution: { path_globs: [] } }) };
 
+  /** The REAL classifier against a fake probe, rather than a hand-written report: the
+   *  detail the gate throws is composed by the same code the production wiring uses, so
+   *  these tests cannot pass on a message the real path would never produce. The probe
+   *  says "the manager exists, the project declares no scripts", which is exactly the
+   *  s60 shape (`pnpm <script>` with no such script). */
+  const undeclaredScripts = (cmd: string): Promise<CommandAvailabilityReport> =>
+    inspectCommand(cmd, { packageScripts: async () => new Set<string>(), programExists: async () => true });
+  const reportOf = (availability: "available" | "unknown") => async (): Promise<CommandAvailabilityReport> => ({
+    availability,
+  });
+
   it("throws CommandUnavailableError instead of RUNNING an unavailable command", async () => {
     const ran: string[] = [];
     const { deps } = makeDeps({
       ...noConstitutionDeps,
-      commandAvailability: async () => "unavailable",
+      commandAvailability: undeclaredScripts,
       runSuccessCommand: async (cmd) => {
         ran.push(cmd);
         return { exitCode: 1 };
@@ -1228,7 +1240,7 @@ describe("runGate — success_command availability pre-flight", () => {
   it("names the command and what is missing in the thrown error's detail", async () => {
     const { deps } = makeDeps({
       ...noConstitutionDeps,
-      commandAvailability: async () => "unavailable",
+      commandAvailability: undeclaredScripts,
     });
 
     let err: unknown;
@@ -1250,7 +1262,7 @@ describe("runGate — success_command availability pre-flight", () => {
     // would hand the worker a defect that is not in its diff.
     const { deps } = makeDeps({
       ...noConstitutionDeps,
-      commandAvailability: async () => "unavailable",
+      commandAvailability: undeclaredScripts,
     });
 
     const result = await runGate(
@@ -1268,7 +1280,7 @@ describe("runGate — success_command availability pre-flight", () => {
     const ran: string[] = [];
     const { deps } = makeDeps({
       ...noConstitutionDeps,
-      commandAvailability: async () => "unknown",
+      commandAvailability: reportOf("unknown"),
       runSuccessCommand: async (cmd) => {
         ran.push(cmd);
         return { exitCode: 0 };
@@ -1289,7 +1301,7 @@ describe("runGate — success_command availability pre-flight", () => {
     const ran: string[] = [];
     const { deps } = makeDeps({
       ...noConstitutionDeps,
-      commandAvailability: async () => "available",
+      commandAvailability: reportOf("available"),
       runSuccessCommand: async (cmd) => {
         ran.push(cmd);
         return { exitCode: 1 };
@@ -1334,7 +1346,7 @@ describe("runGate — success_command availability pre-flight", () => {
       ...noConstitutionDeps,
       commandAvailability: async (cmd) => {
         asked.push(cmd);
-        return cmd === "npm run lint" ? "available" : "unavailable";
+        return cmd === "npm run lint" ? { availability: "available" as const } : undeclaredScripts(cmd);
       },
       runSuccessCommand: async (cmd) => {
         ran.push(cmd);
@@ -1359,7 +1371,7 @@ describe("runGate — success_command availability pre-flight", () => {
       ...noConstitutionDeps,
       commandAvailability: async (cmd) => {
         asked.push(cmd);
-        return "unavailable";
+        return undeclaredScripts(cmd);
       },
     });
 
@@ -1380,7 +1392,7 @@ describe("runGate — success_command availability pre-flight", () => {
     const { deps } = makeDeps({
       ...noConstitutionDeps,
       runCheck: async () => ({ green: false, exitCode: 2, output: "CHECK BOOM" }),
-      commandAvailability: async () => "unavailable",
+      commandAvailability: undeclaredScripts,
       writeGateFeedback: async (taskId, content) => {
         writes.push({ taskId, content });
       },

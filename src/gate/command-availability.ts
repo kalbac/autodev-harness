@@ -34,11 +34,32 @@ export interface CommandProbe {
   packageScripts(): Promise<Set<string> | null>;
   /** Whether `program` resolves to something runnable, or `null` when undeterminable. */
   programExists(program: string): Promise<boolean | null>;
+  /**
+   * Whether the OPERATOR declared this exact command (`gate.checkCommand` /
+   * `gate.successCommands`). Optional — absent means "no declaration is known", which
+   * reproduces the pre-`adr/009` behaviour exactly.
+   *
+   * A declared command is never classified `unavailable`: the operator's declaration IS
+   * the oracle (`adr/009`), and this check exists to catch what the COMPOSER invented,
+   * not to second-guess the operator. Without it, this module has to be a complete model
+   * of every package manager's subcommand set to avoid false refusals -- `pnpm config get
+   * registry` reads as a missing `config` SCRIPT unless `config` is on a hand-maintained
+   * list -- and a false refusal escalates a task over a command that runs perfectly well.
+   * Found by the review gate, s61.
+   */
+  isOperatorDeclared?(cmd: string): boolean;
 }
 
 /** Why a command was classified `unavailable` — carried on the error so the conductor's
  *  escalation can say which of the two things is missing. */
 export type CommandUnavailableReason = "script-not-declared" | "program-not-on-path";
+
+/** A classification plus, when it is `unavailable`, WHICH thing is missing. The cause
+ *  travels with the verdict because only the code that asked the probes knows it. */
+export interface CommandAvailabilityReport {
+  availability: CommandAvailability;
+  unavailable?: { reason: CommandUnavailableReason; detail: string };
+}
 
 /**
  * A command the gate REFUSED TO RUN because it does not exist. Mirrors
@@ -58,58 +79,85 @@ export class CommandUnavailableError extends Error {
 /**
  * Classify one command against a probe.
  *
+ *   - operator-declared                   -> `unknown` (never refused; see `CommandProbe`)
  *   - unparseable (empty/whitespace)      -> `unknown`
+ *   - script ref, manager not on PATH     -> `unavailable`
  *   - script ref, scripts unreadable      -> `unknown`
  *   - script ref, name present/absent     -> `available` / `unavailable`
  *   - program ref, probe true/false/null  -> `available` / `unavailable` / `unknown`
  *
- * A script ref never touches the PATH probe and a program ref never touches the
- * script set: which question to ask is decided ONCE, by `parseCommandRef`.
+ * A script ref asks BOTH questions, in this order: `pnpm run lint` with a declared
+ * `lint` script is still unrunnable if `pnpm` itself is not installed, and answering
+ * `available` there sends the command to a spawn that fails for a reason this module
+ * exists to name (review gate, s61). The manager is asked FIRST because its absence
+ * explains the failure completely, whatever the script set says.
+ *
+ * Which question to ask is decided ONCE, by `parseCommandRef` — never re-derived here.
  */
 export async function classifyCommand(cmd: string, probe: CommandProbe): Promise<CommandAvailability> {
-  const ref = parseCommandRef(cmd);
-  if (ref === null) return "unknown";
-
-  if (ref.kind === "script") {
-    const scripts = await probe.packageScripts();
-    if (scripts === null) return "unknown";
-    return scripts.has(ref.script) ? "available" : "unavailable";
-  }
-
-  const exists = await probe.programExists(ref.program);
-  if (exists === null) return "unknown";
-  return exists ? "available" : "unavailable";
+  return (await inspectCommand(cmd, probe)).availability;
 }
 
 /**
- * Compose the honest, specific refusal for a command already classified
- * `unavailable`. Uses the SAME `parseCommandRef` the classification used, so the
- * message can never describe a different reading of the string than the one that
- * produced the verdict (`[critic/validated-one-string-used-another]`).
+ * The classification AND, when it is `unavailable`, which of the two things is missing.
  *
- * A command that does not parse at all is described as a program — this is only
- * ever called after `classifyCommand` said `unavailable`, which an unparseable
- * command can never be, so the branch exists solely to keep the function total.
+ * One function answers both, because they are one answer: a caller that classified with
+ * these probe results and then described the failure from the string alone could report
+ * "no such script" for a command whose real problem is an uninstalled package manager —
+ * the check-one-thing/report-another shape of
+ * `docs/gotchas/validated-one-string-used-another.md`. `classifyCommand` above is the
+ * thin projection for callers that only need the verdict.
  */
-export function describeUnavailableCommand(cmd: string): { reason: CommandUnavailableReason; detail: string } {
-  const ref = parseCommandRef(cmd);
+export async function inspectCommand(cmd: string, probe: CommandProbe): Promise<CommandAvailabilityReport> {
+  if (probe.isOperatorDeclared?.(cmd) === true) return { availability: "unknown" };
 
-  if (ref !== null && ref.kind === "script") {
-    return {
-      reason: "script-not-declared",
-      detail:
-        `success_command '${cmd}' cannot run: this project's package.json declares no ` +
-        `'${ref.script}' script (${ref.manager} would fail before the check ever executes). ` +
-        `Either add the script to the project, declare the command in gate.successCommands, ` +
-        `or remove it from the task spec.`,
-    };
+  const ref = parseCommandRef(cmd);
+  if (ref === null) return { availability: "unknown" };
+
+  if (ref.kind === "script") {
+    const managerExists = await probe.programExists(ref.manager);
+    if (managerExists === false) {
+      return { availability: "unavailable", unavailable: describeMissingProgram(cmd, ref.manager) };
+    }
+    const scripts = await probe.packageScripts();
+    // A `null` manager probe is NOT folded into either answer: the script question can
+    // still settle this on its own, and only when BOTH are unsettled is the verdict
+    // `unknown` ([logic/ambiguous-false]).
+    if (scripts === null) return { availability: "unknown" };
+    if (!scripts.has(ref.script)) {
+      return { availability: "unavailable", unavailable: describeMissingScript(cmd, ref.manager, ref.script) };
+    }
+    return { availability: managerExists === null ? "unknown" : "available" };
   }
 
-  const program = ref !== null ? ref.program : cmd;
+  const exists = await probe.programExists(ref.program);
+  if (exists === null) return { availability: "unknown" };
+  return exists
+    ? { availability: "available" }
+    : { availability: "unavailable", unavailable: describeMissingProgram(cmd, ref.program) };
+}
+
+function describeMissingScript(
+  cmd: string,
+  manager: string,
+  script: string,
+): { reason: CommandUnavailableReason; detail: string } {
+  return {
+    reason: "script-not-declared",
+    detail:
+      `success_command '${cmd}' cannot run: this project's package.json declares no ` +
+      `'${script}' script (${manager} would fail before the check ever executes). ` +
+      `Either add the script to the project, declare the command in gate.successCommands, ` +
+      `or remove it from the task spec.`,
+  };
+}
+
+function describeMissingProgram(cmd: string, program: string): { reason: CommandUnavailableReason; detail: string } {
   return {
     reason: "program-not-on-path",
     detail:
       `success_command '${cmd}' cannot run: '${program}' was not found on PATH and is not a ` +
-      `file in the worktree. Install the tool, or remove the command from the task spec.`,
+      `file in the worktree. Install the tool, declare the command in gate.successCommands, ` +
+      `or remove it from the task spec.`,
   };
 }

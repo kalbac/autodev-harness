@@ -563,6 +563,27 @@ describe("createOrchestrator — decomposition retry", () => {
     expect(recorder.enqueueCalls).toHaveLength(1);
   });
 
+  // Review gate, s61: the retry read `(err as Error).message`, which THROWS a TypeError
+  // of its own when the adapter throws a non-object. The retry this whole block exists to
+  // guarantee would then never happen, and the operator would see an unrelated error.
+  it("still retries when the adapter throws something that is not an Error", async () => {
+    const { caps } = makeFakeCaps();
+    const { adapter, inputs } = makeFlakyAdapter({
+      failures: 1,
+      fail: () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw undefined;
+      },
+      then: [makeSpec("s1-t1")],
+    });
+
+    const result = await createOrchestrator({ caps, adapter, log: noopLog }).handleIntent("intent");
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.previousFailure).toBe("undefined");
+    expect(result.enqueued.map((e) => e.id)).toEqual(["s1-t1"]);
+  });
+
   it("feeds the EXACT previous failure text back into the retry", async () => {
     const { caps } = makeFakeCaps();
     const { adapter, inputs } = makeFlakyAdapter({

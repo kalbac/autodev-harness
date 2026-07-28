@@ -12,8 +12,8 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { splitCommand } from "../util/command-ref.js";
 import { isExecutableFile, resolveBinary, defaultPathDirs, computeExts } from "../detect/detect-agents.js";
-import { classifyCommand, type CommandProbe } from "../gate/command-availability.js";
-import type { CommandDeclaration } from "../orchestrator/success-command-policy.js";
+import { inspectCommand, type CommandProbe } from "../gate/command-availability.js";
+import { normalizeCommandText, type CommandDeclaration } from "../orchestrator/success-command-policy.js";
 import { homedir } from "node:os";
 
 import { loadConfigWithRaw, isPlannerExplicitlyConfigured, isContractFileConfigured } from "../config/config.js";
@@ -683,6 +683,12 @@ export async function buildProjectRoot(
   function gateDeps(wt: Worktree): GateDeps {
     const checkCommand = cfg.gate.checkCommand;
     const agentCi = cfg.gate.agentCi;
+    /** The operator's own declarations, normalized ONCE with the same function the
+     *  composer-side filter uses, so "declared" means the same string on both sides
+     *  (`docs/gotchas/validated-one-string-used-another.md`). */
+    const declaredCommandTexts = new Set(
+      [...(checkCommand !== null ? [checkCommand] : []), ...cfg.gate.successCommands].map(normalizeCommandText),
+    );
     /** Per-gate-run memo of the trusted root's declared scripts (see `commandAvailability`). */
     let packageScriptsOnce: Promise<Set<string> | null> | undefined;
     return {
@@ -721,13 +727,21 @@ export async function buildProjectRoot(
       // success_commands reads package.json once -- and so every command in ONE run
       // is judged against ONE reading of the oracle, not a set that could change
       // mid-loop.
+      //
+      // An OPERATOR-declared command is never refused (`adr/009`): his declaration IS
+      // the oracle, and this pre-flight exists to catch what the COMPOSER invented.
+      // Without that carve-out the classifier would have to model every package
+      // manager's full subcommand set to avoid false refusals -- `pnpm config get
+      // registry` reads as a missing `config` SCRIPT otherwise -- and a false refusal
+      // escalates a task over a command that runs perfectly well (review gate, s61).
       commandAvailability: (cmd: string) => {
         packageScriptsOnce ??= readPackageScripts(repoRoot);
         const probe: CommandProbe = {
           packageScripts: () => packageScriptsOnce!,
           programExists: makeProgramExistsProbe(wt.path),
+          isOperatorDeclared: (candidate: string) => declaredCommandTexts.has(normalizeCommandText(candidate)),
         };
-        return classifyCommand(cmd, probe);
+        return inspectCommand(cmd, probe);
       },
       // Profile gates (spec 2026-07-22) run in the WORKTREE -- that is the code
       // under judgement -- while their rulesets come from the profile directory in
