@@ -14,8 +14,14 @@ import { isAbsolute, join, parse, resolve } from "node:path";
  *    case's record under a task id the decompose happens to reuse would be read as THIS
  *    case's outcome: a stale projection presented as a measurement, which is exactly the
  *    failure docs/gotchas/stale-projection-needs-ssot-reconciliation.md is about.
+ *  - `escalations` — the human-readable escalation ARTIFACT (`escalate.ts`'s markdown
+ *    body), separate from the queue entry that locks the file_set above. Left unpurged,
+ *    it accumulates across the WHOLE run (25 stale files measured on the s60 polygon), so
+ *    a diagnostician reading one case's archive sees every other case's escalation bodies
+ *    mixed in alongside it — per-case isolation of diagnostics, the same reason `runtime`
+ *    is purged, not a new one (#131).
  */
-export const PURGED_SUBDIRS = ["queue", "runtime"] as const;
+export const PURGED_SUBDIRS = ["queue", "runtime", "escalations"] as const;
 
 /**
  * CALLER CONTRACT (codex R3, scope caveat): this is a low-level removal, not a policy. It

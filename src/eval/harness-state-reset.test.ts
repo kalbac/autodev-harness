@@ -16,13 +16,15 @@ function seedState(): void {
   writeFileSync(join(stateDir, "queue", "escalated", "leftover.md"), "# leftover");
   mkdirSync(join(stateDir, "runtime", "task-1"), { recursive: true });
   writeFileSync(join(stateDir, "runtime", "task-1", "evidence.json"), "{}");
+  mkdirSync(join(stateDir, "escalations"), { recursive: true });
+  writeFileSync(join(stateDir, "escalations", "task-1.md"), "# ESCALATION task-1");
   mkdirSync(join(stateDir, "runs"), { recursive: true });
   writeFileSync(join(stateDir, "runs", "run-1.json"), "{}");
   writeFileSync(join(stateDir, "digest.md"), "history\n");
 }
 
 describe("resetHarnessState", () => {
-  it("removes the queue and runtime subdirectories", async () => {
+  it("removes the queue, runtime, and escalations subdirectories", async () => {
     seedState();
 
     const purged = await resetHarnessState(stateDir);
@@ -30,6 +32,17 @@ describe("resetHarnessState", () => {
     expect(purged.sort()).toEqual([...PURGED_SUBDIRS].sort());
     expect(existsSync(join(stateDir, "queue"))).toBe(false);
     expect(existsSync(join(stateDir, "runtime"))).toBe(false);
+    expect(existsSync(join(stateDir, "escalations"))).toBe(false);
+  });
+
+  // #131: a diagnostician reading one case's archive must never see another case's
+  // escalation bodies mixed in -- the whole point of resetting the blackboard per case.
+  it("purges the escalations subdirectory specifically, not just queue/runtime", async () => {
+    seedState();
+
+    await resetHarnessState(stateDir);
+
+    expect(existsSync(join(stateDir, "escalations", "task-1.md"))).toBe(false);
   });
 
   it("leaves the history artifacts (digest, runs) alone", async () => {

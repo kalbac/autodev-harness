@@ -8,6 +8,7 @@ function metrics(over: Partial<CorpusMetrics> = {}): CorpusMetrics {
     passed: 2,
     failed: 1,
     errored: 0,
+    measured: 3,
     first_pass_commit_rate: 0.5,
     avg_rounds_to_commit: 1,
     escaped_defect_rate: 0,
@@ -76,5 +77,60 @@ describe("renderCorpusReport", () => {
   it("renders the escalations-by-type histogram", () => {
     const md = renderCorpusReport(metrics());
     expect(md).toContain("disagreement");
+  });
+
+  // Fix 4: an errored case must never be a silent denominator shrink -- the bound is
+  // stated LOUDLY, above the metric table, and every errored case is named with its reason.
+  describe("the measured bound (errored cases as an instrument failure, not a harness verdict)", () => {
+    it("states the measured bound above the metric table when a case errored", () => {
+      const md = renderCorpusReport(
+        metrics({
+          total: 7,
+          measured: 5,
+          errored: 2,
+          cases: [
+            {
+              id: "case-a",
+              type: "feature",
+              expected: { outcome: "committed", escalation_type: null },
+              actual: { outcome: "errored", escalation_type: null },
+              passed: false,
+              reason: "no evidence record — the intent enqueued 0 tasks",
+            },
+            {
+              id: "case-b",
+              type: "feature",
+              expected: { outcome: "committed", escalation_type: null },
+              actual: { outcome: "errored", escalation_type: null },
+              passed: false,
+              reason: "no evidence record — critic unreachable",
+            },
+          ],
+        }),
+      );
+
+      const aggregateIdx = md.indexOf("## Aggregate metrics");
+      const measuredIdx = md.indexOf("measured: 5/7");
+      expect(measuredIdx).toBeGreaterThan(-1);
+      expect(measuredIdx).toBeLessThan(aggregateIdx);
+      expect(md).toMatch(/2 errored/);
+      // Named by id and reason ABOVE the metric table -- not merely present somewhere in
+      // the document (the per-case table at the bottom already names every case by id and
+      // reason regardless of this block, so a bare `toContain` would pass even if this
+      // dedicated list were deleted).
+      const caseAReasonIdx = md.indexOf("the intent enqueued 0 tasks");
+      const caseBReasonIdx = md.indexOf("critic unreachable");
+      expect(caseAReasonIdx).toBeGreaterThan(-1);
+      expect(caseAReasonIdx).toBeLessThan(aggregateIdx);
+      expect(caseBReasonIdx).toBeGreaterThan(-1);
+      expect(caseBReasonIdx).toBeLessThan(aggregateIdx);
+      expect(md.slice(0, aggregateIdx)).toContain("case-a");
+      expect(md.slice(0, aggregateIdx)).toContain("case-b");
+    });
+
+    it("still states the measured bound (as fully measured) when nothing errored", () => {
+      const md = renderCorpusReport(metrics({ total: 3, measured: 3, errored: 0 }));
+      expect(md).toMatch(/measured: 3\/3/);
+    });
   });
 });

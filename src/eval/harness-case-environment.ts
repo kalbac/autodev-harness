@@ -17,6 +17,7 @@ import { loadEvidence, EVIDENCE_FILE, type EvidenceSlot } from "../report/eviden
 import { mainTreeStatus } from "../util/git.js";
 import { runNative } from "../util/native.js";
 import { realpathContains } from "../util/path-contain.js";
+import { safeErrorText, safeLog } from "../util/safe-log.js";
 
 /**
  * The REAL `CaseEnvironment` — the thin adapter between the corpus's deterministic
@@ -60,7 +61,44 @@ const SEED_COMMIT_IDENTITY = [
   "user.email=autodev@harness.local",
 ];
 
-export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions): CaseEnvironment {
+/**
+ * `CaseEnvironment` plus one run-level (not per-case) operation: purging the corpus's own
+ * leftover blackboard state after the LAST case (#132 / Fix 5i). Kept OFF the
+ * `CaseEnvironment` interface itself -- that interface is the per-case contract the
+ * executor drives and every fake in `case-executor.test.ts` implements; this operation is
+ * the CALLER's (the `eval` CLI command's) concern, invoked exactly once, after the whole
+ * run finishes, so it does not belong on the per-case seam.
+ */
+export interface HarnessCaseEnvironment extends CaseEnvironment {
+  /**
+   * After a run's last case, once the corpus has actually taken ownership of the target's
+   * queue, purge the corpus's own leftover blackboard state (queue/runtime/escalations)
+   * and log what was purged.
+   *
+   * Without this, the last case's task is left sitting in `escalated/` (or `pending/`),
+   * and the NEXT `eval` invocation's preflight refuses with "the target project has live
+   * task(s)" -- a guard that reads as protecting the operator's work while it is in fact
+   * blocking the remains of the corpus's OWN previous run. Safe to purge unconditionally
+   * at this point: the per-case archive has already preserved everything of value (each
+   * case's `archiveArtifacts` runs in a `finally` immediately after that case finishes,
+   * including the last one, and BEFORE this method is ever called).
+   *
+   * Ownership-gated via the SAME `queueGuard` the destructive per-case path uses
+   * (`queueGuard.ownsQueue()`), not a separate flag -- one fact, one place it can be
+   * wrong. `ownsQueue()` is false whenever the corpus never actually purged anything
+   * (an unresolvable baseline, a dirty tree, a held lock all throw before the first
+   * `satisfied()`), and in that case there is nothing of THIS run's to purge -- purging
+   * would be destroying whatever the operator had, not this run's remains.
+   *
+   * NEVER THROWS: reuses `resetHarnessState`, the same purge every case already runs, and
+   * wraps it the same way `archiveArtifacts` wraps its own I/O -- a WARN on failure, never
+   * a propagated error. This runs after a measurement has already completed; a cleanup
+   * step must not be able to turn a finished run into a failed one (Principle 10).
+   */
+  purgeLeftoverQueue(): Promise<void>;
+}
+
+export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions): HarnessCaseEnvironment {
   const { root, baseline, maxIterations } = opts;
 
   // Archive outcomes are recorded into a map this module OWNS and only exposes for reading.
@@ -120,6 +158,16 @@ export function createHarnessCaseEnvironment(opts: HarnessCaseEnvironmentOptions
       const held = lock;
       lock = null;
       if (held !== null) await held.release();
+    },
+
+    async purgeLeftoverQueue(): Promise<void> {
+      if (!queueGuard.ownsQueue()) return; // the corpus never took ownership -- nothing of ours to purge
+      try {
+        const purged = await resetHarnessState(root.stateDirAbs);
+        log("INFO", `corpus: purged leftover blackboard state after the run [${purged.join(", ") || "nothing"}]`);
+      } catch (err) {
+        safeLog(log, "WARN", `corpus: purging leftover blackboard state after the run failed (ignored): ${safeErrorText(err)}`);
+      }
     },
 
     async resetToBaseline(): Promise<void> {
