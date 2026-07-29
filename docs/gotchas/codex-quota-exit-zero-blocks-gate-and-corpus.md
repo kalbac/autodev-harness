@@ -39,6 +39,45 @@ for a run that produced nothing at all. A killed mid-review run therefore looks 
 finished one: an 84 KB output file, a match for `VERDICT`, and no review anywhere in it.
 Check WHERE the match is, or anchor the pattern.
 
+### …and anchoring is STILL not enough (s63)
+
+The advice above was followed exactly and still produced a false "the review is ready".
+The prompt asked the critic to end with one of two lines and, to be unambiguous, spelled
+both of them out **each on its own line, at column 0**:
+
+```
+End your review with exactly one line:
+VERDICT: SAFE
+or
+VERDICT: NOT SAFE
+```
+
+So the echoed prompt contains **two `^VERDICT:` matches** before the model has written a
+word. A poll loop waiting for `grep -qE '^VERDICT:'` fired within seconds, on the echo,
+while codex was still thinking — and because codex buffers its answer to the very end, the
+file at that moment held the prompt and nothing else. The tell was arithmetic and easy to
+miss: the output was 75,687 bytes against a 74,977-byte prompt, i.e. **~700 bytes of
+"review"**.
+
+Three rules, in order of reliability:
+
+1. **Wait on the PROCESS, not on the text.** Poll whether the launcher pid is still alive;
+   a verdict cannot be final while the producer is running. This is the only condition that
+   cannot be forged by the prompt, and it is what should have been used from the start.
+2. **Make the sentinel unforgeable if you must match text.** Ask for a token the prompt
+   itself never contains at line start — `FINALVERDICT:` when the body discusses
+   `VERDICT:`, or instruct the two options inline (`... exactly one line: "VERDICT: SAFE"
+   or "VERDICT: NOT SAFE"`) so neither appears at column 0. A prompt that spells its own
+   sentinel in the sentinel's own format has poisoned every text check downstream.
+3. **Compare output size against prompt size before believing anything.** `wc -c` on both:
+   a delta of a few hundred bytes is an echo, not a review. Cheap, and it catches the
+   killed-run case from the section above as well.
+
+The transferable shape is the one this repo keeps paying for: **a check whose passing
+condition can be satisfied by the input it is checking is not a check.** It is the same
+defect as `[eval/corpus-lock-survives-a-killed-run]`'s glob that could only ever print
+"clean", wearing a different costume.
+
 **A killed run is not a failed run — it is an ABSENT run.** The tool reports "killed"
 rather than an error, and the same-shaped output file remains on disk from the prompt echo.
 Re-run it; do not reason about the fixes from a review that never happened.

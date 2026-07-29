@@ -139,7 +139,20 @@ the correct blast radius for "I cannot tell you what standard I am enforcing".
 
 A declaration naming an unknown or non-overridable gate throws for the same reason: a
 declaration that does nothing is worse than no declaration, because the operator stops
-looking.
+looking. The same reasoning extends one step further than first written: a declaration on
+a project with **no profile attached** is refused at the composition root, because every
+rule in this table lives inside the profile loader and a profile-less project never calls
+it — the entries would be unchecked, unprobed, and still added to the protected set.
+
+A ruleset path may also contain **no glob metacharacter** (`* ? [ ] { }`). This is a
+deliberate restriction on legal filenames — `rules{a,b}.xml` is a valid POSIX name and is
+now refused — and it exists because the same string is read as a literal path by the gate
+and classified by the oracle fence, which treats a metacharacter as a pattern. A file
+genuinely named `rules[1].xml` would therefore have been judged by the gate while the fence
+watched a pattern that need not match it, leaving the standard rewritable without
+escalation. A ruleset is one concrete file; there is no reading in which it is a pattern,
+so refusing the shape where the value enters is cheaper than teaching the fence an
+exception.
 
 ## What this costs, stated plainly
 

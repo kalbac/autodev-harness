@@ -121,6 +121,20 @@ describe("buildProjectRoot", () => {
     const root = await buildProjectRoot(repoRoot);
     expect(root.cfg.contract.gateRulesets).toEqual({});
   });
+
+  it("accepts a config that OMITS gateRulesets entirely -- the shape every pre-adr/010 project has", async () => {
+    // R2 review observation, closed by measurement rather than by argument. The
+    // refusal above calls `Object.keys(cfg.contract.gateRulesets)`, which throws on
+    // `undefined` -- so the whole guard rests on the zod `.default({})` actually
+    // firing for an ABSENT key, not merely for an explicitly-written `{}`. The
+    // explicit-`{}` test above cannot distinguish those two, and the absent case is
+    // the one every existing project on disk is in: if the default did not apply,
+    // this feature would have bricked every profile-less project the moment it
+    // shipped. Asserted on a config with no `contract:` block at all.
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    expect(root.cfg.contract.gateRulesets).toEqual({});
+  });
 });
 
 describe("supervisorRunOpts", () => {

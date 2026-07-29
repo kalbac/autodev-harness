@@ -815,6 +815,11 @@ gates:
       await writeFile(join(projectRoot, "phpcs.xml.dist"), "<ruleset/>", "utf8");
       const p = await loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } });
       const gate = p.gates[0]!;
+      // `rulesetSource` asserted HERE too, not left to the neighbouring test (R2
+      // review observation): a test whose subject is "these fields agree" must
+      // pin every field it claims agreement over, or it is only self-contained by
+      // reference to a test that could later be changed independently.
+      expect(gate.rulesetSource).toBe("project");
       expect(gate.ruleset).toBe("phpcs.xml.dist");
       expect(gate.ruleset).not.toBe("gates/ruleset.xml");
       // The declared text, resolved against the anchor its own source names, must
