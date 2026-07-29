@@ -603,6 +603,72 @@ describe("#155: a report path anchored at the ruleset's directory, not the workt
     expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
   });
 
+  it("R2-FIX1: an incomplete UNC anchor is refused, not treated as a 4-segment root", () => {
+    // The review gate's R2 trigger. `//server` names no share, so it is not a
+    // root. Treating it as one froze `..`, and `x/../a.php` resolved to
+    // `//server/x/a.php` -- INSIDE the worktree -- instead of `//server/a.php`,
+    // which is outside it. The finding would then be dropped as "a file the
+    // diff never touched", which is fail-OPEN: a real violation discarded.
+    const result = filterFindings(
+      [finding({ file: "x/../a.php", line: 3 })],
+      new Map([["b.php", new Set([3])]]),
+      "//server/x",
+      new Set(),
+      "//server/phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, file: "x/../a.php" });
+  });
+
+  it("R2-FIX2: a `//`-anchor that names no share is REFUSED, so `..` cannot walk into another root", () => {
+    // The length-aware floor above is not sufficient on its own. With `//server`
+    // accepted as an anchor, `..` pops `server` and leaves `//`, onto which the
+    // next segment is pushed -- landing in `//x`, a DIFFERENT root, where the
+    // path then looks perfectly contained. `//server/..` has no meaning on
+    // Windows (a UNC path is not valid until it names a share), so the honest
+    // answer is that this anchor cannot place anything: refuse it and leave the
+    // finding unattributed rather than invent a resolution.
+    const result = filterFindings(
+      [finding({ file: "../x/a.php", line: 3 })],
+      new Map([["a.php", new Set([3])]]),
+      "//x",
+      new Set(),
+      "//server/phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, file: "../x/a.php" });
+  });
+
+  it("R2-FIX1: an anchor that is the POSIX root resolves without doubling the separator", () => {
+    // `//phpcs.xml` has `/` for a directory. Left as `/`, its split carries a
+    // trailing EMPTY segment, so pushing onto it produced `//x` -- a string
+    // that then reads as UNC-shaped, which is a different path space entirely.
+    const result = filterFindings(
+      [finding({ file: "wt/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "/wt",
+      new Set(),
+      "//phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
+  it("R2-FIX3: a DOUBLED separator in the ruleset path does not double it in the anchor", () => {
+    // `C://phpcs.xml` -- the shape string concatenation produces -- gives the
+    // directory `C:/`, whose split ends in an EMPTY segment. Pushing onto that
+    // yields `C://src/a.php`, which no worktree prefix matches, so a finding on
+    // the worker's own added line was flagged unattributed and blocked the
+    // change. Fail-closed, but wrong.
+    const result = filterFindings(
+      [finding({ file: "repo/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "C:\\repo",
+      new Set(),
+      "C://phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
   it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
     // The profile's ruleset declares no basepath, so its findings stay
     // absolute. Supplying the anchor must be a no-op for them.

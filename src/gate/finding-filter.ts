@@ -155,9 +155,18 @@ function isRootedPath(folded: string): boolean {
  *  valid path, it yields `//server`, which names no root at all. A POSIX
  *  absolute path (`["", "repo"]`) and a Windows drive (`["C:", "repo"]`) both
  *  root in one segment. Anything else is a relative anchor, whose first segment
- *  is treated as its floor for the same reason. */
+ *  is treated as its floor for the same reason.
+ *
+ *  HONEST NOTE on the `length >= 4` clause: it is currently UNREACHABLE through
+ *  the only caller, because `relativePathAnchor` already refuses a `//`-prefixed
+ *  anchor that does not name both a server and a share, and a mutation probe
+ *  confirmed that removing this clause fails no test. It is kept because it is
+ *  part of what "is a UNC root" MEANS, not as a second line of defence being
+ *  passed off as tested -- the behaviour is proven by the anchor-validation test
+ *  (`R2-FIX2`), and this clause is what keeps the predicate true of its own name
+ *  if the validator is ever relaxed. */
 function rootSegmentCount(segs: string[]): number {
-  if (segs[0] === "" && segs[1] === "") return 4;
+  if (segs.length >= 4 && segs[0] === "" && segs[1] === "") return 4;
   return 1;
 }
 
@@ -229,7 +238,32 @@ function relativePathAnchor(rulesetPath: string | null): string | null {
   const folded = stripExtendedLengthPrefix(foldSeparators(rulesetPath));
   const lastSlash = folded.lastIndexOf("/");
   if (lastSlash === -1) return null;
-  return folded.slice(0, lastSlash);
+
+  // Trailing separators are stripped so joining onto this anchor can never
+  // double one: an anchor of `C:/` would otherwise push a segment onto the
+  // EMPTY tail its split produces and yield `C://x`.
+  let dir = folded.slice(0, lastSlash);
+  while (dir.length > 1 && dir.endsWith("/")) dir = dir.slice(0, -1);
+  // The canonical POSIX root is the EMPTY string, because that is how an
+  // absolute POSIX path splits (`"/repo".split("/")` is `["", "repo"]`). It is
+  // NOT the same value as "no anchor" -- that is `null`, returned above and
+  // below, and the two are different types precisely so they cannot be
+  // confused (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+  if (dir === "/") dir = "";
+
+  // A `//`-prefixed path is only a root if it actually names BOTH a server and
+  // a share. `//server` names neither a directory nor a root -- there is
+  // nothing for `..` to be measured against, and treating it as a 4-segment
+  // UNC root (the R2 defect) froze `..` entirely, so `x/../a.php` resolved to
+  // `//server/x/a.php` instead of `//server/a.php`: a path OUTSIDE the
+  // worktree made to look contained, whose finding is then silently dropped.
+  // That is the fail-OPEN direction, so the degenerate shape is refused
+  // outright rather than given an invented floor.
+  if (dir.startsWith("//")) {
+    const segs = dir.split("/");
+    if (segs.length < 4 || segs[2] === "" || segs[3] === "") return null;
+  }
+  return dir;
 }
 
 /**
