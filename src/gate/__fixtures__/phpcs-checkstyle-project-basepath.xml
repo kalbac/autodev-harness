@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<checkstyle version="3.13.5">
+<file name=".autodev\worktrees\s64-probe\woodev-base-theme\inc\s64-probe.php">
+ <error line="1" column="1" severity="error" message="Missing file doc comment" source="Squiz.Commenting.FileComment.Missing"/>
+ <error line="2" column="1" severity="error" message="Doc comment for parameter &quot;$x&quot; missing" source="Squiz.Commenting.FunctionComment.MissingParamTag"/>
+ <error line="7" column="1" severity="error" message="There must be no blank lines between the function comment and the declaration" source="Squiz.Commenting.FunctionComment.SpacingAfter"/>
+ <error line="9" column="12" severity="error" message="Short array syntax must be used to define arrays" source="Generic.Arrays.DisallowLongArraySyntax.Found"/>
+</file>
+</checkstyle>

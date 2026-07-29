@@ -921,7 +921,28 @@ export async function buildProjectRoot(
                 }
 
                 const parsed = parseCheckstyle(r.stdout);
-                const filtered = filterFindings(parsed, addedLines.added, wt.path, addedLines.newFiles);
+                // `g.rulesetPath` is what anchors a RELATIVE report path (#155).
+                // It is absolute and already resolved -- at the TRUSTED ROOT for a
+                // project-declared ruleset (`adr/010`), at the profile directory
+                // otherwise -- and a ruleset that declares a relative `basepath`
+                // makes the tool report against that directory, not against the
+                // worktree this gate ran in. Without it every finding from the
+                // operator's own ruleset arrives unattributed, and an unattributed
+                // finding is judged over the WHOLE FILE instead of the added lines.
+                //
+                // `g.ruleset === null` is what makes `g.rulesetPath` meaningful:
+                // `loadProfile` seeds it with a `""` PLACEHOLDER and documents it as
+                // correct only while no ruleset was declared ("safe to leave
+                // un-consulted"). This is the first caller that consults it, so it
+                // asks the question the placeholder was written against instead of
+                // letting an empty string answer by accident.
+                const filtered = filterFindings(
+                  parsed,
+                  addedLines.added,
+                  wt.path,
+                  addedLines.newFiles,
+                  g.ruleset === null ? null : g.rulesetPath,
+                );
                 out.push({
                   id: g.id,
                   // The verdict comes from the FILTERED count, not the exit code: a tool

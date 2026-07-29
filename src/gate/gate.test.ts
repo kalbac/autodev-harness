@@ -52,6 +52,12 @@ function makeReportGateRun(opts: {
   rawOutput: string;
   worktreePath: string;
   parseSpy?: typeof parseCheckstyle;
+  /** The gate's resolved ruleset path, mirroring what `root.ts` hands
+   *  `filterFindings` to anchor a RELATIVE report path (#155). `root.ts` derives
+   *  it as `g.ruleset === null ? null : g.rulesetPath`; here it is passed
+   *  directly, and defaulting to `null` keeps every pre-existing case in this
+   *  file exercising the absolute-path branch unchanged. */
+  rulesetPath?: string | null;
 }): NonNullable<GateDeps["runProfileGates"]> {
   const parse = opts.parseSpy ?? parseCheckstyle;
   return async (_changedFiles, addedLines) => {
@@ -68,7 +74,13 @@ function makeReportGateRun(opts: {
     }
     // classification === "red" -- only NOW is the parser reached.
     const parsed = parse(opts.rawOutput);
-    const findings = filterFindings(parsed, addedLines.added, opts.worktreePath, addedLines.newFiles);
+    const findings = filterFindings(
+      parsed,
+      addedLines.added,
+      opts.worktreePath,
+      addedLines.newFiles,
+      opts.rulesetPath ?? null,
+    );
     return [
       gateRec({
         status: findings.length === 0 ? "green" : "red",
@@ -696,6 +708,117 @@ describe("profile gates -- 'report: checkstyle' line-scoping (Task 4)", () => {
     expect(result.profile_green).toBe(false);
     expect(result.decision).toBe("RETRY");
     expect(written[0]).toContain("3 | ERROR | some finding");
+  });
+});
+
+describe("#155: line-scoping survives a PROJECT-DECLARED ruleset (adr/010)", () => {
+  // Captured s64 from the operator's own theme by running the gate's own phpcs
+  // command against the project's `phpcs.xml.dist`, which declares
+  // `<arg name="basepath" value="."/>`. PHPCS resolves that against the RULESET
+  // FILE's directory -- the trusted root -- while the gate runs with the
+  // worktree as cwd, so every path arrives carrying the worktree's own location
+  // as a prefix instead of being relative to it.
+  const PROJECT_XML = readFileSync(
+    new URL("./__fixtures__/phpcs-checkstyle-project-basepath.xml", import.meta.url),
+    "utf8",
+  );
+  const WORKTREE = "D:\\Projects\\woodev_base_theme_autodev\\.autodev\\worktrees\\s64-probe";
+  const RULESET = "D:\\Projects\\woodev_base_theme_autodev\\phpcs.xml.dist";
+  const PROBE = "woodev-base-theme/inc/s64-probe.php";
+
+  // The fixture's four findings sit on lines 1, 2, 7 and 9. This diff adds line
+  // 5 alone, so ALL of them are pre-existing debt this change never touched.
+  const DIFF_TOUCHES_LINE_5 = [
+    `diff --git a/${PROBE} b/${PROBE}`,
+    `--- a/${PROBE}`,
+    `+++ b/${PROBE}`,
+    "@@ -4,1 +4,2 @@",
+    " context-line-4",
+    "+added-line-5",
+  ].join("\n");
+
+  it("COMMITs a change that touches no reported line, once the ruleset anchors the report", async () => {
+    const { deps } = makeDeps({
+      changedFiles: [PROBE],
+      diffText: DIFF_TOUCHES_LINE_5,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2,
+        redExitCodes: [1, 2],
+        rawOutput: PROJECT_XML,
+        worktreePath: WORKTREE,
+        rulesetPath: RULESET,
+      }),
+    });
+
+    const result = await runGate({ taskId: "S64-1", fileSet: [PROBE] }, deps);
+
+    expect(result.profile_green).toBe(true);
+    expect(result.decision).toBe("COMMIT");
+  });
+
+  it("REPRODUCES #155 without the anchor: the same change is blocked by debt it never wrote", async () => {
+    // The only difference from the case above is the missing `rulesetPath`.
+    // Every finding lands `unattributed`, unattributed findings are kept, and
+    // the worker is now judged over the WHOLE FILE -- the exact defect
+    // `docs/gotchas/profile-gates-must-be-diff-scoped.md` was written to close,
+    // reopened by adr/010's own mechanism. On a legacy file this is
+    // unsatisfiable: the worker cannot converge on debt that is not in its diff.
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      changedFiles: [PROBE],
+      diffText: DIFF_TOUCHES_LINE_5,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2,
+        redExitCodes: [1, 2],
+        rawOutput: PROJECT_XML,
+        worktreePath: WORKTREE,
+      }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+
+    const result = await runGate({ taskId: "S64-2", fileSet: [PROBE] }, deps);
+
+    expect(result.profile_green).toBe(false);
+    expect(result.decision).toBe("RETRY");
+    expect(written[0]).toContain("Missing file doc comment");
+  });
+
+  it("still RETRYs on a finding that IS on an added line (the anchor scopes, it does not excuse)", async () => {
+    // Line 9 is the long-array literal. The fix must not turn line-scoping into
+    // a blanket pass for project-declared rulesets.
+    const diffTouchesLine9 = [
+      `diff --git a/${PROBE} b/${PROBE}`,
+      `--- a/${PROBE}`,
+      `+++ b/${PROBE}`,
+      "@@ -8,1 +8,2 @@",
+      " context-line-8",
+      "+added-line-9",
+    ].join("\n");
+    const written: (string | null)[] = [];
+    const { deps } = makeDeps({
+      changedFiles: [PROBE],
+      diffText: diffTouchesLine9,
+      runProfileGates: makeReportGateRun({
+        exitCode: 2,
+        redExitCodes: [1, 2],
+        rawOutput: PROJECT_XML,
+        worktreePath: WORKTREE,
+        rulesetPath: RULESET,
+      }),
+      writeGateFeedback: async (_t: string, content: string | null) => {
+        written.push(content);
+      },
+    });
+
+    const result = await runGate({ taskId: "S64-3", fileSet: [PROBE] }, deps);
+
+    expect(result.decision).toBe("RETRY");
+    const doc = written[0]!;
+    expect(doc).toContain("Short array syntax must be used");
+    // ...and ONLY that one: the three findings on untouched lines stay dropped.
+    expect(doc).not.toContain("Missing file doc comment");
   });
 });
 

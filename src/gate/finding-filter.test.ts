@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { filterFindings } from "./finding-filter.js";
+import { parseCheckstyle } from "./checkstyle.js";
 import type { CheckstyleFinding } from "./checkstyle.js";
 
 // A minimal helper: build a finding without repeating severity/source noise in
@@ -422,5 +424,147 @@ describe("R6-FIX1: a new file present only in newFiles resolves case-insensitive
     );
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ file: "asset.php", unattributed: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #155: a project-declared ruleset (adr/010) anchors report paths OUTSIDE the
+// worktree, which silently disabled line-scoping for exactly the projects
+// adr/010 was written to serve.
+// ---------------------------------------------------------------------------
+
+/** The real report captured from the operator's own theme, verbatim.
+ *
+ *  Captured s64 by running the gate's own command
+ *  (`vendor/bin/phpcs -q --report=checkstyle --standard=<ruleset> <file>`) with
+ *  cwd = a real worktree and `--standard` pointed at the project's own
+ *  `phpcs.xml.dist`, which declares `<arg name="basepath" value="."/>`.
+ *  A self-authored fixture would prove nothing here -- that is precisely how
+ *  `[gate/agent-ci-ndjson-keyed-by-event-not-type]` shipped a parser that was
+ *  green against a GUESSED shape and useless against the real one. */
+const projectBasepathXml = readFileSync(
+  new URL("./__fixtures__/phpcs-checkstyle-project-basepath.xml", import.meta.url),
+  "utf8",
+);
+
+/** The two anchors that were live when the fixture above was captured. */
+const PROBE_WORKTREE = "D:\\Projects\\woodev_base_theme_autodev\\.autodev\\worktrees\\s64-probe";
+const PROBE_RULESET = "D:\\Projects\\woodev_base_theme_autodev\\phpcs.xml.dist";
+const PROBE_FILE = "woodev-base-theme/inc/s64-probe.php";
+
+describe("#155: a report path anchored at the ruleset's directory, not the worktree", () => {
+  it("parses the real capture as a RELATIVE path that no worktree prefix can match", () => {
+    // The premise of the whole fix, pinned on the capture rather than asserted:
+    // the tool emitted a path relative to the TRUSTED ROOT (the ruleset's own
+    // directory), carrying the worktree's location as a prefix of its own.
+    const parsed = parseCheckstyle(projectBasepathXml);
+    expect(parsed).toHaveLength(4);
+    expect(parsed[0]!.file).toBe(".autodev\\worktrees\\s64-probe\\woodev-base-theme\\inc\\s64-probe.php");
+  });
+
+  it("attributes the finding and LINE-SCOPES it once the ruleset anchor is known", () => {
+    const parsed = parseCheckstyle(projectBasepathXml);
+    // The worker added only line 9 (the long-array literal). Lines 1, 2 and 7
+    // are pre-existing debt in the same file and must be dropped -- that is the
+    // guarantee `docs/gotchas/profile-gates-must-be-diff-scoped.md` exists to
+    // protect, and the guarantee #155 reports as silently absent.
+    const result = filterFindings(parsed, new Map([[PROBE_FILE, new Set([9])]]), PROBE_WORKTREE, new Set(), PROBE_RULESET);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      file: PROBE_FILE,
+      line: 9,
+      unattributed: false,
+      source: "Generic.Arrays.DisallowLongArraySyntax.Found",
+    });
+  });
+
+  it("REPRODUCES the defect when no anchor is supplied: every finding is unattributed", () => {
+    // Pins the pre-fix behaviour so the fix cannot be silently reverted. All
+    // four findings are KEPT (fail-closed, correct) but unattributed -- and an
+    // unattributed finding is judged over the whole file, so the worker
+    // inherits three violations it never wrote.
+    const parsed = parseCheckstyle(projectBasepathXml);
+    const result = filterFindings(parsed, new Map([[PROBE_FILE, new Set([9])]]), PROBE_WORKTREE, new Set());
+    expect(result).toHaveLength(4);
+    expect(result.every((f) => f.unattributed)).toBe(true);
+  });
+
+  it("leaves a finding unattributed when the anchor cannot reach the worktree", () => {
+    // The profile's OWN ruleset lives outside the project entirely. A relative
+    // path anchored there resolves to somewhere that is not in the worktree, so
+    // nothing is attributed -- the pre-#155 answer, which stays correct.
+    const result = filterFindings(
+      [finding({ file: "includes\\a.php", line: 3 })],
+      new Map([["includes/a.php", new Set([3])]]),
+      "C:\\repo\\.autodev\\worktrees\\t",
+      new Set(),
+      "C:\\harness\\profiles\\wordpress-woocommerce\\gates\\phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, file: "includes\\a.php" });
+  });
+
+  it("refuses a relative path that ESCAPES the worktree through the anchor", () => {
+    const result = filterFindings(
+      [finding({ file: ".autodev/worktrees/t/../../../outside.php", line: 3 })],
+      new Map([["outside.php", new Set([3])]]),
+      "C:\\repo\\.autodev\\worktrees\\t",
+      new Set(),
+      "C:\\repo\\phpcs.xml.dist",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]!.unattributed).toBe(true);
+  });
+
+  it("does NOT treat a drive-relative path as relative (D:foo is neither absolute nor anchorable)", () => {
+    // `docs/gotchas/oracle-protected-paths-must-be-worktree-relative.md` round 5:
+    // `D:x` is Windows drive-RELATIVE, resolved against that drive's own current
+    // directory -- a location this process does not know. Joining it onto an
+    // anchor would invent a path the tool never named.
+    const result = filterFindings(
+      [finding({ file: "D:includes\\a.php", line: 3 })],
+      new Map([["includes/a.php", new Set([3])]]),
+      "D:\\repo\\.autodev\\worktrees\\t",
+      new Set(),
+      "D:\\repo\\phpcs.xml.dist",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]!.unattributed).toBe(true);
+  });
+
+  it("resolves a relative POSIX path case-SENSITIVELY", () => {
+    // The anchor changes WHERE a relative path is rooted; it must not change
+    // the case rule that containment and lookup share (R2-FIX3).
+    const hit = filterFindings(
+      [finding({ file: ".autodev/worktrees/t/includes/a.php", line: 3 })],
+      new Map([["includes/a.php", new Set([3])]]),
+      "/repo/.autodev/worktrees/t",
+      new Set(),
+      "/repo/phpcs.xml.dist",
+    );
+    expect(hit[0]).toMatchObject({ file: "includes/a.php", unattributed: false });
+
+    const miss = filterFindings(
+      [finding({ file: ".autodev/worktrees/t/INCLUDES/A.php", line: 3 })],
+      new Map([["includes/a.php", new Set([3])]]),
+      "/repo/.autodev/worktrees/t",
+      new Set(),
+      "/repo/phpcs.xml.dist",
+    );
+    expect(miss).toHaveLength(0); // a genuinely different POSIX file, untouched by the diff
+  });
+
+  it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
+    // The profile's ruleset declares no basepath, so its findings stay
+    // absolute. Supplying the anchor must be a no-op for them.
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\.autodev\\worktrees\\t\\includes\\a.php", line: 3 })],
+      new Map([["includes/a.php", new Set([3])]]),
+      "C:\\repo\\.autodev\\worktrees\\t",
+      new Set(),
+      "C:\\repo\\phpcs.xml.dist",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ file: "includes/a.php", unattributed: false });
   });
 });
