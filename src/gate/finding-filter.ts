@@ -147,24 +147,47 @@ function isRootedPath(folded: string): boolean {
   return folded.startsWith("/") || /^[A-Za-z]:/.test(folded);
 }
 
+/** How many leading segments of a folded, split path constitute its ROOT -- the
+ *  part `..` cannot climb above because there is nothing above it.
+ *
+ *  `"//server/share/x".split("/")` is `["", "", "server", "share", "x"]`: a UNC
+ *  root is FOUR segments, and popping one of them does not yield a shorter
+ *  valid path, it yields `//server`, which names no root at all. A POSIX
+ *  absolute path (`["", "repo"]`) and a Windows drive (`["C:", "repo"]`) both
+ *  root in one segment. Anything else is a relative anchor, whose first segment
+ *  is treated as its floor for the same reason. */
+function rootSegmentCount(segs: string[]): number {
+  if (segs[0] === "" && segs[1] === "") return 4;
+  return 1;
+}
+
 /** Join a relative (folded) path onto a folded anchor, collapsing `.` and `..`
  *  LEXICALLY -- no filesystem access, for the same cross-platform reason this
  *  module refuses node's `path` module: the report and the anchor may have been
  *  produced on a different OS than the one running this code.
  *
- *  Returns `null` when a `..` would consume the anchor entirely. That is a
- *  refusal, not a clamp: a path that climbs past its own root is one this
- *  function cannot place, and the caller's answer to "cannot place" is already
- *  `unattributed` (Principle 10). Clamping instead -- silently treating `../..`
- *  as the root -- would manufacture a containment that the input never
- *  supported. */
-function resolveAgainstAnchor(anchorFolded: string, relativeFolded: string): string | null {
+ *  A `..` at the root is a NO-OP, not a refusal. That is not leniency, it is the
+ *  actual semantics of every filesystem this product runs on: `C:\..` is `C:\`
+ *  and `/..` is `/`. An earlier version of this function refused instead, on the
+ *  reasoning that clamping "would manufacture a containment the input never
+ *  supported" -- which is true of climbing ABOVE a root, and false of a root,
+ *  because a root has no above. The review gate caught it (s64 R1): with a
+ *  ruleset at `C:\phpcs.xml` the anchor is `C:`, so a report path beginning
+ *  `..\` was refused, and a finding on pre-existing debt stayed `unattributed`
+ *  and blocked a change it should have been dropped from. Refusing fails in the
+ *  SAFE direction -- but a false block is still a broken gate, exactly as
+ *  `stripExtendedLengthPrefix` above says of its own case.
+ *
+ *  Clamping cannot fail OPEN: the result still has to pass the worktree
+ *  containment check, and clamping only ever yields the path the OS itself
+ *  would resolve to. */
+function resolveAgainstAnchor(anchorFolded: string, relativeFolded: string): string {
   const segs = anchorFolded.split("/");
+  const floor = rootSegmentCount(segs);
   for (const seg of relativeFolded.split("/")) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
-      if (segs.length <= 1) return null;
-      segs.pop();
+      if (segs.length > floor) segs.pop();
       continue;
     }
     segs.push(seg);
@@ -270,9 +293,7 @@ function normalizeFindingPath(
   if (!isRootedPath(raw)) {
     const anchor = relativePathAnchor(rulesetPath);
     if (anchor === null) return null;
-    const anchored = resolveAgainstAnchor(anchor, raw);
-    if (anchored === null) return null;
-    file = anchored;
+    file = resolveAgainstAnchor(anchor, raw);
   }
   let root = stripExtendedLengthPrefix(foldSeparators(worktreePath));
   if (root.endsWith("/")) root = root.slice(0, -1);

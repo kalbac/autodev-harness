@@ -554,6 +554,55 @@ describe("#155: a report path anchored at the ruleset's directory, not the workt
     expect(miss).toHaveLength(0); // a genuinely different POSIX file, untouched by the diff
   });
 
+  it("R1-FIX1: '..' at a DRIVE root is the root, not an unresolvable path", () => {
+    // The review gate's exact trigger (s64 R1). With the ruleset at `C:\phpcs.xml`
+    // the anchor is the bare drive `C:`, and refusing `..` there left a
+    // pre-existing finding unattributed -- which KEEPS it, so a change was
+    // blocked by debt on a line it never wrote. `C:\..` is `C:\` on Windows.
+    const debt = filterFindings(
+      [finding({ file: "..\\.autodev\\worktrees\\t\\src\\a.php", line: 99 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "C:\\.autodev\\worktrees\\t",
+      new Set(),
+      "C:\\phpcs.xml",
+    );
+    expect(debt).toHaveLength(0); // dropped as out-of-diff debt, not kept as a blocker
+
+    const own = filterFindings(
+      [finding({ file: "..\\.autodev\\worktrees\\t\\src\\a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "C:\\.autodev\\worktrees\\t",
+      new Set(),
+      "C:\\phpcs.xml",
+    );
+    expect(own[0]).toMatchObject({ file: "src/a.php", line: 3, unattributed: false });
+  });
+
+  it("R1-FIX1: '..' at the POSIX root is the root", () => {
+    const result = filterFindings(
+      [finding({ file: "../.autodev/worktrees/t/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "/.autodev/worktrees/t",
+      new Set(),
+      "/phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
+  it("R1-FIX1: '..' never eats a UNC root into a path that names no share", () => {
+    // `//server/share` is a FOUR-segment root. Popping `share` would yield
+    // `//server`, which is not a root at all -- a fabricated path that could
+    // then be compared against a real worktree.
+    const result = filterFindings(
+      [finding({ file: "../../../../src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "//server/share",
+      new Set(),
+      "//server/share/phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
   it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
     // The profile's ruleset declares no basepath, so its findings stay
     // absolute. Supplying the anchor must be a no-op for them.
