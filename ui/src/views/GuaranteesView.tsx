@@ -158,6 +158,23 @@ function GuaranteesSections({ data }: { data: ProjectGuaranteesView }) {
                     scoped to <span className="text-foreground">{g.filesGlob}</span>
                   </div>
                 )}
+                {/* adr/010 — WHICH standard this gate judges by, and whose it is.
+                    A green gate means "every formalized property held" (Principle
+                    15), so a screen that claims what this project guarantees has
+                    to name the standard that formalized them. The `accent` tone
+                    for a project-declared ruleset is deliberate: it is not a
+                    warning (an operator declaration IS the oracle) but it must
+                    not read as identical to the shipped default either, because
+                    a bar the project set is the one thing here he can move. */}
+                {g.ruleset !== null && (
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <StatusPill
+                      tone={g.rulesetSource === "project" ? "accent" : "idle"}
+                      label={g.rulesetSource === "project" ? "project ruleset" : "profile ruleset"}
+                    />
+                    <span className="truncate font-mono text-[10px] text-muted-foreground">{g.ruleset}</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>

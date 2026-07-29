@@ -51,6 +51,46 @@ export const ProfileGateSchema = z
      * second parser is built, never speculatively.
      */
     report: z.enum(["checkstyle"]).optional(),
+    /**
+     * A profile-relative path to this gate's DEFAULT ruleset — `adr/010`. Declaring
+     * this key is how a profile author marks a gate's standard as OVERRIDABLE: only
+     * a gate that declares `ruleset:` can be pointed at a project's own file via
+     * `contract.gateRulesets` (`src/config/schema.ts`); a gate without this key
+     * (e.g. `composer-validate`) cannot be overridden at all, by construction, not
+     * by a separate allow/deny flag.
+     *
+     * Cross-checked against `{ruleset}` in `run`, in BOTH directions, in
+     * `loadProfile` — the identical discipline the `files`/`{files}` and `report`
+     * cross-checks already use, and for the identical reason: a `run` containing
+     * `{ruleset}` with no `ruleset:` key would ship the literal placeholder text to
+     * the tool; a `ruleset:` key whose `run` never mentions `{ruleset}` reads as
+     * overridable while nothing the gate actually runs can be overridden.
+     *
+     * Validated to the SAME normal form `isInvalidProtectedPathEntry` establishes
+     * for `protectedPaths` (non-empty, not absolute on any platform, no `..`
+     * segment) — plus, deliberately STRICTER, no backslash at all. `protectedPaths`
+     * folds `\` to `/` because its entries are later re-probed through
+     * `oracle-paths.ts`'s own fold-then-resolve pipeline (a downstream normalization
+     * this field has no equivalent of): a ruleset path is joined directly against an
+     * anchor directory with `resolve`, which on a POSIX host treats `\` as an
+     * ordinary filename byte, not a separator
+     * (docs/gotchas/oracle-protected-paths-must-be-worktree-relative.md, leak #6).
+     * Refusing the backslash outright here — rather than silently folding it, one
+     * more time, in one more place — is what keeps this module from re-deriving
+     * that leak in a narrower form; an author who wants a `/`-separated path can
+     * simply write one.
+     */
+    ruleset: z
+      .string()
+      .superRefine((p, ctx) => {
+        if (isInvalidRulesetEntry(p)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `gate 'ruleset' must be a non-blank, profile-relative, forward-slash path (not absolute on any platform, no ".." segment, no backslash): ${JSON.stringify(p)}`,
+          });
+        }
+      })
+      .optional(),
   })
   .strict();
 
@@ -149,6 +189,29 @@ function isInvalidProtectedPathEntry(p: string): boolean {
   // collapses to nothing" must catch './' the same way it catches '.'.
   const normalized = posix.normalize(folded).replace(/\/+$/, "");
   return normalized === "." || normalized === "";
+}
+
+/**
+ * Fail-closed lexical check for a `ruleset:` declaration — used both at profile-
+ * load-schema time (above, for the profile author's own default) and by
+ * `profile.ts` at `loadProfile` time (for a PROJECT's override,
+ * `contract.gateRulesets`, which is a plain `Record<string,string>` at the config-
+ * schema layer with no path-shape validation of its own — see
+ * `src/config/schema.ts`'s `gateRulesets` doc comment). Exported so both callers
+ * share the identical predicate rather than drifting into two near-copies that
+ * disagree on some input (`docs/gotchas/validated-one-string-used-another.md`).
+ *
+ * Refuses: empty, absolute on any platform (`isAbsoluteOnAnyPlatform` above),
+ * any `/`-separated segment equal to `..`, or any backslash at all. See the
+ * `ruleset:` field doc comment on `ProfileGateSchema` for why this is stricter
+ * than `isInvalidProtectedPathEntry`'s fold-then-check treatment of `\`.
+ */
+export function isInvalidRulesetEntry(p: string): boolean {
+  if (p === "") return true;
+  if (isAbsoluteOnAnyPlatform(p)) return true;
+  if (p.includes("\\")) return true;
+  if (p.split("/").some((seg) => seg === "..")) return true;
+  return false;
 }
 
 /**
@@ -260,6 +323,41 @@ export interface ResolvedGate {
    *  resolved/normalized field states its "not declared" case explicitly rather
    *  than leaving callers to distinguish "absent" from "not yet set". */
   report: "checkstyle" | null;
+  /**
+   * The profile-relative ruleset text this gate declared (`ruleset:` in
+   * profile.yaml), or `null` when the gate declared none. This is the RAW
+   * declared text, not a resolved path -- `rulesetPath` below is that. Kept
+   * around (rather than discarded once resolved) purely for observability: it
+   * is what `GET /projects/:id/guarantees` (`adr/010` Consequences, #138) needs
+   * to show "which standard formalized this", alongside `rulesetSource`.
+   */
+  ruleset: string | null;
+  /**
+   * Which side supplied the ruleset actually in force for this gate --
+   * `"profile"` (the profile author's own default, `ruleset:`'s value resolved
+   * against the profile directory) or `"project"` (a project's own declaration,
+   * `contract.gateRulesets[id]`, resolved against its `repoRoot` -- `adr/010`).
+   *
+   * Meaningful ONLY when `ruleset !== null`; for a gate that declares no
+   * `ruleset:` key this is always `"profile"` and `rulesetPath` is `""` --
+   * inert placeholders, never consulted, because the `{ruleset}`/`ruleset:`
+   * cross-check in `loadProfile` guarantees such a gate's `run` can never
+   * contain `{ruleset}` to substitute them into.
+   */
+  rulesetSource: "profile" | "project";
+  /**
+   * The ABSOLUTE path actually substituted for `{ruleset}` in `run` -- the one
+   * value the gate's own tool invocation is judged against. `""` when
+   * `ruleset === null` (see `rulesetSource` above for why that placeholder is
+   * safe). Deliberately a resolved absolute path, not the raw declared text:
+   * `run` is executed with the worktree as `cwd`, so a relative ruleset text
+   * would resolve against the WRONG root depending on which side declared it
+   * (the profile directory vs a project's `repoRoot`) -- exactly the
+   * `[critic/validated-one-string-used-another]` shape this repo has hit
+   * repeatedly. Resolving once, here, at load, is what keeps the gate's `run`
+   * command correct regardless of which side supplied the ruleset.
+   */
+  rulesetPath: string;
 }
 
 /** A profile that has been located, validated and expanded. */

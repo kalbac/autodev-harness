@@ -96,7 +96,7 @@ import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-d
 import { snapshot } from "../util/fingerprint.js";
 
 import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
-import { loadProfile, prepareGateInvocation, classifyGateExit } from "../profile/profile.js";
+import { loadProfile, prepareGateInvocation, classifyGateExit, type RulesetOverrides } from "../profile/profile.js";
 import { parseCheckstyle } from "../gate/checkstyle.js";
 import { filterFindings } from "../gate/finding-filter.js";
 import type { AddedLines } from "../gate/diff-lines.js";
@@ -627,7 +627,18 @@ export async function buildProjectRoot(
   // believes are running would silently not run, and a green verdict would claim a
   // qualification that never happened. null = not attached = every profile contour
   // below (gate step 1d, the fifth oracle source, the provision union) is inert.
-  const profile = cfg.profile === null ? null : await loadProfile(cfg.profile);
+  //
+  // `overrides` (adr/010) is passed UNCONDITIONALLY, even when `cfg.contract.
+  // gateRulesets` is `{}` (the default): `loadProfile` treats an empty override
+  // map exactly like "no overrides", so there is no behaviour difference to gate
+  // on here, and always constructing it keeps this call site from needing to
+  // know that fact itself. `cfg` was already loaded from the TRUSTED ROOT above
+  // (`loadConfigWithRaw(repoRoot)`), so `cfg.contract.gateRulesets` is itself a
+  // trusted-root read -- exactly the property `adr/010` part (b) requires (a
+  // worker rewriting its own worktree copy of a ruleset file changes nothing
+  // about which path this override resolves to).
+  const rulesetOverrides: RulesetOverrides = { repoRoot, gateRulesets: cfg.contract.gateRulesets };
+  const profile = cfg.profile === null ? null : await loadProfile(cfg.profile, undefined, rulesetOverrides);
   if (profile !== null) {
     log("INFO", `profile attached: ${profile.id}@${profile.version} (${profile.gates.length} gate(s))`);
   }

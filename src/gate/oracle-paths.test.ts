@@ -408,6 +408,49 @@ describe("resolveOracleSet", () => {
       expect(withArg.globs).toEqual(without.globs);
     });
   });
+
+  // --- source 6: contract.gateRulesets (adr/010) ----------------------------------
+  // Read straight off `HarnessConfig` (no new parameter, unlike source 5): a
+  // project's own override of its OWN gate's ruleset is already a plain
+  // `Record<string,string>` on `cfg.contract`, so there is no `gate/` -> `profile/`
+  // dependency to avoid here. Same classification/normalization as every other
+  // source, keyed by gate id in the attributed reason.
+  describe("declared gate rulesets (source 6, adr/010)", () => {
+    it("adds a declared ruleset literal with a gate-attributed reason", async () => {
+      const cfg = HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: "phpcs.xml.dist" } } });
+      const raw = {};
+
+      const set = await resolveOracleSet(cfg, raw, root);
+
+      expect(set.literals).toContain("phpcs.xml.dist");
+      expect(set.sources.get("phpcs.xml.dist")).toBe("contract.gateRulesets: phpcs");
+    });
+
+    it("classifies a declared ruleset glob into the glob arm", async () => {
+      const cfg = HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: "rulesets/**" } } });
+      const raw = {};
+
+      const set = await resolveOracleSet(cfg, raw, root);
+
+      expect(set.globs).toContain("rulesets/**");
+      expect(set.literals).not.toContain("rulesets/**");
+    });
+
+    it("fails closed on an escaping declared ruleset path", async () => {
+      const cfg = HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: "../outside.xml" } } });
+      const raw = {};
+
+      await expect(resolveOracleSet(cfg, raw, root)).rejects.toThrow(/escapes/i);
+    });
+
+    it("changes nothing when gateRulesets is empty (default)", async () => {
+      const withEmpty = await resolveOracleSet(HarnessConfigSchema.parse({}), {}, root);
+      const withDefault = await resolveOracleSet(HarnessConfigSchema.parse({ contract: { gateRulesets: {} } }), {}, root);
+
+      expect(withEmpty.literals).toEqual(withDefault.literals);
+      expect(withEmpty.globs).toEqual(withDefault.globs);
+    });
+  });
 });
 
 describe("oracleGlobTouches", () => {

@@ -74,6 +74,25 @@ authority model becomes self-authorizing.
     author almost certainly forgot the flag. Optional; a gate without `report`
     behaves exactly as before: whole-file scoping (via `files`), verdict from
     `redExitCodes` alone.
+  - **`ruleset`** / **`{ruleset}`** — `adr/010`. A profile-relative default
+    ruleset, and the placeholder `run` substitutes with the ABSOLUTE resolved
+    path in force. Declaring `ruleset:` is how a profile author marks a gate
+    OVERRIDABLE at all; a gate without this key (e.g. `composer-validate`)
+    cannot be pointed at a project's own file no matter what a project
+    declares. Cross-checked against `{ruleset}` in `run`, both directions, the
+    same discipline as `files`/`{files}`. Resolved at profile LOAD time (unlike
+    `{files}`, which waits for a task's changed-file set): with no project
+    override this is `{profile}/<ruleset>` exactly as `{profile}` alone would
+    have resolved it; with one (a project's `contract.gateRulesets: { <gateId>:
+    <path> }`, read from ITS trusted root), it is that path instead. Every
+    failure — the declared file is absent, unreadable, a directory, a symlink,
+    escapes the repo root, names a gate the profile does not have, names a gate
+    with no `ruleset:` key, or resolves to a path containing whitespace — is a
+    load-time throw, never a silent fallback to the profile's own default: an
+    operator who believes their standard is in force while the profile's
+    silently runs instead is the exact class of defect `adr/010` exists to rule
+    out. See `oracle-paths.ts`'s protected-set doc comment (source 6) for how
+    the declared file itself joins `protectedPaths`' fence.
 - **`protectedPaths[]`** — oracle paths, fed into the `adr/006` Phase-2 fence as
   its fifth source. Entries are worktree-relative and `/`-separated.
 - **`requires.provision[]`** — top-level directories to link into each worktree,
@@ -83,9 +102,36 @@ authority model becomes self-authorizing.
   The escape hatch is blunt on purpose: don't attach the profile, or pin a
   different version.
 
+  **Amended by `adr/010`:** a profile author may mark one gate's ruleset
+  OVERRIDABLE (a `ruleset:` key alongside a `{ruleset}` placeholder in `run`),
+  and a project may then declare its own file for that gate in its
+  `.autodev/config.yaml` (`contract.gateRulesets: { <gateId>: <path> }`), read
+  from the TRUSTED ROOT the same way `contract.docPaths` (`adr/007`) is. This is
+  still not selective disable: a project can swap WHICH standard a gate judges
+  by, never turn the gate off, never touch its `run` command (only the profile
+  author decides which gates are overridable at all, and a gate without a
+  `ruleset:` key — `composer-validate` — cannot be pointed anywhere else no
+  matter what a project declares), and never disable one sniff/rule out of many
+  while keeping the rest. Selective per-sniff disabling is a DIFFERENT feature
+  (#90, a waiver mechanism with its own audit trail — a waiver records WHICH
+  finding was excused and by whom, where a ruleset swap is an all-or-nothing
+  standard substitution) and is still not offered here.
+
+  Why this is not the same hole the "union only" rule exists to close:
+  `adr/006`'s worry is the WORKER re-defining the standard mid-run, on a tree it
+  just wrote. A ruleset override is the OPERATOR's declaration, made before and
+  outside any run, in a file the worker cannot write (the trusted root) — the
+  same distinction `adr/007`'s `docPaths` already draws, and `adr/010`'s whole
+  argument for why this is safe at all.
+
 ## Related
 
 - `docs/superpowers/specs/2026-07-22-profiles-wp-wc-qualification-layer-design.md`
 - `docs/adr/006-capability-based-authority-model.md`
+- `docs/adr/007-critic-judges-the-diff-not-unverifiable-claims-about-untouched-code.md`
+  — `contract.docPaths`, the operator-declaration-read-from-the-trusted-root
+  precedent `adr/010`'s `contract.gateRulesets` reuses.
+- `docs/adr/010-a-project-may-declare-the-ruleset-its-profile-gate-judges-by.md` —
+  the ruleset-override mechanism this file's "Union only" section is amended for.
 - `docs/PRINCIPLES.md` — #14 (the worker does not write its own oracle), #15 (the
   gate proves only formalized properties)

@@ -4281,7 +4281,15 @@ describe("GET /projects/:id/guarantees", () => {
       profile: {
         id: "wordpress-woocommerce",
         version: 1,
-        gates: [{ id: "phpcs", run: "vendor/bin/phpcs {files}", filesGlob: "**/*.php" }],
+        gates: [
+          {
+            id: "phpcs",
+            run: "vendor/bin/phpcs --standard=/repo/phpcs.xml.dist {files}",
+            filesGlob: "**/*.php",
+            ruleset: "phpcs.xml.dist",
+            rulesetSource: "project" as const,
+          },
+        ],
         protectedPaths: ["phpcs.xml"],
       },
       checkCommand: "npm test",

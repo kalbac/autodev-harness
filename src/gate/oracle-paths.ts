@@ -416,6 +416,21 @@ function assertGlobNotEscaping(entry: string, source: string): string {
  *      `composition/`). Classified literal-or-glob like `constitutionPaths`. The
  *      profile itself needs no protection: it lives in the harness repo, which the
  *      worker's worktree never intersects.
+ *   6. `contract.gateRulesets` — each gate id's declared ruleset path (`adr/010`).
+ *      Read straight off `HarnessConfig`, unlike source 5: a project's OWN override
+ *      of its OWN gate's ruleset is already a plain `Record<string,string>` sitting
+ *      on `cfg.contract` (`src/config/schema.ts`), not something owned by
+ *      `profile/` at all, so no `gate/` → `profile/` dependency is introduced by
+ *      adding it here. Classified literal-or-glob like sources 4 and 5, through the
+ *      same `addLiteral`/`addGlob` helpers — this is the part of `adr/010` part (c)
+ *      that closes the hole its own text names: without this, the mechanism would
+ *      move a gate's oracle file from a path the fence already covers (the
+ *      profile's own `gates/phpcs.xml`, never in the worktree at all) to a
+ *      project-declared one the fence does not — quietly UN-protecting exactly the
+ *      file whose whole purpose is to define what "pass" means for that gate. The
+ *      attributed source names the declaring gate id, so an escalation says which
+ *      override demanded the protection, the same way source 5 names which
+ *      profile did.
  */
 export async function resolveOracleSet(
   cfg: HarnessConfig,
@@ -516,6 +531,20 @@ export async function resolveOracleSet(
       addGlob(entry, `profile protectedPaths: ${entry}`);
     } else {
       await addLiteral(entry, `profile protectedPaths: ${entry}`);
+    }
+  }
+
+  // 6. contract.gateRulesets -- adr/010: a project's own declared override of an
+  // overridable profile gate's ruleset joins the protected set too, or the
+  // declaration would silently move that gate's oracle file OUT of the fence's
+  // coverage (see the module doc comment's source-6 entry for the exact failure
+  // this closes). Same classification/normalization as every other source, keyed
+  // by the declaring gate id rather than a profile id.
+  for (const [gateId, entry] of Object.entries(cfg.contract.gateRulesets)) {
+    if (classifyOracleEntry(entry) === "glob") {
+      addGlob(entry, `contract.gateRulesets: ${gateId}`);
+    } else {
+      await addLiteral(entry, `contract.gateRulesets: ${gateId}`);
     }
   }
 

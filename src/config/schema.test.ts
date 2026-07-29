@@ -31,6 +31,24 @@ describe("HarnessConfigSchema", () => {
     expect(cfg.contract.invariantsFile).toBe("INVARIANTS.md");
     expect(cfg.contract.guardsFile).toBe("GUARDS.md");
   });
+
+  it("defaults contract.gateRulesets to {} -- adr/010 override is opt-in per project", () => {
+    // Byte-identical to pre-adr/010 behaviour for a project that declares nothing:
+    // every gate resolves its own profile-declared default ruleset.
+    const cfg = HarnessConfigSchema.parse({});
+    expect(cfg.contract.gateRulesets).toEqual({});
+  });
+
+  it("accepts a populated gateRulesets map and keeps sibling contract fields defaulted", () => {
+    const cfg = HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: "phpcs.xml.dist" } } });
+    expect(cfg.contract.gateRulesets).toEqual({ phpcs: "phpcs.xml.dist" });
+    expect(cfg.contract.docPaths).toEqual([]);
+    expect(cfg.contract.constitutionPaths).toEqual([]);
+  });
+
+  it("rejects a non-string value in gateRulesets", () => {
+    expect(() => HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: 42 } } })).toThrow();
+  });
 });
 
 describe("gate.successCommands (s61 — the operator's command allowlist)", () => {

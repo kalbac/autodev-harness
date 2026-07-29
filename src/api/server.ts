@@ -258,6 +258,22 @@ export interface ProjectGuaranteesView {
         run: string;
         /** null = the gate runs over the whole project on every task. */
         filesGlob: string | null;
+        /** The ruleset text actually in force for this gate, or null when the gate
+         *  declares none and is therefore not overridable at all (`adr/010`). For
+         *  `rulesetSource: "profile"` this is the profile-relative path the profile
+         *  ships; for `"project"` it is the repo-relative path the operator declared
+         *  in `contract.gateRulesets`. Deliberately the DECLARED text rather than the
+         *  resolved absolute path: the absolute path leaks a machine-specific
+         *  location into a read-only projection, and what the operator needs to
+         *  recognize on screen is the file he wrote down. */
+        ruleset: string | null;
+        /** WHICH SIDE supplied the standard this gate judges by — the point of the
+         *  whole projection (`adr/010`). A green gate means "every formalized property
+         *  held" (Principle 15), and a screen claiming what a project guarantees is
+         *  dishonest if it cannot say that the bar came from the project itself. Null
+         *  exactly when `ruleset` is null, so the two are never independently
+         *  meaningful. */
+        rulesetSource: "profile" | "project" | null;
       }>;
       /** Oracle paths this profile protects (worktree-relative). */
       protectedPaths: string[];

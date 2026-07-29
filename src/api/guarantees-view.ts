@@ -31,7 +31,13 @@ export function buildProjectGuaranteesView(
   profile: {
     id: string;
     version: number;
-    gates: Array<{ id: string; run: string; filesGlob: string | null }>;
+    gates: Array<{
+      id: string;
+      run: string;
+      filesGlob: string | null;
+      ruleset: string | null;
+      rulesetSource: "profile" | "project";
+    }>;
     protectedPaths: string[];
   } | null,
   packageScripts: string[] | null,
@@ -65,7 +71,22 @@ export function buildProjectGuaranteesView(
           : {
               id: profile.id,
               version: profile.version,
-              gates: profile.gates.map((g) => ({ id: g.id, run: g.run, filesGlob: g.filesGlob })),
+              // `rulesetSource` is folded to null exactly when `ruleset` is null,
+              // rather than passed through as the inert `"profile"` placeholder
+              // `ResolvedGate` carries for a gate that declares no ruleset at all
+              // (see its field docs). Projecting that placeholder would state
+              // "this gate's standard came from the profile" about a gate that
+              // has no standard to speak of -- the same class of dishonest
+              // projection as folding "contract file unreadable" into "zero
+              // zones", which `invResult`'s tri-state above exists to prevent
+              // (`docs/gotchas/boolean-whose-no-means-two-things.md`).
+              gates: profile.gates.map((g) => ({
+                id: g.id,
+                run: g.run,
+                filesGlob: g.filesGlob,
+                ruleset: g.ruleset,
+                rulesetSource: g.ruleset === null ? null : g.rulesetSource,
+              })),
               protectedPaths: [...profile.protectedPaths],
             },
       checkCommand: cfg.gate.checkCommand,

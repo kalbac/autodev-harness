@@ -185,12 +185,40 @@ export const HarnessConfigSchema = z.object({
       // Default `[]` = no leniency anywhere, which is the pre-adr/007 behaviour
       // exactly. A project that declares nothing loses nothing (Principle 10).
       docPaths: z.array(z.string()).default([]),
+      // `adr/010`: a project's OWN override of an overridable profile gate's
+      // ruleset -- gate id -> a path RELATIVE TO THIS PROJECT's `repoRoot`
+      // (e.g. `{ phpcs: "phpcs.xml.dist" }` overriding the `phpcs` gate). Only
+      // a gate the attached profile itself declared `ruleset:` on (`adr/010`
+      // part (a)) can appear here at all; `src/profile/profile.ts`'s
+      // `loadProfile` is what actually resolves and validates each entry --
+      // this schema only records the operator's intent, exactly the same
+      // split `profile` (above) and `docPaths` already draw between "what was
+      // declared" and "what that declaration resolves to".
+      //
+      // This IS an ORACLE definition -- it changes which standard the `phpcs`
+      // gate judges the diff by -- so, like every other field on `contract`,
+      // it belongs on this trusted-root object and is read by
+      // `loadConfigWithRaw(repoRoot)`, never from the worktree the worker just
+      // wrote (`src/composition/root.ts`). That placement is the whole
+      // argument `adr/010` makes for why this is safe at all: an operator
+      // declaration living in a file the worker cannot write is not the
+      // defendant owning its own oracle (`adr/006`) -- it is the operator, who
+      // `adr/010`'s "what this costs" section names explicitly as the one
+      // party whose blessing already makes a weaker standard legitimate
+      // (Principle 14).
+      //
+      // Default `{}` = no project declares any override, which is
+      // byte-identical to pre-`adr/010` behaviour -- every gate runs against
+      // its profile's own default ruleset, exactly as if this key did not
+      // exist.
+      gateRulesets: z.record(z.string(), z.string()).default({}),
     })
     .default({
       constitutionPaths: [],
       invariantsFile: "INVARIANTS.md",
       guardsFile: "GUARDS.md",
       docPaths: [],
+      gateRulesets: {},
     }),
 
   roles: z

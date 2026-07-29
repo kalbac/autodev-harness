@@ -121,8 +121,20 @@ describe("buildProjectGuaranteesView", () => {
       id: "wordpress-woocommerce",
       version: 1,
       gates: [
-        { id: "phpcs", run: "vendor/bin/phpcs {files}", filesGlob: "**/*.php" },
-        { id: "composer-validate", run: "composer validate", filesGlob: null },
+        {
+          id: "phpcs",
+          run: "vendor/bin/phpcs --standard=/p/gates/phpcs.xml {files}",
+          filesGlob: "**/*.php",
+          ruleset: "gates/phpcs.xml",
+          rulesetSource: "profile" as const,
+        },
+        {
+          id: "composer-validate",
+          run: "composer validate",
+          filesGlob: null,
+          ruleset: null,
+          rulesetSource: "profile" as const,
+        },
       ],
       protectedPaths: ["phpcs.xml"],
     };
@@ -131,10 +143,52 @@ describe("buildProjectGuaranteesView", () => {
       id: "wordpress-woocommerce",
       version: 1,
       gates: [
-        { id: "phpcs", run: "vendor/bin/phpcs {files}", filesGlob: "**/*.php" },
-        { id: "composer-validate", run: "composer validate", filesGlob: null },
+        {
+          id: "phpcs",
+          run: "vendor/bin/phpcs --standard=/p/gates/phpcs.xml {files}",
+          filesGlob: "**/*.php",
+          ruleset: "gates/phpcs.xml",
+          rulesetSource: "profile",
+        },
+        // `rulesetSource` FOLDS TO NULL here, even though the source object
+        // carries the inert `"profile"` placeholder `ResolvedGate` always sets
+        // for a gate with no `ruleset:` key. Projecting the placeholder would
+        // assert "this gate's standard came from the profile" about a gate that
+        // has no standard at all — the dishonest-projection shape this file's
+        // `invariantsReadable` tri-state already exists to prevent.
+        { id: "composer-validate", run: "composer validate", filesGlob: null, ruleset: null, rulesetSource: null },
       ],
       protectedPaths: ["phpcs.xml"],
+    });
+  });
+
+  it("reports a PROJECT-declared ruleset as such, so the screen never presents the project's own bar as the harness's (adr/010)", () => {
+    const cfg = HarnessConfigSchema.parse({});
+    const view = buildProjectGuaranteesView(
+      cfg,
+      UNREADABLE,
+      {
+        id: "wordpress-woocommerce",
+        version: 3,
+        gates: [
+          {
+            id: "phpcs",
+            run: "vendor/bin/phpcs --standard=/repo/phpcs.xml.dist {files}",
+            filesGlob: "**/*.php",
+            ruleset: "phpcs.xml.dist",
+            rulesetSource: "project" as const,
+          },
+        ],
+        protectedPaths: [],
+      },
+      [],
+    );
+    expect(view.checks.profile?.gates[0]).toEqual({
+      id: "phpcs",
+      run: "vendor/bin/phpcs --standard=/repo/phpcs.xml.dist {files}",
+      filesGlob: "**/*.php",
+      ruleset: "phpcs.xml.dist",
+      rulesetSource: "project",
     });
   });
 
