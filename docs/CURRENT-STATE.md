@@ -41,11 +41,25 @@ refused outright by phpcs and fenced by `adr/006`.
 surface and was right: the clone's `autodev/main` has never been pushed, and `agentCi` is off.
 s63's wording here has been corrected — see below.
 
-**Live run:** 3 tasks on the theme, `11b9592` committed with `zones_touched: []` on a docs
-change; one escalated on a real critic objection (his A/B); one draining at session end.
-Neither committed task produced a phpcs finding, so this run gives **no live attribution
+**Live run, and the thing it actually found.** 3 tasks on the theme; `11b9592` committed with
+`zones_touched: []` on a docs change. The other two were about `woodev-base-theme#52`, and
+**their premise was not in the baseline**: the three `woocommerce/myaccount/` files the card is
+about lived only on his open PR #50. So the carve-out task delivered none of the card's value
+while opening the `woocommerce` domain for the two files that WERE there and their five
+theme-authored strings. The critic returned `broken` @0.98; the operator answered **B**; the
+rework extracted constants, wrote docs and **added a test** while leaving the rule behaviourally
+identical — `broken` @0.97, with the sharpest sentence of the session: the new test *"encodes the
+weakened contract rather than the stated copied-core-only exception."* Both tasks were parked in
+`quarantine` by hand, because A would commit the weakening and B only loops (#162). **The gate
+held: the weakening never reached a commit.** New: #160, #161, #162, gotcha 97.
+
+Neither committed task produced a phpcs finding, so the run gives **no live attribution
 evidence** — #155's proof is the capture plus gate-level tests, and that limit is stated rather
 than papered over.
+
+**Post-session state:** his PR #50 is merged, the clone is synced (`99f558c`, a merge of
+`origin/main` into `autodev/main` — not a reset), the three files now exist, and his suite is
+green there (**509 tests, 1 skipped**). #52 is ready to re-queue in a REFORMULATED shape.
 
 ## Where we were (leaving s63)
 
@@ -162,16 +176,25 @@ job now changes from "prove it can measure" to "measure something harder".
    work in his repository. Three options are in the card; **(a) push `autodev/main` to origin
    after a green gate** is the one that turns his own CI into evidence, and it is an
    outward-facing action on his repo, so it is his call.
-2. **Answer the parked escalation on `i18n-woo-domain-carveout-test`** (A/B). The critic says
-   the carve-out weakened `I18nSourceTest` beyond the exception he authorized — whether that
-   is true is an oracle question about his own test, and the task is parked until he says.
-3. **Finish the #52 batch** — the templates task was draining at session end; its outcome is
-   in `.autodev/queue` on the clone, not yet reported anywhere.
-4. **A live case that actually exercises attribution.** s64 proved #155 at the gate level with
+2. **Re-run `woodev-base-theme#52`, REFORMULATED** — this is the first thing the operator asked
+   for in s65, and the clone is already synced and green for it. Do NOT restate the old task:
+   its acceptance ("strings copied verbatim from WooCommerce core") is **not mechanically
+   decidable** by a suite that never loads WooCommerce, which is why the worker produced
+   cosmetics twice. Ask instead for an **explicit list of the exact strings** allowed to name
+   the `woocommerce` domain under `woocommerce/`. Measured: the subtree genuinely mixes core
+   copies (`'Hello %1$s (not %1$s? <a href="%2$s">Log out</a>)'`, `_x( '#', 'hash before order
+   number' )`, `'Account pages'`, the `Order`/`Date`/`Status`/`Total` headers) with the theme's
+   own (`'Orders in the last 12 months'`, `'Orders in progress'`, `'Lifetime spent'`,
+   `'Recent orders'`) — so a path rule is wrong on the real code, not just in principle.
+3. **A live case that actually exercises attribution.** s64 proved #155 at the gate level with
    a real capture, but neither committed task produced a phpcs finding, so the fix has no
    end-to-end observation yet. The theme is clean under its own standard (`phpcs` exit 0
    tree-wide), so the debt case cannot be staged there honestly — the polygon can, by
    declaring a ruleset for it.
+4. **#160 / #161 / #162** — the three findings the #52 run produced: no existence check on a
+   `file_set`; the worker answers a CORRECTNESS objection with a refactor (the mirror of #147);
+   and an escalation offers only A/B, with no "reject and park" and no "abandon", so stopping a
+   task means editing the blackboard by hand.
 4. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
    the worker cannot argue back.** Measured, not suspected. Options are in the issue; the one
    that changes the most is giving the critic the CALLERS of the symbols a diff touches, so

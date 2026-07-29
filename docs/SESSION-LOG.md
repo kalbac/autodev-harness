@@ -50,8 +50,27 @@ harness's work in his repo**. s63's "three of his four PHP CI checks pass" descr
 LOCALLY and invited exactly the wrong reading; wording fixed here, the clone's config comment
 claiming the branch is pushed corrected, and the gap filed as **#157**.
 
-**New:** gotchas 95 (`[gate/declared-ruleset-anchors-paths-elsewhere]`) and 96
-(`[gate/validator-after-normalizer]`), issues #157/#158.
+**The live run's real finding, after the operator answered B.** The two remaining tasks were
+about `woodev-base-theme#52`, and **their premise was not in the baseline** — the three
+`woocommerce/myaccount/` files the card is about lived only on his open PR #50. So the
+carve-out delivered none of the card's value while opening the `woocommerce` domain for the
+two files that WERE there and their five theme-authored strings. Critic `broken` @0.98 → he
+answered **B** → the rework extracted constants, wrote docs and **added a test** while the rule
+stayed behaviourally identical → `broken` @0.97, and the critic named it exactly: the new test
+*"encodes the weakened contract rather than the stated copied-core-only exception."* Both tasks
+parked in `quarantine` by hand — A would commit the weakening, B only loops until the attempt
+budget dies and mislabels the cause `poison`. **The gate held: the weakening never reached a
+commit.** Root cause compounded by an acceptance criterion that is not mechanically decidable
+here ("copied verbatim from WooCommerce core", in a suite that never loads WooCommerce), which
+leaves a worker no way to say "I cannot satisfy this" except to look compliant.
+
+**Closed out:** his PR #50 merged, clone synced by MERGE not reset (`99f558c`), the three files
+now exist, his suite green there (509 tests, 1 skipped). #52 is ready to re-queue reformulated —
+an explicit list of exact strings, not a path rule.
+
+**New:** gotchas 95 (`[gate/declared-ruleset-anchors-paths-elsewhere]`), 96
+(`[gate/validator-after-normalizer]`) and 97 (`[orchestrator/premise-in-an-unmerged-branch]`);
+issues #157/#158/#160/#161/#162.
 
 ---
 
