@@ -170,6 +170,24 @@ function rootSegmentCount(segs: string[]): number {
   return 1;
 }
 
+/** POSIX collapses three or more leading slashes to one; only exactly two are
+ *  special, and only as UNC. Stated once, here, because R3 fixed it for the
+ *  ruleset path alone and R6 found the same string shape still mishandled on the
+ *  REPORT path: `///repo/wt/src/a.php` has seven split segments, the first two
+ *  empty, so `rootSegmentCount` read it as a UNC root and preserved the `///`,
+ *  after which no worktree prefix could match and a finding on an added line was
+ *  falsely blocked.
+ *
+ *  Applied in two places on purpose, and the second is not redundant:
+ *  `canonicalize` uses it so every path gets it, while `relativePathAnchor` must
+ *  apply it BEFORE its incomplete-UNC refusal -- otherwise `///repo` reaches
+ *  that refusal looking exactly like a `//server`-shaped path with an empty
+ *  share and is rejected outright. Same rule, one implementation, two moments
+ *  that each need it. */
+function collapseLeadingSlashes(folded: string): string {
+  return folded.replace(/^\/{3,}/, "/");
+}
+
 /**
  * THE canonicalizer, and the only place `.`, `..`, trailing separators and the
  * root floor are interpreted. Input must already be folded and extended-length-
@@ -194,7 +212,7 @@ function rootSegmentCount(segs: string[]): number {
  * the anchor as well as the value, which is the half that kept being missed.
  */
 function canonicalize(folded: string): string {
-  const segs = folded.split("/");
+  const segs = collapseLeadingSlashes(folded).split("/");
   // Trailing separators first: they would otherwise leave an empty tail segment
   // that the next push turns into a doubled separator (`C:/` + `x` -> `C://x`).
   while (segs.length > 1 && segs[segs.length - 1] === "") segs.pop();
@@ -272,13 +290,12 @@ function relativePathAnchor(rulesetPath: string | null): string | null {
   if (rulesetPath === null || rulesetPath.trim() === "") return null;
   let folded = stripExtendedLengthPrefix(foldSeparators(rulesetPath));
 
-  // POSIX collapses three or more leading slashes to one; only exactly two are
-  // special (and only as UNC). Without this, `///repo/phpcs.xml` -- a perfectly
-  // ordinary POSIX path -- was refused below as an incomplete UNC, leaving every
-  // finding unattributed and blocking a change for a path shape that is not even
-  // unusual (R3, minor). Fails in the safe direction, but a false block is still
-  // a broken gate.
-  folded = folded.replace(/^\/{3,}/, "/");
+  // Here as well as inside `canonicalize`, and deliberately so: without it,
+  // `///repo/phpcs.xml` reaches the incomplete-UNC refusal below looking like a
+  // `//`-path with an empty share and is rejected outright, leaving every
+  // finding unattributed and blocking a change for an ordinary POSIX path shape
+  // (R3, minor). See `collapseLeadingSlashes`.
+  folded = collapseLeadingSlashes(folded);
 
   // An anchor that is not itself ROOTED cannot place anything: a relative
   // ruleset path is measured from a current directory this process does not

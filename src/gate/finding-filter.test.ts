@@ -785,6 +785,52 @@ describe("#155: a report path anchored at the ruleset's directory, not the workt
     expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
   });
 
+  it("R5: a drive-relative report path carrying a '.' is still not promoted to absolute", () => {
+    // The round-5 gate called this a fail-open blocker, on the theory that
+    // `canonicalize` rewrites `D:.` to `D:` and so lands the path inside the
+    // worktree. Measured instead of argued: it does not. `.` is dropped only
+    // when it is an ENTIRE segment, and `"D:./repo/x".split("/")` makes `D:.`
+    // segment zero, which sits below the root floor and is never inspected. The
+    // path therefore fails the `D:/repo/wt/` prefix check and the finding is
+    // KEPT, unattributed -- the fail-closed answer.
+    //
+    // The finding was declined on that evidence; the observation that no test
+    // covered the dot form was correct and is what this test is for.
+    const result = filterFindings(
+      [finding({ file: "D:.\\repo\\wt\\src\\a.php", line: 99, message: "drive-relative" })],
+      new Map([["src/a.php", new Set([3])]]),
+      "D:\\repo\\wt",
+      new Set(),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "drive-relative" });
+    // The raw string is preserved verbatim -- the operator's only diagnostic.
+    expect(result[0]!.file).toBe("D:.\\repo\\wt\\src\\a.php");
+  });
+
+  it("R6-FIX1: three or more leading slashes collapse on the REPORT path too, not just the ruleset", () => {
+    // R3 fixed this for the anchor only. `///repo/wt/src/a.php` splits into seven
+    // segments whose first two are empty, so the root floor read it as UNC and
+    // preserved the `///` -- no worktree prefix could then match, and a finding
+    // on a line the worker had just added was falsely blocked.
+    const report = filterFindings(
+      [finding({ file: "///repo/wt/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "/repo/wt",
+      new Set(),
+    );
+    expect(report[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+
+    // ...and on the WORKTREE path, which is a path like any other.
+    const worktree = filterFindings(
+      [finding({ file: "/repo/wt/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "///repo/wt",
+      new Set(),
+    );
+    expect(worktree[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
   it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
     // The profile's ruleset declares no basepath, so its findings stay
     // absolute. Supplying the anchor must be a no-op for them.

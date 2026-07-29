@@ -5,7 +5,49 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s63)
+## Where we are (leaving s64)
+
+**The ruler the harness judges his code by was wrong, and the harness found it on his repo.**
+`adr/010` (s63) let a project declare its own phpcs ruleset; the same run produced #155. A
+project-declared ruleset is read from the TRUSTED ROOT, and PHPCS resolves a relative
+`basepath` against the RULESET FILE's directory — so his `phpcs.xml.dist` makes every finding
+arrive relative to the repo root while the gate runs with the worktree as cwd. Measured, both
+directions, one file:
+
+| ruleset | reported path |
+|---|---|
+| the profile's (no `basepath`) | `D:\...\worktrees\s64-probe\...` — absolute |
+| his `phpcs.xml.dist` (`basepath="."`) | `.autodev\worktrees\s64-probe\...` — relative to the trusted root |
+
+Every finding therefore landed `unattributed` — kept (fail-closed) but judged over the WHOLE
+FILE, which is the guarantee `profile-gates-must-be-diff-scoped` exists to give, suspended by
+`adr/010`'s own mechanism. Harmless on his clean theme; unsatisfiable on a legacy file. Fixed,
+pinned on a verbatim capture.
+
+**Six review rounds, and the count is the point.** R1 minor · R2 major · R3 three (two
+fail-OPEN) · R4 four (two fail-OPEN, one of them older than #155: a ROOTED report path never
+reached the canonicalizer, so `src/./a.php` matched no diff key and a violation on an added
+line was silently DROPPED) · R5's blocker **disproved by running its exact input** and declined
+with the measurement · R6 pending at session end. R4 also caught the shape now recorded as
+gotcha 96: the incomplete-UNC refusal had been moved AFTER the canonicalizer that erases the
+shape it refuses, so it stopped firing while its test kept passing for an unrelated reason.
+
+**#153 is answered and shipped**: four contract zones on his theme (text domain, hook prefix,
+`--wtb-`, FilterRail query vars), each verified through the harness's own parser to fire on a
+declaration change and NOT on ordinary use. Short arrays deliberately not a zone — already
+refused outright by phpcs and fenced by `adr/006`.
+
+**No CI has ever run on the harness's work in his repo (#157).** He noticed the empty CI
+surface and was right: the clone's `autodev/main` has never been pushed, and `agentCi` is off.
+s63's wording here has been corrected — see below.
+
+**Live run:** 3 tasks on the theme, `11b9592` committed with `zones_touched: []` on a docs
+change; one escalated on a real critic objection (his A/B); one draining at session end.
+Neither committed task produced a phpcs finding, so this run gives **no live attribution
+evidence** — #155's proof is the capture plus gate-level tests, and that limit is stated rather
+than papered over.
+
+## Where we were (leaving s63)
 
 **The harness did real work in the operator's own repository, and it committed.**
 `woodev-base-theme` — his active WordPress theme, not the polygon — through a clone the
@@ -81,7 +123,8 @@ agent invented would have measured the agent's guesses.
 | Profiles / Qualification Layer | ✅ v1 (s51). **v3 s63 (`adr/010`)**: a project may DECLARE the ruleset its gate is judged by, read from the trusted root and fenced as oracle — without it the harness could not write a passing line of PHP in the operator's own theme |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
 | Evaluation Corpus | ✅ machinery + `eval` CLI + **8 cases**; run SIX times. s61 met the bar 7/7; **s62 deliberately broke the ceiling: 8/9, first-pass commit 83.3%, escaped 0%, 0 errored** — the corpus can fail again and does (#147). One case deleted the same run for passing vacuously (#148/#149) |
-| **The harness on a REAL operator repo** | ✅ **s63 — DONE with a commit** (`6908cb6` in a harness-owned clone of `woodev-base-theme`): critic `clean` ×2, gate RETRY on a real defect then green, his own phpunit/phpcs/phpstan all pass. Residual: #155 (line-scoping off for a declared ruleset) |
+| **The harness on a REAL operator repo** | ✅ **s63 — DONE with a commit** (`6908cb6`), ✅ **s64 — a SECOND commit** (`11b9592`) with contract zones live and `zones_touched: []` on a docs change. #155 fixed (six review rounds). Residuals: **#157** (no CI has ever gated this work — branch unpushed, `agentCi` off), one escalation parked on his A/B |
+| **Contract zones on his theme (#153)** | ✅ **s64 — four zones declared from HIS choice**, each verified through the harness's own parser to fire on a declaration change and not on ordinary use. `GUARDS.md` deliberately still empty: blessing a guard is his act, so a touched zone escalates by name and value |
 | **Project legibility (#138)** | 🟡 first slice shipped s62 — `GET /projects/:id/guarantees` + the "What this project guarantees" screen, live-verified. Umbrella still open: corpus metrics in the UI, per-field explanations (#96) |
 | **Task-command authority (`adr/009`)** | ✅ **MERGED + MEASURED** (PR #145) — the composer may only reference declared commands; the gate refuses to RUN one that does not exist |
 | Corpus run diagnostics (#126) | ✅ shipped s57 — and it is what identified #143 from archived artifacts without a re-run |
@@ -113,21 +156,22 @@ job now changes from "prove it can measure" to "measure something harder".
 > **s63 discharged item 1: it ran on his own repo and committed.** What follows is what that
 > run exposed, in the order it costs him.
 
-1. **#155 — a project-declared ruleset silently disables line-scoping.** The run's own
-   finding and the most expensive one open: `basepath` anchors the report at the trusted
-   root, the gate matches worktree-relative paths, findings land `unattributed` and are
-   therefore judged over the whole file. Harmless on a clean theme, immediately harmful on
-   a legacy file — and it is the defect gotcha 82 exists to prevent, reintroduced by
-   `adr/010`'s own mechanism. Fix needs a real checkstyle fixture anchored outside the
-   worktree; a self-authored one proves nothing here (`[gate/agent-ci-ndjson-keyed-by-event-not-type]`).
-2. **#153 — which of the theme's values are contract zones.** The operator's, and the only
-   thing standing between the current run and a gate that protects his invariants rather
-   than just his style. Candidates are already written down in the card, all read from the
-   theme's own docs rather than invented.
-3. **Run a SECOND task on the theme, deliberately on a dirty file.** The first run's target
-   was clean under its own standard, which is the easy case; #155's blast radius is only
-   visible on a file with pre-existing debt. This is also the cheapest way to find the next
-   thing, and s63's evidence is that a real repo answers questions the polygon cannot.
+1. **#157 — decide how his repo's work gets a CI gate.** The most expensive thing open,
+   because it is a hole in the product story rather than in a module: the clone commits, the
+   branch is never pushed, `agentCi` is off, so nothing CI-shaped has ever gated the harness's
+   work in his repository. Three options are in the card; **(a) push `autodev/main` to origin
+   after a green gate** is the one that turns his own CI into evidence, and it is an
+   outward-facing action on his repo, so it is his call.
+2. **Answer the parked escalation on `i18n-woo-domain-carveout-test`** (A/B). The critic says
+   the carve-out weakened `I18nSourceTest` beyond the exception he authorized — whether that
+   is true is an oracle question about his own test, and the task is parked until he says.
+3. **Finish the #52 batch** — the templates task was draining at session end; its outcome is
+   in `.autodev/queue` on the clone, not yet reported anywhere.
+4. **A live case that actually exercises attribution.** s64 proved #155 at the gate level with
+   a real capture, but neither committed task produced a phpcs finding, so the fix has no
+   end-to-end observation yet. The theme is clean under its own standard (`phpcs` exit 0
+   tree-wide), so the debt case cannot be staged there honestly — the polygon can, by
+   declaring a ruleset for it.
 4. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
    the worker cannot argue back.** Measured, not suspected. Options are in the issue; the one
    that changes the most is giving the critic the CALLERS of the symbols a diff touches, so
