@@ -4,6 +4,57 @@
 
 ---
 
+## s64 — the ruler the harness judges his code by, and a CI claim that was never true (2026-07-29/30)
+
+**Branch:** `feat/s64-line-scoping-declared-ruleset` · **Model:** Opus 5, attended.
+
+**#155 reproduced before it was fixed, on his own repo.** `adr/010` let a project declare the
+ruleset its gate is judged by; the run that shipped it also produced the defect. Measured by
+running the gate's own phpcs command twice on one file in a real worktree: the profile's
+ruleset (no `basepath`) emits an **absolute** path, his `phpcs.xml.dist`
+(`<arg name="basepath" value="."/>`) emits `.autodev\worktrees\<task>\...` — **relative to the
+trusted root**, because PHPCS resolves a relative `basepath` against the RULESET FILE's
+directory while the gate runs with the worktree as cwd. Every finding therefore arrived
+`unattributed`: kept (fail-closed) but judged over the WHOLE FILE, which is exactly the
+guarantee `profile-gates-must-be-diff-scoped` exists to give, suspended by `adr/010`'s own
+mechanism. The fix anchors a non-rooted report path at the ruleset's directory, pinned on a
+**verbatim capture** from his theme.
+
+**The review gate ran six rounds and earned every one.** R1 minor (`..` at a root refused, not
+clamped) · R2 major (any `//` path treated as a UNC root) · R3 three findings, two fail-OPEN
+(the ANCHOR's own `.`/`..` never resolved; a relative ruleset path accepted) · R4 four more,
+two fail-OPEN — a **rooted** report path bypassed canonicalization entirely (older than #155),
+and the incomplete-UNC refusal ran AFTER the canonicalizer that erases the shape it refuses,
+which had silently killed the R2 guard while its test kept passing **for the wrong reason**.
+R5's single blocker was **disproved by executing its exact input** (the finding stays
+`unattributed`, i.e. fail-closed) and declined with the measurement; its accompanying "no test
+covers this" was right and is now a test. One R4 finding declined and filed (#158). Every fix
+mutation-verified individually; one probe pair proved two mechanisms were redundant, and that
+is written down rather than implied.
+
+**#153 answered and shipped.** Four contract zones for the theme, from his choice — text
+domain, hook prefix, `--wtb-`, FilterRail query vars — each verified through the harness's own
+parser: an ordinary `__( 'x', 'woodev-base-theme' )` does **not** fire the zone, changing the
+`Text Domain:` header does. Short-array syntax deliberately NOT a zone (already refused
+outright by phpcs and fenced by `adr/006`); said so instead of building it.
+
+**Live run on his theme, honest result:** 3 tasks; `11b9592` COMMITTED (`zones_touched: []` on
+a docs change — the scoping holds), one ESCALATED on a substantive critic objection (the
+carve-out weakened enforcement beyond the stated exception — his A/B), one still draining.
+**No live attribution evidence**: neither committed task produced a phpcs finding, so #155's
+proof rests on the capture plus gate-level tests, not on this run.
+
+**His correction, and it was right:** he saw no CI in the dashboard. Verified — the clone's
+`autodev/main` has never been pushed and `agentCi` is off, so **no CI has ever run on the
+harness's work in his repo**. s63's "three of his four PHP CI checks pass" described checks run
+LOCALLY and invited exactly the wrong reading; wording fixed here, the clone's config comment
+claiming the branch is pushed corrected, and the gap filed as **#157**.
+
+**New:** gotchas 95 (`[gate/declared-ruleset-anchors-paths-elsewhere]`) and 96
+(`[gate/validator-after-normalizer]`), issues #157/#158.
+
+---
+
 ## s63 — the harness did real work in the operator's own repository, and it committed (2026-07-29)
 
 **Branch:** `feat/s63-real-repo` · **Theme commit:** `6908cb6` · **Model:** Opus 5, attended.

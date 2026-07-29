@@ -127,6 +127,220 @@ function isWindowsShapedPath(folded: string): boolean {
   return /^[A-Za-z]:\//.test(folded) || folded.startsWith("//");
 }
 
+/** Does this (folded, prefix-stripped) path already carry its own root, so that
+ *  anchoring it at anything else would be a fabrication?
+ *
+ *  Two shapes qualify, and the second one is the subtle half:
+ *   - anything starting with `/` -- a POSIX absolute path, and also the UNC
+ *     form `//server/share/...` once folded.
+ *   - anything starting with a drive letter and a colon. Note this deliberately
+ *     does NOT require a following slash. `D:/x` is drive-ABSOLUTE, but `D:x`
+ *     is drive-RELATIVE: Windows resolves it against that drive's own current
+ *     directory, which this process does not know and must not guess. Joining
+ *     `D:x` onto an anchor would invent a path the tool never named, so both
+ *     drive shapes are refused here and fall through to the ordinary
+ *     containment check (which fails, leaving the finding `unattributed` --
+ *     fail-closed). `docs/gotchas/oracle-protected-paths-must-be-worktree-
+ *     relative.md` round 5 is exactly this shape, found in a sibling module.
+ */
+function isRootedPath(folded: string): boolean {
+  return folded.startsWith("/") || /^[A-Za-z]:/.test(folded);
+}
+
+/** How many leading segments of a folded, split path constitute its ROOT -- the
+ *  part `..` cannot climb above because there is nothing above it.
+ *
+ *  `"//server/share/x".split("/")` is `["", "", "server", "share", "x"]`: a UNC
+ *  root is FOUR segments, and popping one of them does not yield a shorter
+ *  valid path, it yields `//server`, which names no root at all. A POSIX
+ *  absolute path (`["", "repo"]`) and a Windows drive (`["C:", "repo"]`) both
+ *  root in one segment. Anything else is a relative anchor, whose first segment
+ *  is treated as its floor for the same reason.
+ *
+ *  HONEST NOTE on the `length >= 4` clause: it is currently UNREACHABLE through
+ *  the only caller, because `relativePathAnchor` already refuses a `//`-prefixed
+ *  anchor that does not name both a server and a share, and a mutation probe
+ *  confirmed that removing this clause fails no test. It is kept because it is
+ *  part of what "is a UNC root" MEANS, not as a second line of defence being
+ *  passed off as tested -- the behaviour is proven by the anchor-validation test
+ *  (`R2-FIX2`), and this clause is what keeps the predicate true of its own name
+ *  if the validator is ever relaxed. */
+function rootSegmentCount(segs: string[]): number {
+  if (segs.length >= 4 && segs[0] === "" && segs[1] === "") return 4;
+  return 1;
+}
+
+/** POSIX collapses three or more leading slashes to one; only exactly two are
+ *  special, and only as UNC. Stated once, here, because R3 fixed it for the
+ *  ruleset path alone and R6 found the same string shape still mishandled on the
+ *  REPORT path: `///repo/wt/src/a.php` has seven split segments, the first two
+ *  empty, so `rootSegmentCount` read it as a UNC root and preserved the `///`,
+ *  after which no worktree prefix could match and a finding on an added line was
+ *  falsely blocked.
+ *
+ *  Applied in two places on purpose, and the second is not redundant:
+ *  `canonicalize` uses it so every path gets it, while `relativePathAnchor` must
+ *  apply it BEFORE its incomplete-UNC refusal -- otherwise `///repo` reaches
+ *  that refusal looking exactly like a `//server`-shaped path with an empty
+ *  share and is rejected outright. Same rule, one implementation, two moments
+ *  that each need it. */
+function collapseLeadingSlashes(folded: string): string {
+  return folded.replace(/^\/{3,}/, "/");
+}
+
+/**
+ * THE canonicalizer, and the only place `.`, `..`, trailing separators and the
+ * root floor are interpreted. Input must already be folded and extended-length-
+ * stripped; output is the same path with `.` dropped, `..` applied down to (and
+ * never past) its root, and no trailing separator -- so the POSIX root
+ * canonicalizes to the EMPTY STRING, which is the form `"/repo".split("/")`
+ * implies.
+ *
+ * It exists because rounds 1-3 were all the same mistake in different clothes:
+ * the REPORT path was being normalized while the ANCHOR it was measured against
+ * was not. R3's first finding is the sharpest version -- a ruleset at
+ * `C:\repo\worktree\..\phpcs.xml` yields the anchor `C:/repo/worktree/..`, whose
+ * literal `..` segment the report's own `..` then popped, so a report path of
+ * `..\outside.php` resolved to `C:/repo/worktree/outside.php` (INSIDE the
+ * worktree) instead of `C:/outside.php` (outside it). The finding was then
+ * attributed to a file the diff never touched and silently DROPPED: fail-open,
+ * in the component that decides what may merge.
+ *
+ * Both sides now go through this one function, which is the prescription in
+ * `docs/gotchas/validated-one-string-used-another.md` -- state the normal form
+ * ONCE at the entry point, and make the check and the use share it -- applied to
+ * the anchor as well as the value, which is the half that kept being missed.
+ */
+function canonicalize(folded: string): string {
+  const segs = collapseLeadingSlashes(folded).split("/");
+  // Trailing separators first: they would otherwise leave an empty tail segment
+  // that the next push turns into a doubled separator (`C:/` + `x` -> `C://x`).
+  while (segs.length > 1 && segs[segs.length - 1] === "") segs.pop();
+
+  const floor = rootSegmentCount(segs);
+  const out = segs.slice(0, floor);
+  for (const seg of segs.slice(floor)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length > floor) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
+/** Join a relative (folded) path onto a folded anchor, collapsing `.` and `..`
+ *  LEXICALLY -- no filesystem access, for the same cross-platform reason this
+ *  module refuses node's `path` module: the report and the anchor may have been
+ *  produced on a different OS than the one running this code.
+ *
+ *  A `..` at the root is a NO-OP, not a refusal. That is not leniency, it is the
+ *  actual semantics of every filesystem this product runs on: `C:\..` is `C:\`
+ *  and `/..` is `/`. An earlier version of this function refused instead, on the
+ *  reasoning that clamping "would manufacture a containment the input never
+ *  supported" -- which is true of climbing ABOVE a root, and false of a root,
+ *  because a root has no above. The review gate caught it (s64 R1): with a
+ *  ruleset at `C:\phpcs.xml` the anchor is `C:`, so a report path beginning
+ *  `..\` was refused, and a finding on pre-existing debt stayed `unattributed`
+ *  and blocked a change it should have been dropped from. Refusing fails in the
+ *  SAFE direction -- but a false block is still a broken gate, exactly as
+ *  `stripExtendedLengthPrefix` above says of its own case.
+ *
+ *  Clamping cannot fail OPEN: the result still has to pass the worktree
+ *  containment check, and clamping only ever yields the path the OS itself
+ *  would resolve to. */
+function resolveAgainstAnchor(anchorFolded: string, relativeFolded: string): string {
+  // The anchor arrives already canonical from `relativePathAnchor`, so joining
+  // and canonicalizing ONCE is the whole operation -- there is no second rule
+  // here that could disagree with the first.
+  return canonicalize(anchorFolded + "/" + relativeFolded);
+}
+
+/** The directory a relative report path is anchored at, derived from the path
+ *  of the ruleset the tool was run with, or `null` when there is no ruleset (or
+ *  it names no directory).
+ *
+ *  Why the RULESET's directory and not the worktree, the repo root, or the
+ *  process cwd: measured, not assumed (s64, #155). PHPCS resolves a ruleset's
+ *  relative `basepath` against the directory of the RULESET FILE, and `adr/010`
+ *  reads a project-declared ruleset from the TRUSTED ROOT -- so the operator's
+ *  own `phpcs.xml.dist` (`<arg name="basepath" value="."/>`) makes every report
+ *  path relative to the repo root, while the gate runs with the worktree as
+ *  cwd. The two disagree by exactly the `.autodev/worktrees/<task>/` prefix.
+ *  Both shapes were captured side by side on one file: the profile's own
+ *  ruleset (no basepath) emits an absolute path, the project's emits
+ *  `.autodev\worktrees\s64-probe\...`.
+ *
+ *  Deliberately ONE anchor. The worktree itself is NOT also tried: a relative
+ *  path resolves under the worktree trivially, so admitting it as a second
+ *  anchor would make the measured case AMBIGUOUS (two contained candidates) and
+ *  send the finding straight back to `unattributed`, fixing nothing. No tool
+ *  has been observed emitting a cwd-relative Checkstyle path; if one ever is,
+ *  add it then, pinned on its own capture -- the same discipline
+ *  `checkstyle.ts` applied to its fixture, and the same one this module's
+ *  original doc comment prescribed for precisely this situation. */
+function relativePathAnchor(rulesetPath: string | null): string | null {
+  // An empty string is not "the current directory" here, it is "nobody told me":
+  // `loadProfile` seeds `rulesetPath` with `""` for a gate that declares no
+  // ruleset. Letting it through would anchor every relative report path at the
+  // filesystem root -- the same shape as
+  // `docs/gotchas/empty-path-resolves-to-repo-root.md`, where adding a resolve
+  // step turned a harmless absent path into a confident wrong one.
+  if (rulesetPath === null || rulesetPath.trim() === "") return null;
+  let folded = stripExtendedLengthPrefix(foldSeparators(rulesetPath));
+
+  // Here as well as inside `canonicalize`, and deliberately so: without it,
+  // `///repo/phpcs.xml` reaches the incomplete-UNC refusal below looking like a
+  // `//`-path with an empty share and is rejected outright, leaving every
+  // finding unattributed and blocking a change for an ordinary POSIX path shape
+  // (R3, minor). See `collapseLeadingSlashes`.
+  folded = collapseLeadingSlashes(folded);
+
+  // An anchor that is not itself ROOTED cannot place anything: a relative
+  // ruleset path is measured from a current directory this process does not
+  // know. R3's second finding is what happens without this -- with a relative
+  // ruleset `config/phpcs.xml` and a relative worktree `config/worktree`, the
+  // anchor `config` clamped a `..` it should have applied, and a report path of
+  // `../worktree/outside.php` resolved INSIDE the worktree, dropping a finding
+  // from outside it. Production always passes an absolute path (`root.ts` hands
+  // over `g.rulesetPath`, resolved at profile load), so this refuses a shape the
+  // gate never produces rather than narrowing one it does.
+  if (!isRootedPath(folded)) return null;
+
+  const lastSlash = folded.lastIndexOf("/");
+  if (lastSlash === -1) return null;
+
+  const rawDir = folded.slice(0, lastSlash);
+
+  // A `//`-prefixed path is only a root if it actually names BOTH a server and
+  // a share. `//server` names neither a directory nor a root -- there is
+  // nothing for `..` to be measured against, and treating it as a 4-segment
+  // UNC root (the R2 defect) froze `..` entirely, so `x/../a.php` resolved to
+  // `//server/x/a.php` instead of `//server/a.php`: a path OUTSIDE the
+  // worktree made to look contained, whose finding is then silently dropped.
+  // That is the fail-OPEN direction, so the degenerate shape is refused
+  // outright rather than given an invented floor.
+  //
+  // R4: this check MUST run on the RAW directory, BEFORE canonicalization.
+  // `canonicalize("//server")` returns `/server` -- a three-segment path has a
+  // floor of 1, so the empty second segment is dropped -- which erases the very
+  // shape being refused, and the check silently stopped firing the moment R3
+  // moved canonicalization ahead of it. The R2 test kept passing only because
+  // its worktree happened to be UNC-shaped while the resolved path had become
+  // POSIX: green for the wrong reason. A validator that runs after the
+  // normalizer which destroys its input is not a validator.
+  if (rawDir.startsWith("//")) {
+    const segs = rawDir.split("/");
+    if (segs.length < 4 || segs[2] === "" || segs[3] === "") return null;
+  }
+
+  // The anchor goes through the SAME canonicalizer as the report path -- trailing
+  // separators, `.` and `..` included. Normalizing one side and not the other is
+  // the defect shape every review round kept finding.
+  return canonicalize(rawDir);
+}
+
 /**
  * Normalize one finding's raw path to a worktree-relative, `/`-separated form,
  * or return `null` when it cannot be attributed to anything under
@@ -136,15 +350,24 @@ function isWindowsShapedPath(folded: string): boolean {
  * The primary check is a folded-string prefix match: `file` must start with
  * `worktreePath + "/"` once both are folded to forward slashes -- case-
  * insensitively when either side is Windows-shaped (FIX8, `isWindowsShapedPath`),
- * case-sensitively otherwise. No attempt is made to also recognize a path that
- * looks ALREADY worktree-relative (bare, no drive letter, no leading slash) as
- * a pass-through -- `checkstyle.ts`'s own doc comment records that these tools
- * emit an ABSOLUTE path, and guessing at a second acceptable shape here would
- * widen what counts as "attributed" beyond what has actually been observed
- * from a real tool, in the one component whose job is deciding what may merge.
- * If a tool is ever found to emit a relative path, add that case explicitly,
- * pinned on a captured example -- the same discipline `checkstyle.ts` used for
- * its own fixture.
+ * case-sensitively otherwise.
+ *
+ * #155: a path that is NOT already rooted (`isRootedPath`) is first anchored at
+ * `relativePathAnchor(rulesetPath)` and only then put through that same check --
+ * one entry point, one normal form, both sides folded (folding only one of two
+ * probe paths is round 6 of `docs/gotchas/oracle-protected-paths-must-be-
+ * worktree-relative.md`). This is the case the original version of this comment
+ * anticipated and deferred: *"if a tool is ever found to emit a relative path,
+ * add that case explicitly, pinned on a captured example"*. One was --
+ * `adr/010` let a project declare its own ruleset, the operator's declares
+ * `basepath="."`, and every finding from it arrived relative to the trusted
+ * root. The capture is `__fixtures__/phpcs-checkstyle-project-basepath.xml`,
+ * taken from his real theme.
+ *
+ * Note the direction of the change: before it, a relative path was ALWAYS
+ * `null` here. So this branch can only ever turn an `unattributed` finding into
+ * an attributed, line-scoped one -- it cannot make an attributed finding
+ * disappear, which is the one direction that would be fail-open.
  *
  * FIX7: passing the prefix check is not sufficient proof of containment. A
  * finding path like `C:\repo\..\outside.php` (worktree `C:\repo`) folds to
@@ -169,10 +392,32 @@ function isWindowsShapedPath(folded: string): boolean {
  * that just decided this path was contained at all (`findCaseInsensitiveKey`
  * below) -- that is what `caseInsensitive` is returned for.
  */
-function normalizeFindingPath(rawFile: string, worktreePath: string): { rel: string; caseInsensitive: boolean } | null {
-  const file = stripExtendedLengthPrefix(foldSeparators(rawFile));
-  let root = stripExtendedLengthPrefix(foldSeparators(worktreePath));
-  if (root.endsWith("/")) root = root.slice(0, -1);
+function normalizeFindingPath(
+  rawFile: string,
+  worktreePath: string,
+  rulesetPath: string | null,
+): { rel: string; caseInsensitive: boolean } | null {
+  const raw = stripExtendedLengthPrefix(foldSeparators(rawFile));
+  // R4: EVERY path goes through `canonicalize`, not only the anchored one. The
+  // rooted branch used to pass the report through untouched, so a tool emitting
+  // `C:/repo/wt/src/./a.php` (or `src//a.php`) produced the relative path
+  // `src/./a.php`, which matches no diff key -- the finding was then read as
+  // "a file the diff never touched" and SILENTLY DROPPED, even when it sat on a
+  // line the worker had just added. Fail-open, and it predates #155: the
+  // absolute branch never canonicalized. The `..` case was the mirror image,
+  // failing closed (`src/../src/a.php` was refused outright).
+  const file = isRootedPath(raw)
+    ? canonicalize(raw)
+    : (() => {
+        const anchor = relativePathAnchor(rulesetPath);
+        return anchor === null ? null : resolveAgainstAnchor(anchor, raw);
+      })();
+  if (file === null) return null;
+
+  // The worktree is a path like any other and gets the same treatment -- a
+  // configured root of `C:\repo\wt\.` otherwise built the prefix `C:/repo/wt/./`,
+  // which no report path can match, so every finding fell to `unattributed`.
+  const root = canonicalize(stripExtendedLengthPrefix(foldSeparators(worktreePath)));
   const prefix = root + "/";
 
   const caseInsensitive = isWindowsShapedPath(root) || isWindowsShapedPath(file);
@@ -189,6 +434,13 @@ function normalizeFindingPath(rawFile: string, worktreePath: string): { rel: str
  * for, given the diff's added-line map and new-files set (`diff-lines.ts`'s
  * `addedLineNumbers` output -- `AddedLines.added` and `AddedLines.newFiles`)
  * and the worktree root the tool ran against.
+ *
+ * `rulesetPath` is the absolute path of the ruleset the tool was run with, when
+ * the gate declared one. It exists solely to anchor a RELATIVE report path
+ * (#155 -- see `relativePathAnchor`). It defaults to `null`, which reproduces
+ * the behaviour that predates it: every relative path is unattributed. That is
+ * the fail-closed direction, so a caller that cannot say which ruleset was in
+ * force loses line-scoping rather than mis-attributing a finding.
  *
  * Four outcomes per finding, in the order checked (see the design doc's
  * "Fail-closed rules" for the reasoning behind each):
@@ -224,11 +476,12 @@ export function filterFindings(
   addedLines: Map<string, Set<number>>,
   worktreePath: string,
   newFiles: Set<string>,
+  rulesetPath: string | null = null,
 ): FilteredFinding[] {
   const kept: FilteredFinding[] = [];
 
   for (const f of findings) {
-    const norm = normalizeFindingPath(f.file, worktreePath);
+    const norm = normalizeFindingPath(f.file, worktreePath, rulesetPath);
 
     if (norm === null) {
       // Rule 5. Keep the RAW `f.file` (not a normalized form -- there isn't
