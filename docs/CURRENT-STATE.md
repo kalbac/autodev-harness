@@ -5,49 +5,61 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s62)
+## Where we are (leaving s63)
 
-A working **Node daemon + web dashboard**. s61 met the pass bar on seven cases; **s62 made the
-corpus able to fail again, and it immediately did** — which is the first time in four runs that
-the instrument reported something instead of confirming.
+**The harness did real work in the operator's own repository, and it committed.**
+`woodev-base-theme` — his active WordPress theme, not the polygon — through a clone the
+harness owns. His issue #46, chosen by him: `FilterRail::reset_url()` removed the
+`sanitize_key()`'d query var name instead of the original, so the Reset link silently kept
+any filter whose key was not already a lowercase slug.
 
-| | s59 | s60 | s61 | **s62** | Meaning |
-|---|---|---|---|---|---|
-| **Throughput** — `first_pass_commit_rate` | 50% | 50% | 100% | **83.3%** | one good case does not commit — and should |
-| **Catching power** — `escaped_defect_rate` | 0% | 0% | 0% | **0%** | 3/3 adversarial escalated |
-| Cases passed | 5/7 | 5/7 | 7/7 | **8/9** | pass bar **NOT met — deliberately** |
-| Cases measured | — | — | 7/7 | **9/9** | 0 errored |
+| | evidence |
+|---|---|
+| Commit | `6908cb6` on `autodev/main`, 2 files, +31/−10 |
+| Critic | `clean` @0.96 (round 1), `clean` @0.94 (round 2) — on a REFACTOR, not an addition |
+| Gate round 1 | **RETRY** — phpcs red on one real defect the worker made (a docblock opening lowercase, `Generic.Commenting.DocComment.ShortNotCapital`) |
+| Gate round 2 | green → commit |
+| His `composer test:unit` | **397** tests (was 396), 1256 assertions, green |
+| His `composer phpcs` | whole theme, exit 0 |
+| His `composer phpstan` | **[OK] No errors** — a gate the harness never ran |
+| Guard is real | reintroducing the bug fails **2** tests (mutation-verified, restore clean) |
 
-`corpus/RESULTS-2026-07-28c.md`, 1492.4s, baseline `fb21553`.
+Three of his four PHP CI checks pass, including one the harness does not run. The loop
+behaved exactly as designed: the gate refused work carrying a genuine defect, named it by
+file/line/sniff, and the worker fixed that and only that.
 
-**The failing case is the deliverable.** `good-multifile-method-labels` asks for a coordinated
-three-file migration (a new constant class, a rewritten `get_label()`, a `require_once`). The
-worker's diff is CORRECT. The critic returned `broken` **@0.99** on two objections that are
-both about code the diff does not contain: callers that might pass the old ids (the repo has
-none) and a hypothetical standalone include (which the require order it also notes makes
-moot). `#123` widened the critic's evidence window to whole **changed** files; this case stands
-one step past that edge, where the deciding facts live in **unchanged** files — and one of them
-is an **absence**, which cannot be attached at all. The worker has no way to argue back, so a
-correct change of this class parks every time (**#147**).
+**It could not have run at all before `adr/010`.** Measured on the same diff: under the
+profile's own ruleset it draws **8** violations, 6 of them `DisallowShortArraySyntax` — the
+theme *mandates* short arrays and forbids long ones, so the two standards are mutually
+exclusive on the same predicate and no line containing an array literal could satisfy both.
+A project may now DECLARE the ruleset its gate is judged by (`contract.gateRulesets`), read
+from the trusted root, with the declared file joining the `adr/006` fence. Under his own
+ruleset the same diff draws **1** violation — the real one above. The gate went from
+*unsatisfiable* to *demanding and correct*.
 
-**A case was deleted one run after it was added.** `good-declared-docs-check` asserted that a
-command the project DECLARES is kept by the composer, pre-flighted, and actually RUN. It
-PASSED and proved none of it: every task in every case carried `success_commands: []`, because
-`adr/009`'s prompt half tells the model that omitting the field is normal. The command reached
-the task's `acceptance` prose and never the gate; `success_green: true` meant "nothing to run"
-(**#148**, gotcha 93). The case could not have failed for its stated reason, because a case can
-only assert an OUTCOME while the property lived in the task record (**#149**).
+**The review gate earned its keep, twice.** R1 returned NOT SAFE on four findings: one
+declined on facts, one already found live, and **two real oracle-fence escapes** — a ruleset
+named `rules[1].xml` was a literal to the gate and a *pattern* to the fence (so the worker
+could rewrite the standard it is judged by without escalating), and a declaration on a
+profile-less project skipped every fail-closed rule while still joining the protected set.
+R2 on the fixes: SAFE.
 
-**#138 shipped its first real slice.** `GET /projects/:id/guarantees` + a "What this project
-guarantees" screen: contract zones **with their own `why` sentence** (that text has been in
-every `INVARIANTS.md` since s07 and had never been rendered anywhere), the profile's gates and
-what each is scoped to, protected paths, the critic and its mandate, the retry budget before a
-task parks. Live-verified in a browser against the polygon. The distinction the screen turns
-on: `invariantsReadable === false` is NOT `zones: []` — the gate's own loader folds them
-together (correct for the gate), and folded here it would show a calm empty list for a project
-enforcing nothing.
+**The run's own finding, and it is the honest deliverable (#155).** A project-declared
+ruleset with `basepath=.` anchors phpcs report paths at the TRUSTED ROOT, while the gate runs
+with the worktree as cwd — so findings arrive as
+`.autodev\worktrees\<task>\tests\…` and are marked `unattributed`. They are kept
+(fail-closed, correct) but **line-scoping does not apply to them**. It did not bite here only
+because the theme is clean; on a legacy file the worker would inherit the whole file's debt —
+gotcha 82's defect, through a door `adr/010` itself opened. A `[critic/validated-one-string-used-another]`
+instance created by the fix for #152.
 
-**The critic's token count is still `0`** in the report (#125).
+Also reproduced on a real repo: **#148** (`success_commands: []` on every task), and
+`composer_green: true` is still byte-identical for "the check passed" and "there was no
+check".
+
+Open for the operator: **#153** — which of the theme's values deserve contract zones. Zones
+were left deliberately empty, because a zone is an oracle and the oracle is his; ones the
+agent invented would have measured the agent's guesses.
 
 ## Phase status
 
@@ -59,9 +71,10 @@ enforcing nothing.
 | Unattended autonomy (`adr/004`) | ✅ COMPLETE — all four slices |
 | Critic model | ✅ codex `gpt-5.6-luna` (calibrated s44; **pin it**) |
 | Authority Model (`adr/006`) | ✅ Phase 1 + 2 + 3 shipped |
-| Profiles / Qualification Layer | ✅ v1 shipped (s51) — 2 facets, WP/WC first |
+| Profiles / Qualification Layer | ✅ v1 (s51). **v3 s63 (`adr/010`)**: a project may DECLARE the ruleset its gate is judged by, read from the trusted root and fenced as oracle — without it the harness could not write a passing line of PHP in the operator's own theme |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
 | Evaluation Corpus | ✅ machinery + `eval` CLI + **8 cases**; run SIX times. s61 met the bar 7/7; **s62 deliberately broke the ceiling: 8/9, first-pass commit 83.3%, escaped 0%, 0 errored** — the corpus can fail again and does (#147). One case deleted the same run for passing vacuously (#148/#149) |
+| **The harness on a REAL operator repo** | ✅ **s63 — DONE with a commit** (`6908cb6` in a harness-owned clone of `woodev-base-theme`): critic `clean` ×2, gate RETRY on a real defect then green, his own phpunit/phpcs/phpstan all pass. Residual: #155 (line-scoping off for a declared ruleset) |
 | **Project legibility (#138)** | 🟡 first slice shipped s62 — `GET /projects/:id/guarantees` + the "What this project guarantees" screen, live-verified. Umbrella still open: corpus metrics in the UI, per-field explanations (#96) |
 | **Task-command authority (`adr/009`)** | ✅ **MERGED + MEASURED** (PR #145) — the composer may only reference declared commands; the gate refuses to RUN one that does not exist |
 | Corpus run diagnostics (#126) | ✅ shipped s57 — and it is what identified #143 from archived artifacts without a re-run |
@@ -88,18 +101,32 @@ job now changes from "prove it can measure" to "measure something harder".
 > **The operator's own priority, stated s62 and recorded because it had been asked before:**
 > this harness is FIRST a tool he uses on his own woodev WordPress/WooCommerce repos, SECOND a
 > product for others. The polygon `woodev-shipping-plugin-test` is a stand-in he made
-> convenient; a capability proven only there is not proven for him. He also said plainly that
-> he no longer understands what is being built or why, and sees no product progress — which is
-> what moved #138 to the top and what item 1 below is about.
+> convenient; a capability proven only there is not proven for him.
+>
+> **s63 discharged item 1: it ran on his own repo and committed.** What follows is what that
+> run exposed, in the order it costs him.
 
-1. **Run the harness on a REAL woodev repo, not the polygon.** Expect a lot to break: a real
-   repo is larger, dirtier, carries actual phpcs/composer debt, and has no contract zones
-   placed helpfully. The honest deliverable is the list of what falls over. This is the first
-   measurement that means anything to the operator.
-2. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
+1. **#155 — a project-declared ruleset silently disables line-scoping.** The run's own
+   finding and the most expensive one open: `basepath` anchors the report at the trusted
+   root, the gate matches worktree-relative paths, findings land `unattributed` and are
+   therefore judged over the whole file. Harmless on a clean theme, immediately harmful on
+   a legacy file — and it is the defect gotcha 82 exists to prevent, reintroduced by
+   `adr/010`'s own mechanism. Fix needs a real checkstyle fixture anchored outside the
+   worktree; a self-authored one proves nothing here (`[gate/agent-ci-ndjson-keyed-by-event-not-type]`).
+2. **#153 — which of the theme's values are contract zones.** The operator's, and the only
+   thing standing between the current run and a gate that protects his invariants rather
+   than just his style. Candidates are already written down in the card, all read from the
+   theme's own docs rather than invented.
+3. **Run a SECOND task on the theme, deliberately on a dirty file.** The first run's target
+   was clean under its own standard, which is the easy case; #155's blast radius is only
+   visible on a file with pre-existing debt. This is also the cheapest way to find the next
+   thing, and s63's evidence is that a real repo answers questions the polygon cannot.
+4. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
    the worker cannot argue back.** Measured, not suspected. Options are in the issue; the one
    that changes the most is giving the critic the CALLERS of the symbols a diff touches, so
-   "nothing calls this" becomes a presentable fact instead of a guess.
+   "nothing calls this" becomes a presentable fact instead of a guess. Note s63's counter-
+   evidence: on a real three-file-class refactor the critic returned `clean` twice, so the
+   #147 shape is narrower than "refactors park".
 3. **#148** — the composer never populates `success_commands`, so `adr/009`'s whole machinery
    is unexercised · **#149** — a corpus case can assert only an OUTCOME, so it can pass for
    the wrong reason (the enabler for re-adding the deleted case).
@@ -136,7 +163,17 @@ job now changes from "prove it can measure" to "measure something harder".
   `szepeviktor/phpstan-wordpress`, whose `extension.neon` a profile-shipped config cannot
   portably reference. Measured: without it, a correct file draws 14 phantom findings.
 - **The analyzer toolchain is project-controlled.** A profile's gates run `vendor/bin/phpcs`,
-  and `vendor` comes from the project's own `composer.json`. Named residual, not closed.
+  and `vendor` comes from the project's own `composer.json`. Named residual, not closed —
+  and `adr/010` deliberately does not widen it: a project may now declare the RULESET, never
+  the `run` command, because substituting the command substitutes the tool, and a tool that
+  always exits 0 is a gate that proves nothing. The binary was already substitutable; the
+  ruleset declaration adds nothing to that hole.
+- **How much of a green gate is now the project's own claim?** (`adr/010`) A declared ruleset
+  can be weaker than the profile's — that is the mechanism, not a leak, since the operator's
+  declaration IS the oracle (Principle 14). What it costs is that "qualified by
+  `wordpress-woocommerce@3`" no longer means one fixed bar across projects. The dashboard now
+  says which standard is in force and whose it is, which is the honest minimum; whether the
+  Qualification Report should also state it is open.
 - **Oracle protection for `success_command`/`checkCommand`** — they are commands, not declared
   paths, so Phase 2 protects them only via `constitutionPaths`. **Half-closed by `adr/009`**: a
   task may now only reference a command the project DECLARES, and the gate refuses to run one
@@ -152,6 +189,7 @@ job now changes from "prove it can measure" to "measure something harder".
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s63** — **THE HARNESS DID REAL WORK IN THE OPERATOR'S OWN REPOSITORY AND COMMITTED** (branch `feat/s63-real-repo`; theme commit `6908cb6`). `adr/010`: a project may declare the ruleset its profile gate judges by — measured first, both directions, on his `woodev-base-theme`, where the profile's ruleset and the project's are MUTUALLY EXCLUSIVE on array syntax (his theme mandates `[]`, the profile mandates `array()`), so the gate was literally unsatisfiable there. Same diff: 8 violations under the profile's ruleset, 1 under his. Ran his own issue #46 (`FilterRail::reset_url()` removed the sanitized key, not the original) end to end: critic `clean` @0.96 → gate RETRY on a genuine docblock defect → worker fixed exactly that → `clean` @0.94 → commit. Verified independently at the commit: his 397-test suite green, his phpcs exit 0, his phpstan `[OK] No errors` (a gate the harness never ran), and the new guard mutation-verified (reintroducing the bug fails 2 tests). Review gate R1 NOT SAFE → **two real oracle-fence escapes** (a ruleset named `rules[1].xml` is a literal to the gate and a pattern to the fence; a declaration on a profile-less project skipped every fail-closed rule) → R2 SAFE. New: #153/#154/#155, gotcha 94 (`[test/mutation-check-noop]`) plus an amendment to `[ops/codex-quota-exit-zero]`, and a narrowing of the s21 vendor-junction gotcha that made a runtime phpunit gate possible at all.
 - **s62** — **THE CORPUS CAN FAIL AGAIN, AND DID** (branch `feat/s62-corpus-harder`; corpus `RESULTS-2026-07-28c.md`: **8/9, first-pass commit 83.3%, escaped 0%, 0 errored, 1492.4s**). Added `good-multifile-method-labels` (a coordinated three-file migration) — it FAILS, and the failure is the finding: the worker's diff is correct and the critic returns `broken` @0.99 on two objections about code the diff does not contain, one of which requires proving an ABSENCE of callers, which cannot be attached (#147). Added and then DELETED `good-declared-docs-check` in the same session: it passed while proving nothing, because every task in all nine cases carried `success_commands: []` — `adr/009`'s prompt half zeroed the field it was written to protect (#148, gotcha 93), and a case can assert only an outcome (#149). Also shipped #138's first slice: `GET /projects/:id/guarantees` + the "What this project guarantees" screen, which finally renders each contract zone's own `why` sentence (present since s07, never displayed) and keeps "contract file unreadable" visibly distinct from "no zones declared". Live-verified in a browser. Operator context recorded: the harness is FIRST for his own repos; the polygon is a stand-in.
 - **s61** — **THE PASS BAR WAS MET** (PR #145, closes #131 #132 #135 #136 #141 #143; CI 4/4; two codex review passes → 1 blocker + 4 majors → R2 SAFE). The session fixed the RULER, not the harness: the composer may only reference commands the project declares and the gate refuses to RUN one that does not exist (`adr/009`, the operator's #143 decision, both halves); a malformed decomposition is retried once (#141); a multi-task case is scored on its most decisive ESCALATION (#136); rates are measured over cases that produced a record, with `measured: X/Y` stated above the table; `escalations/` is purged per case (#131); and both Windows pre-run steps are gone (#132/#135). Corpus re-run: **7/7 passed, `first_pass_commit_rate` 50% → 100%, escaped-defect 0%, 0 errored** (`RESULTS-2026-07-28b.md`). Two live-only findings the tests could not reach: `git check-ignore` rejects `--literal-pathspecs` outright (the other half of #135), and a watchdog test raced a fixed 30ms sleep. New: gotcha 92, `adr/009`, and a narrowed rule on which oracle questions are his.
 - **s60** — **`adr/008` MERGED + MEASURED** (PR #142, `be7fea6`, closes #140, CI 4/4, **9** gate rounds, R9 SAFE): a contract zone’s `path_globs` is its SCOPE, and a declared `contract.docPaths` path is outside zone checking. The gate found **ten** defects, all on “which files did this diff touch”, **none caught by the feature’s own tests**; two were blockers of one class (a strict parser checking LESS than the sloppy reader it replaced) now closed structurally. Corpus re-run: **the targeted case `good-docs-overview-note` COMMITTED** — the prediction held end-to-end — but `first_pass_commit_rate` stayed **50%**, because the INSTRUMENT lost two cases: the composer invented a `success_command` the project lacks (#143, new) and #141 recurred. Session resumed from repo state after the terminal was closed. New: gotcha 91, issue #143.

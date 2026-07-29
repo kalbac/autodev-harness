@@ -96,7 +96,7 @@ import { runAntiDrift as runAntiDriftCore, type AntiDriftInput } from "../anti-d
 import { snapshot } from "../util/fingerprint.js";
 
 import { resolveOracleSet, type OracleSet } from "../gate/oracle-paths.js";
-import { loadProfile, prepareGateInvocation, classifyGateExit } from "../profile/profile.js";
+import { loadProfile, prepareGateInvocation, classifyGateExit, type RulesetOverrides } from "../profile/profile.js";
 import { parseCheckstyle } from "../gate/checkstyle.js";
 import { filterFindings } from "../gate/finding-filter.js";
 import type { AddedLines } from "../gate/diff-lines.js";
@@ -627,7 +627,46 @@ export async function buildProjectRoot(
   // believes are running would silently not run, and a green verdict would claim a
   // qualification that never happened. null = not attached = every profile contour
   // below (gate step 1d, the fifth oracle source, the provision union) is inert.
-  const profile = cfg.profile === null ? null : await loadProfile(cfg.profile);
+  //
+  // `overrides` (adr/010) is passed UNCONDITIONALLY, even when `cfg.contract.
+  // gateRulesets` is `{}` (the default): `loadProfile` treats an empty override
+  // map exactly like "no overrides", so there is no behaviour difference to gate
+  // on here, and always constructing it keeps this call site from needing to
+  // know that fact itself. `cfg` was already loaded from the TRUSTED ROOT above
+  // (`loadConfigWithRaw(repoRoot)`), so `cfg.contract.gateRulesets` is itself a
+  // trusted-root read -- exactly the property `adr/010` part (b) requires (a
+  // worker rewriting its own worktree copy of a ruleset file changes nothing
+  // about which path this override resolves to).
+  const rulesetOverrides: RulesetOverrides = { repoRoot, gateRulesets: cfg.contract.gateRulesets };
+
+  // Every fail-closed rule `adr/010` part (d) states lives inside `loadProfile` --
+  // which is never CALLED when no profile is attached. So a project with
+  // `profile: null` and a non-empty `contract.gateRulesets` slipped past all of
+  // them: the entries were never shape-checked, never probed for existence, and
+  // never matched against a gate id, yet they still joined the protected oracle
+  // set as source 6. The operator would be told nothing while his declaration did
+  // nothing, which is precisely the outcome part (d) refuses ("a declaration that
+  // does nothing is worse than no declaration, because the operator stops
+  // looking"). Found by the review gate; the code half of the ADR had quietly
+  // assumed a profile is always present.
+  //
+  // Refused here rather than by making the config schema forbid the combination,
+  // because the two fields are independent at the schema layer and a cross-field
+  // zod refinement would fire on a config the operator may be part-way through
+  // editing through the dashboard. This is a load-time contradiction, and the same
+  // place that resolves the profile is the place that knows there isn't one.
+  if (cfg.profile === null) {
+    const declared = Object.keys(cfg.contract.gateRulesets);
+    if (declared.length > 0) {
+      throw new Error(
+        `contract.gateRulesets declares ruleset override(s) for gate(s) ${declared.map((g) => `'${g}'`).join(", ")}, ` +
+          `but this project has no profile attached ('profile: null') -- there is no gate for the override to apply ` +
+          `to, so it would be silently inert while reading as though a standard were in force (adr/010)`,
+      );
+    }
+  }
+
+  const profile = cfg.profile === null ? null : await loadProfile(cfg.profile, undefined, rulesetOverrides);
   if (profile !== null) {
     log("INFO", `profile attached: ${profile.id}@${profile.version} (${profile.gates.length} gate(s))`);
   }

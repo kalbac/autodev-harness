@@ -100,6 +100,41 @@ describe("buildProjectRoot", () => {
     // The parsed cfg carries the resolved planner values (raw is only the presence gate).
     expect(root.cfg.roles.planner).toMatchObject({ adapter: "codex", model: "o3" });
   });
+
+  it("REFUSES contract.gateRulesets when no profile is attached (adr/010 part (d))", async () => {
+    // Review-gate finding. Every fail-closed rule adr/010 states lives inside
+    // `loadProfile` -- which is never CALLED when `profile: null`. So these entries
+    // were never shape-checked, never probed for existence and never matched to a
+    // gate id, yet they still joined the protected oracle set as source 6: the
+    // operator's declaration did nothing while reading as though a standard were in
+    // force. That is the precise outcome part (d) exists to refuse.
+    writeConfig(repoRoot, ["contract:", "  gateRulesets:", "    phpcs: phpcs.xml.dist", ""].join("\n"));
+    await expect(buildProjectRoot(repoRoot)).rejects.toThrow(/no profile attached/i);
+  });
+
+  it("accepts an EMPTY gateRulesets with no profile attached -- the default must not become an error", async () => {
+    // The other arm: `gateRulesets` defaults to `{}` on every project that has
+    // never heard of adr/010, so a refusal keyed on the KEY's presence rather than
+    // on its contents would brick every existing config. Same shape as the
+    // `isContractFileConfigured` lesson in adr/006 Phase 1.
+    writeConfig(repoRoot, ["contract:", "  gateRulesets: {}", ""].join("\n"));
+    const root = await buildProjectRoot(repoRoot);
+    expect(root.cfg.contract.gateRulesets).toEqual({});
+  });
+
+  it("accepts a config that OMITS gateRulesets entirely -- the shape every pre-adr/010 project has", async () => {
+    // R2 review observation, closed by measurement rather than by argument. The
+    // refusal above calls `Object.keys(cfg.contract.gateRulesets)`, which throws on
+    // `undefined` -- so the whole guard rests on the zod `.default({})` actually
+    // firing for an ABSENT key, not merely for an explicitly-written `{}`. The
+    // explicit-`{}` test above cannot distinguish those two, and the absent case is
+    // the one every existing project on disk is in: if the default did not apply,
+    // this feature would have bricked every profile-less project the moment it
+    // shipped. Asserted on a config with no `contract:` block at all.
+    writeConfig(repoRoot, "");
+    const root = await buildProjectRoot(repoRoot);
+    expect(root.cfg.contract.gateRulesets).toEqual({});
+  });
 });
 
 describe("supervisorRunOpts", () => {

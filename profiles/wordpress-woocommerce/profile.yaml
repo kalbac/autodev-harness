@@ -23,8 +23,31 @@
 # one: the same diff that v1 rejected can now commit, and a pinned version whose
 # meaning silently changed underneath a project would defeat the entire point
 # of pinning (`profiles/README.md`, "Union only, no selective disable").
+#
+# v3 (docs/adr/010-a-project-may-declare-the-ruleset-its-profile-gate-judges-by.md):
+# the phpcs gate's ruleset is now OVERRIDABLE. Measured on the first real operator
+# repository the harness was ever pointed at (`woodev-base-theme`): its own,
+# stricter-in-one-place ruleset (short array syntax MANDATORY, long array syntax
+# forbidden -- the mutual exclusive opposite of this profile's own WordPress-Core
+# default) made every array literal in every new line uncodeable, because the two
+# standards contradict each other on the same predicate. That is not the profile
+# weakening under a project's pressure -- it is the operator's OWN written
+# standard, already sitting in this profile's `protectedPaths` before v3 existed,
+# refused a hearing solely because the mechanism could not tell "the worker
+# rewriting its own oracle mid-run" (`adr/006`, the case `protectedPaths` exists
+# to stop) apart from "the operator's pre-existing file, declared before and
+# outside any run" (`adr/010`'s whole argument). `ruleset: gates/phpcs.xml` below
+# is what makes this gate's standard overridable at all -- a gate without a
+# `ruleset:` key (`composer-validate`) still cannot be, by construction, not by a
+# separate flag a project could also set. A project that declares nothing sees
+# `{ruleset}` resolve to the exact same file `{profile}/gates/phpcs.xml` already
+# named, so this bump changes nothing OBSERVABLE for every project that does not
+# opt in -- but the `run` STRING changed shape (`{profile}/gates/phpcs.xml` ->
+# `{ruleset}`), and a pinned version whose gate command silently changed
+# underneath a project would defeat pinning the same way v2's did, hence the
+# major bump rather than a patch.
 id: wordpress-woocommerce
-version: 2
+version: 3
 
 requires:
   provision: [vendor]
@@ -70,7 +93,8 @@ gates:
   # classification runs BEFORE any report parsing is attempted either way.
   - id: phpcs
     files: "**/*.php"
-    run: "vendor/bin/phpcs -q --report=checkstyle --standard={profile}/gates/phpcs.xml {files}"
+    ruleset: gates/phpcs.xml
+    run: "vendor/bin/phpcs -q --report=checkstyle --standard={ruleset} {files}"
     redExitCodes: [1, 2]
     report: checkstyle
 

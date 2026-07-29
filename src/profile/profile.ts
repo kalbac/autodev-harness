@@ -9,14 +9,39 @@
  * (Principle 10), because a silently-absent profile means gates the operator
  * believes are running are not running at all.
  */
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, lstat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { globMatch, normalizePath } from "../util/glob.js";
 import { canonicalPathContains, realpathContains } from "../util/path-contain.js";
-import { ProfileFileSchema, isAbsoluteOnAnyPlatform, type ResolvedProfile, type ResolvedGate } from "./schema.js";
+import {
+  ProfileFileSchema,
+  isAbsoluteOnAnyPlatform,
+  isInvalidRulesetEntry,
+  type ResolvedProfile,
+  type ResolvedGate,
+} from "./schema.js";
+
+/**
+ * A project's override of one or more overridable profile gate rulesets —
+ * `adr/010`. `repoRoot` is the anchor a `gateRulesets` entry resolves against
+ * (the project's own trusted root, NOT the profile directory `{profile}` uses);
+ * `gateRulesets` mirrors `HarnessConfig.contract.gateRulesets` (gate id -> a path
+ * relative to `repoRoot`) exactly, so `src/composition/root.ts` can pass
+ * `cfg.contract.gateRulesets` straight through without reshaping it.
+ *
+ * Optional on `loadProfile` (not required) because a profile can be loaded with
+ * no project attached at all (every existing test in this file, and every
+ * profile lookup that predates `adr/010`) — omitting it must be byte-identical
+ * to every gate resolving its own profile-declared default, which is exactly
+ * what "no project declares an override" means.
+ */
+export interface RulesetOverrides {
+  repoRoot: string;
+  gateRulesets: Record<string, string>;
+}
 
 /**
  * The harness package root — the directory holding `package.json`, walking up from
@@ -177,10 +202,118 @@ export function classifyGateExit(gate: Pick<ResolvedGate, "redExitCodes">, exitC
 }
 
 /**
- * Load, validate and expand the profile pinned by `ref`. `root` defaults to the
- * harness package root and is injectable for tests.
+ * Shared containment probe for an absolute `candidatePath` that must sit inside
+ * `anchor` and be a real, readable regular file — the identical discipline the
+ * `{profile}`-derived-token probe below always used, extracted so it has exactly
+ * ONE implementation instead of two that could quietly diverge
+ * (`docs/gotchas/validated-one-string-used-another.md`: a value checked against
+ * one root and used against a different one is this repo's most recurring
+ * defect shape). `adr/010` needs the identical three properties — lexical
+ * containment, "is a regular file", realpath containment — proven against a
+ * SECOND possible anchor (a project's own `repoRoot`, when it overrides a
+ * gate's ruleset), so the anchor became a parameter rather than staying the
+ * token probe's hard-coded `dir`.
+ *
+ * `anchorLabel` names the anchor in a thrown message ("the profile directory",
+ * "the project's repo root") so an operator learns WHICH root a path escaped,
+ * not merely that it escaped something. `subject` is the sentence fragment
+ * naming what is being probed (e.g. `gate 'phpcs' references`); the caller
+ * supplies it complete because the two callers describe the same failure in
+ * different voices (a profile's own shipped file vs a project's declaration).
+ * `missingClause` fills in what "does not exist" means for that caller (a
+ * profile's ruleset "was not shipped" by the profile author; a project's
+ * ruleset override "does not exist in the project").
+ *
+ * `refuseSymlinkLeaf`, when true, throws on ANY symlinked final path component
+ * before even statting it — the treatment `adr/010`'s fail-closed table
+ * requires for a PROJECT's ruleset declaration (a symlink is its own listed
+ * failure, distinct from an escaping intermediate symlink, which the realpath
+ * check below still catches either way). The `{profile}`-derived-token probe
+ * deliberately keeps its long-standing tolerance for an INWARD-pointing
+ * symlink here (see its own call site below for why that tolerance is still
+ * correct for the profile's own shipped files) by passing `false`.
  */
-export async function loadProfile(ref: string, root: string = harnessRoot()): Promise<ResolvedProfile> {
+async function assertContainedRegularFile(
+  anchor: string,
+  candidatePath: string,
+  anchorLabel: string,
+  subject: string,
+  missingClause: string,
+  refuseSymlinkLeaf: boolean,
+): Promise<void> {
+  // Lexical containment first: collapses '.'/'..' segments without touching the
+  // filesystem, so an escape like '<anchor>/../outside.xml' is refused even when
+  // a real file happens to sit at the escaped location.
+  if (!canonicalPathContains(resolve(anchor), resolve(candidatePath))) {
+    throw new Error(
+      `${subject} '${candidatePath}', which resolves OUTSIDE ${anchorLabel} '${anchor}' via a '..' path segment -- refusing to probe a path outside it`,
+    );
+  }
+
+  if (refuseSymlinkLeaf) {
+    // `lstat` (does NOT follow the link) so a symlinked leaf is caught before the
+    // regular `stat` below would silently follow it to whatever it points at.
+    // Mirrors `gate/oracle-paths.ts`'s `normalizeLiteralEntry`, which refuses an
+    // oracle literal that is a symlink for the identical reason: the fence's
+    // trust in a project-declared path is narrower than its trust in a file the
+    // profile itself ships, so a symlink standing in for that file -- even one
+    // that happens to point somewhere harmless today -- is refused outright
+    // rather than judged by where it currently resolves.
+    let lst;
+    try {
+      lst = await lstat(candidatePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        throw new Error(`${subject} '${candidatePath}', which ${missingClause} -- a missing declaration is broken operator config, not a worker-fixable failure`);
+      }
+      throw new Error(`${subject} '${candidatePath}', which could not be probed (${code ?? "unknown fs error"})`);
+    }
+    if (lst.isSymbolicLink()) {
+      throw new Error(
+        `${subject} '${candidatePath}', which is a SYMLINK -- a project-declared ruleset must be a real file, not a link standing in for one (adr/010)`,
+      );
+    }
+  }
+
+  let st;
+  try {
+    st = await stat(candidatePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new Error(`${subject} '${candidatePath}', which ${missingClause} -- a missing declaration is broken operator config, not a worker-fixable failure`);
+    }
+    throw new Error(`${subject} '${candidatePath}', which could not be probed (${code ?? "unknown fs error"})`);
+  }
+  if (!st.isFile()) {
+    throw new Error(`${subject} '${candidatePath}', which is not a regular file`);
+  }
+
+  // Realpath containment, now that the file is known to exist: catches an
+  // intermediate symlinked ancestor whose REAL location is outside `anchor` even
+  // though it lexically resolved inside it.
+  if (!(await realpathContains(anchor, candidatePath))) {
+    throw new Error(
+      `${subject} '${candidatePath}', which resolves OUTSIDE ${anchorLabel} '${anchor}' via a symlink -- refusing to probe a path outside it`,
+    );
+  }
+}
+
+/**
+ * Load, validate and expand the profile pinned by `ref`. `root` defaults to the
+ * harness package root and is injectable for tests. `overrides`, when supplied
+ * (`adr/010`), lets a project point one or more overridable gates at its OWN
+ * ruleset instead of the profile's default -- see `RulesetOverrides` and the
+ * `{ruleset}` resolution step near the end of this function for the fail-closed
+ * rules governing it. Omitted entirely, every gate resolves its own
+ * profile-declared default exactly as before `adr/010` existed.
+ */
+export async function loadProfile(
+  ref: string,
+  root: string = harnessRoot(),
+  overrides?: RulesetOverrides,
+): Promise<ResolvedProfile> {
   const { id, version } = parseProfileRef(ref);
   const dir = resolve(root, "profiles", id);
 
@@ -299,6 +432,16 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
     // See ResolvedGate.redExitCodes for why the default is [1], not "any non-zero".
     redExitCodes: g.redExitCodes ?? [1],
     report: g.report ?? null,
+    ruleset: g.ruleset ?? null,
+    // Placeholders, correct ONLY when `ruleset` above is `null` -- overwritten by
+    // the `{ruleset}` resolution step near the end of this function for every
+    // gate that actually declared one. See `ResolvedGate.rulesetSource`/
+    // `rulesetPath` for why these two specific placeholder values are safe to
+    // leave un-consulted rather than modelling "not yet resolved" as a third
+    // state: the cross-check just below guarantees a gate with `ruleset === null`
+    // can never have `{ruleset}` in `run` to substitute these into.
+    rulesetSource: "profile",
+    rulesetPath: "",
   }));
 
   // The two halves of diff-scoping must agree, and a mismatch in EITHER direction
@@ -349,6 +492,57 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
           `(only a live run can), but a gate that never asks the tool for it cannot possibly produce it either; ` +
           `add the tool's own report flag (e.g. '--report=${g.report}') to 'run', or remove 'report: ${g.report}'`,
       );
+    }
+
+    // 'ruleset' cross-check -- adr/010, the same discipline and the same reason as
+    // the {files}/files: pair above: a mismatch in EITHER direction is silently
+    // wrong rather than loudly broken. A `run` with `{ruleset}` and no `ruleset:`
+    // key would ship the literal text "{ruleset}" to the tool as an argument
+    // (phpcs would report it cannot read a ruleset by that name -> non-zero ->
+    // read as a RED gate, looping the worker on a profile bug that is not in the
+    // diff). A `ruleset:` key whose `run` never mentions `{ruleset}` is the more
+    // dangerous direction: the gate would read as OVERRIDABLE while nothing it
+    // actually runs can be pointed anywhere else -- a project could declare an
+    // override in `contract.gateRulesets` that is silently never consulted.
+    const mentionsRuleset = g.run.includes("{ruleset}");
+    if (mentionsRuleset && g.ruleset === null) {
+      throw new Error(
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' uses '{ruleset}' but declares no 'ruleset:' key -- ` +
+          `the placeholder would be passed to the tool verbatim`,
+      );
+    }
+    if (!mentionsRuleset && g.ruleset !== null) {
+      throw new Error(
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' declares a 'ruleset:' key but its 'run' never uses ` +
+          `'{ruleset}' -- the gate would read as overridable (adr/010) while a project's override in ` +
+          `'contract.gateRulesets' could never actually be substituted into the command that runs`,
+      );
+    }
+  }
+
+  // adr/010 part (d): a project override naming a gate id this profile does not
+  // have, or a gate that never declared 'ruleset:' at all, must throw HERE --
+  // "declares an override that does nothing is worse than no override, because
+  // the operator stops looking" (adr/010). Checked before any path is resolved,
+  // so a typo'd gate id in `contract.gateRulesets` never gets as far as "which
+  // file does this even point at".
+  if (overrides !== undefined) {
+    for (const gateId of Object.keys(overrides.gateRulesets)) {
+      const target = gates.find((g) => g.id === gateId);
+      if (target === undefined) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: contract.gateRulesets declares an override for gate '${gateId}', but ` +
+            `this profile has no gate with that id -- an override naming a gate that does not exist would do ` +
+            `nothing while reading as if it were in force (adr/010)`,
+        );
+      }
+      if (target.ruleset === null) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: contract.gateRulesets declares an override for gate '${gateId}', but ` +
+            `that gate has no 'ruleset:' key and is not overridable at all -- only the ruleset is ever ` +
+            `overridable, never the 'run' command itself (adr/010)`,
+        );
+      }
     }
   }
 
@@ -430,65 +624,174 @@ export async function loadProfile(ref: string, root: string = harnessRoot()): Pr
 
       const rulesetPath = token.slice(at);
 
-      // Lexical containment: collapses '.'/'..' segments without touching the
-      // filesystem, so an escape like '{profile}/../outside.xml' is refused even
-      // when a real file happens to sit at the escaped location.
-      if (!canonicalPathContains(resolve(dir), resolve(rulesetPath))) {
-        throw new Error(
-          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which resolves OUTSIDE ` +
-            `the profile directory '${dir}' via a '..' path segment -- refusing to probe a path outside the profile`,
-        );
-      }
-
-      // Deliberately `stat` (follows a symlink), not `lstat` like the
-      // structurally similar probe in `src/gate/oracle-paths.ts` (round-4
-      // critic finding: the divergence was real but undocumented, which reads
-      // as an oversight rather than a decision -- comment only, no behaviour
-      // change). `oracle-paths.ts` refuses ANY symlinked leaf outright because
-      // it FINGERPRINTS the file's content across a worker's task: a worker
-      // could repoint the link (or swap the target for a same-content file)
-      // between the pre- and post- snapshot, and the hash would not move,
-      // silently defeating the fence it is part of. Nothing here is
-      // fingerprinted -- this probe only proves the ruleset file exists and is
-      // a regular file ONCE, at profile-load time, before any task runs. A
-      // ruleset that is a symlink pointing INWARD, to another file the profile
-      // itself ships, is harmless to follow here. This is not a blanket claim
-      // that symlinks are safe in this module in general -- FIX A above still
-      // refuses the profile DIRECTORY itself being a symlink out of `root` --
-      // only that this one probe has no content-integrity property for a
+      // The shared containment probe (`assertContainedRegularFile` above) does
+      // the lexical-containment / stat-is-a-file / realpath-containment
+      // sequence this loop always did -- see that function's doc comment for
+      // why it is now a shared function rather than inline code.
+      //
+      // `refuseSymlinkLeaf: false` -- deliberately `stat`-tolerant here, not
+      // `lstat`-strict like `adr/010`'s NEW ruleset-override probe below.
+      // `gate/oracle-paths.ts` refuses ANY symlinked oracle leaf outright
+      // because it FINGERPRINTS the file's content across a worker's task: a
+      // worker could repoint the link (or swap the target for a same-content
+      // file) between the pre- and post- snapshot, and the hash would not
+      // move, silently defeating the fence it is part of. Nothing here is
+      // fingerprinted -- this probe only proves the referenced file exists and
+      // is a regular file ONCE, at profile-load time, before any task runs. A
+      // {profile}-derived path that is a symlink pointing INWARD, to another
+      // file the profile itself ships, is harmless to follow here. This is not
+      // a blanket claim that symlinks are safe in this module in general --
+      // FIX A above still refuses the profile DIRECTORY itself being a symlink
+      // out of `root`, and the NEW `{ruleset}` override probe below refuses a
+      // project-declared symlink outright -- only that THIS probe, over the
+      // profile's OWN shipped files, has no content-integrity property for a
       // symlinked leaf to defeat.
-      let st;
-      try {
-        st = await stat(rulesetPath);
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "ENOTDIR") {
-          throw new Error(
-            `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which the profile ` +
-              `did not ship -- a missing ruleset is broken operator config, not a worker-fixable failure`,
-          );
-        }
-        throw new Error(
-          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which could not be ` +
-            `probed (${code ?? "unknown fs error"})`,
-        );
-      }
-      if (!st.isFile()) {
-        throw new Error(
-          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which is not a regular file`,
-        );
-      }
-
-      // Realpath containment, now that the file is known to exist: catches an
-      // intermediate symlinked ancestor whose REAL location is outside `dir` even
-      // though it lexically resolved inside it.
-      if (!(await realpathContains(dir, rulesetPath))) {
-        throw new Error(
-          `profile ${JSON.stringify(ref)}: gate '${g.id}' references '${rulesetPath}', which resolves OUTSIDE ` +
-            `the profile directory '${dir}' via a symlink -- refusing to probe a path outside the profile`,
-        );
-      }
+      await assertContainedRegularFile(
+        dir,
+        rulesetPath,
+        "the profile directory",
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' references`,
+        "the profile did not ship",
+        false,
+      );
     }
+  }
+
+  // {ruleset} resolution -- adr/010. Deliberately runs AFTER the {profile}-token
+  // probe just above, not interleaved with it: at this point every gate's `run`
+  // still contains the literal text "{ruleset}" (never yet substituted), so the
+  // token probe above only ever sees genuine {profile}-derived tokens and this
+  // step's own substitution cannot accidentally feed it a second, redundant
+  // candidate to re-probe.
+  //
+  // Unlike {profile}, this is resolved to an ABSOLUTE path HERE, at load time --
+  // not deferred to gate-invocation time the way {files} is. There is exactly
+  // one thing a project's contract.gateRulesets entry can mean (adr/010 part
+  // (b)): a path at the TRUSTED ROOT. Resolving and validating it once, now,
+  // means a broken declaration surfaces as a profile-load error naming exactly
+  // what was declared -- never as a gate run failing deep inside a task, which
+  // step 1d would read as a worker-fixable RED and RETRY forever against a
+  // defect that was never in the diff.
+  for (const g of gates) {
+    if (g.ruleset === null) continue; // no 'ruleset:' key -- {ruleset} cannot appear in run (cross-checked above)
+
+    // `hasOwnProperty`, not a plain `overrides?.gateRulesets[g.id] !== undefined`
+    // check: the latter cannot distinguish "no override declared" from "an
+    // override was declared with the value `undefined`" -- unreachable through
+    // this module's own JSON-shaped config loader, but the distinction is what
+    // this whole feature is about (adr/010 part (d): a declaration that could
+    // not be honoured must never silently read as "no declaration"), so the
+    // stricter check costs nothing and states the intent precisely.
+    let anchor: string;
+    let anchorLabel: string;
+    let relativeEntry: string;
+    let source: "profile" | "project";
+    if (overrides !== undefined && Object.prototype.hasOwnProperty.call(overrides.gateRulesets, g.id)) {
+      const declared = overrides.gateRulesets[g.id];
+      // `hasOwnProperty` already proved this key is present on the record, but
+      // `noUncheckedIndexedAccess` types the read as `string | undefined`
+      // regardless -- it cannot see through a dynamic property-existence check.
+      // The runtime guarantee (`gateRulesets` is a `Record<string,string>`
+      // straight off a zod-validated `HarnessConfig`) makes this branch
+      // unreachable in practice; it is stated as an explicit throw rather than
+      // a `!` assertion so an unreachable branch still fails LOUD if it is ever
+      // wrong, instead of silently asserting past the type checker's doubt.
+      if (declared === undefined) {
+        throw new Error(
+          `profile ${JSON.stringify(ref)}: contract.gateRulesets['${g.id}'] has no value despite the key being ` +
+            `present -- this should be unreachable through a zod-validated Record<string,string>`,
+        );
+      }
+      anchor = overrides.repoRoot;
+      anchorLabel = "the project's repo root";
+      relativeEntry = declared;
+      source = "project";
+    } else {
+      anchor = dir;
+      anchorLabel = "the profile directory";
+      relativeEntry = g.ruleset;
+      source = "profile";
+    }
+    const overridden = source === "project";
+
+    // The profile author's OWN 'ruleset:' text was already validated to this
+    // exact normal form at schema-parse time (`ProfileGateSchema`'s `ruleset`
+    // field, via the same `isInvalidRulesetEntry`), so re-checking it here would
+    // be pure redundancy. A project's OVERRIDE text has no such guarantee: it
+    // is a plain string on `HarnessConfig.contract.gateRulesets`
+    // (`src/config/schema.ts`) with no path-shape validation of its own, so
+    // THIS is the one place that ever inspects it lexically. Never fall back
+    // to the profile default merely because the override looks malformed --
+    // adr/010 part (d) is explicit that a declared-but-unhonourable override
+    // must throw, not silently defer to the profile's own ruleset.
+    if (overridden && isInvalidRulesetEntry(relativeEntry)) {
+      throw new Error(
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' project override ruleset '${relativeEntry}' ` +
+          `(contract.gateRulesets) is not a valid repo-relative path (must be non-blank, not absolute on any ` +
+          `platform, no '..' segment, no backslash) -- refusing rather than silently falling back to the ` +
+          `profile's own ruleset (adr/010)`,
+      );
+    }
+
+    const candidatePath = resolve(anchor, relativeEntry);
+
+    // Same three-property containment probe the {profile}-token probe above
+    // uses, against WHICHEVER anchor this gate's ruleset is actually anchored
+    // to -- see `assertContainedRegularFile`'s doc comment for why sharing this
+    // one implementation is the point.
+    //
+    // `refuseSymlinkLeaf: overridden` -- adr/010's fail-closed table (part (d))
+    // is scoped to a PROJECT's declaration specifically: its own last row,
+    // "not declared -> the profile's own ruleset, unchanged", says the
+    // non-override path is not touched by this ADR at all. So the symlink
+    // refusal applies only when a project actually overrode this gate; the
+    // profile's own default keeps the SAME tolerance the {profile}-token probe
+    // above has always had (an inward-pointing symlink to another file the
+    // profile itself ships is harmless here, for the identical reason that
+    // probe's own comment gives -- nothing in this function fingerprints the
+    // file's content across a worker's task). A project's OWN declaration gets
+    // the stricter treatment because it is untrusted operator input in a way a
+    // profile's shipped file is not.
+    await assertContainedRegularFile(
+      anchor,
+      candidatePath,
+      anchorLabel,
+      `profile ${JSON.stringify(ref)}: gate '${g.id}' ${overridden ? "project-declared" : "profile-declared"} ruleset`,
+      overridden ? "does not exist in the project" : "the profile did not ship",
+      overridden,
+    );
+
+    // Gate commands are whitespace-split and are not quote-aware (the same
+    // reason the profile-dir whitespace check near the top of this function
+    // exists): a resolved ruleset path containing a space would silently
+    // produce broken argv the moment '{ruleset}' is substituted into `run`.
+    if (/\s/.test(candidatePath)) {
+      throw new Error(
+        `profile ${JSON.stringify(ref)}: gate '${g.id}' ruleset resolves to '${candidatePath}', whose path ` +
+          `contains whitespace -- gate commands are split on whitespace and are not quote-aware, so a ` +
+          `'{ruleset}' expansion from here would produce broken arguments`,
+      );
+    }
+
+    // All FOUR fields are written together, from the same `source`/`relativeEntry`/
+    // `candidatePath` triple, so they can never describe different rulesets.
+    //
+    // `ruleset` in particular must become the text ACTUALLY in force, not the
+    // profile author's own `ruleset:` value it was seeded with at construction.
+    // Leaving the seed in place was a real defect, caught live against
+    // `GET /projects/:id/guarantees` on the first real project rather than by any
+    // test: the endpoint reported `ruleset: "gates/phpcs.xml"` (the profile's
+    // path) beside `rulesetSource: "project"`, so the guarantees screen would have
+    // named a file the project does not contain and attributed it to the project,
+    // while the command underneath correctly ran the project's own ruleset. Three
+    // fields describing one thing disagreeing is exactly the shape
+    // `docs/gotchas/validated-one-string-used-another.md` names -- here the value
+    // was RESOLVED one way and REPORTED another, which is the same defect wearing
+    // a projection instead of a filesystem call.
+    g.ruleset = relativeEntry;
+    g.rulesetSource = source;
+    g.rulesetPath = candidatePath;
+    g.run = g.run.split("{ruleset}").join(candidatePath);
   }
 
   return { id, version, dir, gates, protectedPaths: pf.protectedPaths, provision: pf.requires.provision };

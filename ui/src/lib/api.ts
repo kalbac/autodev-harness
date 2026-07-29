@@ -181,11 +181,25 @@ export interface ProjectGuaranteesZone {
 
 /** The attached gate profile, curated for display (#138). `gates[].filesGlob` is
  *  `null` when a gate runs against the whole project rather than being scoped to
- *  changed files. */
+ *  changed files.
+ *
+ *  `ruleset`/`rulesetSource` (`adr/010`) are `null` together for a gate that
+ *  declares no ruleset and therefore cannot be pointed anywhere else. When they
+ *  are set, `rulesetSource` says WHICH SIDE supplied the standard the gate judges
+ *  by — `"profile"` for the one the harness ships, `"project"` for one the
+ *  operator declared in `contract.gateRulesets`. That distinction is the reason
+ *  this pair is projected at all: a screen that claims what a project guarantees
+ *  must not silently present a bar the project itself set as the harness's own. */
 export interface ProjectGuaranteesProfile {
   id: string;
   version: number;
-  gates: Array<{ id: string; run: string; filesGlob: string | null }>;
+  gates: Array<{
+    id: string;
+    run: string;
+    filesGlob: string | null;
+    ruleset: string | null;
+    rulesetSource: "profile" | "project" | null;
+  }>;
   protectedPaths: string[];
 }
 

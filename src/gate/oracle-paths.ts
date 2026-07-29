@@ -416,6 +416,21 @@ function assertGlobNotEscaping(entry: string, source: string): string {
  *      `composition/`). Classified literal-or-glob like `constitutionPaths`. The
  *      profile itself needs no protection: it lives in the harness repo, which the
  *      worker's worktree never intersects.
+ *   6. `contract.gateRulesets` — each gate id's declared ruleset path (`adr/010`).
+ *      Read straight off `HarnessConfig`, unlike source 5: a project's OWN override
+ *      of its OWN gate's ruleset is already a plain `Record<string,string>` sitting
+ *      on `cfg.contract` (`src/config/schema.ts`), not something owned by
+ *      `profile/` at all, so no `gate/` → `profile/` dependency is introduced by
+ *      adding it here. Classified literal-or-glob like sources 4 and 5, through the
+ *      same `addLiteral`/`addGlob` helpers — this is the part of `adr/010` part (c)
+ *      that closes the hole its own text names: without this, the mechanism would
+ *      move a gate's oracle file from a path the fence already covers (the
+ *      profile's own `gates/phpcs.xml`, never in the worktree at all) to a
+ *      project-declared one the fence does not — quietly UN-protecting exactly the
+ *      file whose whole purpose is to define what "pass" means for that gate. The
+ *      attributed source names the declaring gate id, so an escalation says which
+ *      override demanded the protection, the same way source 5 names which
+ *      profile did.
  */
 export async function resolveOracleSet(
   cfg: HarnessConfig,
@@ -517,6 +532,34 @@ export async function resolveOracleSet(
     } else {
       await addLiteral(entry, `profile protectedPaths: ${entry}`);
     }
+  }
+
+  // 6. contract.gateRulesets -- adr/010: a project's own declared override of an
+  // overridable profile gate's ruleset joins the protected set too, or the
+  // declaration would silently move that gate's oracle file OUT of the fence's
+  // coverage (see the module doc comment's source-6 entry for the exact failure
+  // this closes). Same classification/normalization as every other source, keyed
+  // by the declaring gate id rather than a profile id.
+  //
+  // Added as a LITERAL unconditionally -- the ONE source here that does not run
+  // `classifyOracleEntry` first, and the asymmetry is deliberate. Sources 4 and 5
+  // accept operator/profile declarations that may legitimately be patterns
+  // (`.github/workflows/**`), so they must classify. A ruleset is never a pattern:
+  // `profile.ts` resolves, stats and substitutes this exact string as a single
+  // concrete path, so classifying it could only ever produce a fence entry that
+  // describes something OTHER than the file the gate actually reads.
+  //
+  // Classifying it did exactly that, and it was an escape rather than a cosmetic
+  // mismatch: a POSIX file genuinely named `rules[1].xml` passed the ruleset
+  // validator, ran the gate as a literal path, and registered as a GLOB here -- so
+  // the fence watched a pattern that need not match the file, and a worker could
+  // rewrite the standard it was judged by without escalating. `isInvalidRulesetEntry`
+  // (`profile/schema.ts`) now refuses metacharacters at the entry point, which makes
+  // the two readings agree by construction; keeping the literal call here as well is
+  // not redundancy but the same guarantee stated where the fence is built, so this
+  // source cannot silently start classifying again if that predicate is ever relaxed.
+  for (const [gateId, entry] of Object.entries(cfg.contract.gateRulesets)) {
+    await addLiteral(entry, `contract.gateRulesets: ${gateId}`);
   }
 
   return { literals, globs, sources };

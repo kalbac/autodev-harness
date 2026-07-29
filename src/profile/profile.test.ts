@@ -284,6 +284,9 @@ describe("prepareGateInvocation", () => {
     filesGlob,
     redExitCodes: [1],
     report: null,
+    ruleset: null,
+    rulesetSource: "profile" as const,
+    rulesetPath: "",
   });
 
   it("passes a whole-project gate through untouched", () => {
@@ -562,6 +565,21 @@ gates:
     await writeProfile("demo", GOOD);
     await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
   });
+
+  it("still accepts a '{ruleset}' token in the RAW run string (adr/010) -- it is a placeholder, not an absolute path, so this check must not refuse it before {ruleset} is ever expanded", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    files: "**/*.php"
+    ruleset: gates/ruleset.xml
+    run: "phpcs --standard={ruleset} {files}"
+`;
+    await writeProfile("demo", yaml);
+    await mkdir(join(root, "profiles", "demo", "gates"), { recursive: true });
+    await writeFile(join(root, "profiles", "demo", "gates", "ruleset.xml"), "<ruleset/>", "utf8");
+    await expect(loadProfile("demo@1", root)).resolves.toBeTruthy();
+  });
 });
 
 describe("loadProfile -- raw absolute-path check inspects EVERY '='-separated segment, not just the text after the FIRST '=' (round-5 critic finding)", () => {
@@ -700,5 +718,271 @@ describe("exact version pinning, both sides (round-6 critic finding)", () => {
     await writeProfile("demo", GOOD.replace("version: 1", `version: ${Number.MAX_SAFE_INTEGER}`));
     const p = await loadProfile(`demo@${Number.MAX_SAFE_INTEGER}`, root);
     expect(p.version).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
+
+describe("loadProfile -- 'ruleset:'/'{ruleset}' cross-check (adr/010)", () => {
+  it("throws when '{ruleset}' is used in run but the gate declares no 'ruleset:' key", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    files: "**/*.php"
+    run: "phpcs --standard={ruleset} {files}"
+`;
+    await writeProfile("demo", yaml);
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/declares no 'ruleset:' key/);
+  });
+
+  it("throws when 'ruleset:' is declared but 'run' never mentions '{ruleset}' (would read as overridable while nothing can be substituted)", async () => {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    files: "**/*.php"
+    ruleset: gates/ruleset.xml
+    run: "phpcs {files}"
+`;
+    await writeProfile("demo", yaml);
+    await mkdir(join(root, "profiles", "demo", "gates"), { recursive: true });
+    await writeFile(join(root, "profiles", "demo", "gates", "ruleset.xml"), "<ruleset/>", "utf8");
+    await expect(loadProfile("demo@1", root)).rejects.toThrow(/never uses[\s\S]*\{ruleset\}/);
+  });
+});
+
+describe("loadProfile -- {ruleset} resolution (adr/010: a project may declare its own ruleset)", () => {
+  /** Writes a profile declaring one overridable 'phpcs' gate, with its default
+   *  ruleset shipped at 'gates/ruleset.xml' inside the profile. */
+  async function writeRulesetProfile(run = "phpcs --standard={ruleset} {files}"): Promise<void> {
+    const yaml = `id: demo
+version: 1
+gates:
+  - id: phpcs
+    files: "**/*.php"
+    ruleset: gates/ruleset.xml
+    run: "${run}"
+`;
+    await writeProfile("demo", yaml);
+    await mkdir(join(root, "profiles", "demo", "gates"), { recursive: true });
+    await writeFile(join(root, "profiles", "demo", "gates", "ruleset.xml"), "<ruleset/>", "utf8");
+  }
+
+  it("with no override, resolves {ruleset} under the profile directory and reports rulesetSource 'profile'", async () => {
+    await writeRulesetProfile();
+    const p = await loadProfile("demo@1", root);
+    const expected = join(root, "profiles", "demo", "gates", "ruleset.xml");
+    expect(p.gates[0]!.ruleset).toBe("gates/ruleset.xml");
+    expect(p.gates[0]!.rulesetSource).toBe("profile");
+    expect(p.gates[0]!.rulesetPath).toBe(expected);
+    expect(p.gates[0]!.run).toContain(expected);
+    expect(p.gates[0]!.run).not.toContain("{ruleset}");
+  });
+
+  it("with a project override, resolves {ruleset} under the project's repoRoot, reports rulesetSource 'project', and the command names the repoRoot path and NOT the profile one", async () => {
+    await writeRulesetProfile();
+    const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+    try {
+      await writeFile(join(projectRoot, "phpcs.xml.dist"), "<ruleset/>", "utf8");
+      const p = await loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } });
+      const projectPath = join(projectRoot, "phpcs.xml.dist");
+      const profilePath = join(root, "profiles", "demo", "gates", "ruleset.xml");
+      expect(p.gates[0]!.rulesetSource).toBe("project");
+      expect(p.gates[0]!.rulesetPath).toBe(projectPath);
+      expect(p.gates[0]!.run).toContain(projectPath);
+      expect(p.gates[0]!.run).not.toContain(profilePath);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("an overridden gate's `ruleset` text is the PROJECT's entry, never the profile's -- all three ruleset fields describe the same file", async () => {
+    // Regression. The first version of this feature seeded `ruleset` with the
+    // profile author's own `ruleset:` value and never overwrote it, while
+    // `rulesetSource`/`rulesetPath`/`run` were all correctly switched to the
+    // project's. Every assertion in the test above still passed, because it
+    // checked two of the three fields and not this one -- so the suite was green
+    // while `GET /projects/:id/guarantees` reported `ruleset: "gates/ruleset.xml"`
+    // beside `rulesetSource: "project"`, i.e. the guarantees screen named a file
+    // the project does not contain and attributed it to the project. Found by
+    // reading the live endpoint on the first real repository.
+    //
+    // Asserted as a TRIPLE rather than as one more field, because the property
+    // that actually matters is that the three agree: any future change that moves
+    // one of them without the others has to fail here.
+    await writeRulesetProfile();
+    const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+    try {
+      await writeFile(join(projectRoot, "phpcs.xml.dist"), "<ruleset/>", "utf8");
+      const p = await loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } });
+      const gate = p.gates[0]!;
+      // `rulesetSource` asserted HERE too, not left to the neighbouring test (R2
+      // review observation): a test whose subject is "these fields agree" must
+      // pin every field it claims agreement over, or it is only self-contained by
+      // reference to a test that could later be changed independently.
+      expect(gate.rulesetSource).toBe("project");
+      expect(gate.ruleset).toBe("phpcs.xml.dist");
+      expect(gate.ruleset).not.toBe("gates/ruleset.xml");
+      // The declared text, resolved against the anchor its own source names, must
+      // reproduce the absolute path the command actually runs -- the closest thing
+      // to a machine-checkable statement of "these three describe one file".
+      expect(join(projectRoot, gate.ruleset!)).toBe(gate.rulesetPath);
+      expect(gate.run).toContain(gate.rulesetPath);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("a NON-overridden gate's `ruleset` stays the profile's own text, and the same three-field agreement holds against the profile dir", async () => {
+    // The other arm of the triple-agreement property. Without this, a "fix" that
+    // simply blanked `ruleset` on every gate would satisfy the test above.
+    await writeRulesetProfile();
+    const p = await loadProfile("demo@1", root);
+    const gate = p.gates[0]!;
+    expect(gate.ruleset).toBe("gates/ruleset.xml");
+    expect(gate.rulesetSource).toBe("profile");
+    expect(join(root, "profiles", "demo", gate.ruleset!)).toBe(gate.rulesetPath);
+    expect(gate.run).toContain(gate.rulesetPath);
+  });
+
+  it("a gate with no 'ruleset:' key is untouched by overrides -- rulesetSource/rulesetPath stay at their inert defaults", async () => {
+    // GOOD declares a plain {profile}-based gate with no 'ruleset:' key at all.
+    await writeProfile("demo", GOOD);
+    const p = await loadProfile("demo@1", root);
+    expect(p.gates[0]!.ruleset).toBeNull();
+    expect(p.gates[0]!.rulesetSource).toBe("profile");
+    expect(p.gates[0]!.rulesetPath).toBe("");
+  });
+
+  describe("adr/010 part (d): the fail-closed table, one row per test", () => {
+    it.each([["rules[1].xml"], ["rules*.xml"], ["rules?.xml"], ["rules{a,b}.xml"]])(
+      "throws on a project override containing glob metacharacters (%s) -- the oracle-fence escape",
+      async (entry) => {
+        // Review-gate finding. A ruleset entry is consumed HERE as one literal path
+        // (resolved, stat'ed, substituted verbatim into the command) but was handed
+        // to `resolveOracleSet`, whose classifier reads a metacharacter as a
+        // PATTERN. `rules[1].xml` is a legal POSIX filename, so declaring it ran the
+        // gate against the real file while the fence registered a glob that need not
+        // match it -- the worker could then rewrite the standard it is judged by
+        // without escalating, defeating adr/010 part (c) by way of a filename.
+        //
+        // Refused where the value ENTERS rather than special-cased in the fence:
+        // `docs/gotchas/validated-one-string-used-another.md`'s rule after seven
+        // instances is to state the normal form once, so every consumer downstream
+        // is looking at the same thing.
+        await writeRulesetProfile();
+        await expect(loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { phpcs: entry } })).rejects.toThrow(
+          /not a valid repo-relative path/i,
+        );
+      },
+    );
+
+    it("throws when a project override names a gate id the profile does not have (unknown gate id)", async () => {
+      await writeRulesetProfile();
+      await expect(
+        loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { "no-such-gate": "phpcs.xml.dist" } }),
+      ).rejects.toThrow(/no gate with that id/);
+    });
+
+    it("throws when a project override names a gate that declares no 'ruleset:' key (not overridable at all)", async () => {
+      // GOOD's only gate ('phpcs') has no 'ruleset:' key.
+      await writeProfile("demo", GOOD);
+      await expect(
+        loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { phpcs: "phpcs.xml.dist" } }),
+      ).rejects.toThrow(/not overridable at all/);
+    });
+
+    it("throws when the project override is absolute (fails the lexical normal-form check)", async () => {
+      await writeRulesetProfile();
+      await expect(
+        loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { phpcs: "/etc/passwd" } }),
+      ).rejects.toThrow(/not a valid repo-relative path/);
+    });
+
+    it("throws when the project override escapes repoRoot via '..' (fails the lexical normal-form check)", async () => {
+      await writeRulesetProfile();
+      await expect(
+        loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { phpcs: "../outside.xml" } }),
+      ).rejects.toThrow(/not a valid repo-relative path/);
+    });
+
+    it("throws when the declared project override file is absent", async () => {
+      await writeRulesetProfile();
+      const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+      try {
+        await expect(
+          loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } }),
+        ).rejects.toThrow(/does not exist in the project/);
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("throws when the declared project override names a DIRECTORY, not a file", async () => {
+      await writeRulesetProfile();
+      const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+      try {
+        await mkdir(join(projectRoot, "phpcs.xml.dist"));
+        await expect(
+          loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } }),
+        ).rejects.toThrow(/not a regular file/);
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("throws when the declared project override is a SYMLINK, even one pointing at a real file (adr/010's stricter rule vs. the {profile}-token probe's own tolerance)", async () => {
+      await writeRulesetProfile();
+      const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+      try {
+        await writeFile(join(projectRoot, "real.xml"), "<ruleset/>", "utf8");
+        await symlink(join(projectRoot, "real.xml"), join(projectRoot, "phpcs.xml.dist"), "file");
+        await expect(
+          loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } }),
+        ).rejects.toThrow(/is a SYMLINK/);
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("throws when the resolved override path contains whitespace (gate commands are whitespace-split and not quote-aware)", async () => {
+      await writeRulesetProfile();
+      const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+      try {
+        await writeFile(join(projectRoot, "my ruleset.xml"), "<ruleset/>", "utf8");
+        await expect(
+          loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "my ruleset.xml" } }),
+        ).rejects.toThrow(/whitespace/i);
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("a declared-but-unhonourable override does NOT fall back to the profile's own ruleset -- it throws even though the profile's default is perfectly valid", async () => {
+    // The profile's own default ('gates/ruleset.xml') is shipped and valid --
+    // writeRulesetProfile() always writes it. If loadProfile silently fell back to
+    // it whenever the override could not be honoured, this call would SUCCEED
+    // (using the profile default) instead of throwing. adr/010 part (d) is explicit
+    // that this must never happen: an operator who declared an override must be
+    // told their declaration could not be honoured, not silently served the
+    // profile's standard while believing their own is in force.
+    await writeRulesetProfile();
+    const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+    try {
+      // No 'phpcs.xml.dist' ever written under projectRoot -- the override is
+      // declared-but-absent.
+      await expect(
+        loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } }),
+      ).rejects.toThrow(/does not exist in the project/);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("an EMPTY override map behaves exactly like no override at all (every gate keeps its profile default)", async () => {
+    await writeRulesetProfile();
+    const p = await loadProfile("demo@1", root, { repoRoot: root, gateRulesets: {} });
+    expect(p.gates[0]!.rulesetSource).toBe("profile");
+    expect(p.gates[0]!.rulesetPath).toBe(join(root, "profiles", "demo", "gates", "ruleset.xml"));
   });
 });
