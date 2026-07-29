@@ -669,6 +669,53 @@ describe("#155: a report path anchored at the ruleset's directory, not the workt
     expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
   });
 
+  it("R3-FIX1: the ANCHOR's own '..' is resolved before the report path is measured against it", () => {
+    // Fail-OPEN before the fix. The anchor was `C:/repo/worktree/..`, carrying a
+    // literal `..` segment; the report's own `..` then popped THAT instead of
+    // climbing out of `worktree`, so `../outside.php` resolved to
+    // `C:/repo/worktree/outside.php` -- inside the worktree -- and the finding
+    // was attributed to a file the diff never touched and silently dropped.
+    // The true anchor is `C:/repo`, which puts the finding at `C:/outside.php`.
+    const result = filterFindings(
+      [finding({ file: "..\\outside.php", line: 3, message: "outside" })],
+      new Map([["src/a.php", new Set([3])]]),
+      "C:\\repo\\worktree",
+      new Set(),
+      "C:\\repo\\worktree\\..\\phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "outside" });
+  });
+
+  it("R3-FIX2: a RELATIVE ruleset path is refused as an anchor", () => {
+    // Also fail-open. A relative ruleset is measured from a current directory
+    // this process does not know, so `config` clamped a `..` it should have
+    // applied and `../worktree/outside.php` landed inside `config/worktree`.
+    const result = filterFindings(
+      [finding({ file: "../worktree/outside.php", line: 3, message: "outside" })],
+      new Map([["src/a.php", new Set([3])]]),
+      "config/worktree",
+      new Set(),
+      "config/phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "outside" });
+  });
+
+  it("R3-FIX3: three or more leading slashes are POSIX, not an incomplete UNC", () => {
+    // `///repo` is `/repo` on POSIX -- only exactly TWO leading slashes are
+    // special. Refusing it left every finding unattributed, blocking a change
+    // for an ordinary path shape.
+    const result = filterFindings(
+      [finding({ file: "wt/src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "/repo/wt",
+      new Set(),
+      "///repo/phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
   it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
     // The profile's ruleset declares no basepath, so its findings stay
     // absolute. Supplying the anchor must be a no-op for them.

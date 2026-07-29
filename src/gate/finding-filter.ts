@@ -170,6 +170,48 @@ function rootSegmentCount(segs: string[]): number {
   return 1;
 }
 
+/**
+ * THE canonicalizer, and the only place `.`, `..`, trailing separators and the
+ * root floor are interpreted. Input must already be folded and extended-length-
+ * stripped; output is the same path with `.` dropped, `..` applied down to (and
+ * never past) its root, and no trailing separator -- so the POSIX root
+ * canonicalizes to the EMPTY STRING, which is the form `"/repo".split("/")`
+ * implies.
+ *
+ * It exists because rounds 1-3 were all the same mistake in different clothes:
+ * the REPORT path was being normalized while the ANCHOR it was measured against
+ * was not. R3's first finding is the sharpest version -- a ruleset at
+ * `C:\repo\worktree\..\phpcs.xml` yields the anchor `C:/repo/worktree/..`, whose
+ * literal `..` segment the report's own `..` then popped, so a report path of
+ * `..\outside.php` resolved to `C:/repo/worktree/outside.php` (INSIDE the
+ * worktree) instead of `C:/outside.php` (outside it). The finding was then
+ * attributed to a file the diff never touched and silently DROPPED: fail-open,
+ * in the component that decides what may merge.
+ *
+ * Both sides now go through this one function, which is the prescription in
+ * `docs/gotchas/validated-one-string-used-another.md` -- state the normal form
+ * ONCE at the entry point, and make the check and the use share it -- applied to
+ * the anchor as well as the value, which is the half that kept being missed.
+ */
+function canonicalize(folded: string): string {
+  const segs = folded.split("/");
+  // Trailing separators first: they would otherwise leave an empty tail segment
+  // that the next push turns into a doubled separator (`C:/` + `x` -> `C://x`).
+  while (segs.length > 1 && segs[segs.length - 1] === "") segs.pop();
+
+  const floor = rootSegmentCount(segs);
+  const out = segs.slice(0, floor);
+  for (const seg of segs.slice(floor)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length > floor) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
 /** Join a relative (folded) path onto a folded anchor, collapsing `.` and `..`
  *  LEXICALLY -- no filesystem access, for the same cross-platform reason this
  *  module refuses node's `path` module: the report and the anchor may have been
@@ -191,17 +233,10 @@ function rootSegmentCount(segs: string[]): number {
  *  containment check, and clamping only ever yields the path the OS itself
  *  would resolve to. */
 function resolveAgainstAnchor(anchorFolded: string, relativeFolded: string): string {
-  const segs = anchorFolded.split("/");
-  const floor = rootSegmentCount(segs);
-  for (const seg of relativeFolded.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (segs.length > floor) segs.pop();
-      continue;
-    }
-    segs.push(seg);
-  }
-  return segs.join("/");
+  // The anchor arrives already canonical from `relativePathAnchor`, so joining
+  // and canonicalizing ONCE is the whole operation -- there is no second rule
+  // here that could disagree with the first.
+  return canonicalize(anchorFolded + "/" + relativeFolded);
 }
 
 /** The directory a relative report path is anchored at, derived from the path
@@ -235,21 +270,40 @@ function relativePathAnchor(rulesetPath: string | null): string | null {
   // `docs/gotchas/empty-path-resolves-to-repo-root.md`, where adding a resolve
   // step turned a harmless absent path into a confident wrong one.
   if (rulesetPath === null || rulesetPath.trim() === "") return null;
-  const folded = stripExtendedLengthPrefix(foldSeparators(rulesetPath));
+  let folded = stripExtendedLengthPrefix(foldSeparators(rulesetPath));
+
+  // POSIX collapses three or more leading slashes to one; only exactly two are
+  // special (and only as UNC). Without this, `///repo/phpcs.xml` -- a perfectly
+  // ordinary POSIX path -- was refused below as an incomplete UNC, leaving every
+  // finding unattributed and blocking a change for a path shape that is not even
+  // unusual (R3, minor). Fails in the safe direction, but a false block is still
+  // a broken gate.
+  folded = folded.replace(/^\/{3,}/, "/");
+
+  // An anchor that is not itself ROOTED cannot place anything: a relative
+  // ruleset path is measured from a current directory this process does not
+  // know. R3's second finding is what happens without this -- with a relative
+  // ruleset `config/phpcs.xml` and a relative worktree `config/worktree`, the
+  // anchor `config` clamped a `..` it should have applied, and a report path of
+  // `../worktree/outside.php` resolved INSIDE the worktree, dropping a finding
+  // from outside it. Production always passes an absolute path (`root.ts` hands
+  // over `g.rulesetPath`, resolved at profile load), so this refuses a shape the
+  // gate never produces rather than narrowing one it does.
+  if (!isRootedPath(folded)) return null;
+
   const lastSlash = folded.lastIndexOf("/");
   if (lastSlash === -1) return null;
 
-  // Trailing separators are stripped so joining onto this anchor can never
-  // double one: an anchor of `C:/` would otherwise push a segment onto the
-  // EMPTY tail its split produces and yield `C://x`.
-  let dir = folded.slice(0, lastSlash);
-  while (dir.length > 1 && dir.endsWith("/")) dir = dir.slice(0, -1);
-  // The canonical POSIX root is the EMPTY string, because that is how an
-  // absolute POSIX path splits (`"/repo".split("/")` is `["", "repo"]`). It is
-  // NOT the same value as "no anchor" -- that is `null`, returned above and
-  // below, and the two are different types precisely so they cannot be
-  // confused (`docs/gotchas/boolean-whose-no-means-two-things.md`).
-  if (dir === "/") dir = "";
+  // The anchor goes through the SAME canonicalizer as the report path -- trailing
+  // separators, `.` and `..` included. Normalizing one side and not the other is
+  // the defect shape all three review rounds kept finding.
+  // Canonicalized here as well as at the join, and the redundancy is deliberate
+  // and measured: a probe disabling EITHER alone leaves every test green, and
+  // only disabling BOTH reproduces R3's fail-open. The join needs it because an
+  // un-canonical anchor ending in a separator turns `/` + `wt/...` into `//wt/...`,
+  // which then reads as UNC-shaped; the UNC refusal below needs it because it
+  // inspects `dir`'s own segments.
+  const dir = canonicalize(folded.slice(0, lastSlash));
 
   // A `//`-prefixed path is only a root if it actually names BOTH a server and
   // a share. `//server` names neither a directory nor a root -- there is
