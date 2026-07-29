@@ -540,12 +540,26 @@ export async function resolveOracleSet(
   // coverage (see the module doc comment's source-6 entry for the exact failure
   // this closes). Same classification/normalization as every other source, keyed
   // by the declaring gate id rather than a profile id.
+  //
+  // Added as a LITERAL unconditionally -- the ONE source here that does not run
+  // `classifyOracleEntry` first, and the asymmetry is deliberate. Sources 4 and 5
+  // accept operator/profile declarations that may legitimately be patterns
+  // (`.github/workflows/**`), so they must classify. A ruleset is never a pattern:
+  // `profile.ts` resolves, stats and substitutes this exact string as a single
+  // concrete path, so classifying it could only ever produce a fence entry that
+  // describes something OTHER than the file the gate actually reads.
+  //
+  // Classifying it did exactly that, and it was an escape rather than a cosmetic
+  // mismatch: a POSIX file genuinely named `rules[1].xml` passed the ruleset
+  // validator, ran the gate as a literal path, and registered as a GLOB here -- so
+  // the fence watched a pattern that need not match the file, and a worker could
+  // rewrite the standard it was judged by without escalating. `isInvalidRulesetEntry`
+  // (`profile/schema.ts`) now refuses metacharacters at the entry point, which makes
+  // the two readings agree by construction; keeping the literal call here as well is
+  // not redundancy but the same guarantee stated where the fence is built, so this
+  // source cannot silently start classifying again if that predicate is ever relaxed.
   for (const [gateId, entry] of Object.entries(cfg.contract.gateRulesets)) {
-    if (classifyOracleEntry(entry) === "glob") {
-      addGlob(entry, `contract.gateRulesets: ${gateId}`);
-    } else {
-      await addLiteral(entry, `contract.gateRulesets: ${gateId}`);
-    }
+    await addLiteral(entry, `contract.gateRulesets: ${gateId}`);
   }
 
   return { literals, globs, sources };

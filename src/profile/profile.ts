@@ -773,6 +773,22 @@ export async function loadProfile(
       );
     }
 
+    // All FOUR fields are written together, from the same `source`/`relativeEntry`/
+    // `candidatePath` triple, so they can never describe different rulesets.
+    //
+    // `ruleset` in particular must become the text ACTUALLY in force, not the
+    // profile author's own `ruleset:` value it was seeded with at construction.
+    // Leaving the seed in place was a real defect, caught live against
+    // `GET /projects/:id/guarantees` on the first real project rather than by any
+    // test: the endpoint reported `ruleset: "gates/phpcs.xml"` (the profile's
+    // path) beside `rulesetSource: "project"`, so the guarantees screen would have
+    // named a file the project does not contain and attributed it to the project,
+    // while the command underneath correctly ran the project's own ruleset. Three
+    // fields describing one thing disagreeing is exactly the shape
+    // `docs/gotchas/validated-one-string-used-another.md` names -- here the value
+    // was RESOLVED one way and REPORTED another, which is the same defect wearing
+    // a projection instead of a filesystem call.
+    g.ruleset = relativeEntry;
     g.rulesetSource = source;
     g.rulesetPath = candidatePath;
     g.run = g.run.split("{ruleset}").join(candidatePath);

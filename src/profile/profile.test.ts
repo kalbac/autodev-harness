@@ -795,6 +795,50 @@ gates:
     }
   });
 
+  it("an overridden gate's `ruleset` text is the PROJECT's entry, never the profile's -- all three ruleset fields describe the same file", async () => {
+    // Regression. The first version of this feature seeded `ruleset` with the
+    // profile author's own `ruleset:` value and never overwrote it, while
+    // `rulesetSource`/`rulesetPath`/`run` were all correctly switched to the
+    // project's. Every assertion in the test above still passed, because it
+    // checked two of the three fields and not this one -- so the suite was green
+    // while `GET /projects/:id/guarantees` reported `ruleset: "gates/ruleset.xml"`
+    // beside `rulesetSource: "project"`, i.e. the guarantees screen named a file
+    // the project does not contain and attributed it to the project. Found by
+    // reading the live endpoint on the first real repository.
+    //
+    // Asserted as a TRIPLE rather than as one more field, because the property
+    // that actually matters is that the three agree: any future change that moves
+    // one of them without the others has to fail here.
+    await writeRulesetProfile();
+    const projectRoot = realpathSync(await mkdtemp(join(tmpdir(), "project-")));
+    try {
+      await writeFile(join(projectRoot, "phpcs.xml.dist"), "<ruleset/>", "utf8");
+      const p = await loadProfile("demo@1", root, { repoRoot: projectRoot, gateRulesets: { phpcs: "phpcs.xml.dist" } });
+      const gate = p.gates[0]!;
+      expect(gate.ruleset).toBe("phpcs.xml.dist");
+      expect(gate.ruleset).not.toBe("gates/ruleset.xml");
+      // The declared text, resolved against the anchor its own source names, must
+      // reproduce the absolute path the command actually runs -- the closest thing
+      // to a machine-checkable statement of "these three describe one file".
+      expect(join(projectRoot, gate.ruleset!)).toBe(gate.rulesetPath);
+      expect(gate.run).toContain(gate.rulesetPath);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("a NON-overridden gate's `ruleset` stays the profile's own text, and the same three-field agreement holds against the profile dir", async () => {
+    // The other arm of the triple-agreement property. Without this, a "fix" that
+    // simply blanked `ruleset` on every gate would satisfy the test above.
+    await writeRulesetProfile();
+    const p = await loadProfile("demo@1", root);
+    const gate = p.gates[0]!;
+    expect(gate.ruleset).toBe("gates/ruleset.xml");
+    expect(gate.rulesetSource).toBe("profile");
+    expect(join(root, "profiles", "demo", gate.ruleset!)).toBe(gate.rulesetPath);
+    expect(gate.run).toContain(gate.rulesetPath);
+  });
+
   it("a gate with no 'ruleset:' key is untouched by overrides -- rulesetSource/rulesetPath stay at their inert defaults", async () => {
     // GOOD declares a plain {profile}-based gate with no 'ruleset:' key at all.
     await writeProfile("demo", GOOD);
@@ -805,6 +849,28 @@ gates:
   });
 
   describe("adr/010 part (d): the fail-closed table, one row per test", () => {
+    it.each([["rules[1].xml"], ["rules*.xml"], ["rules?.xml"], ["rules{a,b}.xml"]])(
+      "throws on a project override containing glob metacharacters (%s) -- the oracle-fence escape",
+      async (entry) => {
+        // Review-gate finding. A ruleset entry is consumed HERE as one literal path
+        // (resolved, stat'ed, substituted verbatim into the command) but was handed
+        // to `resolveOracleSet`, whose classifier reads a metacharacter as a
+        // PATTERN. `rules[1].xml` is a legal POSIX filename, so declaring it ran the
+        // gate against the real file while the fence registered a glob that need not
+        // match it -- the worker could then rewrite the standard it is judged by
+        // without escalating, defeating adr/010 part (c) by way of a filename.
+        //
+        // Refused where the value ENTERS rather than special-cased in the fence:
+        // `docs/gotchas/validated-one-string-used-another.md`'s rule after seven
+        // instances is to state the normal form once, so every consumer downstream
+        // is looking at the same thing.
+        await writeRulesetProfile();
+        await expect(loadProfile("demo@1", root, { repoRoot: root, gateRulesets: { phpcs: entry } })).rejects.toThrow(
+          /not a valid repo-relative path/i,
+        );
+      },
+    );
+
     it("throws when a project override names a gate id the profile does not have (unknown gate id)", async () => {
       await writeRulesetProfile();
       await expect(

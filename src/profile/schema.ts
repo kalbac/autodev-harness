@@ -202,15 +202,40 @@ function isInvalidProtectedPathEntry(p: string): boolean {
  * disagree on some input (`docs/gotchas/validated-one-string-used-another.md`).
  *
  * Refuses: empty, absolute on any platform (`isAbsoluteOnAnyPlatform` above),
- * any `/`-separated segment equal to `..`, or any backslash at all. See the
- * `ruleset:` field doc comment on `ProfileGateSchema` for why this is stricter
- * than `isInvalidProtectedPathEntry`'s fold-then-check treatment of `\`.
+ * any `/`-separated segment equal to `..`, any backslash at all, and any glob
+ * metacharacter. See the `ruleset:` field doc comment on `ProfileGateSchema` for
+ * why this is stricter than `isInvalidProtectedPathEntry`'s fold-then-check
+ * treatment of `\`.
+ *
+ * The glob refusal closes an ORACLE-FENCE ESCAPE found by the review gate, and it
+ * is worth stating precisely because the two ends of it look unrelated. A ruleset
+ * entry is consumed by `profile.ts` as a LITERAL path — it is `resolve`d, `stat`ed
+ * and substituted verbatim into the gate command — but the same string is handed
+ * to `resolveOracleSet`, whose `classifyOracleEntry` reads a metacharacter as a
+ * PATTERN. On POSIX a file may legitimately be named `rules[1].xml`; declaring it
+ * would run the gate against that real file while registering a glob in the fence,
+ * and a glob is not obliged to match the literal filename that produced it. The
+ * result is a ruleset the worker may rewrite without the fence noticing — the exact
+ * protection `adr/010` part (c) exists to provide, defeated by a filename.
+ *
+ * Refusing the shape at the ENTRY POINT is the fix rather than teaching the fence
+ * to special-case source 6, because that is the rule
+ * `docs/gotchas/validated-one-string-used-another.md` arrives at after seven
+ * instances: state the normal form once, where the value enters, so every consumer
+ * downstream is looking at the same thing. A ruleset is one concrete file; there is
+ * no legitimate reading in which it is a pattern.
  */
 export function isInvalidRulesetEntry(p: string): boolean {
   if (p === "") return true;
   if (isAbsoluteOnAnyPlatform(p)) return true;
   if (p.includes("\\")) return true;
   if (p.split("/").some((seg) => seg === "..")) return true;
+  // Deliberately the SUPERSET of what `classifyOracleEntry` treats as glob syntax,
+  // not an exact mirror of it: this predicate's job is to guarantee the two
+  // consumers can never disagree, and a superset guarantees that even if the
+  // fence's own metacharacter set later widens. `{`/`}` are included on the same
+  // reasoning although the harness matcher does not implement brace expansion.
+  if (/[*?[\]{}]/.test(p)) return true;
   return false;
 }
 
@@ -324,12 +349,23 @@ export interface ResolvedGate {
    *  than leaving callers to distinguish "absent" from "not yet set". */
   report: "checkstyle" | null;
   /**
-   * The profile-relative ruleset text this gate declared (`ruleset:` in
-   * profile.yaml), or `null` when the gate declared none. This is the RAW
-   * declared text, not a resolved path -- `rulesetPath` below is that. Kept
-   * around (rather than discarded once resolved) purely for observability: it
-   * is what `GET /projects/:id/guarantees` (`adr/010` Consequences, #138) needs
-   * to show "which standard formalized this", alongside `rulesetSource`.
+   * The relative ruleset text ACTUALLY IN FORCE for this gate, or `null` when the
+   * gate declares no `ruleset:` key at all. This is the RAW declared text, not a
+   * resolved path -- `rulesetPath` below is that. Kept around (rather than
+   * discarded once resolved) purely for observability: it is what
+   * `GET /projects/:id/guarantees` (`adr/010` Consequences, #138) needs to show
+   * "which standard formalized this", alongside `rulesetSource`.
+   *
+   * "In force" is load-bearing and was learned the expensive way. This field is
+   * SEEDED with the profile author's own `ruleset:` value when the gate list is
+   * built, and then OVERWRITTEN with the project's declared entry by the
+   * `{ruleset}` resolution step whenever an override applies -- so it always
+   * agrees with `rulesetSource` and `rulesetPath`, and is always profile-relative
+   * for `"profile"` and repoRoot-relative for `"project"`. Reading the seed as
+   * final produced a projection that named the PROFILE's file while attributing it
+   * to the PROJECT (caught live on the first real repository, not by a test). A
+   * consumer must never pair this value with a source it did not come from; the
+   * three fields are written together for exactly that reason.
    */
   ruleset: string | null;
   /**

@@ -426,14 +426,29 @@ describe("resolveOracleSet", () => {
       expect(set.sources.get("phpcs.xml.dist")).toBe("contract.gateRulesets: phpcs");
     });
 
-    it("classifies a declared ruleset glob into the glob arm", async () => {
+    it("NEVER classifies a declared ruleset as a glob -- a metacharacter-bearing entry still lands in the LITERAL arm", async () => {
+      // This test previously asserted the opposite, and in doing so it locked in an
+      // oracle-fence ESCAPE (found by the review gate). `profile.ts` consumes a
+      // ruleset entry as one concrete path -- it resolves, stats and substitutes the
+      // string verbatim -- so registering it here as a PATTERN made the fence watch
+      // something other than the file the gate reads. On POSIX a file may genuinely
+      // be named `rules[1].xml`: declared, it ran the gate against that real file
+      // while the fence held a glob that need not match it, leaving the worker free
+      // to rewrite the standard it was judged by without escalating.
+      //
+      // `isInvalidRulesetEntry` now refuses metacharacters where the value enters,
+      // so this input cannot survive `loadProfile` at all. The assertion is kept
+      // anyway, on the raw `resolveOracleSet` path, because the fence must not
+      // depend on that predicate staying strict to remain correct -- the two halves
+      // are stated independently on purpose.
       const cfg = HarnessConfigSchema.parse({ contract: { gateRulesets: { phpcs: "rulesets/**" } } });
       const raw = {};
 
       const set = await resolveOracleSet(cfg, raw, root);
 
-      expect(set.globs).toContain("rulesets/**");
-      expect(set.literals).not.toContain("rulesets/**");
+      expect(set.literals).toContain("rulesets/**");
+      expect(set.globs).not.toContain("rulesets/**");
+      expect(set.sources.get("rulesets/**")).toBe("contract.gateRulesets: phpcs");
     });
 
     it("fails closed on an escaping declared ruleset path", async () => {
