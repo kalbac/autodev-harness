@@ -24,9 +24,16 @@ any filter whose key was not already a lowercase slug.
 | His `composer phpstan` | **[OK] No errors** — a gate the harness never ran |
 | Guard is real | reintroducing the bug fails **2** tests (mutation-verified, restore clean) |
 
-Three of his four PHP CI checks pass, including one the harness does not run. The loop
-behaved exactly as designed: the gate refused work carrying a genuine defect, named it by
-file/line/sniff, and the worker fixed that and only that.
+Three of the four PHP checks his CI runs pass, including one the harness does not run — but
+**they were run LOCALLY at the commit, and no CI ran at all** (corrected s64, on the
+operator's observation that his dashboard showed no CI). The clone's `autodev/main` was
+never pushed, so his GitHub Actions never saw the work, and `gate.agentCi.enabled: false`
+means the harness ran none either. The local runs are real evidence about the code; they are
+not evidence that a CI gate passed, and the earlier wording here ("his four PHP CI checks
+pass") invited exactly that reading. Tracked as **#157**.
+
+The loop itself behaved exactly as designed: the gate refused work carrying a genuine defect,
+named it by file/line/sniff, and the worker fixed that and only that.
 
 **It could not have run at all before `adr/010`.** Measured on the same diff: under the
 profile's own ruleset it draws **8** violations, 6 of them `DisallowShortArraySyntax` — the

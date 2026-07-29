@@ -716,6 +716,75 @@ describe("#155: a report path anchored at the ruleset's directory, not the workt
     expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
   });
 
+  it("R4-FIX1: a ROOTED report path with a '.' segment is canonicalized, not dropped", () => {
+    // Fail-OPEN, and older than #155: the rooted branch never canonicalized, so
+    // `src/./a.php` matched no diff key, was read as "a file the diff never
+    // touched", and a violation on a line the worker had just added was
+    // discarded in silence.
+    const dot = filterFindings(
+      [finding({ file: "C:\\repo\\.autodev\\worktrees\\t\\src\\.\\a.php", line: 9 })],
+      new Map([["src/a.php", new Set([9])]]),
+      "C:\\repo\\.autodev\\worktrees\\t",
+      new Set(),
+    );
+    expect(dot).toHaveLength(1);
+    expect(dot[0]).toMatchObject({ file: "src/a.php", line: 9, unattributed: false });
+
+    // Same shape via a doubled separator.
+    const dbl = filterFindings(
+      [finding({ file: "C:\\repo\\wt\\src\\\\a.php", line: 9 })],
+      new Map([["src/a.php", new Set([9])]]),
+      "C:\\repo\\wt",
+      new Set(),
+    );
+    expect(dbl[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
+  it("R4-FIX1: a ROOTED report path with a harmless '..' resolves instead of being refused", () => {
+    // The mirror image, failing closed: `src/../src/a.php` names a file plainly
+    // inside the worktree, and was refused because the raw remainder contained
+    // a `..` segment.
+    const result = filterFindings(
+      [finding({ file: "/repo/wt/src/../src/a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "/repo/wt",
+      new Set(),
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
+  it("R4-FIX2: the incomplete-UNC refusal survives canonicalization", () => {
+    // The review gate's exact trigger, and the one that exposed the R2 test as
+    // green-for-the-wrong-reason. `canonicalize("//server")` is `/server`, so a
+    // refusal placed AFTER canonicalization inspected a string from which the
+    // offending shape had already been erased. With the anchor wrongly accepted,
+    // `x/../a.php` resolves to `/server/a.php`, lands inside the worktree, and
+    // is dropped as untouched -- fail-open.
+    const result = filterFindings(
+      [finding({ file: "x/../a.php", line: 3, message: "unplaceable" })],
+      new Map([["other.php", new Set([3])]]),
+      "/server",
+      new Set(),
+      "//server/phpcs.xml",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ unattributed: true, message: "unplaceable" });
+  });
+
+  it("R4-FIX3: the WORKTREE path is canonicalized too", () => {
+    // A configured root carrying a `.` built the prefix `C:/repo/wt/./`, which no
+    // report path can start with, so every finding fell to unattributed and the
+    // gate blocked on findings it could not place. Fail-closed, still broken.
+    const result = filterFindings(
+      [finding({ file: "C:\\repo\\wt\\src\\a.php", line: 3 })],
+      new Map([["src/a.php", new Set([3])]]),
+      "C:\\repo\\wt\\.",
+      new Set(),
+      "C:\\repo\\wt\\phpcs.xml",
+    );
+    expect(result[0]).toMatchObject({ file: "src/a.php", unattributed: false });
+  });
+
   it("does not disturb an ABSOLUTE report path when an anchor is also supplied", () => {
     // The profile's ruleset declares no basepath, so its findings stay
     // absolute. Supplying the anchor must be a no-op for them.

@@ -294,16 +294,7 @@ function relativePathAnchor(rulesetPath: string | null): string | null {
   const lastSlash = folded.lastIndexOf("/");
   if (lastSlash === -1) return null;
 
-  // The anchor goes through the SAME canonicalizer as the report path -- trailing
-  // separators, `.` and `..` included. Normalizing one side and not the other is
-  // the defect shape all three review rounds kept finding.
-  // Canonicalized here as well as at the join, and the redundancy is deliberate
-  // and measured: a probe disabling EITHER alone leaves every test green, and
-  // only disabling BOTH reproduces R3's fail-open. The join needs it because an
-  // un-canonical anchor ending in a separator turns `/` + `wt/...` into `//wt/...`,
-  // which then reads as UNC-shaped; the UNC refusal below needs it because it
-  // inspects `dir`'s own segments.
-  const dir = canonicalize(folded.slice(0, lastSlash));
+  const rawDir = folded.slice(0, lastSlash);
 
   // A `//`-prefixed path is only a root if it actually names BOTH a server and
   // a share. `//server` names neither a directory nor a root -- there is
@@ -313,11 +304,24 @@ function relativePathAnchor(rulesetPath: string | null): string | null {
   // worktree made to look contained, whose finding is then silently dropped.
   // That is the fail-OPEN direction, so the degenerate shape is refused
   // outright rather than given an invented floor.
-  if (dir.startsWith("//")) {
-    const segs = dir.split("/");
+  //
+  // R4: this check MUST run on the RAW directory, BEFORE canonicalization.
+  // `canonicalize("//server")` returns `/server` -- a three-segment path has a
+  // floor of 1, so the empty second segment is dropped -- which erases the very
+  // shape being refused, and the check silently stopped firing the moment R3
+  // moved canonicalization ahead of it. The R2 test kept passing only because
+  // its worktree happened to be UNC-shaped while the resolved path had become
+  // POSIX: green for the wrong reason. A validator that runs after the
+  // normalizer which destroys its input is not a validator.
+  if (rawDir.startsWith("//")) {
+    const segs = rawDir.split("/");
     if (segs.length < 4 || segs[2] === "" || segs[3] === "") return null;
   }
-  return dir;
+
+  // The anchor goes through the SAME canonicalizer as the report path -- trailing
+  // separators, `.` and `..` included. Normalizing one side and not the other is
+  // the defect shape every review round kept finding.
+  return canonicalize(rawDir);
 }
 
 /**
@@ -377,14 +381,26 @@ function normalizeFindingPath(
   rulesetPath: string | null,
 ): { rel: string; caseInsensitive: boolean } | null {
   const raw = stripExtendedLengthPrefix(foldSeparators(rawFile));
-  let file = raw;
-  if (!isRootedPath(raw)) {
-    const anchor = relativePathAnchor(rulesetPath);
-    if (anchor === null) return null;
-    file = resolveAgainstAnchor(anchor, raw);
-  }
-  let root = stripExtendedLengthPrefix(foldSeparators(worktreePath));
-  if (root.endsWith("/")) root = root.slice(0, -1);
+  // R4: EVERY path goes through `canonicalize`, not only the anchored one. The
+  // rooted branch used to pass the report through untouched, so a tool emitting
+  // `C:/repo/wt/src/./a.php` (or `src//a.php`) produced the relative path
+  // `src/./a.php`, which matches no diff key -- the finding was then read as
+  // "a file the diff never touched" and SILENTLY DROPPED, even when it sat on a
+  // line the worker had just added. Fail-open, and it predates #155: the
+  // absolute branch never canonicalized. The `..` case was the mirror image,
+  // failing closed (`src/../src/a.php` was refused outright).
+  const file = isRootedPath(raw)
+    ? canonicalize(raw)
+    : (() => {
+        const anchor = relativePathAnchor(rulesetPath);
+        return anchor === null ? null : resolveAgainstAnchor(anchor, raw);
+      })();
+  if (file === null) return null;
+
+  // The worktree is a path like any other and gets the same treatment -- a
+  // configured root of `C:\repo\wt\.` otherwise built the prefix `C:/repo/wt/./`,
+  // which no report path can match, so every finding fell to `unattributed`.
+  const root = canonicalize(stripExtendedLengthPrefix(foldSeparators(worktreePath)));
   const prefix = root + "/";
 
   const caseInsensitive = isWindowsShapedPath(root) || isWindowsShapedPath(file);
