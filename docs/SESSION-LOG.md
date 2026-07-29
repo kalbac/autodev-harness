@@ -4,6 +4,89 @@
 
 ---
 
+## s63 — the harness did real work in the operator's own repository, and it committed (2026-07-29)
+
+**Branch:** `feat/s63-real-repo` · **Theme commit:** `6908cb6` · **Model:** Opus 5, attended.
+
+Every prior "the loop works" claim rested on `woodev-shipping-plugin-test`, a polygon made
+convenient for the harness. s62 ended with the operator saying he saw no product progress.
+s63 pointed the harness at `woodev-base-theme` — his active WordPress theme — and gave it a
+task he chose himself.
+
+**It could not run there, and #152 said why in numbers.** The theme is CLEAN under its own
+standard (119 files, exit 0) and draws 8 violations on the first task's target file under the
+profile's ruleset, 6 of them `DisallowShortArraySyntax`. Not debt: the theme EXCLUDES that
+sniff and re-enables `Generic.Arrays.DisallowLongArraySyntax`, so short arrays are mandatory
+there. Measured in both directions rather than argued — one injected `$probe = array( 1, 2 );`
+is RED under the project's ruleset and accepted by the profile's, while the profile's
+short-array findings are the mirror image. Neither is a relaxation of the other, so no union
+and no take-the-stricter rule can produce a satisfiable standard.
+
+**`adr/010`.** A profile gate may nominate its ruleset overridable (`ruleset:` + `{ruleset}`);
+a project declares its own in `contract.gateRulesets`, read from the TRUSTED ROOT, and the
+declared file joins the `adr/006` Phase-2 fence with its own attributed source. Only the
+ruleset is overridable, never the `run` command. Every failure throws at load — there is
+deliberately no silent fallback, because an operator believing his standard is in force while
+the profile's runs is the believed-but-inert shape this repo keeps paying for. Profile bumped
+to v3 (the `run` string changed shape; a pin whose meaning drifts defeats pinning), and the
+polygon's pin was moved with it.
+
+**Infrastructure, measured not assumed.** The harness got its OWN CLONE of the theme, which
+deletes three of the four blockers outright: his branch is not auto-switched, his dirty tree
+cannot block a merge, and `.autodev/`+`.serena/` churn is excluded in the clone. His working
+copy was never touched (he is mid-PR #50). Two probes decided the gate's shape: a project
+ruleset applied from the worktree cwd works (exit 0, and a control proved it can go red), and
+**`composer test:unit` runs GREEN over a junctioned `vendor`** — 396 tests, exit 0 — which
+NARROWS the s21 gotcha: the `Cannot redeclare` fatal needs the project's own classes to be
+COMPOSER-autoloaded, and this theme ships its own autoloader and mocks WP with Brain\Monkey.
+That one measurement is the difference between a linter gate and a gate that judges the diff
+by the project's own test suite.
+
+**The run.** His issue #46 — `reset_url()` removed the `sanitize_key()`'d name instead of the
+original, so Reset kept any filter whose key was not already a lowercase slug. Decomposition
+produced one precise task citing his own test's line numbers. Round 1: correct minimal fix,
+the test that LOCKED IN the bug rewritten, a new mixed-case case added, critic `clean` @0.96
+on a refactor. Gate: **RETRY** — phpcs red on one real defect the worker made, a docblock
+opening lowercase. Round 2: the worker fixed exactly that, critic `clean` @0.94, gate green,
+**commit**. Verified independently at the commit: his 397-test suite green (was 396), his
+phpcs exit 0, his phpstan `[OK] No errors` — a gate the harness never ran — and the new guard
+mutation-verified, reintroducing the bug fails 2 tests.
+
+**The review gate earned its keep.** R1 NOT SAFE, four findings: one declined on facts (the
+claimed compile error was in a `toEqual` expected object, not the input), one already found
+live before the review arrived (`ruleset` reported the PROFILE's file beside
+`rulesetSource: "project"` — caught by reading `GET /projects/:id/guarantees` on the real
+repo, and it had survived a green suite because the existing test asserted two of three
+fields), and **two real oracle-fence escapes**: a ruleset named `rules[1].xml` is a legal
+POSIX filename that the gate reads as a literal and the fence classifies as a PATTERN, so the
+standard could be rewritten without escalating; and a declaration on a profile-less project
+skipped every fail-closed rule while still joining the protected set. Both fixed at the ENTRY
+POINT, per gotcha 84. R2: SAFE, with two conditional observations closed by adding tests
+rather than by argument.
+
+**The run's own finding (#155), which is the honest deliverable.** A declared ruleset with
+`basepath=.` anchors phpcs report paths at the trusted root while the gate runs with the
+worktree as cwd, so findings arrive as `.autodev\worktrees\<task>\…` and are marked
+`unattributed` — kept fail-closed, but **line-scoping does not apply**. Harmless on a clean
+theme; on a legacy file the worker inherits the whole file's debt, which is gotcha 82's defect
+reintroduced by `adr/010`'s own mechanism.
+
+**Also:** #154 (a broken project floods the log on every UI poll — 20 identical lines in 14s
+after the v3 bump), #153 (which of the theme's values are contract zones — the operator's
+call; zones were left deliberately empty so the first measurement would not test the agent's
+guesses), and #148 reproduced on a real repo (`success_commands: []` everywhere).
+
+**Two gotchas from the session's own mistakes.** 94 `[test/mutation-check-noop]`: a mutation
+check removed nothing (`perl -0pi` with `;
+` against a CRLF file), the suite stayed green,
+and the natural reading was "this regression test guards nothing" — the exact opposite of the
+truth. And an amendment to `[ops/codex-quota-exit-zero]`: anchoring the verdict grep at line
+start is NOT enough when the prompt itself spells `VERDICT: SAFE` at column 0 — wait on the
+process, and compare output size against prompt size.
+
+**Verification:** 2252 tests + 3 skipped, typecheck clean, both bundles rebuilt, guarantees
+screen live-verified in a browser.
+
 ## s62 (28.07.2026) — **the corpus can FAIL again, and did on its first try** (8/9) — plus #138's first slice: a screen that says what the harness actually guarantees
 
 Two threads, one branch. The corpus stopped being a ceiling, and the operator got the first thing he can read without opening source.
