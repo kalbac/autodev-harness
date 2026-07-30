@@ -4,6 +4,64 @@
 
 ---
 
+## s65 — a real CI finally gated it, and his own ruleset forbade his own decision (2026-07-30)
+
+**Branch:** `docs/s65-real-repo-ci` · **Model:** Opus 5, attended. No harness code changed —
+the whole session's work landed in the operator's own repository.
+
+**#157 discharged, and the mechanism is the lesson.** He authorised the push; pushing the
+branch would have changed nothing. `woodev-base-theme/.github/workflows/ci.yml` triggers on
+`push: branches: [main]` and on `pull_request`, so `autodev/main` on origin matches neither —
+"just push it" would have reproduced the very empty CI panel #157 was filed about, now with a
+branch on origin making the work *look* verified. Read the triggers before pushing; the **PR**
+is the gate. `woodev-base-theme#55`: **4/4 green** — `php-qa` 30s, `js-qa` 27s,
+`php-integration` 1m22s, `e2e` 4m48s. The last two are suites the harness does not run at all,
+so this is the first time its work was judged outside the gate's own reach.
+
+**#52 shipped as an explicit allowlist** (`f34595a`, third harness commit in his repo). The
+path rule failed twice in s64 for a reason that would have repeated; the operator sharpened the
+criterion himself: a string may name `woocommerce` only when core ships **that exact msgid**,
+because a near miss never resolves *and* leaves the theme's POT — worse than not touching it.
+Measured against a real core checkout: `SKU` is `SKU:`, `Action` is `Actions`, `Category`/`Tags`
+are `Category:`/`Categories:`/`Tag:`/`Tags:`. 12 msgids allowed, 19 call sites switched across
+five files, those four kept on the theme domain.
+
+**The run's real finding: his own `phpcs.xml.dist` forbade his own product decision.**
+`text_domain` was a one-element list, so every carve-out call was a `TextDomainMismatch` and the
+task was **unsatisfiable until the ruleset changed** — critic `clean` @0.93, gate RETRY on 19
+findings the worker could not legally fix. The file is in `contract.gateRulesets` and inside the
+`adr/006` fence, so the worker *cannot* rewrite the standard it is judged by. He blessed the
+change; it was applied outside the worker's diff (`29b6ae4`). Principle 14 in its intended
+shape, not as a refusal.
+
+**And the narrow fix was wrong — measured, after I had already recommended it** (gotcha 98). A
+second `<rule ref="WordPress.WP.I18n">` with an `<include-pattern>` scopes the **sniff**, not
+the property: outside the subtree a foreign domain and a missing `$domain` argument both stopped
+being reported at all. Reads as a tightening, behaves as switching i18n checking off for the
+rest of the theme, `composer phpcs` exit 0, no alarm. Shipped instead: property widened
+globally, scope + msgid list in `I18nSourceTest`, both layers in the same gate, effective rule
+= the intersection. Cost named in the ruleset itself.
+
+**Verified, not quoted.** `composer test:unit` 510/1672 (was 509), `phpcs` exit 0 over 119
+files, `phpstan` `[OK] No errors`. Guard mutation-verified three ways, one mechanism per probe:
+non-allowlisted msgid inside → fails; allowlisted msgid outside → fails; `_x` context off by one
+article → fails. Tree clean after each.
+
+**s64's split WAS the earlier failure.** It decomposed this into three `depends_on` tasks, which
+is why "change the test" existed alone as a pure weakening. Told to keep it one change, the
+composer emitted **one task over seven files** and decomposed in 49s instead of seven minutes.
+
+**s64's one commit to his repo was a false claim.** `11b9592` asserted the carve-out was
+"enforced by `tests/php/Unit/I18nSourceTest.php`" while the test enforced the opposite, on a
+criterion that suite cannot decide. True now, and mutation-proven.
+
+Also cleared: a wedged s64 `run --drain` (2h over an empty queue) and a daemon older than the
+s64 #155 fix. New: **#163** (`agent_ci_green: true` when agent-ci is disabled — the field that
+made s63's CI wording possible), **#164** (escalation artifacts never cleaned; not a second
+truth, `state` returns `escalated: []`), gotcha 98. Closed: **#157**, **#52**.
+
+---
+
 ## s64 — the ruler the harness judges his code by, and a CI claim that was never true (2026-07-29/30)
 
 **Branch:** `feat/s64-line-scoping-declared-ruleset` · **Model:** Opus 5, attended.

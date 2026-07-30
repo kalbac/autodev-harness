@@ -5,7 +5,76 @@
 > *replaced*, and the full narrative goes to `SESSION-LOG.md` (see `DOCS-SCHEMA.md`).
 > Anchors: `VISION.md` (mission) · `PRINCIPLES.md` (the invariants).
 
-## Where we are (leaving s64)
+## Where we are (leaving s65)
+
+**A real CI has gated the harness's work in the operator's repository, for the first time.**
+`#157` is discharged, and the detail is the point: **pushing the branch would not have done
+it.** His `ci.yml` triggers on `push: branches: [main]` and on `pull_request`, so
+`autodev/main` landing on origin produces exactly the empty CI surface he complained about.
+What produces evidence is the PR — `kalbac/woodev-base-theme#55`, **CI 4/4 green**:
+
+| job | result |
+|---|---|
+| `php-qa` (phpcs + phpstan + unit, PHP 8.1 floor) | pass, 30s |
+| `js-qa` (lint, format, tokens:check, test:js, build) | pass, 27s |
+| `php-integration` (wp-env container suite) | pass, 1m22s |
+| `e2e` (wp-env + Playwright) | pass, 4m48s |
+
+Two of those — the integration suite and e2e — the harness does not run at all, so this is
+the first time the work was judged by checks outside the gate's own reach.
+
+**`#52` is answered, implemented and committed** (`f34595a`), as an EXPLICIT ALLOWLIST of 12
+msgids rather than the path rule that failed twice in s64. The criterion is the operator's
+own, and it is sharper than the one the card started with: a string may name `woocommerce`
+only when core ships **that exact msgid** under that domain, because a near miss never
+resolves AND drops out of the theme's own POT — worse than leaving it alone. Measured against
+a real WooCommerce checkout: `SKU` is `SKU:` in core, `Action` is `Actions`, `Category`/`Tags`
+are `Category:`/`Categories:` and `Tag:`/`Tags:`. Those four stay on the theme domain; 19 call
+sites across five override files switched, covering exactly the 12.
+
+**His own ruleset forbade his own decision, and that is the run's real finding.**
+`phpcs.xml.dist` declared `text_domain` as a one-element list, so every carve-out call was
+`WordPress.WP.I18n.TextDomainMismatch` — the task was **unsatisfiable until the ruleset
+changed**. The worker could not fix it and must not be able to: the file is declared in
+`contract.gateRulesets` and sits inside the `adr/006` fence. So the resolution was an operator
+act — he blessed it, and it was applied OUTSIDE the worker's diff (`29b6ae4`), which is
+Principle 14 in its intended shape rather than as a refusal.
+
+**The narrow fix was wrong, and only running it said so** (gotcha 98). A second
+`<rule ref="WordPress.WP.I18n">` with an `<include-pattern>` for the subtree was presented to
+the operator as "the technically correct form" and then measured before shipping:
+`include-pattern` scopes the **sniff**, not the property, so outside the subtree a foreign
+domain and a missing `$domain` argument both stopped being reported at all. It reads as a
+tightening and behaves as switching i18n checking off for the rest of the theme, with
+`composer phpcs` exit 0 and no alarm. Shipped instead: the property widened globally, the
+SCOPE and the msgid list living in `I18nSourceTest`, which runs in the same gate — the
+effective rule is the intersection of the two layers, which neither states alone.
+
+**Verified independently, not taken from the verdict.** `composer test:unit` 510 tests (was
+509) / 1672 assertions, `composer phpcs` exit 0 tree-wide over 119 files, `composer phpstan`
+`[OK] No errors`. The guard is mutation-verified in three directions, each probe disabling
+exactly one mechanism: a non-allowlisted msgid inside the subtree fails; an allowlisted msgid
+outside it fails; and `_x`'s context altered by one article (`hash before the order number`)
+fails. Tree clean after every probe.
+
+**The composer's split WAS the earlier failure.** s64 decomposed this into three tasks with
+`depends_on`, which is why "change the test" existed on its own as a pure weakening and was
+correctly killed by the critic. Told in the intent to keep it one change, the composer emitted
+**one task over all seven files**, and decomposition took 49s instead of seven minutes.
+
+**s64's one commit to his repo was a false claim, and it is now true.** `11b9592` wrote into
+his `AGENTS.md` that the carve-out covers "i18n calls reproducing WooCommerce core's own copy
+verbatim" and that this is "enforced by `tests/php/Unit/I18nSourceTest.php`". Both halves were
+false: the criterion is undecidable in a suite that never loads WooCommerce, and the test
+enforced the opposite. Corrected in the same commit as the implementation.
+
+Also cleared this session: a wedged `run --drain` from s64 (alive 2h over an empty queue) and
+a daemon running a `dist` older than the s64 `#155` fix. New: **#163** (`agent_ci_green: true`
+when agent-ci is DISABLED — "nothing to run" serialized as "passed", the field that made s63's
+CI wording possible), **#164** (escalation artifacts never cleaned when a task terminalizes;
+not a second truth — `state` reads the queue and returns `escalated: []`), gotcha 98.
+
+## Where we were (leaving s64)
 
 **The ruler the harness judges his code by was wrong, and the harness found it on his repo.**
 `adr/010` (s63) let a project declare its own phpcs ruleset; the same run produced #155. A
@@ -137,7 +206,8 @@ agent invented would have measured the agent's guesses.
 | Profiles / Qualification Layer | ✅ v1 (s51). **v3 s63 (`adr/010`)**: a project may DECLARE the ruleset its gate is judged by, read from the trusted root and fenced as oracle — without it the harness could not write a passing line of PHP in the operator's own theme |
 | Reporting (Execution + Qualification + Morning) | ✅ shipped s52–s53 |
 | Evaluation Corpus | ✅ machinery + `eval` CLI + **8 cases**; run SIX times. s61 met the bar 7/7; **s62 deliberately broke the ceiling: 8/9, first-pass commit 83.3%, escaped 0%, 0 errored** — the corpus can fail again and does (#147). One case deleted the same run for passing vacuously (#148/#149) |
-| **The harness on a REAL operator repo** | ✅ **s63 — DONE with a commit** (`6908cb6`), ✅ **s64 — a SECOND commit** (`11b9592`) with contract zones live and `zones_touched: []` on a docs change. #155 fixed (six review rounds). Residuals: **#157** (no CI has ever gated this work — branch unpushed, `agentCi` off), one escalation parked on his A/B |
+| **The harness on a REAL operator repo** | ✅ **s63** first commit (`6908cb6`) · ✅ **s64** second (`11b9592`) · ✅ **s65 — THIRD commit (`f34595a`) AND THE FIRST REAL CI GATE**: `autodev/main` pushed, PR `woodev-base-theme#55` open, **CI 4/4 green** incl. two suites the harness never runs. **#157 CLOSED.** The mechanism matters: a branch push alone triggers nothing (`on: push: branches: [main]`) — the PR is what gates it |
+| **Declared rulesets (`adr/010`) meet a real oracle conflict** | ✅ **s65** — his own `phpcs.xml.dist` FORBADE his own product decision (#52), so the task was unsatisfiable until the ruleset changed; the worker cannot change it (`adr/006` fence), so the operator blessed it and it was applied OUTSIDE the worker's diff (`29b6ae4`). The narrow path-scoped shape was measured and rejected — `include-pattern` scopes the SNIFF (gotcha 98) |
 | **Contract zones on his theme (#153)** | ✅ **s64 — four zones declared from HIS choice**, each verified through the harness's own parser to fire on a declaration change and not on ordinary use. `GUARDS.md` deliberately still empty: blessing a guard is his act, so a touched zone escalates by name and value |
 | **Project legibility (#138)** | 🟡 first slice shipped s62 — `GET /projects/:id/guarantees` + the "What this project guarantees" screen, live-verified. Umbrella still open: corpus metrics in the UI, per-field explanations (#96) |
 | **Task-command authority (`adr/009`)** | ✅ **MERGED + MEASURED** (PR #145) — the composer may only reference declared commands; the gate refuses to RUN one that does not exist |
@@ -167,48 +237,50 @@ job now changes from "prove it can measure" to "measure something harder".
 > product for others. The polygon `woodev-shipping-plugin-test` is a stand-in he made
 > convenient; a capability proven only there is not proven for him.
 >
-> **s63 discharged item 1: it ran on his own repo and committed.** What follows is what that
-> run exposed, in the order it costs him.
+> **s63–s65 discharged the first three items: it ran on his own repo, committed three times,
+> and is now gated by his own CI.** What follows is what those runs exposed, in the order it
+> costs him.
 
-1. **#157 — decide how his repo's work gets a CI gate.** The most expensive thing open,
-   because it is a hole in the product story rather than in a module: the clone commits, the
-   branch is never pushed, `agentCi` is off, so nothing CI-shaped has ever gated the harness's
-   work in his repository. Three options are in the card; **(a) push `autodev/main` to origin
-   after a green gate** is the one that turns his own CI into evidence, and it is an
-   outward-facing action on his repo, so it is his call.
-2. **Re-run `woodev-base-theme#52`, REFORMULATED** — this is the first thing the operator asked
-   for in s65, and the clone is already synced and green for it. Do NOT restate the old task:
-   its acceptance ("strings copied verbatim from WooCommerce core") is **not mechanically
-   decidable** by a suite that never loads WooCommerce, which is why the worker produced
-   cosmetics twice. Ask instead for an **explicit list of the exact strings** allowed to name
-   the `woocommerce` domain under `woocommerce/`. Measured: the subtree genuinely mixes core
-   copies (`'Hello %1$s (not %1$s? <a href="%2$s">Log out</a>)'`, `_x( '#', 'hash before order
-   number' )`, `'Account pages'`, the `Order`/`Date`/`Status`/`Total` headers) with the theme's
-   own (`'Orders in the last 12 months'`, `'Orders in progress'`, `'Lifetime spent'`,
-   `'Recent orders'`) — so a path rule is wrong on the real code, not just in principle.
+1. **`woodev-base-theme#55` is open and green — it is HIS to merge.** The documented separation
+   holds (`.autodev/config.yaml`: "he merges what this clone produces"), so the harness does not
+   merge into his `main`. Nothing is blocked on the harness here; the branch stays pushed and
+   future work continues on top of it.
+2. **The clone's `autodev/main` now has an upstream, which changes the sync story.** s64's
+   handoff could say "the clone tracks `main`"; it now also pushes. Two consequences nobody has
+   worked through yet: what happens when he merges #55 (does the harness fast-forward, or does
+   `autodev/main` keep diverging), and whether a task that fails the gate should still leave a
+   pushed branch behind. Neither has bitten yet — decide before the next multi-task run rather
+   than during one.
 3. **A live case that actually exercises attribution.** s64 proved #155 at the gate level with
    a real capture, but neither committed task produced a phpcs finding, so the fix has no
    end-to-end observation yet. The theme is clean under its own standard (`phpcs` exit 0
    tree-wide), so the debt case cannot be staged there honestly — the polygon can, by
    declaring a ruleset for it.
-4. **#160 / #161 / #162** — the three findings the #52 run produced: no existence check on a
+4. **#163 — a vacuously-true gate field reads as a pass.** `agent_ci_green: true` when agent-ci
+   is DISABLED, byte-identical to "CI passed"; this is the field s63's overclaimed CI wording was
+   built on, so it has already misled a report once. Same family as #148's `success_green`. Cheap
+   and it removes a whole class of honest-sounding lie: tri-state `passed`/`failed`/`not_run`,
+   which the profile gates already model correctly with `status` + `skip_reason`.
+5. **#160 / #161 / #162** — the three findings the s64 #52 run produced: no existence check on a
    `file_set`; the worker answers a CORRECTNESS objection with a refactor (the mirror of #147);
-   and an escalation offers only A/B, with no "reject and park" and no "abandon", so stopping a
-   task means editing the blackboard by hand.
-4. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
+   and an escalation offers only A/B, with no "reject and park" and no "abandon". **#162 bit
+   again in s65** — reply-B was the only way to restart a task after the ORACLE changed under it,
+   which worked but is the wrong verb for "the world changed, try again".
+6. **#147 — the critic blocks a correct change whose correctness lives outside the diff, and
    the worker cannot argue back.** Measured, not suspected. Options are in the issue; the one
    that changes the most is giving the critic the CALLERS of the symbols a diff touches, so
-   "nothing calls this" becomes a presentable fact instead of a guess. Note s63's counter-
-   evidence: on a real three-file-class refactor the critic returned `clean` twice, so the
-   #147 shape is narrower than "refactors park".
-3. **#148** — the composer never populates `success_commands`, so `adr/009`'s whole machinery
+   "nothing calls this" becomes a presentable fact instead of a guess. Note the counter-evidence
+   from real repo work: s63's three-file refactor and s65's seven-file change both returned
+   `clean`, so the #147 shape is narrower than "refactors park".
+7. **#148** — the composer never populates `success_commands`, so `adr/009`'s whole machinery
    is unexercised · **#149** — a corpus case can assert only an OUTCOME, so it can pass for
    the wrong reason (the enabler for re-adding the deleted case).
-4. **#138 continues** — corpus metrics in the UI; per-field explanations (#96).
-5. **#125** (`critic_total` always `0` — this run reports `72867 / 0`) · **#124** · **#129**
-   (one provider is both the review gate and the harness's own critic) · **#133** · **#122**.
-6. Remaining #146 shapes: a second adversarial case aimed at the CRITIC, and a genuinely
-   ambiguous intent whose right outcome is an escalation.
+8. **#138 continues** — corpus metrics in the UI; per-field explanations (#96) · **#164**
+   (escalation artifacts never cleaned when a task terminalizes).
+9. **#125** (`critic_total` always `0`) · **#124** · **#129** (one provider is both the review
+   gate and the harness's own critic) · **#133** · **#122**.
+10. Remaining #146 shapes: a second adversarial case aimed at the CRITIC, and a genuinely
+    ambiguous intent whose right outcome is an escalation.
 
 `FUTURE-BACKLOG` is FROZEN; open items are GitHub issues on board #2.
 
@@ -263,6 +335,7 @@ job now changes from "prove it can measure" to "measure something harder".
 
 > One line each — pointers, not summaries. Detail belongs in `SESSION-LOG.md`.
 
+- **s65** — **A REAL CI FINALLY GATED IT** (branch `docs/s65-real-repo-ci`; theme commits `29b6ae4` + `f34595a`; `woodev-base-theme#55` **CI 4/4 green**). #157 closed, and the mechanism is the lesson: his `ci.yml` fires on `push: branches: [main]` and `pull_request`, so pushing `autodev/main` triggers NOTHING — "just push it" would have rebuilt the same empty CI panel with a branch on origin making the work look verified. #52 shipped as an EXPLICIT ALLOWLIST of 12 msgids (`f34595a`), the criterion sharpened by the operator himself: a string may name `woocommerce` only when core ships that exact msgid, since a near miss never resolves AND leaves the theme's POT (`SKU` vs core's `SKU:`, `Action` vs `Actions`). **The run's real finding: his own `phpcs.xml.dist` forbade his own product decision** — `text_domain` was a one-element list, so the task was unsatisfiable until the ruleset changed, and the worker cannot change it (`adr/006` fence) → he blessed it, applied outside the worker's diff (`29b6ae4`). The narrow path-scoped fix was recommended and then **measured and withdrawn**: `<include-pattern>` scopes the SNIFF, so outside the subtree a foreign domain and a missing `$domain` stopped being reported at all (gotcha 98). Verified independently: 510 tests, phpcs exit 0 over 119 files, phpstan `[OK]`, guard mutation-verified three ways. Also: told to keep it one change, the composer emitted ONE task over seven files where s64 had split it into three `depends_on` tasks — and that split WAS s64's failure. New: #163, #164, gotcha 98. Closed: #157, #52.
 - **s63** — **THE HARNESS DID REAL WORK IN THE OPERATOR'S OWN REPOSITORY AND COMMITTED** (branch `feat/s63-real-repo`; theme commit `6908cb6`). `adr/010`: a project may declare the ruleset its profile gate judges by — measured first, both directions, on his `woodev-base-theme`, where the profile's ruleset and the project's are MUTUALLY EXCLUSIVE on array syntax (his theme mandates `[]`, the profile mandates `array()`), so the gate was literally unsatisfiable there. Same diff: 8 violations under the profile's ruleset, 1 under his. Ran his own issue #46 (`FilterRail::reset_url()` removed the sanitized key, not the original) end to end: critic `clean` @0.96 → gate RETRY on a genuine docblock defect → worker fixed exactly that → `clean` @0.94 → commit. Verified independently at the commit: his 397-test suite green, his phpcs exit 0, his phpstan `[OK] No errors` (a gate the harness never ran), and the new guard mutation-verified (reintroducing the bug fails 2 tests). Review gate R1 NOT SAFE → **two real oracle-fence escapes** (a ruleset named `rules[1].xml` is a literal to the gate and a pattern to the fence; a declaration on a profile-less project skipped every fail-closed rule) → R2 SAFE. New: #153/#154/#155, gotcha 94 (`[test/mutation-check-noop]`) plus an amendment to `[ops/codex-quota-exit-zero]`, and a narrowing of the s21 vendor-junction gotcha that made a runtime phpunit gate possible at all.
 - **s62** — **THE CORPUS CAN FAIL AGAIN, AND DID** (branch `feat/s62-corpus-harder`; corpus `RESULTS-2026-07-28c.md`: **8/9, first-pass commit 83.3%, escaped 0%, 0 errored, 1492.4s**). Added `good-multifile-method-labels` (a coordinated three-file migration) — it FAILS, and the failure is the finding: the worker's diff is correct and the critic returns `broken` @0.99 on two objections about code the diff does not contain, one of which requires proving an ABSENCE of callers, which cannot be attached (#147). Added and then DELETED `good-declared-docs-check` in the same session: it passed while proving nothing, because every task in all nine cases carried `success_commands: []` — `adr/009`'s prompt half zeroed the field it was written to protect (#148, gotcha 93), and a case can assert only an outcome (#149). Also shipped #138's first slice: `GET /projects/:id/guarantees` + the "What this project guarantees" screen, which finally renders each contract zone's own `why` sentence (present since s07, never displayed) and keeps "contract file unreadable" visibly distinct from "no zones declared". Live-verified in a browser. Operator context recorded: the harness is FIRST for his own repos; the polygon is a stand-in.
 - **s61** — **THE PASS BAR WAS MET** (PR #145, closes #131 #132 #135 #136 #141 #143; CI 4/4; two codex review passes → 1 blocker + 4 majors → R2 SAFE). The session fixed the RULER, not the harness: the composer may only reference commands the project declares and the gate refuses to RUN one that does not exist (`adr/009`, the operator's #143 decision, both halves); a malformed decomposition is retried once (#141); a multi-task case is scored on its most decisive ESCALATION (#136); rates are measured over cases that produced a record, with `measured: X/Y` stated above the table; `escalations/` is purged per case (#131); and both Windows pre-run steps are gone (#132/#135). Corpus re-run: **7/7 passed, `first_pass_commit_rate` 50% → 100%, escaped-defect 0%, 0 errored** (`RESULTS-2026-07-28b.md`). Two live-only findings the tests could not reach: `git check-ignore` rejects `--literal-pathspecs` outright (the other half of #135), and a watchdog test raced a fixed 30ms sleep. New: gotcha 92, `adr/009`, and a narrowed rule on which oracle questions are his.
@@ -293,6 +366,7 @@ job now changes from "prove it can measure" to "measure something harder".
 - **Corpus:** `node dist/index.js eval [--corpus <dir>] [--baseline <commit-ish>] [--max-iterations <n>] [--out <file>]`, on demand only — it drives real worker/critic calls. A 7-case run takes ~11 min. TWO manual steps on Windows (#132): set `gate.agentCi: false` in the target project first (agent-ci cannot run natively and would escalate every case for an environment reason), and pass `--artifacts <dir OUTSIDE the repo>` — with the default path the run refuses to start, because `git check-ignore` reads the Windows drive-letter colon as pathspec magic (#135, gotcha 88). Clear the queue first: the preflight refuses if any task is live.
 - **Presence store:** `~/.autodev/settings.json` (`{overnight:{enabled}}`); `GET`/`PATCH /settings`. Per-project opt-in: `autonomy.overnight.enabled` in the project `.autodev/config.yaml`. Overnight runs on the AND, presence read fresh per trigger.
 - **Test repo:** `woodev-shipping-plugin-test` (registry `~/.autodev/projects.json`, path `D:\Projects\wordpress\woodev-shipping-plugin-test`, on `autodev/main`). `.autodev` is git-excluded, so seeding never dirties the tree.
+- **Operator repo (the real target):** `woodev-base-theme`, harness clone at `D:/Projects/woodev_base_theme_autodev`, on `autodev/main` — **now pushed to `origin`** (s65), with `.autodev/` and `.serena/` in `.git/info/exclude`. His own working copy `D:\Projects\woodev_base_theme` is never touched; he merges what the clone produces. **CI evidence comes from a PR, not from the push** — `ci.yml` fires on `push: branches: [main]` and `pull_request` only. Verify a daemon restart picks up a fresh `dist`: s65 found one serving a bundle older than the s64 `#155` fix.
 - **Critic:** codex, **pin `--model gpt-5.6-luna`**. Run it DIRECTLY — `cat prompt.txt | codex exec --model gpt-5.6-luna --skip-git-repo-check -` (synchronous, prompt on STDIN because a large prompt exceeds the Windows argument limit). Not via the background companion: `/codex:cancel` is broken under git-bash and can leave a job wedged (`[ops/codex-cancel-broken-under-git-bash]`), and a quota refusal exits 0 with no verdict (`[ops/codex-quota-exit-zero]`).
 - **Tests:** 1961 green + 3 skipped; `npm run typecheck` clean (`tsconfig.typecheck.json` — the emit tsconfig does NOT cover `test/**`).
 - **Corpus pre-flight, BY EXACT NAME** (gotcha 89): `.autodev/corpus.lock` must not exist (a KILLED run leaves it, and the next run then produces a report shaped like a catastrophic regression — the tells are wall-clock `0.0s` and tokens `0/0`); the three `queue/` dirs empty; `git status` clean; HEAD at the intended `--baseline`. Launch DETACHED (`Start-Process`), never as a bash background job.
